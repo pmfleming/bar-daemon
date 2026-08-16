@@ -7,6 +7,24 @@ pub struct BarSnapshot {
     pub audio: AudioState,
     pub brightness: BrightnessState,
     pub battery: BatteryState,
+    pub power_profile: PowerProfileState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PowerProfileState {
+    pub available: bool,
+    pub profile: String,
+    pub driver: String,
+    pub profiles: Vec<PowerProfile>,
+    pub performance_degraded: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PowerProfile {
+    pub name: String,
+    pub driver: String,
+    pub platform_driver: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

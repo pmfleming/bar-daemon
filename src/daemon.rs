@@ -17,7 +17,7 @@ use zbus::{connection, object_server::SignalEmitter};
 
 use crate::{
     api::{self, ApiService, BUS_NAME, OBJECT_PATH},
-    audio, battery, brightness, hyprland, media, protocol,
+    audio, battery, brightness, hyprland, media, power, protocol,
     state::StateStore,
 };
 
@@ -141,6 +141,9 @@ fn initial_stream_data(stream: &str, snapshot: &crate::model::BarSnapshot) -> Va
             serde_json::to_value(&snapshot.brightness).unwrap_or(Value::Null)
         }
         protocol::stream::BATTERY => serde_json::to_value(&snapshot.battery).unwrap_or(Value::Null),
+        protocol::stream::POWER_PROFILE => {
+            serde_json::to_value(&snapshot.power_profile).unwrap_or(Value::Null)
+        }
         _ => Value::Null,
     }
 }
@@ -188,7 +191,8 @@ pub async fn run() -> Result<()> {
     let media_task = tokio::spawn(media::monitor(state.clone()));
     let audio_task = tokio::spawn(audio::monitor(state.clone()));
     let brightness_task = tokio::spawn(brightness::monitor(state.clone()));
-    let battery_task = tokio::spawn(battery::monitor(state));
+    let battery_task = tokio::spawn(battery::monitor(state.clone()));
+    let power_task = tokio::spawn(power::monitor(state));
     tracing::info!(
         bus_name = BUS_NAME,
         object_path = OBJECT_PATH,
@@ -204,6 +208,7 @@ pub async fn run() -> Result<()> {
     audio_task.abort();
     brightness_task.abort();
     battery_task.abort();
+    power_task.abort();
     result
 }
 

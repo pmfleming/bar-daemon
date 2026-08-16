@@ -8,6 +8,7 @@ pub mod stream {
     pub const AUDIO: &str = "audio.changed";
     pub const BRIGHTNESS: &str = "brightness.changed";
     pub const BATTERY: &str = "battery.changed";
+    pub const POWER_PROFILE: &str = "power-profile.changed";
 }
 
 pub const METHODS: &[&str] = &[
@@ -18,6 +19,7 @@ pub const METHODS: &[&str] = &[
     "audio.setMuted",
     "brightness.adjust",
     "brightness.set",
+    "powerProfile.set",
 ];
 pub const STREAMS: &[&str] = &[
     stream::WORKSPACES,
@@ -25,6 +27,7 @@ pub const STREAMS: &[&str] = &[
     stream::AUDIO,
     stream::BRIGHTNESS,
     stream::BATTERY,
+    stream::POWER_PROFILE,
 ];
 
 pub fn registry() -> Value {
@@ -38,14 +41,16 @@ pub fn registry() -> Value {
             { "name": "audio.adjust", "params": { "delta_percent": 5 }, "result": "audio" },
             { "name": "audio.setMuted", "params": { "muted": null }, "result": "audio" },
             { "name": "brightness.adjust", "params": { "delta_percent": 5 }, "result": "brightness" },
-            { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" }
+            { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
+            { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" }
         ],
         "streams": [
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
@@ -86,6 +91,11 @@ pub fn contract_fixture() -> Value {
                 "charging": false, "plugged": false, "power_watts": 8.2, "time_to_empty_seconds": 14400,
                 "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
                 "critical": false, "error": null
+            },
+            "power_profile": {
+                "available": true, "profile": "balanced", "driver": "amd_pstate",
+                "profiles": [{ "name": "balanced", "driver": "amd_pstate", "platform_driver": "platform_profile" }],
+                "performance_degraded": "", "error": null
             }
         }
     })

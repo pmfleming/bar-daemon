@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::{audio, brightness, hyprland::HyprlandClient, media, state::StateStore};
+use crate::{audio, brightness, hyprland::HyprlandClient, media, power, state::StateStore};
 
 pub const PROTOCOL: &str = "bar-api";
 pub const VERSION: u8 = 1;
@@ -46,10 +46,21 @@ impl ApiService {
             "audio.setMuted" => self.audio_set_muted(params).await,
             "brightness.adjust" => self.brightness_adjust(params).await,
             "brightness.set" => self.brightness_set(params).await,
+            "powerProfile.set" => self.power_profile_set(params).await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn power_profile_set(&self, params: Value) -> Value {
+        let Some(profile) = params.get("profile").and_then(Value::as_str) else {
+            return error("validation-error", "powerProfile.set requires profile");
+        };
+        match power::set_profile(profile).await {
+            Ok(state) => success(json!({ "power_profile": state })),
+            Err(error_value) => error("power-profile-operation-failed", error_value.to_string()),
         }
     }
 
