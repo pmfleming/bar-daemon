@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::{audio, brightness, hyprland::HyprlandClient, media, power, state::StateStore};
+use crate::{
+    audio, brightness, hyprland::HyprlandClient, media, notifications, power, state::StateStore,
+};
 
 pub const PROTOCOL: &str = "bar-api";
 pub const VERSION: u8 = 1;
@@ -47,10 +49,26 @@ impl ApiService {
             "brightness.adjust" => self.brightness_adjust(params).await,
             "brightness.set" => self.brightness_set(params).await,
             "powerProfile.set" => self.power_profile_set(params).await,
+            "notifications.togglePanel" => self.notification_action(false).await,
+            "notifications.toggleDnd" => self.notification_action(true).await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn notification_action(&self, dnd: bool) -> Value {
+        let result = if dnd {
+            notifications::toggle_dnd().await
+        } else {
+            notifications::toggle_panel().await
+        };
+        match result {
+            Ok(()) => {
+                success(json!({ "operation": if dnd { "toggle-dnd" } else { "toggle-panel" } }))
+            }
+            Err(error_value) => error("notification-operation-failed", error_value.to_string()),
         }
     }
 

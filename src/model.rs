@@ -8,6 +8,20 @@ pub struct BarSnapshot {
     pub brightness: BrightnessState,
     pub battery: BatteryState,
     pub power_profile: PowerProfileState,
+    pub notifications: NotificationState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotificationState {
+    pub available: bool,
+    pub count: u32,
+    pub dnd: bool,
+    pub inhibited: bool,
+    pub text: String,
+    pub tooltip: String,
+    pub alt: String,
+    pub class_name: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

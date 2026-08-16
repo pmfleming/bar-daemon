@@ -12,6 +12,7 @@ Quickshell owns layout, rendering, tooltips, animation, input, and system-tray m
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
 - UPower battery state, health, cycle count, threshold classification, and deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
+- Resilient SwayNC status subscription with normalized count/DND state and panel actions
 
 ## Usage
 

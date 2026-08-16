@@ -9,6 +9,7 @@ pub mod stream {
     pub const BRIGHTNESS: &str = "brightness.changed";
     pub const BATTERY: &str = "battery.changed";
     pub const POWER_PROFILE: &str = "power-profile.changed";
+    pub const NOTIFICATIONS: &str = "notifications.changed";
 }
 
 pub const METHODS: &[&str] = &[
@@ -20,6 +21,8 @@ pub const METHODS: &[&str] = &[
     "brightness.adjust",
     "brightness.set",
     "powerProfile.set",
+    "notifications.togglePanel",
+    "notifications.toggleDnd",
 ];
 pub const STREAMS: &[&str] = &[
     stream::WORKSPACES,
@@ -28,6 +31,7 @@ pub const STREAMS: &[&str] = &[
     stream::BRIGHTNESS,
     stream::BATTERY,
     stream::POWER_PROFILE,
+    stream::NOTIFICATIONS,
 ];
 
 pub fn registry() -> Value {
@@ -42,7 +46,9 @@ pub fn registry() -> Value {
             { "name": "audio.setMuted", "params": { "muted": null }, "result": "audio" },
             { "name": "brightness.adjust", "params": { "delta_percent": 5 }, "result": "brightness" },
             { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
-            { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" }
+            { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
+            { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
+            { "name": "notifications.toggleDnd", "params": {}, "result": "operation" }
         ],
         "streams": [
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
@@ -50,7 +56,8 @@ pub fn registry() -> Value {
             { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
@@ -96,6 +103,10 @@ pub fn contract_fixture() -> Value {
                 "available": true, "profile": "balanced", "driver": "amd_pstate",
                 "profiles": [{ "name": "balanced", "driver": "amd_pstate", "platform_driver": "platform_profile" }],
                 "performance_degraded": "", "error": null
+            },
+            "notifications": {
+                "available": true, "count": 1, "dnd": false, "inhibited": false, "text": "1",
+                "tooltip": "1 Notification", "alt": "notification", "class_name": "notification", "error": null
             }
         }
     })

@@ -5,8 +5,8 @@ use serde_json::{Value, to_value};
 use tokio::sync::{RwLock, broadcast};
 
 use crate::model::{
-    AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState, PowerProfileState,
-    WorkspaceState,
+    AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState, NotificationState,
+    PowerProfileState, WorkspaceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -48,6 +48,16 @@ impl StateStore {
         snapshot.workspaces = value.clone();
         drop(snapshot);
         self.emit(crate::protocol::stream::WORKSPACES, value);
+    }
+
+    pub async fn update_notifications(&self, value: NotificationState) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.notifications == value {
+            return;
+        }
+        snapshot.notifications = value.clone();
+        drop(snapshot);
+        self.emit(crate::protocol::stream::NOTIFICATIONS, value);
     }
 
     pub async fn update_power_profile(&self, value: PowerProfileState) {
