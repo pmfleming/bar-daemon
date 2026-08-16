@@ -1,5 +1,6 @@
 pub mod api;
 pub mod audio;
+pub mod brightness;
 pub mod client;
 pub mod daemon;
 pub mod hyprland;

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::{audio, hyprland::HyprlandClient, media, state::StateStore};
+use crate::{audio, brightness, hyprland::HyprlandClient, media, state::StateStore};
 
 pub const PROTOCOL: &str = "bar-api";
 pub const VERSION: u8 = 1;
@@ -44,10 +44,47 @@ impl ApiService {
             "media.operation" => self.media_operation(params).await,
             "audio.adjust" => self.audio_adjust(params).await,
             "audio.setMuted" => self.audio_set_muted(params).await,
+            "brightness.adjust" => self.brightness_adjust(params).await,
+            "brightness.set" => self.brightness_set(params).await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn brightness_adjust(&self, params: Value) -> Value {
+        let Some(delta) = params.get("delta_percent").and_then(Value::as_i64) else {
+            return error(
+                "validation-error",
+                "brightness.adjust requires integer delta_percent",
+            );
+        };
+        let Ok(delta) = i16::try_from(delta) else {
+            return error(
+                "validation-error",
+                "brightness delta_percent is out of range",
+            );
+        };
+        match brightness::adjust(delta).await {
+            Ok(state) => success(json!({ "brightness": state })),
+            Err(error_value) => error("brightness-operation-failed", error_value.to_string()),
+        }
+    }
+
+    async fn brightness_set(&self, params: Value) -> Value {
+        let Some(percent) = params.get("percent").and_then(Value::as_u64) else {
+            return error(
+                "validation-error",
+                "brightness.set requires integer percent",
+            );
+        };
+        let Ok(percent) = u8::try_from(percent) else {
+            return error("validation-error", "brightness percent is out of range");
+        };
+        match brightness::set(percent).await {
+            Ok(state) => success(json!({ "brightness": state })),
+            Err(error_value) => error("brightness-operation-failed", error_value.to_string()),
         }
     }
 

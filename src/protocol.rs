@@ -6,6 +6,7 @@ pub mod stream {
     pub const WORKSPACES: &str = "workspaces.changed";
     pub const MEDIA: &str = "media.changed";
     pub const AUDIO: &str = "audio.changed";
+    pub const BRIGHTNESS: &str = "brightness.changed";
 }
 
 pub const METHODS: &[&str] = &[
@@ -14,8 +15,15 @@ pub const METHODS: &[&str] = &[
     "media.operation",
     "audio.adjust",
     "audio.setMuted",
+    "brightness.adjust",
+    "brightness.set",
 ];
-pub const STREAMS: &[&str] = &[stream::WORKSPACES, stream::MEDIA, stream::AUDIO];
+pub const STREAMS: &[&str] = &[
+    stream::WORKSPACES,
+    stream::MEDIA,
+    stream::AUDIO,
+    stream::BRIGHTNESS,
+];
 
 pub fn registry() -> Value {
     json!({
@@ -26,12 +34,15 @@ pub fn registry() -> Value {
             { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
             { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null }, "result": "operation" },
             { "name": "audio.adjust", "params": { "delta_percent": 5 }, "result": "audio" },
-            { "name": "audio.setMuted", "params": { "muted": null }, "result": "audio" }
+            { "name": "audio.setMuted", "params": { "muted": null }, "result": "audio" },
+            { "name": "brightness.adjust", "params": { "delta_percent": 5 }, "result": "brightness" },
+            { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" }
         ],
         "streams": [
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
@@ -62,6 +73,10 @@ pub fn contract_fixture() -> Value {
             "audio": {
                 "available": true, "sink_name": "alsa_output.test", "sink_description": "Speakers",
                 "volume_percent": 50, "muted": false, "error": null
+            },
+            "brightness": {
+                "available": true, "device": "amdgpu_bl1", "brightness": 500, "max_brightness": 1000,
+                "percent": 50, "error": null
             }
         }
     })

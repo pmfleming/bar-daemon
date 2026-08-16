@@ -5,6 +5,17 @@ pub struct BarSnapshot {
     pub workspaces: WorkspaceState,
     pub media: MediaState,
     pub audio: AudioState,
+    pub brightness: BrightnessState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BrightnessState {
+    pub available: bool,
+    pub device: String,
+    pub brightness: u64,
+    pub max_brightness: u64,
+    pub percent: u8,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
