@@ -8,6 +8,7 @@ Quickshell owns layout, rendering, tooltips, animation, input, and system-tray m
 
 - Hyprland monitor/workspace snapshots and Lua-aware workspace focus
 - MPRIS player discovery, deterministic active-player selection, metadata, and playback actions
+- Native PipeWire default-output volume/mute state and bounded adjustments
 
 ## Usage
 

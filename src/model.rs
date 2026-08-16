@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 pub struct BarSnapshot {
     pub workspaces: WorkspaceState,
     pub media: MediaState,
+    pub audio: AudioState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AudioState {
+    pub available: bool,
+    pub sink_name: String,
+    pub sink_description: String,
+    pub volume_percent: u8,
+    pub muted: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

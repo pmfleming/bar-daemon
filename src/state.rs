@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{Value, to_value};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::model::{BarSnapshot, MediaState, WorkspaceState};
+use crate::model::{AudioState, BarSnapshot, MediaState, WorkspaceState};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DomainEvent {
@@ -45,6 +45,16 @@ impl StateStore {
         snapshot.workspaces = value.clone();
         drop(snapshot);
         self.emit(crate::protocol::stream::WORKSPACES, value);
+    }
+
+    pub async fn update_audio(&self, value: AudioState) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.audio == value {
+            return;
+        }
+        snapshot.audio = value.clone();
+        drop(snapshot);
+        self.emit(crate::protocol::stream::AUDIO, value);
     }
 
     pub async fn update_media(&self, value: MediaState) {

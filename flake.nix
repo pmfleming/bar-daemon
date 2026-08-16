@@ -15,7 +15,10 @@
             version = "0.1.0";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config pkgs.llvmPackages.libclang ];
+            buildInputs = [ pkgs.pipewire ];
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
             postInstall = ''
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
@@ -47,7 +50,9 @@
 
       devShells = forAllSystems (system: pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cargo clippy jq rust-analyzer rustc rustfmt ];
+          packages = with pkgs; [ cargo clippy jq llvmPackages.libclang pkg-config pipewire rust-analyzer rustc rustfmt ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
           RUST_BACKTRACE = "1";
           RUST_LOG = "bar_daemon=debug";
         };

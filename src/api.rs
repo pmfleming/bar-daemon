@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::{hyprland::HyprlandClient, media, state::StateStore};
+use crate::{audio, hyprland::HyprlandClient, media, state::StateStore};
 
 pub const PROTOCOL: &str = "bar-api";
 pub const VERSION: u8 = 1;
@@ -42,10 +42,45 @@ impl ApiService {
             "bar.snapshot" => success(json!({ "snapshot": self.state.snapshot().await })),
             "workspace.focus" => self.focus_workspace(params).await,
             "media.operation" => self.media_operation(params).await,
+            "audio.adjust" => self.audio_adjust(params).await,
+            "audio.setMuted" => self.audio_set_muted(params).await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn audio_adjust(&self, params: Value) -> Value {
+        let Some(delta) = params.get("delta_percent").and_then(Value::as_i64) else {
+            return error(
+                "validation-error",
+                "audio.adjust requires integer delta_percent",
+            );
+        };
+        let Ok(delta) = i16::try_from(delta) else {
+            return error("validation-error", "audio delta_percent is out of range");
+        };
+        match audio::adjust(delta).await {
+            Ok(state) => success(json!({ "audio": state })),
+            Err(error_value) => error("audio-operation-failed", error_value.to_string()),
+        }
+    }
+
+    async fn audio_set_muted(&self, params: Value) -> Value {
+        let muted = match params.get("muted") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(value)) => Some(*value),
+            _ => {
+                return error(
+                    "validation-error",
+                    "audio.setMuted muted must be boolean or null",
+                );
+            }
+        };
+        match audio::set_muted(muted).await {
+            Ok(state) => success(json!({ "audio": state })),
+            Err(error_value) => error("audio-operation-failed", error_value.to_string()),
         }
     }
 

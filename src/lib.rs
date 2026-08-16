@@ -1,4 +1,5 @@
 pub mod api;
+pub mod audio;
 pub mod client;
 pub mod daemon;
 pub mod hyprland;
