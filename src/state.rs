@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{Value, to_value};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::model::{BarSnapshot, WorkspaceState};
+use crate::model::{BarSnapshot, MediaState, WorkspaceState};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DomainEvent {
@@ -44,8 +44,22 @@ impl StateStore {
         }
         snapshot.workspaces = value.clone();
         drop(snapshot);
+        self.emit(crate::protocol::stream::WORKSPACES, value);
+    }
+
+    pub async fn update_media(&self, value: MediaState) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.media == value {
+            return;
+        }
+        snapshot.media = value.clone();
+        drop(snapshot);
+        self.emit(crate::protocol::stream::MEDIA, value);
+    }
+
+    fn emit(&self, stream: &str, value: impl Serialize) {
         let _ = self.events.send(DomainEvent {
-            stream: crate::protocol::stream::WORKSPACES.to_string(),
+            stream: stream.to_string(),
             data: to_value(value).unwrap_or(Value::Null),
         });
     }

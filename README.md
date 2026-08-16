@@ -7,6 +7,7 @@ Quickshell owns layout, rendering, tooltips, animation, input, and system-tray m
 ## Current domains
 
 - Hyprland monitor/workspace snapshots and Lua-aware workspace focus
+- MPRIS player discovery, deterministic active-player selection, metadata, and playback actions
 
 ## Usage
 
@@ -21,7 +22,8 @@ JSONL example:
 
 ```json
 {"op":"call","id":"snapshot","method":"bar.snapshot","params":{}}
-{"op":"subscribe","id":"subscribe","streams":["workspaces.changed"]}
+{"op":"subscribe","id":"subscribe","streams":["workspaces.changed","media.changed"]}
+{"op":"call","id":"media","method":"media.operation","params":{"operation":"play-pause"}}
 {"op":"call","id":"focus","method":"workspace.focus","params":{"workspace_id":2,"on_current_monitor":true}}
 {"op":"shutdown","id":"shutdown"}
 ```

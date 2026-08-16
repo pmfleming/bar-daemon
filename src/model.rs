@@ -3,6 +3,32 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BarSnapshot {
     pub workspaces: WorkspaceState,
+    pub media: MediaState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MediaState {
+    pub available: bool,
+    pub active_player: Option<String>,
+    pub players: Vec<MediaPlayer>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MediaPlayer {
+    pub id: String,
+    pub identity: String,
+    pub desktop_entry: String,
+    pub playback_status: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub art_url: String,
+    pub can_control: bool,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

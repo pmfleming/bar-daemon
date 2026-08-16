@@ -4,10 +4,11 @@ use crate::api::VERSION;
 
 pub mod stream {
     pub const WORKSPACES: &str = "workspaces.changed";
+    pub const MEDIA: &str = "media.changed";
 }
 
-pub const METHODS: &[&str] = &["bar.snapshot", "workspace.focus"];
-pub const STREAMS: &[&str] = &[stream::WORKSPACES];
+pub const METHODS: &[&str] = &["bar.snapshot", "workspace.focus", "media.operation"];
+pub const STREAMS: &[&str] = &[stream::WORKSPACES, stream::MEDIA];
 
 pub fn registry() -> Value {
     json!({
@@ -15,10 +16,12 @@ pub fn registry() -> Value {
         "version": VERSION,
         "methods": [
             { "name": "bar.snapshot", "params": {}, "result": "snapshot" },
-            { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" }
+            { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
+            { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null }, "result": "operation" }
         ],
         "streams": [
-            { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
@@ -34,6 +37,16 @@ pub fn contract_fixture() -> Value {
                 "focused_monitor": "eDP-1",
                 "monitors": [{ "id": 0, "name": "eDP-1", "focused": true, "active_workspace_id": 1 }],
                 "workspaces": [{ "id": 1, "name": "1", "monitor": "eDP-1", "windows": 1, "urgent": false, "fullscreen": false, "last_window_title": "Terminal" }],
+                "error": null
+            },
+            "media": {
+                "available": true,
+                "active_player": "org.mpris.MediaPlayer2.spotify",
+                "players": [{
+                    "id": "org.mpris.MediaPlayer2.spotify", "identity": "Spotify", "desktop_entry": "spotify",
+                    "playback_status": "playing", "title": "Track", "artist": "Artist", "album": "Album", "art_url": "",
+                    "can_control": true, "can_play": true, "can_pause": true, "can_next": true, "can_previous": true
+                }],
                 "error": null
             }
         }

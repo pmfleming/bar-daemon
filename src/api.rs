@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::{hyprland::HyprlandClient, state::StateStore};
+use crate::{hyprland::HyprlandClient, media, state::StateStore};
 
 pub const PROTOCOL: &str = "bar-api";
 pub const VERSION: u8 = 1;
@@ -41,10 +41,22 @@ impl ApiService {
         match method {
             "bar.snapshot" => success(json!({ "snapshot": self.state.snapshot().await })),
             "workspace.focus" => self.focus_workspace(params).await,
+            "media.operation" => self.media_operation(params).await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn media_operation(&self, params: Value) -> Value {
+        let Some(operation) = params.get("operation").and_then(Value::as_str) else {
+            return error("validation-error", "media.operation requires operation");
+        };
+        let player_id = params.get("player_id").and_then(Value::as_str);
+        match media::operation(player_id, operation).await {
+            Ok(player_id) => success(json!({ "operation": operation, "player_id": player_id })),
+            Err(error_value) => error("media-operation-failed", error_value.to_string()),
         }
     }
 

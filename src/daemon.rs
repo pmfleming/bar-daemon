@@ -17,7 +17,7 @@ use zbus::{connection, object_server::SignalEmitter};
 
 use crate::{
     api::{self, ApiService, BUS_NAME, OBJECT_PATH},
-    hyprland, protocol,
+    hyprland, media, protocol,
     state::StateStore,
 };
 
@@ -135,6 +135,7 @@ fn initial_stream_data(stream: &str, snapshot: &crate::model::BarSnapshot) -> Va
         protocol::stream::WORKSPACES => {
             serde_json::to_value(&snapshot.workspaces).unwrap_or(Value::Null)
         }
+        protocol::stream::MEDIA => serde_json::to_value(&snapshot.media).unwrap_or(Value::Null),
         _ => Value::Null,
     }
 }
@@ -178,7 +179,8 @@ pub async fn run() -> Result<()> {
         .await
         .context("start bar-daemon D-Bus service")?;
 
-    let workspace_task = tokio::spawn(hyprland::monitor(state));
+    let workspace_task = tokio::spawn(hyprland::monitor(state.clone()));
+    let media_task = tokio::spawn(media::monitor(state));
     tracing::info!(
         bus_name = BUS_NAME,
         object_path = OBJECT_PATH,
@@ -190,6 +192,7 @@ pub async fn run() -> Result<()> {
         _ = terminate.recv() => Ok(()),
     };
     workspace_task.abort();
+    media_task.abort();
     result
 }
 
