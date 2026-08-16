@@ -10,6 +10,7 @@ Quickshell owns layout, rendering, tooltips, animation, input, and system-tray m
 - MPRIS player discovery, deterministic active-player selection, metadata, and playback actions
 - Native PipeWire default-output volume/mute state and bounded adjustments
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
+- UPower battery state, health, cycle count, threshold classification, and deduplicated alerts
 
 ## Usage
 

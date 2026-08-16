@@ -1,5 +1,6 @@
 pub mod api;
 pub mod audio;
+pub mod battery;
 pub mod brightness;
 pub mod client;
 pub mod daemon;

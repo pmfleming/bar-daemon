@@ -7,6 +7,7 @@ pub mod stream {
     pub const MEDIA: &str = "media.changed";
     pub const AUDIO: &str = "audio.changed";
     pub const BRIGHTNESS: &str = "brightness.changed";
+    pub const BATTERY: &str = "battery.changed";
 }
 
 pub const METHODS: &[&str] = &[
@@ -23,6 +24,7 @@ pub const STREAMS: &[&str] = &[
     stream::MEDIA,
     stream::AUDIO,
     stream::BRIGHTNESS,
+    stream::BATTERY,
 ];
 
 pub fn registry() -> Value {
@@ -42,7 +44,8 @@ pub fn registry() -> Value {
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
@@ -77,6 +80,12 @@ pub fn contract_fixture() -> Value {
             "brightness": {
                 "available": true, "device": "amdgpu_bl1", "brightness": 500, "max_brightness": 1000,
                 "percent": 50, "error": null
+            },
+            "battery": {
+                "available": true, "native_path": "BAT0", "percentage": 80, "state": "discharging",
+                "charging": false, "plugged": false, "power_watts": 8.2, "time_to_empty_seconds": 14400,
+                "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
+                "critical": false, "error": null
             }
         }
     })

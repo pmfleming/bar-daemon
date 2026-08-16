@@ -4,7 +4,9 @@ use serde::Serialize;
 use serde_json::{Value, to_value};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::model::{AudioState, BarSnapshot, BrightnessState, MediaState, WorkspaceState};
+use crate::model::{
+    AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState, WorkspaceState,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DomainEvent {
@@ -45,6 +47,16 @@ impl StateStore {
         snapshot.workspaces = value.clone();
         drop(snapshot);
         self.emit(crate::protocol::stream::WORKSPACES, value);
+    }
+
+    pub async fn update_battery(&self, value: BatteryState) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.battery == value {
+            return;
+        }
+        snapshot.battery = value.clone();
+        drop(snapshot);
+        self.emit(crate::protocol::stream::BATTERY, value);
     }
 
     pub async fn update_brightness(&self, value: BrightnessState) {

@@ -6,6 +6,25 @@ pub struct BarSnapshot {
     pub media: MediaState,
     pub audio: AudioState,
     pub brightness: BrightnessState,
+    pub battery: BatteryState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryState {
+    pub available: bool,
+    pub native_path: String,
+    pub percentage: u8,
+    pub state: String,
+    pub charging: bool,
+    pub plugged: bool,
+    pub power_watts: f64,
+    pub time_to_empty_seconds: u64,
+    pub time_to_full_seconds: u64,
+    pub health_percent: Option<u8>,
+    pub cycles: Option<u32>,
+    pub warning: bool,
+    pub critical: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
