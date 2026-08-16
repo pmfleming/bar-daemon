@@ -6,7 +6,7 @@ use tokio::sync::{RwLock, broadcast};
 
 use crate::model::{
     AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState, NotificationState,
-    PowerProfileState, WorkspaceState,
+    PowerProfileState, UpdateState, WorkspaceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -48,6 +48,16 @@ impl StateStore {
         snapshot.workspaces = value.clone();
         drop(snapshot);
         self.emit(crate::protocol::stream::WORKSPACES, value);
+    }
+
+    pub async fn update_updates(&self, value: UpdateState) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.updates == value {
+            return;
+        }
+        snapshot.updates = value.clone();
+        drop(snapshot);
+        self.emit(crate::protocol::stream::UPDATES, value);
     }
 
     pub async fn update_notifications(&self, value: NotificationState) {

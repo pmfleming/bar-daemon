@@ -13,6 +13,7 @@ Quickshell owns layout, rendering, tooltips, animation, input, and system-tray m
 - UPower battery state, health, cycle count, threshold classification, and deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
 - Resilient SwayNC status subscription with normalized count/DND state and panel actions
+- Event-driven NixOS delayed-update readiness across fast and delayed lanes
 
 ## Usage
 

@@ -11,3 +11,4 @@ pub mod notifications;
 pub mod power;
 pub mod protocol;
 pub mod state;
+pub mod updates;

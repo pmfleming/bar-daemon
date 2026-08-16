@@ -10,6 +10,7 @@ pub mod stream {
     pub const BATTERY: &str = "battery.changed";
     pub const POWER_PROFILE: &str = "power-profile.changed";
     pub const NOTIFICATIONS: &str = "notifications.changed";
+    pub const UPDATES: &str = "updates.changed";
 }
 
 pub const METHODS: &[&str] = &[
@@ -23,6 +24,7 @@ pub const METHODS: &[&str] = &[
     "powerProfile.set",
     "notifications.togglePanel",
     "notifications.toggleDnd",
+    "updates.refresh",
 ];
 pub const STREAMS: &[&str] = &[
     stream::WORKSPACES,
@@ -32,6 +34,7 @@ pub const STREAMS: &[&str] = &[
     stream::BATTERY,
     stream::POWER_PROFILE,
     stream::NOTIFICATIONS,
+    stream::UPDATES,
 ];
 
 pub fn registry() -> Value {
@@ -48,7 +51,8 @@ pub fn registry() -> Value {
             { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
-            { "name": "notifications.toggleDnd", "params": {}, "result": "operation" }
+            { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
+            { "name": "updates.refresh", "params": {}, "result": "updates" }
         ],
         "streams": [
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
@@ -57,7 +61,8 @@ pub fn registry() -> Value {
             { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
@@ -107,6 +112,11 @@ pub fn contract_fixture() -> Value {
             "notifications": {
                 "available": true, "count": 1, "dnd": false, "inhibited": false, "text": "1",
                 "tooltip": "1 Notification", "alt": "notification", "class_name": "notification", "error": null
+            },
+            "updates": {
+                "available": true, "ready": true,
+                "lanes": [{ "name": "fast", "ready": true, "revision": "abc", "base_hash": "def", "created_at": 123, "auto_apply": false, "system": "/nix/store/system" }],
+                "state_directory": "/var/lib/nixos-delayed-updates-v2", "error": null
             }
         }
     })

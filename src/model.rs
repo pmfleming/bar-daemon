@@ -9,6 +9,27 @@ pub struct BarSnapshot {
     pub battery: BatteryState,
     pub power_profile: PowerProfileState,
     pub notifications: NotificationState,
+    pub updates: UpdateState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdateState {
+    pub available: bool,
+    pub ready: bool,
+    pub lanes: Vec<UpdateLane>,
+    pub state_directory: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdateLane {
+    pub name: String,
+    pub ready: bool,
+    pub revision: Option<String>,
+    pub base_hash: Option<String>,
+    pub created_at: Option<u64>,
+    pub auto_apply: bool,
+    pub system: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

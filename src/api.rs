@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     audio, brightness, hyprland::HyprlandClient, media, notifications, power, state::StateStore,
+    updates,
 };
 
 pub const PROTOCOL: &str = "bar-api";
@@ -51,10 +52,18 @@ impl ApiService {
             "powerProfile.set" => self.power_profile_set(params).await,
             "notifications.togglePanel" => self.notification_action(false).await,
             "notifications.toggleDnd" => self.notification_action(true).await,
+            "updates.refresh" => self.updates_refresh().await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn updates_refresh(&self) -> Value {
+        match updates::refresh_default(&self.state).await {
+            Ok(state) => success(json!({ "updates": state })),
+            Err(error_value) => error("update-refresh-failed", error_value.to_string()),
         }
     }
 
