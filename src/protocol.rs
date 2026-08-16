@@ -11,6 +11,7 @@ pub mod stream {
     pub const POWER_PROFILE: &str = "power-profile.changed";
     pub const NOTIFICATIONS: &str = "notifications.changed";
     pub const UPDATES: &str = "updates.changed";
+    pub const TIMEZONE: &str = "timezone.changed";
 }
 
 pub const METHODS: &[&str] = &[
@@ -35,6 +36,7 @@ pub const STREAMS: &[&str] = &[
     stream::POWER_PROFILE,
     stream::NOTIFICATIONS,
     stream::UPDATES,
+    stream::TIMEZONE,
 ];
 
 pub fn registry() -> Value {
@@ -62,12 +64,14 @@ pub fn registry() -> Value {
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] }
+            { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::TIMEZONE, "events": ["subscribed", "changed", "lagged"] }
         ]
     })
 }
 
-pub fn contract_fixture() -> Value {
+#[cfg(test)]
+fn generated_contract_fixture() -> Value {
     json!({
         "protocol": "bar-api",
         "version": VERSION,
@@ -117,14 +121,28 @@ pub fn contract_fixture() -> Value {
                 "available": true, "ready": true,
                 "lanes": [{ "name": "fast", "ready": true, "revision": "abc", "base_hash": "def", "created_at": 123, "auto_apply": false, "system": "/nix/store/system" }],
                 "state_directory": "/var/lib/nixos-delayed-updates-v2", "error": null
+            },
+            "timezone": {
+                "available": true, "timezone": "Europe/Amsterdam", "city": "Amsterdam",
+                "abbreviation": "CEST", "utc_offset_seconds": 7200, "error": null
             }
         }
     })
 }
 
+pub fn contract_fixture() -> Value {
+    serde_json::from_str(include_str!("../test_support/bar-api-v1.json"))
+        .expect("checked bar-api fixture must be valid JSON")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{METHODS, STREAMS, registry};
+    use super::{METHODS, STREAMS, contract_fixture, generated_contract_fixture, registry};
+
+    #[test]
+    fn checked_contract_fixture_is_current() {
+        assert_eq!(contract_fixture(), generated_contract_fixture());
+    }
 
     #[test]
     fn registry_matches_constants() {

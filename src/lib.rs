@@ -11,4 +11,5 @@ pub mod notifications;
 pub mod power;
 pub mod protocol;
 pub mod state;
+pub mod timezone;
 pub mod updates;

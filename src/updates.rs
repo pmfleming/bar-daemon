@@ -25,7 +25,7 @@ pub async fn monitor(store: StateStore) {
     let (tx, mut rx) = mpsc::channel(16);
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         if result.is_ok() {
-            let _ = tx.blocking_send(());
+            let _ = tx.try_send(());
         }
     })
     .ok();

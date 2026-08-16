@@ -19,7 +19,7 @@ use crate::{
     api::{self, ApiService, BUS_NAME, OBJECT_PATH},
     audio, battery, brightness, hyprland, media, notifications, power, protocol,
     state::StateStore,
-    updates,
+    timezone, updates,
 };
 
 pub struct BarDaemon {
@@ -149,6 +149,9 @@ fn initial_stream_data(stream: &str, snapshot: &crate::model::BarSnapshot) -> Va
             serde_json::to_value(&snapshot.notifications).unwrap_or(Value::Null)
         }
         protocol::stream::UPDATES => serde_json::to_value(&snapshot.updates).unwrap_or(Value::Null),
+        protocol::stream::TIMEZONE => {
+            serde_json::to_value(&snapshot.timezone).unwrap_or(Value::Null)
+        }
         _ => Value::Null,
     }
 }
@@ -199,7 +202,8 @@ pub async fn run() -> Result<()> {
     let battery_task = tokio::spawn(battery::monitor(state.clone()));
     let power_task = tokio::spawn(power::monitor(state.clone()));
     let notification_task = tokio::spawn(notifications::monitor(state.clone()));
-    let update_task = tokio::spawn(updates::monitor(state));
+    let update_task = tokio::spawn(updates::monitor(state.clone()));
+    let timezone_task = tokio::spawn(timezone::monitor(state));
     tracing::info!(
         bus_name = BUS_NAME,
         object_path = OBJECT_PATH,
@@ -218,6 +222,7 @@ pub async fn run() -> Result<()> {
     power_task.abort();
     notification_task.abort();
     update_task.abort();
+    timezone_task.abort();
     result
 }
 

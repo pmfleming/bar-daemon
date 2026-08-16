@@ -37,12 +37,12 @@ pub async fn monitor(store: StateStore) {
         std::env::var_os("BAR_DAEMON_BACKLIGHT_ROOT")
             .unwrap_or_else(|| DEFAULT_BACKLIGHT_ROOT.into()),
     );
+    refresh(&store, &root).await;
     let (tx, mut rx) = mpsc::channel(8);
-    let watcher_root = root.clone();
     let mut watcher = PollWatcher::new(
         move |result: notify::Result<notify::Event>| {
             if result.is_ok() {
-                let _ = tx.blocking_send(());
+                let _ = tx.try_send(());
             }
         },
         Config::default()
@@ -50,9 +50,14 @@ pub async fn monitor(store: StateStore) {
             .with_compare_contents(true),
     )
     .ok();
-    if let Some(watcher) = watcher.as_mut() {
-        if let Err(error) = watcher.watch(&watcher_root, RecursiveMode::Recursive) {
-            tracing::debug!(%error, "backlight watcher unavailable");
+    if let (Some(watcher), Ok(device)) = (watcher.as_mut(), discover(&root)) {
+        for file in ["actual_brightness", "brightness", "max_brightness"] {
+            let path = device.path.join(file);
+            if path.exists() {
+                if let Err(error) = watcher.watch(&path, RecursiveMode::NonRecursive) {
+                    tracing::debug!(%error, path = %path.display(), "backlight file watcher unavailable");
+                }
+            }
         }
     }
     loop {

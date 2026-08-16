@@ -14,6 +14,7 @@ Quickshell owns layout, rendering, tooltips, animation, input, and system-tray m
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
 - Resilient SwayNC status subscription with normalized count/DND state and panel actions
 - Event-driven NixOS delayed-update readiness across fast and delayed lanes
+- systemd-timedated timezone, city, abbreviation, and current UTC offset
 
 ## Usage
 
@@ -33,6 +34,8 @@ JSONL example:
 {"op":"call","id":"focus","method":"workspace.focus","params":{"workspace_id":2,"on_current_monitor":true}}
 {"op":"shutdown","id":"shutdown"}
 ```
+
+See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
 
 D-Bus endpoint:
 

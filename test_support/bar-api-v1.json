@@ -1,0 +1,285 @@
+{
+  "protocol": "bar-api",
+  "registry": {
+    "methods": [
+      {
+        "name": "bar.snapshot",
+        "params": {},
+        "result": "snapshot"
+      },
+      {
+        "name": "workspace.focus",
+        "params": {
+          "on_current_monitor": false,
+          "workspace_id": 1
+        },
+        "result": "operation"
+      },
+      {
+        "name": "media.operation",
+        "params": {
+          "operation": "play-pause",
+          "player_id": null
+        },
+        "result": "operation"
+      },
+      {
+        "name": "audio.adjust",
+        "params": {
+          "delta_percent": 5
+        },
+        "result": "audio"
+      },
+      {
+        "name": "audio.setMuted",
+        "params": {
+          "muted": null
+        },
+        "result": "audio"
+      },
+      {
+        "name": "brightness.adjust",
+        "params": {
+          "delta_percent": 5
+        },
+        "result": "brightness"
+      },
+      {
+        "name": "brightness.set",
+        "params": {
+          "percent": 50
+        },
+        "result": "brightness"
+      },
+      {
+        "name": "powerProfile.set",
+        "params": {
+          "profile": "balanced"
+        },
+        "result": "power_profile"
+      },
+      {
+        "name": "notifications.togglePanel",
+        "params": {},
+        "result": "operation"
+      },
+      {
+        "name": "notifications.toggleDnd",
+        "params": {},
+        "result": "operation"
+      },
+      {
+        "name": "updates.refresh",
+        "params": {},
+        "result": "updates"
+      }
+    ],
+    "protocol": "bar-api",
+    "streams": [
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "workspaces.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "media.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "audio.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "brightness.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "battery.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "power-profile.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "notifications.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "updates.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "timezone.changed"
+      }
+    ],
+    "version": 1
+  },
+  "snapshot": {
+    "audio": {
+      "available": true,
+      "error": null,
+      "muted": false,
+      "sink_description": "Speakers",
+      "sink_name": "alsa_output.test",
+      "volume_percent": 50
+    },
+    "battery": {
+      "available": true,
+      "charging": false,
+      "critical": false,
+      "cycles": 101,
+      "error": null,
+      "health_percent": 85,
+      "native_path": "BAT0",
+      "percentage": 80,
+      "plugged": false,
+      "power_watts": 8.2,
+      "state": "discharging",
+      "time_to_empty_seconds": 14400,
+      "time_to_full_seconds": 0,
+      "warning": false
+    },
+    "brightness": {
+      "available": true,
+      "brightness": 500,
+      "device": "amdgpu_bl1",
+      "error": null,
+      "max_brightness": 1000,
+      "percent": 50
+    },
+    "media": {
+      "active_player": "org.mpris.MediaPlayer2.spotify",
+      "available": true,
+      "error": null,
+      "players": [
+        {
+          "album": "Album",
+          "art_url": "",
+          "artist": "Artist",
+          "can_control": true,
+          "can_next": true,
+          "can_pause": true,
+          "can_play": true,
+          "can_previous": true,
+          "desktop_entry": "spotify",
+          "id": "org.mpris.MediaPlayer2.spotify",
+          "identity": "Spotify",
+          "playback_status": "playing",
+          "title": "Track"
+        }
+      ]
+    },
+    "notifications": {
+      "alt": "notification",
+      "available": true,
+      "class_name": "notification",
+      "count": 1,
+      "dnd": false,
+      "error": null,
+      "inhibited": false,
+      "text": "1",
+      "tooltip": "1 Notification"
+    },
+    "power_profile": {
+      "available": true,
+      "driver": "amd_pstate",
+      "error": null,
+      "performance_degraded": "",
+      "profile": "balanced",
+      "profiles": [
+        {
+          "driver": "amd_pstate",
+          "name": "balanced",
+          "platform_driver": "platform_profile"
+        }
+      ]
+    },
+    "timezone": {
+      "abbreviation": "CEST",
+      "available": true,
+      "city": "Amsterdam",
+      "error": null,
+      "timezone": "Europe/Amsterdam",
+      "utc_offset_seconds": 7200
+    },
+    "updates": {
+      "available": true,
+      "error": null,
+      "lanes": [
+        {
+          "auto_apply": false,
+          "base_hash": "def",
+          "created_at": 123,
+          "name": "fast",
+          "ready": true,
+          "revision": "abc",
+          "system": "/nix/store/system"
+        }
+      ],
+      "ready": true,
+      "state_directory": "/var/lib/nixos-delayed-updates-v2"
+    },
+    "workspaces": {
+      "available": true,
+      "error": null,
+      "focused_monitor": "eDP-1",
+      "monitors": [
+        {
+          "active_workspace_id": 1,
+          "focused": true,
+          "id": 0,
+          "name": "eDP-1"
+        }
+      ],
+      "workspaces": [
+        {
+          "fullscreen": false,
+          "id": 1,
+          "last_window_title": "Terminal",
+          "monitor": "eDP-1",
+          "name": "1",
+          "urgent": false,
+          "windows": 1
+        }
+      ]
+    }
+  },
+  "version": 1
+}

@@ -10,6 +10,17 @@ pub struct BarSnapshot {
     pub power_profile: PowerProfileState,
     pub notifications: NotificationState,
     pub updates: UpdateState,
+    pub timezone: TimezoneState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TimezoneState {
+    pub available: bool,
+    pub timezone: String,
+    pub city: String,
+    pub abbreviation: String,
+    pub utc_offset_seconds: i32,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
