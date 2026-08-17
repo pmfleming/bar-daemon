@@ -111,7 +111,7 @@ pub async fn set(percent: u8) -> Result<BrightnessState> {
 }
 
 async fn set_for_device(device: BacklightDevice, requested_percent: u8) -> Result<BrightnessState> {
-    let target = ((u128::from(device.max_brightness) * u128::from(requested_percent)) / 100) as u64;
+    let target = raw_brightness(device.max_brightness, requested_percent);
     let direct_result = tokio::fs::write(device.path.join("brightness"), target.to_string()).await;
     if direct_result.is_err() {
         let output = Command::new("brightnessctl")
@@ -181,12 +181,20 @@ fn percent(brightness: u64, maximum: u64) -> u8 {
     ((u128::from(brightness) * 100 + u128::from(maximum) / 2) / u128::from(maximum)).min(100) as u8
 }
 
+fn raw_brightness(maximum: u64, requested_percent: u8) -> u64 {
+    if maximum == 0 {
+        return 0;
+    }
+    let rounded = (u128::from(maximum) * u128::from(requested_percent) + 50) / 100;
+    (rounded as u64).clamp(1, maximum)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    use super::{discover, percent};
+    use super::{discover, percent, raw_brightness};
 
     #[test]
     fn discovers_highest_resolution_backlight() {
@@ -207,5 +215,12 @@ mod tests {
         assert_eq!(percent(1, 3), 33);
         assert_eq!(percent(200, 100), 100);
         assert_eq!(percent(1, 0), 0);
+    }
+
+    #[test]
+    fn nonzero_percent_never_turns_off_low_resolution_backlight() {
+        assert_eq!(raw_brightness(10, 1), 1);
+        assert_eq!(raw_brightness(10, 5), 1);
+        assert_eq!(raw_brightness(10, 100), 10);
     }
 }

@@ -40,7 +40,8 @@ pub async fn run() -> Result<()> {
     let connection = zbus::Connection::session().await.ok();
     let output = Arc::new(Mutex::new(tokio::io::stdout()));
     if let Some(connection) = connection.as_ref().cloned() {
-        spawn_events(connection, Arc::clone(&output));
+        spawn_events(connection.clone(), Arc::clone(&output));
+        spawn_owner_watcher(connection, Arc::clone(&output));
     }
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines.next_line().await.context("read client request")? {
@@ -147,29 +148,56 @@ where
 }
 
 fn spawn_events(connection: zbus::Connection, output: Output) {
-    tokio::spawn(async move {
-        let Ok(proxy) = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE).await
-        else {
-            return;
-        };
-        let Ok(mut signals) = proxy.receive_signal("Event").await else {
-            return;
-        };
+    let task_output = Arc::clone(&output);
+    spawn_transport_task(output, async move {
+        let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE).await?;
+        let mut signals = proxy.receive_signal("Event").await?;
         while let Some(message) = signals.next().await {
-            let Ok((stream, event_json)) = message.body().deserialize::<(String, String)>() else {
-                continue;
-            };
+            let (stream, event_json) = message.body().deserialize::<(String, String)>()?;
             let event = serde_json::from_str::<Value>(&event_json)
                 .unwrap_or_else(|_| json!({"raw":event_json}));
-            if emit(
-                &output,
+            emit(
+                &task_output,
                 &json!({"kind":"event","stream":stream,"event":event}),
             )
-            .await
-            .is_err()
-            {
-                break;
+            .await?;
+        }
+        anyhow::bail!("bar-daemon event stream ended")
+    });
+}
+
+fn spawn_owner_watcher(connection: zbus::Connection, output: Output) {
+    spawn_transport_task(output, async move {
+        let proxy = zbus::Proxy::new(
+            &connection,
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+        )
+        .await?;
+        let mut changes = proxy.receive_signal("NameOwnerChanged").await?;
+        while let Some(message) = changes.next().await {
+            let (name, old_owner, new_owner): (String, String, String) =
+                message.body().deserialize()?;
+            if name == BUS_NAME && !old_owner.is_empty() && old_owner != new_owner {
+                anyhow::bail!("bar-daemon restarted; reconnecting");
             }
+        }
+        anyhow::bail!("D-Bus owner-change stream ended")
+    });
+}
+
+fn spawn_transport_task(
+    output: Output,
+    task: impl std::future::Future<Output = Result<()>> + Send + 'static,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = task.await {
+            let _ = emit(
+                &output,
+                &json!({"kind":"transport-error","error":error.to_string()}),
+            )
+            .await;
         }
     });
 }

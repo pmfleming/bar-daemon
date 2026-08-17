@@ -203,10 +203,11 @@ fn parse_snapshot(workspaces_json: &str, monitors_json: &str) -> Result<Workspac
 pub async fn monitor(store: StateStore) {
     let client = HyprlandClient::default();
     loop {
-        refresh(&client, &store).await;
         match client.event_socket().await {
             Ok(stream) => {
+                // Attach first so compositor changes made during the snapshot are queued.
                 let mut lines = BufReader::new(stream).lines();
+                refresh(&client, &store).await;
                 loop {
                     match lines.next_line().await {
                         Ok(Some(event)) => {
@@ -224,6 +225,7 @@ pub async fn monitor(store: StateStore) {
             }
             Err(error) => {
                 tracing::debug!(%error, "Hyprland event socket unavailable");
+                refresh(&client, &store).await;
             }
         }
         sleep(Duration::from_secs(1)).await;

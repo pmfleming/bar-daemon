@@ -29,18 +29,48 @@ pub async fn monitor(store: StateStore) {
         }
     })
     .ok();
-    if let Some(watcher) = watcher.as_mut() {
-        if let Err(error) = watcher.watch(&directory, RecursiveMode::Recursive) {
-            tracing::debug!(%error, path = %directory.display(), "NixOS update watcher unavailable");
-        }
-    }
+    let mut watched_path = None;
     loop {
+        if let Some(watcher) = watcher.as_mut() {
+            update_watch(watcher, &directory, &mut watched_path);
+        }
         refresh_path(&store, directory.clone()).await;
         tokio::select! {
             value = rx.recv() => if value.is_none() { sleep(Duration::from_secs(2)).await; },
             _ = sleep(Duration::from_secs(60)) => {}
         }
     }
+}
+
+fn update_watch(watcher: &mut impl Watcher, directory: &Path, watched_path: &mut Option<PathBuf>) {
+    let Some((next_path, mode)) = watch_target(directory) else {
+        return;
+    };
+    if watched_path.as_ref() == Some(&next_path) {
+        return;
+    }
+    if let Some(previous) = watched_path.take()
+        && let Err(error) = watcher.unwatch(&previous)
+    {
+        tracing::debug!(%error, path = %previous.display(), "could not replace NixOS update watch");
+    }
+    match watcher.watch(&next_path, mode) {
+        Ok(()) => *watched_path = Some(next_path),
+        Err(error) => {
+            tracing::debug!(%error, path = %next_path.display(), "NixOS update watcher unavailable")
+        }
+    }
+}
+
+fn watch_target(directory: &Path) -> Option<(PathBuf, RecursiveMode)> {
+    if directory.is_dir() {
+        return Some((directory.to_path_buf(), RecursiveMode::Recursive));
+    }
+    directory
+        .ancestors()
+        .skip(1)
+        .find(|path| path.is_dir())
+        .map(|path| (path.to_path_buf(), RecursiveMode::NonRecursive))
 }
 
 pub async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
@@ -132,7 +162,7 @@ mod tests {
     use std::{fs, os::unix::fs::symlink};
     use tempfile::tempdir;
 
-    use super::read_state;
+    use super::{read_state, watch_target};
 
     #[test]
     fn requires_complete_ready_lane() {
@@ -157,5 +187,14 @@ mod tests {
         let state = read_state(&root.path().join("missing")).unwrap();
         assert!(!state.available);
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn watches_parent_until_state_directory_exists() {
+        let root = tempdir().unwrap();
+        let directory = root.path().join("updates");
+        assert_eq!(watch_target(&directory).unwrap().0, root.path());
+        fs::create_dir(&directory).unwrap();
+        assert_eq!(watch_target(&directory).unwrap().0, directory);
     }
 }

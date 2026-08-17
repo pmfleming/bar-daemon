@@ -1,19 +1,23 @@
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use serde_json::{Value, json};
 use tokio::{
     signal::{
         ctrl_c,
         unix::{SignalKind, signal},
     },
-    sync::Mutex,
+    sync::{Mutex, oneshot},
     task::JoinHandle,
 };
-use zbus::{connection, object_server::SignalEmitter};
+use zbus::{connection, message::Header, object_server::SignalEmitter};
 
 use crate::{
     api::{self, ApiService, BUS_NAME, OBJECT_PATH},
@@ -22,11 +26,18 @@ use crate::{
     timezone, updates,
 };
 
+struct Subscription {
+    owner: Option<String>,
+    task: JoinHandle<()>,
+}
+
+type Subscriptions = Arc<Mutex<HashMap<String, Subscription>>>;
+
 pub struct BarDaemon {
     api: ApiService,
     state: StateStore,
     sequence: AtomicU64,
-    subscriptions: Mutex<HashMap<String, JoinHandle<()>>>,
+    subscriptions: Subscriptions,
 }
 
 #[zbus::interface(name = "org.laufan.BarDaemon1")]
@@ -45,6 +56,7 @@ impl BarDaemon {
     async fn subscribe(
         &self,
         streams: Vec<String>,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> String {
         if let Some(stream) = streams
@@ -61,19 +73,45 @@ impl BarDaemon {
             "subscription-{}",
             self.sequence.fetch_add(1, Ordering::Relaxed)
         );
-        let task = tokio::spawn(forward_events(
-            self.state.clone(),
-            emitter.to_owned(),
-            id.clone(),
-            streams,
-        ));
-        self.subscriptions.lock().await.insert(id.clone(), task);
+        let owner = header.sender().map(ToString::to_string);
+        let connection = emitter.connection().clone();
+        let directed = directed_emitter(&emitter, &header);
+        let state = self.state.clone();
+        let (start_sender, start_receiver) = oneshot::channel();
+        let task_id = id.clone();
+        let task_owner = owner.clone();
+        let subscriptions = Arc::clone(&self.subscriptions);
+        let task = tokio::spawn(async move {
+            if start_receiver.await.is_err() {
+                return;
+            }
+            let events = forward_events(state, directed, task_id.clone(), streams);
+            if let Some(owner) = task_owner {
+                tokio::select! {
+                    _ = events => {}
+                    _ = wait_for_owner_loss(connection, owner) => {}
+                }
+            } else {
+                events.await;
+            }
+            subscriptions.lock().await.remove(&task_id);
+        });
+        self.subscriptions
+            .lock()
+            .await
+            .insert(id.clone(), Subscription { owner, task });
+        let _ = start_sender.send(());
         api::success(json!({ "subscription": { "id": id } })).to_string()
     }
 
-    async fn cancel(&self, request_id: &str) -> String {
-        if let Some(task) = self.subscriptions.lock().await.remove(request_id) {
-            task.abort();
+    async fn cancel(&self, request_id: &str, #[zbus(header)] header: Header<'_>) -> String {
+        let owner = header.sender().map(ToString::to_string);
+        let mut subscriptions = self.subscriptions.lock().await;
+        let owned = subscriptions
+            .get(request_id)
+            .is_some_and(|subscription| subscription.owner == owner);
+        if owned && let Some(subscription) = subscriptions.remove(request_id) {
+            subscription.task.abort();
             return api::success(json!({ "cancelled": request_id, "kind": "subscription" }))
                 .to_string();
         }
@@ -89,18 +127,24 @@ impl BarDaemon {
     -> zbus::Result<()>;
 }
 
+fn directed_emitter(emitter: &SignalEmitter<'_>, header: &Header<'_>) -> SignalEmitter<'static> {
+    match header.sender() {
+        Some(sender) => emitter.to_owned().set_destination(sender.to_owned().into()),
+        None => emitter.to_owned(),
+    }
+}
+
 async fn forward_events(
     state: StateStore,
     emitter: SignalEmitter<'static>,
     subscription_id: String,
     streams: Vec<String>,
 ) {
-    let snapshot = state.snapshot().await;
+    let (snapshot, mut events) = state.snapshot_and_subscribe().await;
     for stream in &streams {
         let data = initial_stream_data(stream, &snapshot);
         emit_event(&emitter, stream, "subscribed", &subscription_id, data).await;
     }
-    let mut events = state.subscribe();
     loop {
         match events.recv().await {
             Ok(event) if streams.contains(&event.stream) => {
@@ -176,14 +220,45 @@ async fn emit_event(
     }
 }
 
+async fn wait_for_owner_loss(connection: zbus::Connection, owner: String) {
+    let result: Result<()> = async {
+        let proxy = zbus::Proxy::new(
+            &connection,
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+        )
+        .await?;
+        let mut changes = proxy.receive_signal("NameOwnerChanged").await?;
+        let has_owner: bool = proxy.call("NameHasOwner", &(owner.as_str(),)).await?;
+        tracing::debug!(%owner, has_owner, "subscription owner watch established");
+        if !has_owner {
+            return Ok(());
+        }
+        while let Some(message) = changes.next().await {
+            let (name, old_owner, new_owner): (String, String, String) =
+                message.body().deserialize()?;
+            if name == owner && !old_owner.is_empty() && new_owner.is_empty() {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("D-Bus owner-change stream ended")
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(%owner, %error, "subscription owner watcher stopped");
+    }
+}
+
 pub async fn run() -> Result<()> {
     let state = StateStore::default();
     let api = ApiService::new(state.clone());
+    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
     let daemon = BarDaemon {
         api,
         state: state.clone(),
         sequence: AtomicU64::new(1),
-        subscriptions: Mutex::new(HashMap::new()),
+        subscriptions: Arc::clone(&subscriptions),
     };
     let _connection = connection::Builder::session()
         .context("connect to session D-Bus")?

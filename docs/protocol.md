@@ -19,7 +19,7 @@ Requests accepted by `bar-daemon client`:
 {"op":"shutdown","id":"4"}
 ```
 
-The client emits correlated `response` records and asynchronous `event` records. Stream events carry the embedded versioned event envelope under `event`.
+The client emits correlated `response` records and asynchronous `event` records. Stream events carry the embedded versioned event envelope under `event`. A daemon restart emits `transport-error`; supervisors must restart the client and restore calls and subscriptions.
 
 ## Methods
 

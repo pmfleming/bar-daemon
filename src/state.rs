@@ -36,6 +36,12 @@ impl StateStore {
         self.snapshot.read().await.clone()
     }
 
+    pub async fn snapshot_and_subscribe(&self) -> (BarSnapshot, broadcast::Receiver<DomainEvent>) {
+        let snapshot = self.snapshot.read().await;
+        let events = self.events.subscribe();
+        (snapshot.clone(), events)
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<DomainEvent> {
         self.events.subscribe()
     }
@@ -162,5 +168,19 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_subscription_share_one_update_boundary() {
+        let store = StateStore::default();
+        let (snapshot, mut events) = store.snapshot_and_subscribe().await;
+        assert!(!snapshot.workspaces.available);
+        store
+            .update_workspaces(WorkspaceState {
+                available: true,
+                ..WorkspaceState::default()
+            })
+            .await;
+        assert_eq!(events.recv().await.unwrap().data["available"], true);
     }
 }

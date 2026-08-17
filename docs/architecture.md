@@ -29,4 +29,4 @@ Unavailable integrations produce a typed domain state rather than terminating th
 
 ## Transport
 
-The D-Bus API uses JSON payloads so QML can consume the same versioned envelopes through the `bar-daemon client` JSONL bridge. Protocol drift is guarded by `test_support/bar-api-v1.json`, registry tests, unit tests, and the Nix build check.
+The D-Bus API uses JSON payloads so QML can consume the same versioned envelopes through the `bar-daemon client` JSONL bridge. Subscription signals are directed to their calling D-Bus owner, and owner loss terminates and removes the subscription. The JSONL client reports service-owner replacement as a transport failure so its supervisor reconnects and restores subscriptions. Protocol drift is guarded by `test_support/bar-api-v1.json`, registry tests, unit tests, and the Nix build check.
