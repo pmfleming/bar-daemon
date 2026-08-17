@@ -1,0 +1,57 @@
+project_name = "bar-daemon"
+project_root = "."
+# source_roots is optional; Cargo workspace and local path packages are discovered automatically.
+output_dir = "target/analysis"
+
+[rust]
+identity_resolution = "auto"
+rust_analyzer = "rust-analyzer"
+identity_timeout_seconds = 60
+identity_offline = true
+
+[verification]
+timeout_seconds = 600
+workspace = true
+all_targets = true
+all_features = false
+# Enable in CI when Cargo.lock is committed.
+locked = false
+audit = false
+deny = false
+geiger = false
+unused_dependencies = false
+unused_dependency_backend = "cargo-shear"
+semver = false
+# Optional compiler-derived reachable API inventory (cargo-public-api):
+public_api = false
+feature_matrix = false
+# Optional behavioral evidence (requires cargo-mutants):
+mutation = false
+# Set above 1 in CI to detect order-dependent or intermittent failures.
+flaky_test_runs = 1
+# Behavioral safety checks are opt-in and usually run on nightly:
+fuzz_targets = []
+fuzz_seconds = 30
+sanitizers = [] # address, leak, memory, or thread
+miri = false
+
+# Optional Cargo-qualified architecture constraints:
+# [[architecture.rules]]
+# id = "domain-does-not-use-infrastructure"
+# from = ["app::lib::domain::**"]
+# deny = ["app::lib::infrastructure::**"]
+# level = "error"
+
+# Stable rule limits prevent new findings while allowing an explicit baseline:
+# [policy.rules."rust.reliability.expect"]
+# level = "error"
+# max = 0
+# exclude_paths = ["src/generated/**"]
+# exclude_packages = ["generated-bindings"]
+
+# Temporary exceptions must be owned, justified, and time-bounded:
+# [[policy.waivers]]
+# rule_id = "rust.project.license"
+# reason = "Owner license decision is pending"
+# owner = "project-maintainers"
+# expires = "2026-12-31"

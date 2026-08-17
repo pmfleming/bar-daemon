@@ -311,83 +311,102 @@ fn bind_probe_global(
         return;
     };
     match global.type_ {
-        ObjectType::Node => {
-            let (nodes, fallback_description) = match props.get("media.class") {
-                Some("Audio/Sink") => (Rc::clone(&state.sinks), "Audio output"),
-                Some("Audio/Source") => (Rc::clone(&state.sources), "Audio input"),
-                _ => return,
-            };
-            let Ok(node) = registry.bind::<Node, _>(global) else {
-                return;
-            };
-            nodes.borrow_mut().insert(
-                global.id,
-                SinkProbe {
-                    id: global.id,
-                    name: props.get("node.name").unwrap_or_default().to_string(),
-                    description: props
-                        .get("node.description")
-                        .or_else(|| props.get("node.nick"))
-                        .unwrap_or(fallback_description)
-                        .to_string(),
-                    channels: 2,
-                    volume: 0.0,
-                    muted: false,
-                },
-            );
-            let id = global.id;
-            let listener = node
-                .add_listener_local()
-                .param(move |_, parameter, _, _, pod| {
-                    if parameter != pw::spa::param::ParamType::Props {
-                        return;
-                    }
-                    let Some(pod) = pod else {
-                        return;
-                    };
-                    if let Some(values) = parse_props(pod)
-                        && let Some(audio_node) = nodes.borrow_mut().get_mut(&id)
-                    {
-                        if let Some(volume) = values.volume {
-                            audio_node.volume = volume;
-                        }
-                        if let Some(channels) = values.channels {
-                            audio_node.channels = channels;
-                        }
-                        if let Some(muted) = values.muted {
-                            audio_node.muted = muted;
-                        }
-                    }
-                })
-                .register();
-            node.enum_params(1, Some(pw::spa::param::ParamType::Props), 0, 1);
-            state.objects.borrow_mut().retain(global.id, node, listener);
-        }
+        ObjectType::Node => bind_probe_node(state, registry, global, props),
         ObjectType::Metadata if props.get("metadata.name") == Some("default") => {
-            let Ok(metadata) = registry.bind::<Metadata, _>(global) else {
-                return;
-            };
-            let default_sink_name = Rc::clone(&state.default_sink_name);
-            let default_source_name = Rc::clone(&state.default_source_name);
-            let listener = metadata
-                .add_listener_local()
-                .property(move |_, key, _, value| {
-                    let name = value.and_then(default_node_name).unwrap_or_default();
-                    match key {
-                        Some("default.audio.sink") => *default_sink_name.borrow_mut() = name,
-                        Some("default.audio.source") => *default_source_name.borrow_mut() = name,
-                        _ => {}
-                    }
-                    0
-                })
-                .register();
-            state
-                .objects
-                .borrow_mut()
-                .retain(global.id, metadata, listener);
+            bind_default_metadata(state, registry, global);
         }
         _ => {}
     }
+}
+
+fn bind_probe_node(
+    state: &Rc<ProbeState>,
+    registry: &pw::registry::RegistryRc,
+    global: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>,
+    props: &pw::spa::utils::dict::DictRef,
+) {
+    let (nodes, fallback_description) = match props.get("media.class") {
+        Some("Audio/Sink") => (Rc::clone(&state.sinks), "Audio output"),
+        Some("Audio/Source") => (Rc::clone(&state.sources), "Audio input"),
+        _ => return,
+    };
+    let Ok(node) = registry.bind::<Node, _>(global) else {
+        return;
+    };
+    nodes.borrow_mut().insert(
+        global.id,
+        SinkProbe {
+            id: global.id,
+            name: props.get("node.name").unwrap_or_default().to_string(),
+            description: props
+                .get("node.description")
+                .or_else(|| props.get("node.nick"))
+                .unwrap_or(fallback_description)
+                .to_string(),
+            channels: 2,
+            volume: 0.0,
+            muted: false,
+        },
+    );
+    let id = global.id;
+    let listener = node
+        .add_listener_local()
+        .param(move |_, parameter, _, _, pod| {
+            if parameter != pw::spa::param::ParamType::Props {
+                return;
+            }
+            let Some(pod) = pod else {
+                return;
+            };
+            if let Some(values) = parse_props(pod)
+                && let Some(audio_node) = nodes.borrow_mut().get_mut(&id)
+            {
+                apply_props(audio_node, values);
+            }
+        })
+        .register();
+    node.enum_params(1, Some(pw::spa::param::ParamType::Props), 0, 1);
+    state.objects.borrow_mut().retain(global.id, node, listener);
+}
+
+fn apply_props(node: &mut SinkProbe, values: PropsValues) {
+    if let Some(volume) = values.volume {
+        node.volume = volume;
+    }
+    if let Some(channels) = values.channels {
+        node.channels = channels;
+    }
+    if let Some(muted) = values.muted {
+        node.muted = muted;
+    }
+}
+
+fn bind_default_metadata(
+    state: &Rc<ProbeState>,
+    registry: &pw::registry::RegistryRc,
+    global: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>,
+) {
+    let Ok(metadata) = registry.bind::<Metadata, _>(global) else {
+        return;
+    };
+    let default_sink_name = Rc::clone(&state.default_sink_name);
+    let default_source_name = Rc::clone(&state.default_source_name);
+    let listener = metadata
+        .add_listener_local()
+        .property(move |_, key, _, value| {
+            let name = value.and_then(default_node_name).unwrap_or_default();
+            match key {
+                Some("default.audio.sink") => *default_sink_name.borrow_mut() = name,
+                Some("default.audio.source") => *default_source_name.borrow_mut() = name,
+                _ => {}
+            }
+            0
+        })
+        .register();
+    state
+        .objects
+        .borrow_mut()
+        .retain(global.id, metadata, listener);
 }
 
 #[derive(Default)]
