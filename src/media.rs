@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
@@ -136,7 +139,7 @@ async fn player_names(connection: &zbus::Connection) -> Result<Vec<String>> {
 }
 
 async fn watch_properties(connection: zbus::Connection, name: String, changed: mpsc::Sender<()>) {
-    let Ok(proxy) = zbus::Proxy::new(
+    let Ok(properties_proxy) = zbus::Proxy::new(
         &connection,
         name.as_str(),
         PATH,
@@ -146,11 +149,23 @@ async fn watch_properties(connection: zbus::Connection, name: String, changed: m
     else {
         return;
     };
-    let Ok(mut signals) = proxy.receive_signal("PropertiesChanged").await else {
+    let Ok(player_proxy) =
+        zbus::Proxy::new(&connection, name.as_str(), PATH, PLAYER_INTERFACE).await
+    else {
         return;
     };
-    while signals.next().await.is_some() {
-        if changed.send(()).await.is_err() {
+    let Ok(mut properties) = properties_proxy.receive_signal("PropertiesChanged").await else {
+        return;
+    };
+    let Ok(mut seeks) = player_proxy.receive_signal("Seeked").await else {
+        return;
+    };
+    loop {
+        let received = tokio::select! {
+            signal = properties.next() => signal.is_some(),
+            signal = seeks.next() => signal.is_some(),
+        };
+        if !received || changed.send(()).await.is_err() {
             return;
         }
     }
@@ -176,6 +191,15 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         .get_property::<HashMap<String, OwnedValue>>("Metadata")
         .await
         .unwrap_or_default();
+    let length_us = property_i64(&metadata, "mpris:length")
+        .unwrap_or_default()
+        .max(0) as u64;
+    let position_us = player
+        .get_property::<i64>("Position")
+        .await
+        .unwrap_or_default()
+        .max(0) as u64;
+    let playback_rate = player.get_property::<f64>("Rate").await.unwrap_or(1.0);
     Ok(MediaPlayer {
         id: name.to_string(),
         identity,
@@ -185,6 +209,10 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         artist: property_strings(&metadata, "xesam:artist").join(", "),
         album: property_string(&metadata, "xesam:album").unwrap_or_default(),
         art_url: property_string(&metadata, "mpris:artUrl").unwrap_or_default(),
+        length_us,
+        position_us,
+        position_observed_at_unix_ms: unix_time_ms(),
+        playback_rate,
         can_control: player.get_property("CanControl").await.unwrap_or(false),
         can_play: player.get_property("CanPlay").await.unwrap_or(false),
         can_pause: player.get_property("CanPause").await.unwrap_or(false),
@@ -198,6 +226,27 @@ fn property_string(values: &HashMap<String, OwnedValue>, key: &str) -> Option<St
         .get(key)
         .and_then(|value| <&str>::try_from(value).ok())
         .map(str::to_string)
+}
+
+fn property_i64(values: &HashMap<String, OwnedValue>, key: &str) -> Option<i64> {
+    values
+        .get(key)
+        .and_then(|value| i64::try_from(value).ok())
+        .or_else(|| {
+            values
+                .get(key)
+                .and_then(|value| u64::try_from(value).ok())
+                .and_then(|value| i64::try_from(value).ok())
+        })
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn property_strings(values: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {

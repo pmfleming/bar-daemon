@@ -82,6 +82,10 @@ fn generated_contract_fixture() -> Value {
             "workspaces": {
                 "available": true,
                 "focused_monitor": "eDP-1",
+                "active_window": {
+                    "address": "0x123", "title": "Terminal", "class_name": "com.mitchellh.ghostty",
+                    "initial_class": "ghostty", "workspace_id": 1, "fullscreen": false, "floating": false
+                },
                 "monitors": [{ "id": 0, "name": "eDP-1", "focused": true, "active_workspace_id": 1 }],
                 "workspaces": [{ "id": 1, "name": "1", "monitor": "eDP-1", "windows": 1, "urgent": false, "fullscreen": false, "last_window_title": "Terminal" }],
                 "error": null
@@ -92,6 +96,8 @@ fn generated_contract_fixture() -> Value {
                 "players": [{
                     "id": "org.mpris.MediaPlayer2.spotify", "identity": "Spotify", "desktop_entry": "spotify",
                     "playback_status": "playing", "title": "Track", "artist": "Artist", "album": "Album", "art_url": "",
+                    "length_us": 240000000, "position_us": 60000000,
+                    "position_observed_at_unix_ms": 1234567890000_u64, "playback_rate": 1.0,
                     "can_control": true, "can_play": true, "can_pause": true, "can_next": true, "can_previous": true
                 }],
                 "error": null

@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    model::{MonitorState, Workspace, WorkspaceState},
+    model::{ActiveWindow, MonitorState, Workspace, WorkspaceState},
     state::StateStore,
 };
 
@@ -49,6 +49,24 @@ struct HyprMonitor {
 struct HyprActiveWorkspace {
     #[serde(default)]
     id: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HyprActiveWindow {
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default, rename = "class")]
+    class_name: String,
+    #[serde(default, rename = "initialClass")]
+    initial_class: String,
+    #[serde(default)]
+    workspace: HyprActiveWorkspace,
+    #[serde(default)]
+    fullscreen: i8,
+    #[serde(default)]
+    floating: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -119,9 +137,12 @@ impl HyprlandClient {
     }
 
     pub async fn snapshot(&self) -> Result<WorkspaceState> {
-        let (workspaces, monitors) =
-            tokio::try_join!(self.request("j/workspaces"), self.request("j/monitors"))?;
-        parse_snapshot(&workspaces, &monitors)
+        let (workspaces, monitors, active_window) = tokio::try_join!(
+            self.request("j/workspaces"),
+            self.request("j/monitors"),
+            self.request("j/activewindow")
+        )?;
+        parse_snapshot(&workspaces, &monitors, &active_window)
     }
 
     pub async fn focus_workspace(&self, workspace_id: i64, on_current_monitor: bool) -> Result<()> {
@@ -161,20 +182,43 @@ async fn request_socket(path: &Path, command: &str) -> Result<String> {
     Ok(response)
 }
 
-fn parse_snapshot(workspaces_json: &str, monitors_json: &str) -> Result<WorkspaceState> {
+fn parse_snapshot(
+    workspaces_json: &str,
+    monitors_json: &str,
+    active_window_json: &str,
+) -> Result<WorkspaceState> {
     let mut workspaces: Vec<HyprWorkspace> =
         serde_json::from_str(workspaces_json).context("decode Hyprland workspaces")?;
     let mut monitors: Vec<HyprMonitor> =
         serde_json::from_str(monitors_json).context("decode Hyprland monitors")?;
+    let active_window: HyprActiveWindow =
+        serde_json::from_str(active_window_json).context("decode Hyprland active window")?;
     workspaces.sort_by_key(|workspace| workspace.id);
     monitors.sort_by_key(|monitor| monitor.id);
     let focused_monitor = monitors
         .iter()
         .find(|monitor| monitor.focused)
         .map(|monitor| monitor.name.clone());
+    let active_window = if active_window.address.is_empty()
+        && active_window.title.is_empty()
+        && active_window.class_name.is_empty()
+    {
+        None
+    } else {
+        Some(ActiveWindow {
+            address: active_window.address,
+            title: active_window.title,
+            class_name: active_window.class_name,
+            initial_class: active_window.initial_class,
+            workspace_id: active_window.workspace.id,
+            fullscreen: active_window.fullscreen != 0,
+            floating: active_window.floating,
+        })
+    };
     Ok(WorkspaceState {
         available: true,
         focused_monitor,
+        active_window,
         monitors: monitors
             .into_iter()
             .map(|monitor| MonitorState {
@@ -250,6 +294,8 @@ fn refresh_event(event: &str) -> bool {
     const PREFIXES: &[&str] = &[
         "workspace",
         "focusedmon",
+        "activewindow",
+        "windowtitle",
         "createworkspace",
         "destroyworkspace",
         "moveworkspace",
@@ -276,6 +322,7 @@ mod tests {
         let state = parse_snapshot(
             r#"[{"id":5,"name":"5","monitor":"eDP-1","windows":1,"hasfullscreen":true,"lastwindowtitle":"Scratchpad"},{"id":1,"name":"1","monitor":"eDP-1","windows":2,"urgent":true}]"#,
             r#"[{"id":0,"name":"eDP-1","focused":true,"activeWorkspace":{"id":1}}]"#,
+            r#"{"address":"0x123","title":"Terminal","class":"com.mitchellh.ghostty","initialClass":"ghostty","workspace":{"id":1},"fullscreen":0,"floating":false}"#,
         ).unwrap();
         assert_eq!(state.focused_monitor.as_deref(), Some("eDP-1"));
         assert_eq!(
@@ -284,6 +331,10 @@ mod tests {
         );
         assert!(state.workspaces[0].urgent);
         assert!(state.workspaces[1].fullscreen);
+        let active_window = state.active_window.unwrap();
+        assert_eq!(active_window.title, "Terminal");
+        assert_eq!(active_window.class_name, "com.mitchellh.ghostty");
+        assert_eq!(active_window.workspace_id, 1);
     }
 
     #[test]

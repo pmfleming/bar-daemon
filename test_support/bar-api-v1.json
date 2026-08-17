@@ -213,7 +213,11 @@
           "id": "org.mpris.MediaPlayer2.spotify",
           "identity": "Spotify",
           "playback_status": "playing",
-          "title": "Track"
+          "title": "Track",
+          "length_us": 240000000,
+          "position_us": 60000000,
+          "position_observed_at_unix_ms": 1234567890000,
+          "playback_rate": 1.0
         }
       ]
     },
@@ -289,7 +293,16 @@
           "urgent": false,
           "windows": 1
         }
-      ]
+      ],
+      "active_window": {
+        "address": "0x123",
+        "title": "Terminal",
+        "class_name": "com.mitchellh.ghostty",
+        "initial_class": "ghostty",
+        "workspace_id": 1,
+        "fullscreen": false,
+        "floating": false
+      }
     }
   },
   "version": 1

@@ -133,6 +133,10 @@ pub struct MediaPlayer {
     pub artist: String,
     pub album: String,
     pub art_url: String,
+    pub length_us: u64,
+    pub position_us: u64,
+    pub position_observed_at_unix_ms: u64,
+    pub playback_rate: f64,
     pub can_control: bool,
     pub can_play: bool,
     pub can_pause: bool,
@@ -144,9 +148,21 @@ pub struct MediaPlayer {
 pub struct WorkspaceState {
     pub available: bool,
     pub focused_monitor: Option<String>,
+    pub active_window: Option<ActiveWindow>,
     pub monitors: Vec<MonitorState>,
     pub workspaces: Vec<Workspace>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActiveWindow {
+    pub address: String,
+    pub title: String,
+    pub class_name: String,
+    pub initial_class: String,
+    pub workspace_id: i64,
+    pub fullscreen: bool,
+    pub floating: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
