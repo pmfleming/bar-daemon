@@ -28,6 +28,7 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `media.operation`
 - `audio.adjust`
 - `audio.setMuted`
+- `audio.setInputMuted`
 - `brightness.adjust`
 - `brightness.set`
 - `powerProfile.set`

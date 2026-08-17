@@ -38,6 +38,13 @@
         "result": "audio"
       },
       {
+        "name": "audio.setInputMuted",
+        "params": {
+          "muted": null
+        },
+        "result": "audio"
+      },
+      {
         "name": "brightness.adjust",
         "params": {
           "delta_percent": 5
@@ -158,7 +165,11 @@
       "muted": false,
       "sink_description": "Speakers",
       "sink_name": "alsa_output.test",
-      "volume_percent": 50
+      "volume_percent": 50,
+      "input_available": true,
+      "source_name": "alsa_input.test",
+      "source_description": "Microphone",
+      "input_muted": false
     },
     "battery": {
       "available": true,

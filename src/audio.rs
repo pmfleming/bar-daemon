@@ -47,7 +47,9 @@ struct SinkProbe {
 #[derive(Default)]
 struct ProbeState {
     sinks: Rc<RefCell<HashMap<u32, SinkProbe>>>,
-    default_name: Rc<RefCell<String>>,
+    sources: Rc<RefCell<HashMap<u32, SinkProbe>>>,
+    default_sink_name: Rc<RefCell<String>>,
+    default_source_name: Rc<RefCell<String>>,
     objects: Rc<RefCell<Objects>>,
 }
 
@@ -98,9 +100,9 @@ async fn refresh(store: &StateStore) {
 
 pub async fn adjust(delta_percent: i16) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
-        let sink = probe_default()?;
+        let (sink, _) = probe_default()?;
         let volume = (sink.volume + f32::from(delta_percent) / 100.0).clamp(0.0, 1.0);
-        set_sink(&sink, Some(volume), Some(false))?;
+        set_node(&sink, Some(volume), Some(false), "sink")?;
         probe()
     })
     .await
@@ -109,12 +111,28 @@ pub async fn adjust(delta_percent: i16) -> Result<AudioState> {
 
 pub async fn set_muted(muted: Option<bool>) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
-        let sink = probe_default()?;
-        set_sink(&sink, None, Some(muted.unwrap_or(!sink.muted)))?;
+        let (sink, _) = probe_default()?;
+        set_node(&sink, None, Some(muted.unwrap_or(!sink.muted)), "sink")?;
         probe()
     })
     .await
     .context("join PipeWire mute operation")?
+}
+
+pub async fn set_input_muted(muted: Option<bool>) -> Result<AudioState> {
+    tokio::task::spawn_blocking(move || {
+        let (_, source) = probe_default()?;
+        let source = source.context("no PipeWire audio source is available")?;
+        set_node(
+            &source,
+            None,
+            Some(muted.unwrap_or(!source.muted)),
+            "source",
+        )?;
+        probe()
+    })
+    .await
+    .context("join PipeWire input mute operation")?
 }
 
 fn initialize() {
@@ -175,9 +193,12 @@ fn monitor_pipewire(on_change: ChangeCallback) -> Result<()> {
 
 fn relevant_global(global: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>) -> bool {
     match global.type_ {
-        ObjectType::Node => global
-            .props
-            .is_some_and(|props| props.get("media.class") == Some("Audio/Sink")),
+        ObjectType::Node => global.props.is_some_and(|props| {
+            matches!(
+                props.get("media.class"),
+                Some("Audio/Sink" | "Audio/Source")
+            )
+        }),
         ObjectType::Metadata => global
             .props
             .is_some_and(|props| props.get("metadata.name") == Some("default")),
@@ -221,18 +242,28 @@ fn bind_monitor_object(
 }
 
 fn probe() -> Result<AudioState> {
-    let sink = probe_default()?;
+    let (sink, source) = probe_default()?;
     Ok(AudioState {
         available: true,
         sink_name: sink.name,
         sink_description: sink.description,
         volume_percent: (sink.volume * 100.0).round().clamp(0.0, 100.0) as u8,
         muted: sink.muted,
+        input_available: source.is_some(),
+        source_name: source
+            .as_ref()
+            .map(|source| source.name.clone())
+            .unwrap_or_default(),
+        source_description: source
+            .as_ref()
+            .map(|source| source.description.clone())
+            .unwrap_or_default(),
+        input_muted: source.as_ref().is_some_and(|source| source.muted),
         error: None,
     })
 }
 
-fn probe_default() -> Result<SinkProbe> {
+fn probe_default() -> Result<(SinkProbe, Option<SinkProbe>)> {
     initialize();
     let main_loop = pw::main_loop::MainLoopRc::new(None).context("create PipeWire main loop")?;
     let context =
@@ -254,13 +285,21 @@ fn probe_default() -> Result<SinkProbe> {
     pipewire_roundtrip(&main_loop, &core)?;
     pipewire_roundtrip(&main_loop, &core)?;
     let sinks = state.sinks.borrow();
-    let default_name = state.default_name.borrow();
-    sinks
+    let sources = state.sources.borrow();
+    let default_sink_name = state.default_sink_name.borrow();
+    let default_source_name = state.default_source_name.borrow();
+    let sink = preferred_node(&sinks, &default_sink_name)
+        .context("no PipeWire audio sink is available")?;
+    let source = preferred_node(&sources, &default_source_name);
+    Ok((sink, source))
+}
+
+fn preferred_node(nodes: &HashMap<u32, SinkProbe>, default_name: &str) -> Option<SinkProbe> {
+    nodes
         .values()
-        .find(|sink| !default_name.is_empty() && sink.name == *default_name)
-        .or_else(|| sinks.values().next())
+        .find(|node| !default_name.is_empty() && node.name == default_name)
+        .or_else(|| nodes.values().next())
         .cloned()
-        .context("no PipeWire audio sink is available")
 }
 
 fn bind_probe_global(
@@ -272,11 +311,16 @@ fn bind_probe_global(
         return;
     };
     match global.type_ {
-        ObjectType::Node if props.get("media.class") == Some("Audio/Sink") => {
+        ObjectType::Node => {
+            let (nodes, fallback_description) = match props.get("media.class") {
+                Some("Audio/Sink") => (Rc::clone(&state.sinks), "Audio output"),
+                Some("Audio/Source") => (Rc::clone(&state.sources), "Audio input"),
+                _ => return,
+            };
             let Ok(node) = registry.bind::<Node, _>(global) else {
                 return;
             };
-            state.sinks.borrow_mut().insert(
+            nodes.borrow_mut().insert(
                 global.id,
                 SinkProbe {
                     id: global.id,
@@ -284,14 +328,13 @@ fn bind_probe_global(
                     description: props
                         .get("node.description")
                         .or_else(|| props.get("node.nick"))
-                        .unwrap_or("Audio output")
+                        .unwrap_or(fallback_description)
                         .to_string(),
                     channels: 2,
                     volume: 0.0,
                     muted: false,
                 },
             );
-            let sinks = Rc::clone(&state.sinks);
             let id = global.id;
             let listener = node
                 .add_listener_local()
@@ -302,17 +345,17 @@ fn bind_probe_global(
                     let Some(pod) = pod else {
                         return;
                     };
-                    if let Some(values) = parse_props(pod) {
-                        if let Some(sink) = sinks.borrow_mut().get_mut(&id) {
-                            if let Some(volume) = values.volume {
-                                sink.volume = volume;
-                            }
-                            if let Some(channels) = values.channels {
-                                sink.channels = channels;
-                            }
-                            if let Some(muted) = values.muted {
-                                sink.muted = muted;
-                            }
+                    if let Some(values) = parse_props(pod)
+                        && let Some(audio_node) = nodes.borrow_mut().get_mut(&id)
+                    {
+                        if let Some(volume) = values.volume {
+                            audio_node.volume = volume;
+                        }
+                        if let Some(channels) = values.channels {
+                            audio_node.channels = channels;
+                        }
+                        if let Some(muted) = values.muted {
+                            audio_node.muted = muted;
                         }
                     }
                 })
@@ -324,13 +367,16 @@ fn bind_probe_global(
             let Ok(metadata) = registry.bind::<Metadata, _>(global) else {
                 return;
             };
-            let default_name = Rc::clone(&state.default_name);
+            let default_sink_name = Rc::clone(&state.default_sink_name);
+            let default_source_name = Rc::clone(&state.default_source_name);
             let listener = metadata
                 .add_listener_local()
                 .property(move |_, key, _, value| {
-                    if key == Some("default.audio.sink") {
-                        *default_name.borrow_mut() =
-                            value.and_then(default_node_name).unwrap_or_default();
+                    let name = value.and_then(default_node_name).unwrap_or_default();
+                    match key {
+                        Some("default.audio.sink") => *default_sink_name.borrow_mut() = name,
+                        Some("default.audio.source") => *default_source_name.borrow_mut() = name,
+                        _ => {}
                     }
                     0
                 })
@@ -383,7 +429,12 @@ fn parse_props(pod: &pw::spa::pod::Pod) -> Option<PropsValues> {
     Some(values)
 }
 
-fn set_sink(sink: &SinkProbe, volume: Option<f32>, muted: Option<bool>) -> Result<()> {
+fn set_node(
+    node_probe: &SinkProbe,
+    volume: Option<f32>,
+    muted: Option<bool>,
+    node_kind: &str,
+) -> Result<()> {
     use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
     initialize();
     let mut properties = Vec::new();
@@ -392,7 +443,7 @@ fn set_sink(sink: &SinkProbe, volume: Option<f32>, muted: Option<bool>) -> Resul
             pw::spa::sys::SPA_PROP_channelVolumes,
             Value::ValueArray(ValueArray::Float(vec![
                 linear_to_raw(volume);
-                sink.channels.max(1)
+                node_probe.channels.max(1)
             ])),
         ));
     }
@@ -416,7 +467,7 @@ fn set_sink(sink: &SinkProbe, volume: Option<f32>, muted: Option<bool>) -> Resul
     let registry = core.get_registry_rc()?;
     let applied = Rc::new(Cell::new(false));
     let applied_for_listener = Rc::clone(&applied);
-    let requested_id = sink.id;
+    let requested_id = node_probe.id;
     let registry_weak = registry.downgrade();
     let retained = Rc::new(RefCell::new(None::<Node>));
     let retained_for_listener = Rc::clone(&retained);
@@ -441,7 +492,7 @@ fn set_sink(sink: &SinkProbe, volume: Option<f32>, muted: Option<bool>) -> Resul
         .register();
     pipewire_roundtrip(&main_loop, &core)?;
     if !applied.get() {
-        bail!("default PipeWire sink disappeared");
+        bail!("default PipeWire {node_kind} disappeared");
     }
     Ok(())
 }
@@ -497,7 +548,9 @@ fn pipewire_roundtrip(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_node_name, linear_to_raw, raw_to_linear};
+    use std::collections::HashMap;
+
+    use super::{SinkProbe, default_node_name, linear_to_raw, preferred_node, raw_to_linear};
 
     #[test]
     fn converts_pipewire_cubic_volume() {
@@ -511,5 +564,29 @@ mod tests {
             Some("alsa_output.test")
         );
         assert!(default_node_name("invalid").is_none());
+    }
+
+    #[test]
+    fn selects_the_default_pipewire_node() {
+        let nodes = HashMap::from([
+            (
+                1,
+                SinkProbe {
+                    name: "fallback".into(),
+                    ..SinkProbe::default()
+                },
+            ),
+            (
+                2,
+                SinkProbe {
+                    name: "preferred".into(),
+                    muted: true,
+                    ..SinkProbe::default()
+                },
+            ),
+        ]);
+        let selected = preferred_node(&nodes, "preferred").unwrap();
+        assert_eq!(selected.name, "preferred");
+        assert!(selected.muted);
     }
 }

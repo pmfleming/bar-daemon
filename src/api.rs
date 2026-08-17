@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::{
     audio, brightness, hyprland::HyprlandClient, media, notifications, power, state::StateStore,
@@ -30,6 +31,8 @@ pub fn error(code: &str, message: impl Into<String>) -> Value {
 pub struct ApiService {
     state: StateStore,
     hyprland: Arc<HyprlandClient>,
+    audio_effects: Arc<Mutex<()>>,
+    brightness_effects: Arc<Mutex<()>>,
 }
 
 impl ApiService {
@@ -37,6 +40,8 @@ impl ApiService {
         Self {
             state,
             hyprland: Arc::new(HyprlandClient::default()),
+            audio_effects: Arc::new(Mutex::new(())),
+            brightness_effects: Arc::new(Mutex::new(())),
         }
     }
 
@@ -47,6 +52,7 @@ impl ApiService {
             "media.operation" => self.media_operation(params).await,
             "audio.adjust" => self.audio_adjust(params).await,
             "audio.setMuted" => self.audio_set_muted(params).await,
+            "audio.setInputMuted" => self.audio_set_input_muted(params).await,
             "brightness.adjust" => self.brightness_adjust(params).await,
             "brightness.set" => self.brightness_set(params).await,
             "powerProfile.set" => self.power_profile_set(params).await,
@@ -104,8 +110,12 @@ impl ApiService {
                 "brightness delta_percent is out of range",
             );
         };
+        let _guard = self.brightness_effects.lock().await;
         match brightness::adjust(delta).await {
-            Ok(state) => success(json!({ "brightness": state })),
+            Ok(state) => {
+                self.state.update_brightness(state.clone()).await;
+                success(json!({ "brightness": state }))
+            }
             Err(error_value) => error("brightness-operation-failed", error_value.to_string()),
         }
     }
@@ -120,8 +130,12 @@ impl ApiService {
         let Ok(percent) = u8::try_from(percent) else {
             return error("validation-error", "brightness percent is out of range");
         };
+        let _guard = self.brightness_effects.lock().await;
         match brightness::set(percent).await {
-            Ok(state) => success(json!({ "brightness": state })),
+            Ok(state) => {
+                self.state.update_brightness(state.clone()).await;
+                success(json!({ "brightness": state }))
+            }
             Err(error_value) => error("brightness-operation-failed", error_value.to_string()),
         }
     }
@@ -136,8 +150,12 @@ impl ApiService {
         let Ok(delta) = i16::try_from(delta) else {
             return error("validation-error", "audio delta_percent is out of range");
         };
+        let _guard = self.audio_effects.lock().await;
         match audio::adjust(delta).await {
-            Ok(state) => success(json!({ "audio": state })),
+            Ok(state) => {
+                self.state.update_audio(state.clone()).await;
+                success(json!({ "audio": state }))
+            }
             Err(error_value) => error("audio-operation-failed", error_value.to_string()),
         }
     }
@@ -153,8 +171,33 @@ impl ApiService {
                 );
             }
         };
+        let _guard = self.audio_effects.lock().await;
         match audio::set_muted(muted).await {
-            Ok(state) => success(json!({ "audio": state })),
+            Ok(state) => {
+                self.state.update_audio(state.clone()).await;
+                success(json!({ "audio": state }))
+            }
+            Err(error_value) => error("audio-operation-failed", error_value.to_string()),
+        }
+    }
+
+    async fn audio_set_input_muted(&self, params: Value) -> Value {
+        let muted = match params.get("muted") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(value)) => Some(*value),
+            _ => {
+                return error(
+                    "validation-error",
+                    "audio.setInputMuted muted must be boolean or null",
+                );
+            }
+        };
+        let _guard = self.audio_effects.lock().await;
+        match audio::set_input_muted(muted).await {
+            Ok(state) => {
+                self.state.update_audio(state.clone()).await;
+                success(json!({ "audio": state }))
+            }
             Err(error_value) => error("audio-operation-failed", error_value.to_string()),
         }
     }
@@ -217,5 +260,14 @@ mod tests {
         assert_eq!(response["protocol"], "bar-api");
         assert_eq!(response["version"], 1);
         assert_eq!(response["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn validates_input_mute_without_touching_pipewire() {
+        let api = ApiService::new(StateStore::default());
+        let response = api
+            .dispatch("audio.setInputMuted", json!({ "muted": "yes" }))
+            .await;
+        assert_eq!(response["error"]["code"], "validation-error");
     }
 }

@@ -108,6 +108,10 @@ pub struct AudioState {
     pub sink_description: String,
     pub volume_percent: u8,
     pub muted: bool,
+    pub input_available: bool,
+    pub source_name: String,
+    pub source_description: String,
+    pub input_muted: bool,
     pub error: Option<String>,
 }
 

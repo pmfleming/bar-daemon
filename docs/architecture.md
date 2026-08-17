@@ -19,7 +19,7 @@ Unavailable integrations produce a typed domain state rather than terminating th
 | --- | --- | --- |
 | Workspaces | Direct Hyprland command/event sockets | Positive IDs, Lua-aware focus dispatch |
 | Media | MPRIS session D-Bus | Playing → Spotify → controllable → first selection |
-| Audio | Native PipeWire registry, metadata, and node properties | Cubic/linear conversion, 0–100% clamp |
+| Audio | Native PipeWire default sink/source metadata and node properties | Output cubic/linear conversion and 0–100% clamp; output and microphone mute |
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
 | Battery | UPower system D-Bus with sysfs fallback | Warning/critical/full deduplication per power cycle |
 | Power profile | power-profiles-daemon system D-Bus | Available-profile validation |

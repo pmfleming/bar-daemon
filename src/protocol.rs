@@ -20,6 +20,7 @@ pub const METHODS: &[&str] = &[
     "media.operation",
     "audio.adjust",
     "audio.setMuted",
+    "audio.setInputMuted",
     "brightness.adjust",
     "brightness.set",
     "powerProfile.set",
@@ -49,6 +50,7 @@ pub fn registry() -> Value {
             { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null }, "result": "operation" },
             { "name": "audio.adjust", "params": { "delta_percent": 5 }, "result": "audio" },
             { "name": "audio.setMuted", "params": { "muted": null }, "result": "audio" },
+            { "name": "audio.setInputMuted", "params": { "muted": null }, "result": "audio" },
             { "name": "brightness.adjust", "params": { "delta_percent": 5 }, "result": "brightness" },
             { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
@@ -96,7 +98,9 @@ fn generated_contract_fixture() -> Value {
             },
             "audio": {
                 "available": true, "sink_name": "alsa_output.test", "sink_description": "Speakers",
-                "volume_percent": 50, "muted": false, "error": null
+                "volume_percent": 50, "muted": false, "input_available": true,
+                "source_name": "alsa_input.test", "source_description": "Microphone",
+                "input_muted": false, "error": null
             },
             "brightness": {
                 "available": true, "device": "amdgpu_bl1", "brightness": 500, "max_brightness": 1000,
