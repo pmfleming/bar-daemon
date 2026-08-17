@@ -149,8 +149,11 @@ fn discover(root: &Path) -> Result<BacklightDevice> {
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let max_brightness = read_u64(&path.join("max_brightness"))?;
-        let brightness = read_u64(&path.join("actual_brightness"))
-            .or_else(|_| read_u64(&path.join("brightness")))?;
+        // Use the requested value for control state. `actual_brightness` may lag
+        // behind it or report a slightly different hardware level; basing each
+        // adjustment on that value makes repeated percentage steps drift.
+        let brightness = read_u64(&path.join("brightness"))
+            .or_else(|_| read_u64(&path.join("actual_brightness")))?;
         if max_brightness > 0 {
             devices.push(BacklightDevice {
                 name,
@@ -208,6 +211,20 @@ mod tests {
         let device = discover(root.path()).unwrap();
         assert_eq!(device.name, "panel");
         assert_eq!(device.state().percent, 60);
+    }
+
+    #[test]
+    fn prefers_requested_brightness_over_hardware_feedback() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("panel");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("brightness"), "600").unwrap();
+        fs::write(path.join("actual_brightness"), "550").unwrap();
+        fs::write(path.join("max_brightness"), "1000").unwrap();
+
+        let state = discover(root.path()).unwrap().state();
+        assert_eq!(state.brightness, 600);
+        assert_eq!(state.percent, 60);
     }
 
     #[test]
