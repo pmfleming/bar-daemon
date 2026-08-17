@@ -36,7 +36,7 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.toggleDnd`
 - `updates.refresh`
 
-Run `bar-daemon debug protocol-registry` for canonical parameter examples.
+Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, and `previous`; an omitted `player_id` uses the daemon's current active-player policy.
 
 ## Streams
 

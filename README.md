@@ -2,12 +2,12 @@
 
 Rust status, policy, and action service for a Quickshell desktop bar.
 
-Quickshell owns layout, rendering, tooltips, animation, input, and system-tray menu hosting. `bar-daemon` owns session/system integration, normalized state, policy, and effects. It exposes `bar-api` version 1 over session D-Bus and through a JSON Lines client suitable for QML `Process` integration.
+Quickshell owns layout, rendering, animation, input, and system-tray menu hosting. `bar-daemon` owns session/system integration, normalized state, policy, and effects. It exposes `bar-api` version 1 over session D-Bus and through a JSON Lines client suitable for QML `Process` integration.
 
 ## Current domains
 
-- Hyprland monitor/workspace snapshots and Lua-aware workspace focus
-- MPRIS player discovery, deterministic active-player selection, metadata, and playback actions
+- Hyprland monitor/workspace snapshots, normalized active-window state, and Lua-aware workspace focus
+- MPRIS discovery, deterministic active-player selection, artwork and playback timing, seek correction, and playback actions
 - Native PipeWire default-output volume/mute and default-input mute state, with bounded output adjustments
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
 - UPower battery state, health, cycle count, threshold classification, and deduplicated alerts

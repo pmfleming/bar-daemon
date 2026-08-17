@@ -3,7 +3,7 @@
 `bar-daemon` follows the same boundary as the Shelllist domain daemons:
 
 - Rust owns system/session integration, normalized state, policy, validation, recovery, and effects.
-- Quickshell owns windows, monitor-local layout, visual formatting, tooltips, animation, and pointer/keyboard interaction.
+- Quickshell owns windows, monitor-local layout, visual formatting, animation, and pointer/keyboard interaction.
 - The system tray remains in Quickshell because it must host StatusNotifierItem icons and DBusMenu objects.
 - Network and Bluetooth remain owned by `nm-daemon` and `bt-daemon`; `bar-daemon` does not proxy or duplicate those APIs.
 
@@ -17,8 +17,8 @@ Unavailable integrations produce a typed domain state rather than terminating th
 
 | Domain | Integration | Policy/effects |
 | --- | --- | --- |
-| Workspaces | Direct Hyprland command/event sockets | Positive IDs, Lua-aware focus dispatch |
-| Media | MPRIS session D-Bus | Playing → Spotify → controllable → first selection |
+| Workspaces | Direct Hyprland command/event sockets | Positive IDs, active-window normalization, Lua-aware focus dispatch |
+| Media | MPRIS session D-Bus | Playing → Spotify → controllable → first selection; artwork and timing normalization |
 | Audio | Native PipeWire default sink/source metadata and node properties | Output cubic/linear conversion and 0–100% clamp; output and microphone mute |
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
 | Battery | UPower system D-Bus with sysfs fallback | Warning/critical/full deduplication per power cycle |
