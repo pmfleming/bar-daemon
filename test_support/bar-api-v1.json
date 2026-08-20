@@ -8,6 +8,44 @@
         "result": "snapshot"
       },
       {
+        "name": "activity.queryRange",
+        "params": {
+          "from_unix_ms": 1767225600000,
+          "to_unix_ms": 1769904000000
+        },
+        "result": "activity_range"
+      },
+      {
+        "name": "activity.refresh",
+        "params": {},
+        "result": "activity"
+      },
+      {
+        "name": "todos.create",
+        "params": {
+          "title": "Plan release",
+          "due_unix_ms": null,
+          "due_date": "2026-01-20",
+          "priority": 3
+        },
+        "result": "todo"
+      },
+      {
+        "name": "todos.complete",
+        "params": {
+          "id": "local-1",
+          "completed": true
+        },
+        "result": "todo"
+      },
+      {
+        "name": "todos.delete",
+        "params": {
+          "id": "local-1"
+        },
+        "result": "deleted"
+      },
+      {
         "name": "workspace.focus",
         "params": {
           "on_current_monitor": false,
@@ -84,6 +122,14 @@
     "protocol": "bar-api",
     "streams": [
       {
+        "name": "activity.changed",
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ]
+      },
+      {
         "events": [
           "subscribed",
           "changed",
@@ -159,6 +205,47 @@
     "version": 1
   },
   "snapshot": {
+    "activity": {
+      "available": true,
+      "syncing": false,
+      "event_count": 1,
+      "incomplete_todo_count": 1,
+      "next_event": {
+        "id": "work:meeting:1768464000000",
+        "source_id": "work",
+        "calendar_name": "Work",
+        "color": "#7aa2f7",
+        "title": "Planning",
+        "start_unix_ms": 1768464000000,
+        "end_unix_ms": 1768467600000,
+        "all_day": false,
+        "start_date": null,
+        "end_date": null,
+        "timezone": "Europe/Amsterdam",
+        "location": "Room 1",
+        "url": ""
+      },
+      "sources": [
+        {
+          "id": "work",
+          "name": "Work",
+          "kind": "ics-directory",
+          "available": true,
+          "item_count": 1,
+          "error": null
+        }
+      ],
+      "world_clocks": [
+        {
+          "timezone": "Asia/Tokyo",
+          "label": "Tokyo",
+          "city": "Tokyo",
+          "abbreviation": "JST",
+          "utc_offset_seconds": 32400
+        }
+      ],
+      "error": null
+    },
     "audio": {
       "available": true,
       "error": null,

@@ -1,0 +1,28 @@
+{
+  "calendar_sources": [
+    {
+      "id": "personal",
+      "name": "Personal",
+      "kind": "ics-directory",
+      "path": "/home/user/.local/share/calendars/personal",
+      "color": "#7aa2f7"
+    },
+    {
+      "id": "holidays",
+      "name": "Holidays",
+      "kind": "ics-file",
+      "path": "/home/user/.local/share/calendars/holidays.ics",
+      "color": "#9ece6a"
+    }
+  ],
+  "world_clocks": [
+    {
+      "timezone": "America/New_York",
+      "label": "New York"
+    },
+    {
+      "timezone": "Asia/Tokyo",
+      "label": "Tokyo"
+    }
+  ]
+}

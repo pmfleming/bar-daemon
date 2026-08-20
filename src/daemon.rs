@@ -20,8 +20,9 @@ use tokio::{
 use zbus::{connection, message::Header, object_server::SignalEmitter};
 
 use crate::{
+    activity::{ActivityService, notifications},
     api::{self, ApiService, BUS_NAME, OBJECT_PATH},
-    audio, battery, brightness, hyprland, media, notifications, power, protocol,
+    audio, battery, brightness, hyprland, media, power, protocol,
     state::StateStore,
     timezone, updates,
 };
@@ -177,6 +178,9 @@ async fn forward_events(
 
 fn initial_stream_data(stream: &str, snapshot: &crate::model::BarSnapshot) -> Value {
     match stream {
+        protocol::stream::ACTIVITY => {
+            serde_json::to_value(&snapshot.activity).unwrap_or(Value::Null)
+        }
         protocol::stream::WORKSPACES => {
             serde_json::to_value(&snapshot.workspaces).unwrap_or(Value::Null)
         }
@@ -252,7 +256,8 @@ async fn wait_for_owner_loss(connection: zbus::Connection, owner: String) {
 
 pub async fn run() -> Result<()> {
     let state = StateStore::default();
-    let api = ApiService::new(state.clone());
+    let activity = ActivityService::new(state.clone()).await;
+    let api = ApiService::new(state.clone(), Arc::clone(&activity));
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
     let daemon = BarDaemon {
         api,
@@ -270,6 +275,7 @@ pub async fn run() -> Result<()> {
         .await
         .context("start bar-daemon D-Bus service")?;
 
+    let activity_task = tokio::spawn(activity.monitor());
     let workspace_task = tokio::spawn(hyprland::monitor(state.clone()));
     let media_task = tokio::spawn(media::monitor(state.clone()));
     let audio_task = tokio::spawn(audio::monitor(state.clone()));
@@ -289,6 +295,7 @@ pub async fn run() -> Result<()> {
         result = ctrl_c() => result.context("wait for Ctrl-C"),
         _ = terminate.recv() => Ok(()),
     };
+    activity_task.abort();
     workspace_task.abort();
     media_task.abort();
     audio_task.abort();

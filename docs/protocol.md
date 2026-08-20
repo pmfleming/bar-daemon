@@ -24,6 +24,11 @@ The client emits correlated `response` records and asynchronous `event` records.
 ## Methods
 
 - `bar.snapshot`
+- `activity.queryRange`
+- `activity.refresh`
+- `todos.create`
+- `todos.complete`
+- `todos.delete`
 - `workspace.focus`
 - `media.operation`
 - `audio.adjust`
@@ -36,10 +41,13 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.toggleDnd`
 - `updates.refresh`
 
+`activity.queryRange` requires integer `from_unix_ms` and `to_unix_ms` values and is bounded to 370 days. Todo creation accepts `title`, optional `due_unix_ms`, optional local `due_date` (`YYYY-MM-DD`), and priority 0–9.
+
 Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, and `previous`; an omitted `player_id` uses the daemon's current active-player policy.
 
 ## Streams
 
+- `activity.changed`
 - `workspaces.changed`
 - `media.changed`
 - `audio.changed`
@@ -49,6 +57,8 @@ Run `bar-daemon debug protocol-registry` for canonical parameter examples. `medi
 - `notifications.changed`
 - `updates.changed`
 - `timezone.changed`
+
+`activity.changed` is a compact summary containing source health, counts, next event, and world-clock metadata. Clients query event/todo collections with `activity.queryRange`; large collections are intentionally excluded from `BarSnapshot`.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 

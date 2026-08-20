@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::activity::model::{
+    ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, TodoItem, WorldClockState,
+};
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BarSnapshot {
+    pub activity: ActivityState,
     pub workspaces: WorkspaceState,
     pub media: MediaState,
     pub audio: AudioState,

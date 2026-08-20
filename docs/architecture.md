@@ -6,6 +6,7 @@
 - Quickshell owns windows, monitor-local layout, visual formatting, animation, and pointer/keyboard interaction.
 - The system tray remains in Quickshell because it must host StatusNotifierItem icons and DBusMenu objects.
 - Network and Bluetooth remain owned by `nm-daemon` and `bt-daemon`; `bar-daemon` does not proxy or duplicate those APIs.
+- Activity is an internal modular domain: calendars, todos, reminders, world clocks, and notification policy share one process while retaining independent engines and failure boundaries. See [`activity-module-plan.md`](activity-module-plan.md).
 
 ## Runtime
 
@@ -17,6 +18,7 @@ Unavailable integrations produce a typed domain state rather than terminating th
 
 | Domain | Integration | Policy/effects |
 | --- | --- | --- |
+| Activity | Local ICS sources and XDG todo state; provider adapters are staged behind normalized models | Bounded range queries, last-known-good source state, todo validation, world clocks |
 | Workspaces | Direct Hyprland command/event sockets | Positive IDs, active-window normalization, Lua-aware focus dispatch |
 | Media | MPRIS session D-Bus | Playing → Spotify → controllable → first selection; artwork and timing normalization |
 | Audio | Native PipeWire default sink/source metadata and node properties | Output cubic/linear conversion and 0–100% clamp; output and microphone mute |

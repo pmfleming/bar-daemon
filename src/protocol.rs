@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use crate::api::VERSION;
 
 pub mod stream {
+    pub const ACTIVITY: &str = "activity.changed";
     pub const WORKSPACES: &str = "workspaces.changed";
     pub const MEDIA: &str = "media.changed";
     pub const AUDIO: &str = "audio.changed";
@@ -16,6 +17,11 @@ pub mod stream {
 
 pub const METHODS: &[&str] = &[
     "bar.snapshot",
+    "activity.queryRange",
+    "activity.refresh",
+    "todos.create",
+    "todos.complete",
+    "todos.delete",
     "workspace.focus",
     "media.operation",
     "audio.adjust",
@@ -29,6 +35,7 @@ pub const METHODS: &[&str] = &[
     "updates.refresh",
 ];
 pub const STREAMS: &[&str] = &[
+    stream::ACTIVITY,
     stream::WORKSPACES,
     stream::MEDIA,
     stream::AUDIO,
@@ -46,6 +53,11 @@ pub fn registry() -> Value {
         "version": VERSION,
         "methods": [
             { "name": "bar.snapshot", "params": {}, "result": "snapshot" },
+            { "name": "activity.queryRange", "params": { "from_unix_ms": 1767225600000_i64, "to_unix_ms": 1769904000000_i64 }, "result": "activity_range" },
+            { "name": "activity.refresh", "params": {}, "result": "activity" },
+            { "name": "todos.create", "params": { "title": "Plan release", "due_unix_ms": null, "due_date": "2026-01-20", "priority": 3 }, "result": "todo" },
+            { "name": "todos.complete", "params": { "id": "local-1", "completed": true }, "result": "todo" },
+            { "name": "todos.delete", "params": { "id": "local-1" }, "result": "deleted" },
             { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
             { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null }, "result": "operation" },
             { "name": "audio.adjust", "params": { "delta_percent": 5 }, "result": "audio" },
@@ -59,6 +71,7 @@ pub fn registry() -> Value {
             { "name": "updates.refresh", "params": {}, "result": "updates" }
         ],
         "streams": [
+            { "name": stream::ACTIVITY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
@@ -79,6 +92,21 @@ fn generated_contract_fixture() -> Value {
         "version": VERSION,
         "registry": registry(),
         "snapshot": {
+            "activity": {
+                "available": true,
+                "syncing": false,
+                "event_count": 1,
+                "incomplete_todo_count": 1,
+                "next_event": {
+                    "id": "work:meeting:1768464000000", "source_id": "work", "calendar_name": "Work",
+                    "color": "#7aa2f7", "title": "Planning", "start_unix_ms": 1768464000000_i64,
+                    "end_unix_ms": 1768467600000_i64, "all_day": false, "start_date": null,
+                    "end_date": null, "timezone": "Europe/Amsterdam", "location": "Room 1", "url": ""
+                },
+                "sources": [{ "id": "work", "name": "Work", "kind": "ics-directory", "available": true, "item_count": 1, "error": null }],
+                "world_clocks": [{ "timezone": "Asia/Tokyo", "label": "Tokyo", "city": "Tokyo", "abbreviation": "JST", "utc_offset_seconds": 32400 }],
+                "error": null
+            },
             "workspaces": {
                 "available": true,
                 "focused_monitor": "eDP-1",

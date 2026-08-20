@@ -4,7 +4,11 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::{
-    audio, brightness, hyprland::HyprlandClient, media, notifications, power, state::StateStore,
+    activity::{ActivityService, notifications},
+    audio, brightness,
+    hyprland::HyprlandClient,
+    media, power,
+    state::StateStore,
     updates,
 };
 
@@ -30,15 +34,17 @@ pub fn error(code: &str, message: impl Into<String>) -> Value {
 #[derive(Clone)]
 pub struct ApiService {
     state: StateStore,
+    activity: Arc<ActivityService>,
     hyprland: Arc<HyprlandClient>,
     audio_effects: Arc<Mutex<()>>,
     brightness_effects: Arc<Mutex<()>>,
 }
 
 impl ApiService {
-    pub fn new(state: StateStore) -> Self {
+    pub fn new(state: StateStore, activity: Arc<ActivityService>) -> Self {
         Self {
             state,
+            activity,
             hyprland: Arc::new(HyprlandClient::default()),
             audio_effects: Arc::new(Mutex::new(())),
             brightness_effects: Arc::new(Mutex::new(())),
@@ -48,6 +54,11 @@ impl ApiService {
     pub async fn dispatch(&self, method: &str, params: Value) -> Value {
         match method {
             "bar.snapshot" => success(json!({ "snapshot": self.state.snapshot().await })),
+            "activity.queryRange" => self.activity_query_range(params).await,
+            "activity.refresh" => self.activity_refresh().await,
+            "todos.create" => self.todo_create(params).await,
+            "todos.complete" => self.todo_complete(params).await,
+            "todos.delete" => self.todo_delete(params).await,
             "workspace.focus" => self.focus_workspace(params).await,
             "media.operation" => self.media_operation(params).await,
             "audio.adjust" => self.audio_adjust(params).await,
@@ -63,6 +74,84 @@ impl ApiService {
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),
             ),
+        }
+    }
+
+    async fn activity_query_range(&self, params: Value) -> Value {
+        let Some(from_unix_ms) = params.get("from_unix_ms").and_then(Value::as_i64) else {
+            return error(
+                "validation-error",
+                "activity.queryRange requires integer from_unix_ms",
+            );
+        };
+        let Some(to_unix_ms) = params.get("to_unix_ms").and_then(Value::as_i64) else {
+            return error(
+                "validation-error",
+                "activity.queryRange requires integer to_unix_ms",
+            );
+        };
+        match self.activity.query_range(from_unix_ms, to_unix_ms).await {
+            Ok(range) => success(json!({ "activity_range": range })),
+            Err(error_value) => error("activity-query-failed", error_value.to_string()),
+        }
+    }
+
+    async fn activity_refresh(&self) -> Value {
+        self.activity.refresh().await;
+        success(json!({ "activity": self.state.snapshot().await.activity }))
+    }
+
+    async fn todo_create(&self, params: Value) -> Value {
+        let Some(title) = params.get("title").and_then(Value::as_str) else {
+            return error("validation-error", "todos.create requires title");
+        };
+        let due_unix_ms = match params.get("due_unix_ms") {
+            None | Some(Value::Null) => None,
+            Some(value) => match value.as_i64() {
+                Some(value) => Some(value),
+                None => return error("validation-error", "due_unix_ms must be integer or null"),
+            },
+        };
+        let due_date = match params.get("due_date") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(value.clone()),
+            _ => return error("validation-error", "due_date must be YYYY-MM-DD or null"),
+        };
+        let priority = params.get("priority").and_then(Value::as_u64).unwrap_or(0);
+        let Ok(priority) = u8::try_from(priority) else {
+            return error("validation-error", "todo priority is out of range");
+        };
+        match self
+            .activity
+            .create_todo(title.into(), due_unix_ms, due_date, priority)
+            .await
+        {
+            Ok(todo) => success(json!({ "todo": todo })),
+            Err(error_value) => error("todo-create-failed", error_value.to_string()),
+        }
+    }
+
+    async fn todo_complete(&self, params: Value) -> Value {
+        let Some(id) = params.get("id").and_then(Value::as_str) else {
+            return error("validation-error", "todos.complete requires id");
+        };
+        let completed = params
+            .get("completed")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        match self.activity.complete_todo(id, completed).await {
+            Ok(todo) => success(json!({ "todo": todo })),
+            Err(error_value) => error("todo-complete-failed", error_value.to_string()),
+        }
+    }
+
+    async fn todo_delete(&self, params: Value) -> Value {
+        let Some(id) = params.get("id").and_then(Value::as_str) else {
+            return error("validation-error", "todos.delete requires id");
+        };
+        match self.activity.delete_todo(id).await {
+            Ok(()) => success(json!({ "deleted": id })),
+            Err(error_value) => error("todo-delete-failed", error_value.to_string()),
         }
     }
 
@@ -244,18 +333,24 @@ mod tests {
     use serde_json::json;
 
     use super::ApiService;
-    use crate::state::StateStore;
+    use crate::{activity::ActivityService, state::StateStore};
+
+    async fn api() -> ApiService {
+        let state = StateStore::default();
+        let activity = ActivityService::new(state.clone()).await;
+        ApiService::new(state, activity)
+    }
 
     #[tokio::test]
     async fn rejects_invalid_workspace_focus() {
-        let api = ApiService::new(StateStore::default());
+        let api = api().await;
         let response = api.dispatch("workspace.focus", json!({})).await;
         assert_eq!(response["error"]["code"], "validation-error");
     }
 
     #[tokio::test]
     async fn returns_versioned_snapshot() {
-        let api = ApiService::new(StateStore::default());
+        let api = api().await;
         let response = api.dispatch("bar.snapshot", json!({})).await;
         assert_eq!(response["protocol"], "bar-api");
         assert_eq!(response["version"], 1);
@@ -264,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn validates_input_mute_without_touching_pipewire() {
-        let api = ApiService::new(StateStore::default());
+        let api = api().await;
         let response = api
             .dispatch("audio.setInputMuted", json!({ "muted": "yes" }))
             .await;
