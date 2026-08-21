@@ -3,11 +3,14 @@ Description=Quickshell bar status and policy service
 Documentation=https://github.com/pmfleming/bar-daemon
 PartOf=graphical-session.target
 After=graphical-session.target dbus.service pipewire.service wireplumber.service
+Conflicts=swaync.service
+Before=swaync.service
 
 [Service]
 Type=dbus
 BusName=org.laufan.BarDaemon
 ExecStart=@out@/bin/bar-daemon daemon
+Environment=BAR_DAEMON_NOTIFICATION_BACKEND=native
 Restart=on-failure
 RestartSec=2s
 

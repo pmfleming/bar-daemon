@@ -14,7 +14,7 @@ The daemon exports one session D-Bus object and starts one monitor per domain. M
 
 Unavailable integrations produce a typed domain state rather than terminating the daemon. Monitors reconnect with bounded delays or periodic recovery checks.
 
-Set `BAR_DAEMON_NOTIFICATION_BACKEND=native` to claim `org.freedesktop.Notifications`; the default remains the SwayNC adapter during migration. Native notification state is initialized before Activity and other providers. Internal producers receive a `NotificationSink`, so battery alerts and future reminders enter the native engine directly rather than calling back through D-Bus.
+The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NOTIFICATION_BACKEND=swaync` only for the temporary compatibility adapter. Native notification state is initialized before Activity and other providers. Internal producers receive a `NotificationSink`, so battery alerts and future reminders enter the native engine directly rather than calling back through D-Bus.
 
 ## Domain integrations
 

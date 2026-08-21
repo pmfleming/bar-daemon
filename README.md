@@ -21,7 +21,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 
 ```sh
 bar-daemon daemon
-BAR_DAEMON_NOTIFICATION_BACKEND=native bar-daemon daemon
+BAR_DAEMON_NOTIFICATION_BACKEND=swaync bar-daemon daemon # temporary fallback
 bar-daemon client
 bar-daemon debug protocol-registry
 bar-daemon debug contract-fixture

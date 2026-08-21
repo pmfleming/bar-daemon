@@ -260,8 +260,8 @@ async fn wait_for_owner_loss(connection: zbus::Connection, owner: String) {
 
 pub async fn run() -> Result<()> {
     let state = StateStore::default();
-    let native_notifications = env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
-        .is_ok_and(|value| value.eq_ignore_ascii_case("native"));
+    let native_notifications = !env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("swaync"));
     let notification_engine = if native_notifications {
         Some(
             notifications::engine::NotificationEngine::persistent(

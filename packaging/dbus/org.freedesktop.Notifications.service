@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.Notifications
+Exec=@out@/bin/bar-daemon daemon
+SystemdService=bar-daemon.service

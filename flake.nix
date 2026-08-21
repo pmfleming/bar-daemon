@@ -21,15 +21,18 @@
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
             postFixup = ''
-              wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl pkgs.swaynotificationcenter ]}
+              wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl ]}
             '';
             postInstall = ''
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service
+              install -Dm644 ${./packaging/dbus/org.freedesktop.Notifications.service} \
+                $out/share/dbus-1/services/org.freedesktop.Notifications.service
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service \
+                $out/share/dbus-1/services/org.freedesktop.Notifications.service \
                 --replace-fail @out@ $out
             '';
             meta = {
@@ -53,7 +56,7 @@
 
       devShells = forAllSystems (system: pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ brightnessctl cargo clippy jq llvmPackages.libclang pkg-config pipewire rust-analyzer rustc rustfmt swaynotificationcenter ];
+          packages = with pkgs; [ brightnessctl cargo clippy jq llvmPackages.libclang pkg-config pipewire rust-analyzer rustc rustfmt ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
           RUST_BACKTRACE = "1";
