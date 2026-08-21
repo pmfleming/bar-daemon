@@ -154,7 +154,7 @@ async fn forward_events(
     }
     loop {
         match events.recv().await {
-            Ok(event) if streams.contains(&event.stream) => {
+            Ok(event) if stream_selected(&streams, &event.stream) => {
                 emit_event(
                     &emitter,
                     &event.stream,
@@ -180,6 +180,10 @@ async fn forward_events(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }
     }
+}
+
+fn stream_selected(streams: &[String], event_stream: &str) -> bool {
+    streams.iter().any(|stream| stream == event_stream)
 }
 
 fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
@@ -267,7 +271,17 @@ async fn wait_for_owner_loss(connection: zbus::Connection, owner: String) {
 mod tests {
     use crate::{model::BarSnapshot, protocol};
 
-    use super::initial_stream_data;
+    use super::{initial_stream_data, stream_selected};
+
+    #[test]
+    fn selects_only_subscribed_event_streams() {
+        let streams = vec![
+            protocol::stream::AUDIO.into(),
+            protocol::stream::MEDIA.into(),
+        ];
+        assert!(stream_selected(&streams, protocol::stream::AUDIO));
+        assert!(!stream_selected(&streams, protocol::stream::BATTERY));
+    }
 
     #[test]
     fn initial_subscription_includes_current_domain_state() {
