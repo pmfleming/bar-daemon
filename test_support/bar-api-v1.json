@@ -175,6 +175,21 @@
         "result": "power_profile"
       },
       {
+        "name": "powerSleep.lock",
+        "params": {},
+        "result": "power_sleep"
+      },
+      {
+        "name": "powerSleep.suspend",
+        "params": {},
+        "result": "power_sleep"
+      },
+      {
+        "name": "powerSleep.hibernate",
+        "params": {},
+        "result": "power_sleep"
+      },
+      {
         "name": "notifications.togglePanel",
         "params": {},
         "result": "operation"
@@ -291,6 +306,14 @@
           "lagged"
         ],
         "name": "power-profile.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "power-sleep.changed"
       },
       {
         "events": [
@@ -425,7 +448,11 @@
         "supports_end": true,
         "supports_charge_behaviour": true,
         "charge_behaviour": "auto",
-        "available_behaviours": ["auto", "inhibit-charge", "force-discharge"],
+        "available_behaviours": [
+          "auto",
+          "inhibit-charge",
+          "force-discharge"
+        ],
         "error": null
       },
       "devices": [
@@ -460,11 +487,37 @@
             "supports_end": true,
             "supports_charge_behaviour": true,
             "charge_behaviour": "auto",
-            "available_behaviours": ["auto", "inhibit-charge", "force-discharge"],
+            "available_behaviours": [
+              "auto",
+              "inhibit-charge",
+              "force-discharge"
+            ],
             "error": null
           }
         }
-      ]
+      ],
+      "history": {
+        "retention_days": 7,
+        "last_charge_timestamp_ms": 1768464000000,
+        "points": [
+          {
+            "timestamp_ms": 1768464000000,
+            "percentage": 82,
+            "power_watts": 7.8,
+            "time_to_full_seconds": null,
+            "charging": false,
+            "plugged": false
+          },
+          {
+            "timestamp_ms": 1768464900000,
+            "percentage": 80,
+            "power_watts": 8.2,
+            "time_to_full_seconds": null,
+            "charging": false,
+            "plugged": false
+          }
+        ]
+      }
     },
     "brightness": {
       "available": true,
@@ -542,6 +595,24 @@
         }
       ],
       "version": "0.30"
+    },
+    "power_sleep": {
+      "available": true,
+      "can_suspend": "yes",
+      "can_hibernate": "challenge",
+      "preparing_for_sleep": false,
+      "lock_before_sleep": true,
+      "inhibitors": [
+        {
+          "what": "sleep",
+          "who": "Backup",
+          "why": "Writing snapshot",
+          "mode": "delay",
+          "uid": 1000,
+          "pid": 4242
+        }
+      ],
+      "error": null
     },
     "timezone": {
       "abbreviation": "CEST",

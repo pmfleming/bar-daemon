@@ -15,10 +15,32 @@ pub struct BarSnapshot {
     pub brightness: BrightnessState,
     pub battery: BatteryState,
     pub power_profile: PowerProfileState,
+    pub power_sleep: PowerSleepState,
     pub notifications: NotificationState,
     pub notification_active: NotificationActiveState,
     pub updates: UpdateState,
     pub timezone: TimezoneState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PowerSleepState {
+    pub available: bool,
+    pub can_suspend: String,
+    pub can_hibernate: String,
+    pub preparing_for_sleep: bool,
+    pub lock_before_sleep: bool,
+    pub inhibitors: Vec<SleepInhibitor>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SleepInhibitor {
+    pub what: String,
+    pub who: String,
+    pub why: String,
+    pub mode: String,
+    pub uid: u32,
+    pub pid: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -128,7 +150,25 @@ pub struct BatteryState {
     pub operation: BatteryOperationState,
     pub protection: BatteryProtectionState,
     pub devices: Vec<BatteryDeviceState>,
+    pub history: BatteryHistoryState,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryHistoryState {
+    pub retention_days: u8,
+    pub last_charge_timestamp_ms: u64,
+    pub points: Vec<BatteryHistoryPoint>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryHistoryPoint {
+    pub timestamp_ms: u64,
+    pub percentage: u8,
+    pub power_watts: f64,
+    pub time_to_full_seconds: Option<u64>,
+    pub charging: bool,
+    pub plugged: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

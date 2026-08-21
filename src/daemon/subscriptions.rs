@@ -203,6 +203,9 @@ fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
         protocol::stream::POWER_PROFILE => {
             serde_json::to_value(&snapshot.power_profile).unwrap_or(Value::Null)
         }
+        protocol::stream::POWER_SLEEP => {
+            serde_json::to_value(&snapshot.power_sleep).unwrap_or(Value::Null)
+        }
         protocol::stream::NOTIFICATIONS => {
             serde_json::to_value(&snapshot.notifications).unwrap_or(Value::Null)
         }

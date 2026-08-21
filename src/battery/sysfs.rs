@@ -189,6 +189,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         operation: Default::default(),
         protection,
         devices,
+        history: Default::default(),
         error: None,
     }
 }

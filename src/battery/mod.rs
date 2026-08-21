@@ -18,6 +18,7 @@ use crate::{
 };
 
 pub(crate) mod config;
+mod history;
 mod model;
 mod monitor;
 mod policy;
@@ -41,7 +42,7 @@ pub async fn refresh_state(store: &StateStore) -> Result<BatteryState> {
     let state = tokio::task::spawn_blocking(|| sysfs::PowerSupplyFs::system().read_state())
         .await
         .context("join battery state refresh")??;
-    let state = decorate_from_disk(state).await;
+    let state = history::attach(decorate_from_disk(state).await);
     store.update_battery(state.clone()).await;
     Ok(state)
 }
@@ -606,6 +607,7 @@ async fn publish(
     alerts: &mut AlertTracker,
     notifications: &NotificationSink,
 ) {
+    let state = history::attach(state);
     if let Some(alert) = alerts.observe(&state, state.policy.notify_when_full) {
         tokio::spawn(send_notification(alert, notifications.clone()));
     }

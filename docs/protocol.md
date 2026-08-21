@@ -59,6 +59,8 @@ Battery methods operate on the native ThinkPad threshold interface. `battery.set
 
 `battery.setChargingInhibited` durably selects or clears the ThinkPad kernel's `inhibit-charge` behavior. `battery.startCalibration` performs a bounded force-discharge/full-charge cycle and `battery.cancelCalibration` safely restores the pre-calibration thresholds. These methods require an explicit `battery_id` in canonical clients, though the daemon accepts omission as primary-battery compatibility behavior.
 
+The `power-sleep.changed` domain exposes systemd-logind suspend/hibernate capability strings, `PrepareForSleep` state, and current inhibitors. `powerSleep.lock`, `powerSleep.suspend`, and `powerSleep.hibernate` target the current logind session; both sleep actions request a session lock first. See [`power-sleep.md`](power-sleep.md).
+
 Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, and `previous`; an omitted `player_id` uses the daemon's current active-player policy.
 
 ## Streams

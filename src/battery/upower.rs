@@ -62,6 +62,7 @@ pub(super) async fn read_state(
         operation: Default::default(),
         protection: Default::default(),
         devices: Vec::new(),
+        history: Default::default(),
         error: None,
     })
 }

@@ -1,8 +1,17 @@
 use super::{ApiService, error, success};
-use crate::{audio, brightness, media, power, updates};
+use crate::{audio, brightness, media, power, sleep, updates};
 use serde_json::{Value, json};
 
 impl ApiService {
+    pub(super) async fn power_sleep_action(&self, action: &str) -> Value {
+        match sleep::perform(action).await {
+            Ok(state) => {
+                self.state.update_power_sleep(state.clone()).await;
+                success(json!({"power_sleep": state, "operation": action}))
+            }
+            Err(value) => error("power-sleep-operation-failed", value.to_string()),
+        }
+    }
     pub(super) async fn updates_refresh(&self) -> Value {
         match updates::refresh_default(&self.state).await {
             Ok(state) => success(json!({"updates": state})),

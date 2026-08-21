@@ -11,6 +11,7 @@ pub mod stream {
     pub const BRIGHTNESS: &str = "brightness.changed";
     pub const BATTERY: &str = "battery.changed";
     pub const POWER_PROFILE: &str = "power-profile.changed";
+    pub const POWER_SLEEP: &str = "power-sleep.changed";
     pub const NOTIFICATIONS: &str = "notifications.changed";
     pub const NOTIFICATION_ACTIVE: &str = "notifications.active.changed";
     pub const UPDATES: &str = "updates.changed";
@@ -41,6 +42,9 @@ pub const METHODS: &[&str] = &[
     "powerProfile.set",
     "powerProfile.setBatteryAware",
     "powerProfile.setActionEnabled",
+    "powerSleep.lock",
+    "powerSleep.suspend",
+    "powerSleep.hibernate",
     "notifications.togglePanel",
     "notifications.toggleDnd",
     "notifications.setDnd",
@@ -59,6 +63,7 @@ pub const STREAMS: &[&str] = &[
     stream::BRIGHTNESS,
     stream::BATTERY,
     stream::POWER_PROFILE,
+    stream::POWER_SLEEP,
     stream::NOTIFICATIONS,
     stream::NOTIFICATION_ACTIVE,
     stream::UPDATES,
@@ -93,6 +98,9 @@ pub fn registry() -> Value {
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
             { "name": "powerProfile.setBatteryAware", "params": { "enabled": true }, "result": "power_profile" },
             { "name": "powerProfile.setActionEnabled", "params": { "action": "amdgpu_panel_power", "enabled": true }, "result": "power_profile" },
+            { "name": "powerSleep.lock", "params": {}, "result": "power_sleep" },
+            { "name": "powerSleep.suspend", "params": {}, "result": "power_sleep" },
+            { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true }, "result": "notifications" },
@@ -111,6 +119,7 @@ pub fn registry() -> Value {
             { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::POWER_SLEEP, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATION_ACTIVE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] },
@@ -210,6 +219,13 @@ fn generated_contract_fixture() -> Value {
                         "available_behaviours": ["auto", "inhibit-charge", "force-discharge"], "error": null
                     }
                 }],
+                "history": {
+                    "retention_days": 7, "last_charge_timestamp_ms": 1768464000000_u64,
+                    "points": [
+                        { "timestamp_ms": 1768464000000_u64, "percentage": 82, "power_watts": 7.8, "time_to_full_seconds": null, "charging": false, "plugged": false },
+                        { "timestamp_ms": 1768464900000_u64, "percentage": 80, "power_watts": 8.2, "time_to_full_seconds": null, "charging": false, "plugged": false }
+                    ]
+                },
                 "error": null
             },
             "power_profile": {
@@ -218,6 +234,12 @@ fn generated_contract_fixture() -> Value {
                 "performance_degraded": "", "version": "0.30", "battery_aware": true,
                 "actions": [{ "name": "amdgpu_panel_power", "description": "Panel power savings", "enabled": true }],
                 "active_holds": [{ "application_id": "org.example.Compiler", "profile": "performance", "reason": "Building" }],
+                "error": null
+            },
+            "power_sleep": {
+                "available": true, "can_suspend": "yes", "can_hibernate": "challenge",
+                "preparing_for_sleep": false, "lock_before_sleep": true,
+                "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null
             },
             "notifications": {

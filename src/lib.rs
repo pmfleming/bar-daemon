@@ -12,6 +12,7 @@ pub mod media;
 pub mod model;
 pub mod power;
 pub mod protocol;
+pub mod sleep;
 pub mod state;
 pub mod timezone;
 pub mod updates;

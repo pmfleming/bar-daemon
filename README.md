@@ -13,6 +13,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
 - Native Linux power-supply monitoring, ThinkPad charge protection, recoverable charge-once, health/cycle telemetry, and configurable deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
+- systemd-logind sleep capabilities, active inhibitors, and lock-before-suspend/hibernate actions
 - Native Freedesktop notification server with expiry, actions, DND, active state, and persistent SQLite history; resilient SwayNC fallback adapter
 - Event-driven NixOS delayed-update readiness across fast and delayed lanes
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
@@ -39,7 +40,7 @@ JSONL example:
 {"op":"shutdown","id":"shutdown"}
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries, [`docs/battery.md`](docs/battery.md) for ThinkPad setup, policy, and migration details, [`docs/activity-module-plan.md`](docs/activity-module-plan.md) for the Activity roadmap and configuration, and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
+See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries, [`docs/battery.md`](docs/battery.md) for ThinkPad setup, policy, and migration details, [`docs/power-sleep.md`](docs/power-sleep.md) for logind and Hyprland sleep integration, [`docs/activity-module-plan.md`](docs/activity-module-plan.md) for the Activity roadmap and configuration, and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
 
 D-Bus endpoint:
 

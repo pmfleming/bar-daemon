@@ -7,6 +7,7 @@ The native battery module replaces UPower for bar-daemon's laptop use case. It r
 `battery.changed` and `bar.snapshot` include:
 
 - aggregate charge, charging state, external-power state, power rate, time estimates, health, and cycle count;
+- seven days of 15-minute charge/power/time-to-full samples under `history`, including the start time of the current post-charge session;
 - every present battery under `devices`, with energy and voltage data when the kernel provides it;
 - observed threshold and `charge_behaviour` capabilities;
 - desired protection and alert policy separately from observed hardware values, including whether bar-daemon has taken policy ownership; and
@@ -40,12 +41,13 @@ Charging inhibition uses the kernel's advertised `inhibit-charge` behavior and r
 
 ## Persistence
 
-Policy is stored in `$XDG_CONFIG_HOME/bar-daemon/battery.json`, falling back to `~/.config/bar-daemon/battery.json`. Runtime recovery state is stored in `$XDG_STATE_HOME/bar-daemon/battery-state.json`, falling back to `~/.local/state/bar-daemon/battery-state.json`. Writes use a temporary file and atomic rename. Per-device entries under `devices` override the legacy top-level protection defaults, so dual-battery ThinkPads retain independent BAT0 and BAT1 ranges. Charge-once recovery records the target battery ID and never restores a range to a different battery.
+Policy is stored in `$XDG_CONFIG_HOME/bar-daemon/battery.json`, falling back to `~/.config/bar-daemon/battery.json`. Runtime recovery state is stored in `$XDG_STATE_HOME/bar-daemon/battery-state.json`, falling back to `~/.local/state/bar-daemon/battery-state.json`. Graph history is stored in `$XDG_STATE_HOME/bar-daemon/battery-history-v1.json`, sampled every 15 minutes plus plug/charge transitions and pruned after seven days. Writes use a temporary file and atomic rename. Per-device entries under `devices` override the legacy top-level protection defaults, so dual-battery ThinkPads retain independent BAT0 and BAT1 ranges. Charge-once recovery records the target battery ID and never restores a range to a different battery.
 
 The paths can be overridden for testing or unusual deployments:
 
 - `BAR_DAEMON_BATTERY_CONFIG`
 - `BAR_DAEMON_BATTERY_STATE`
+- `BAR_DAEMON_BATTERY_HISTORY`
 
 The API is the preferred way to update the files because it validates ranges and keeps desired policy synchronized with verified hardware state. An example policy file is:
 

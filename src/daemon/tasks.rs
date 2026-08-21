@@ -9,7 +9,7 @@ use crate::{
             engine::NotificationEngine, server::forward_signals, service::NotificationService,
         },
     },
-    audio, battery, brightness, hyprland, media, power,
+    audio, battery, brightness, hyprland, media, power, sleep,
     state::StateStore,
     timezone, updates,
 };
@@ -34,6 +34,7 @@ impl MonitorTasks {
             tokio::spawn(brightness::monitor(state.clone())),
             tokio::spawn(battery::monitor(state.clone(), notifications.sink())),
             tokio::spawn(power::monitor(state.clone())),
+            tokio::spawn(sleep::monitor(state.clone())),
             tokio::spawn(updates::monitor(state.clone())),
             tokio::spawn(timezone::monitor(state.clone())),
         ];
