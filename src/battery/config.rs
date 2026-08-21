@@ -16,6 +16,7 @@ pub(crate) struct BatteryConfig {
     pub warning_percent: u8,
     pub critical_percent: u8,
     pub notify_when_full: bool,
+    pub auto_power_saver: bool,
     pub manage_thresholds: bool,
     pub protection_enabled: bool,
     pub protected_start_percent: u8,
@@ -53,6 +54,7 @@ impl Default for BatteryConfig {
             warning_percent: 25,
             critical_percent: 12,
             notify_when_full: true,
+            auto_power_saver: true,
             manage_thresholds: false,
             protection_enabled: false,
             protected_start_percent: 75,
@@ -257,6 +259,7 @@ mod tests {
         assert!(!config.protection_enabled);
         assert_eq!(config.protected_start_percent, 75);
         assert_eq!(config.protected_end_percent, 80);
+        assert!(config.auto_power_saver);
         config.validate().unwrap();
     }
 

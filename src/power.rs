@@ -6,7 +6,8 @@ use tokio::time::{interval, sleep};
 use zvariant::OwnedValue;
 
 use crate::{
-    model::{PowerProfile, PowerProfileAction, PowerProfileHold, PowerProfileState},
+    model::{BatteryState, PowerProfile, PowerProfileAction, PowerProfileHold, PowerProfileState},
+    protocol,
     state::StateStore,
 };
 
@@ -14,6 +15,8 @@ const BUS: &str = "org.freedesktop.UPower.PowerProfiles";
 const PATH: &str = "/org/freedesktop/UPower/PowerProfiles";
 const INTERFACE: &str = "org.freedesktop.UPower.PowerProfiles";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
+const HOLD_APPLICATION_ID: &str = "org.laufan.BarDaemon";
+const HOLD_REASON: &str = "Battery level is low";
 
 pub async fn monitor(store: StateStore) {
     loop {
@@ -44,18 +47,98 @@ pub async fn monitor(store: StateStore) {
 async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -> Result<()> {
     let properties = zbus::Proxy::new(connection, BUS, PATH, PROPERTIES_INTERFACE).await?;
     let mut changes = properties.receive_signal("PropertiesChanged").await?;
+    let mut events = store.subscribe();
     let mut fallback = interval(Duration::from_secs(60));
+    let mut low_battery_hold = LowBatteryHold::default();
     fallback.tick().await;
     refresh(connection, store).await;
+    low_battery_hold
+        .reconcile(connection, &store.snapshot().await.battery)
+        .await?;
     loop {
         tokio::select! {
             signal = changes.next() => {
                 if signal.is_none() { bail!("power-profiles-daemon property stream ended"); }
                 refresh(connection, store).await;
             }
-            _ = fallback.tick() => refresh(connection, store).await,
+            event = events.recv() => {
+                match event {
+                    Ok(event) if event.stream == protocol::stream::BATTERY => {
+                        low_battery_hold
+                            .reconcile(connection, &store.snapshot().await.battery)
+                            .await?;
+                        refresh(connection, store).await;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        low_battery_hold
+                            .reconcile(connection, &store.snapshot().await.battery)
+                            .await?;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        bail!("state event stream ended");
+                    }
+                }
+            }
+            _ = fallback.tick() => {
+                low_battery_hold
+                    .reconcile(connection, &store.snapshot().await.battery)
+                    .await?;
+                refresh(connection, store).await;
+            },
         }
     }
+}
+
+#[derive(Default)]
+struct LowBatteryHold {
+    cookie: Option<u32>,
+}
+
+impl LowBatteryHold {
+    async fn reconcile(
+        &mut self,
+        connection: &zbus::Connection,
+        battery: &BatteryState,
+    ) -> Result<()> {
+        let desired = should_hold_power_saver(battery);
+        if !desired {
+            return self.release(connection).await;
+        }
+        if self.cookie.is_some() {
+            return Ok(());
+        }
+        let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE)
+            .await
+            .context("connect to power-profiles-daemon for low-battery hold")?;
+        let cookie: u32 = proxy
+            .call(
+                "HoldProfile",
+                &("power-saver", HOLD_REASON, HOLD_APPLICATION_ID),
+            )
+            .await
+            .context("hold power-saver for low battery")?;
+        self.cookie = Some(cookie);
+        Ok(())
+    }
+
+    async fn release(&mut self, connection: &zbus::Connection) -> Result<()> {
+        let Some(cookie) = self.cookie.take() else {
+            return Ok(());
+        };
+        let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE)
+            .await
+            .context("connect to power-profiles-daemon to release low-battery hold")?;
+        let _: () = proxy
+            .call("ReleaseProfile", &(cookie,))
+            .await
+            .context("release low-battery power-saver hold")?;
+        Ok(())
+    }
+}
+
+fn should_hold_power_saver(battery: &BatteryState) -> bool {
+    battery.available && battery.policy.auto_power_saver && battery.warning && !battery.plugged
 }
 
 async fn refresh(connection: &zbus::Connection, store: &StateStore) {
@@ -234,7 +317,9 @@ mod tests {
     use std::collections::HashMap;
     use zvariant::{OwnedValue, Value};
 
-    use super::{parse_action, parse_hold, parse_profile};
+    use crate::model::{BatteryPolicyState, BatteryState};
+
+    use super::{parse_action, parse_hold, parse_profile, should_hold_power_saver};
 
     fn owned(value: &str) -> OwnedValue {
         OwnedValue::try_from(Value::new(value)).unwrap()
@@ -274,5 +359,27 @@ mod tests {
         let hold = parse_hold(&hold).unwrap();
         assert_eq!(hold.profile, "performance");
         assert_eq!(hold.reason, "Building");
+    }
+
+    #[test]
+    fn low_battery_hold_requires_enabled_discharging_warning() {
+        let state = BatteryState {
+            available: true,
+            warning: true,
+            policy: BatteryPolicyState {
+                auto_power_saver: true,
+                ..BatteryPolicyState::default()
+            },
+            ..BatteryState::default()
+        };
+        assert!(should_hold_power_saver(&state));
+        assert!(!should_hold_power_saver(&BatteryState {
+            plugged: true,
+            ..state.clone()
+        }));
+        assert!(!should_hold_power_saver(&BatteryState {
+            warning: false,
+            ..state
+        }));
     }
 }

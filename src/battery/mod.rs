@@ -349,6 +349,7 @@ fn decorate(
         warning_percent: config.warning_percent,
         critical_percent: config.critical_percent,
         notify_when_full: config.notify_when_full,
+        auto_power_saver: config.auto_power_saver,
     };
     for device in &mut state.devices {
         let device_config = config.device(&device.id);

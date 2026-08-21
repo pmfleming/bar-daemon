@@ -83,7 +83,7 @@ pub fn registry() -> Value {
             { "name": "battery.setThresholds", "params": { "battery_id": "BAT0", "start_percent": 75, "end_percent": 80 }, "result": "battery" },
             { "name": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
             { "name": "battery.chargeOnce", "params": { "battery_id": "BAT0" }, "result": "battery" },
-            { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true }, "result": "battery" },
+            { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true }, "result": "battery" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
             { "name": "powerProfile.setBatteryAware", "params": { "enabled": true }, "result": "power_profile" },
             { "name": "powerProfile.setActionEnabled", "params": { "action": "amdgpu_panel_power", "enabled": true }, "result": "power_profile" },
@@ -173,7 +173,7 @@ fn generated_contract_fixture() -> Value {
                 "charging": false, "plugged": false, "power_watts": 8.2, "time_to_empty_seconds": 14400,
                 "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
                 "critical": false,
-                "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true },
+                "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true },
                 "protection": {
                     "supported": true, "backend": "thinkpad-sysfs", "managed": true, "enabled": true,
                     "start_percent": 75, "end_percent": 80,

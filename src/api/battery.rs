@@ -170,6 +170,13 @@ impl ApiService {
             next_config.notify_when_full = value;
             changed = true;
         }
+        if params.get("auto_power_saver").is_some() {
+            let Some(value) = params.get("auto_power_saver").and_then(Value::as_bool) else {
+                return error("validation-error", "auto_power_saver must be boolean");
+            };
+            next_config.auto_power_saver = value;
+            changed = true;
+        }
         if !changed {
             return error(
                 "validation-error",

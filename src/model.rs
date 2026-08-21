@@ -135,6 +135,7 @@ pub struct BatteryPolicyState {
     pub warning_percent: u8,
     pub critical_percent: u8,
     pub notify_when_full: bool,
+    pub auto_power_saver: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

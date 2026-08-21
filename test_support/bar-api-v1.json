@@ -125,7 +125,8 @@
         "params": {
           "warning_percent": 25,
           "critical_percent": 12,
-          "notify_when_full": true
+          "notify_when_full": true,
+          "auto_power_saver": true
         },
         "result": "battery"
       },
@@ -376,7 +377,8 @@
       "policy": {
         "warning_percent": 25,
         "critical_percent": 12,
-        "notify_when_full": true
+        "notify_when_full": true,
+        "auto_power_saver": true
       },
       "protection": {
         "supported": true,
