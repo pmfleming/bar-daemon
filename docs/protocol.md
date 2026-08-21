@@ -57,6 +57,8 @@ The client emits correlated `response` records and asynchronous `event` records.
 
 Battery methods operate on the native ThinkPad threshold interface. `battery.setThresholds` requires `battery_id`, `start_percent`, and `end_percent` satisfying `0 <= start < end <= 100`; it also enables persistent protection management. `battery.setProtection` and `battery.chargeOnce` accept an optional `battery_id`, defaulting to the primary battery. Charge-once temporarily selects `0–100`, survives daemon restarts, and restores the exact previous range on full charge, unplug, or after 24 hours. `battery.setAlertPolicy` accepts any non-empty subset of `warning_percent`, `critical_percent`, `notify_when_full`, and `auto_power_saver`, with `critical_percent <= warning_percent`. See [`battery.md`](battery.md).
 
+`battery.setChargingInhibited` durably selects or clears the ThinkPad kernel's `inhibit-charge` behavior. `battery.startCalibration` performs a bounded force-discharge/full-charge cycle and `battery.cancelCalibration` safely restores the pre-calibration thresholds. These methods require an explicit `battery_id` in canonical clients, though the daemon accepts omission as primary-battery compatibility behavior.
+
 Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, and `previous`; an omitted `player_id` uses the daemon's current active-player policy.
 
 ## Streams

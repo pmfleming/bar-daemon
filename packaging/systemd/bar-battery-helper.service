@@ -1,5 +1,5 @@
 [Unit]
-Description=Privileged ThinkPad battery threshold helper
+Description=Privileged ThinkPad battery charging helper
 Documentation=https://github.com/pmfleming/bar-daemon
 
 [Service]

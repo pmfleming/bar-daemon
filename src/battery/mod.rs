@@ -13,7 +13,7 @@ use zvariant::OwnedObjectPath;
 
 use crate::{
     activity::notifications::service::NotificationSink,
-    model::{BatteryPolicyState, BatteryState},
+    model::{BatteryOperationState, BatteryPolicyState, BatteryState},
     state::StateStore,
 };
 
@@ -186,6 +186,11 @@ async fn reconcile_and_decorate(mut state: BatteryState) -> BatteryState {
             append_error(&mut policy_error, error.to_string());
         }
     }
+    if reconcile_runtime_operation(&mut state, &mut runtime, &mut policy_error).await
+        && let Err(error) = config::save_runtime(&runtime).await
+    {
+        append_error(&mut policy_error, error.to_string());
+    }
     let charge_once_percentage = state
         .devices
         .iter()
@@ -283,6 +288,9 @@ fn reconciliation_target(
     should_finish_charge_once: bool,
     battery_id: &str,
 ) -> Option<(u8, u8)> {
+    if runtime.operation == "calibration" && runtime.operation_battery_id == battery_id {
+        return Some((0, 100));
+    }
     let charge_once_target = runtime.charge_once_active
         && (runtime.charge_once_battery_id.is_empty()
             || runtime.charge_once_battery_id == battery_id);
@@ -296,6 +304,133 @@ fn reconciliation_target(
             .or_else(|| configured_target(device));
     }
     configured_target(device)
+}
+
+async fn reconcile_runtime_operation(
+    state: &mut BatteryState,
+    runtime: &mut config::BatteryRuntimeState,
+    policy_error: &mut Option<String>,
+) -> bool {
+    if runtime.operation.is_empty() {
+        return false;
+    }
+    let Some(device) = state
+        .devices
+        .iter()
+        .find(|device| device.id == runtime.operation_battery_id)
+        .cloned()
+    else {
+        append_error(
+            policy_error,
+            format!(
+                "cannot resume {} operation: battery {} is unavailable",
+                runtime.operation, runtime.operation_battery_id
+            ),
+        );
+        return false;
+    };
+    match runtime.operation.as_str() {
+        "inhibit" => {
+            if device.protection.charge_behaviour.as_deref() != Some("inhibit-charge") {
+                match helper::set_charge_behaviour(&device.id, "inhibit-charge").await {
+                    Ok(actual) => update_observed_behaviour(state, &device.id, actual),
+                    Err(error) => append_error(policy_error, error.to_string()),
+                }
+            }
+            false
+        }
+        "calibration" => {
+            if runtime.operation_expired(config::unix_ms()) || !state.plugged {
+                return finish_runtime_operation(state, runtime, policy_error).await;
+            }
+            if runtime.operation_phase == "discharging" && device.percentage <= 1 {
+                match helper::set_charge_behaviour(&device.id, "auto").await {
+                    Ok(actual) => {
+                        update_observed_behaviour(state, &device.id, actual);
+                        runtime.operation_phase = "charging".into();
+                        true
+                    }
+                    Err(error) => {
+                        append_error(policy_error, error.to_string());
+                        false
+                    }
+                }
+            } else if runtime.operation_phase == "discharging" {
+                if device.protection.charge_behaviour.as_deref() != Some("force-discharge") {
+                    match helper::set_charge_behaviour(&device.id, "force-discharge").await {
+                        Ok(actual) => update_observed_behaviour(state, &device.id, actual),
+                        Err(error) => append_error(policy_error, error.to_string()),
+                    }
+                }
+                false
+            } else if runtime.operation_phase == "charging" && device.percentage >= 100 {
+                finish_runtime_operation(state, runtime, policy_error).await
+            } else if runtime.operation_phase == "charging" {
+                if device.protection.charge_behaviour.as_deref() != Some("auto") {
+                    match helper::set_charge_behaviour(&device.id, "auto").await {
+                        Ok(actual) => update_observed_behaviour(state, &device.id, actual),
+                        Err(error) => append_error(policy_error, error.to_string()),
+                    }
+                }
+                false
+            } else {
+                append_error(
+                    policy_error,
+                    format!("unknown calibration phase: {}", runtime.operation_phase),
+                );
+                finish_runtime_operation(state, runtime, policy_error).await
+            }
+        }
+        operation => {
+            append_error(
+                policy_error,
+                format!("unknown battery operation: {operation}"),
+            );
+            finish_runtime_operation(state, runtime, policy_error).await
+        }
+    }
+}
+
+async fn finish_runtime_operation(
+    state: &mut BatteryState,
+    runtime: &mut config::BatteryRuntimeState,
+    policy_error: &mut Option<String>,
+) -> bool {
+    let battery_id = runtime.operation_battery_id.clone();
+    let behaviour_result = helper::set_charge_behaviour(&battery_id, "auto").await;
+    let threshold_result = match (
+        runtime.operation_restore_start_percent,
+        runtime.operation_restore_end_percent,
+    ) {
+        (Some(start), Some(end)) => helper::set_thresholds(&battery_id, start, end)
+            .await
+            .map(Some),
+        _ => Ok(None),
+    };
+    match (behaviour_result, threshold_result) {
+        (Ok(actual), Ok(thresholds)) => {
+            update_observed_behaviour(state, &battery_id, actual);
+            if let Some(thresholds) = thresholds {
+                update_observed_thresholds(
+                    state,
+                    &battery_id,
+                    thresholds.actual_start_percent,
+                    thresholds.actual_end_percent,
+                );
+            }
+            runtime.clear_operation();
+            true
+        }
+        (behaviour, thresholds) => {
+            if let Err(error) = behaviour {
+                append_error(policy_error, error.to_string());
+            }
+            if let Err(error) = thresholds {
+                append_error(policy_error, error.to_string());
+            }
+            false
+        }
+    }
 }
 
 fn configured_target(device: &config::BatteryDeviceConfig) -> Option<(u8, u8)> {
@@ -350,6 +485,13 @@ fn decorate(
         critical_percent: config.critical_percent,
         notify_when_full: config.notify_when_full,
         auto_power_saver: config.auto_power_saver,
+    };
+    state.operation = BatteryOperationState {
+        kind: runtime.operation.clone(),
+        battery_id: runtime.operation_battery_id.clone(),
+        phase: runtime.operation_phase.clone(),
+        started_unix_ms: runtime.operation_started_unix_ms,
+        expires_unix_ms: runtime.operation_expires_unix_ms,
     };
     for device in &mut state.devices {
         let device_config = config.device(&device.id);
@@ -414,7 +556,23 @@ fn update_observed_thresholds(state: &mut BatteryState, battery_id: &str, start:
     }
 }
 
+fn update_observed_behaviour(state: &mut BatteryState, battery_id: &str, behaviour: String) {
+    if let Some(device) = state
+        .devices
+        .iter_mut()
+        .find(|device| device.id == battery_id)
+    {
+        device.protection.charge_behaviour = Some(behaviour);
+    }
+}
+
 fn semantic_state(state: &BatteryState) -> String {
+    if state.operation.kind == "calibration" {
+        return "calibrating".into();
+    }
+    if state.operation.kind == "inhibit" {
+        return "charging-inhibited".into();
+    }
     if state.charging {
         return "charging".into();
     }

@@ -186,6 +186,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         warning: !snapshot.plugged && percentage <= WARNING_PERCENT,
         critical: !snapshot.plugged && percentage <= CRITICAL_PERCENT,
         policy: Default::default(),
+        operation: Default::default(),
         protection,
         devices,
         error: None,

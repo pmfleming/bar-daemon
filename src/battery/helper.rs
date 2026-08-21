@@ -17,7 +17,8 @@ pub const INTERFACE: &str = "org.laufan.BarBatteryHelper1";
 const POLKIT_BUS: &str = "org.freedesktop.PolicyKit1";
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const POLKIT_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
-const POLKIT_ACTION: &str = "org.laufan.bar-daemon.set-battery-thresholds";
+const POLKIT_THRESHOLDS_ACTION: &str = "org.laufan.bar-daemon.set-battery-thresholds";
+const POLKIT_BEHAVIOUR_ACTION: &str = "org.laufan.bar-daemon.set-battery-charge-behaviour";
 
 pub struct BatteryHelper {
     writer: ThresholdWriter,
@@ -45,7 +46,7 @@ impl BatteryHelper {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> zbus::fdo::Result<(u8, u8, bool)> {
-        authorize(connection, &header).await?;
+        authorize(connection, &header, POLKIT_THRESHOLDS_ACTION).await?;
         let result = self
             .writer
             .set_thresholds(battery, start_percent, end_percent)
@@ -56,13 +57,37 @@ impl BatteryHelper {
             result.verified,
         ))
     }
+
+    async fn get_charge_behaviour(
+        &self,
+        battery: &str,
+    ) -> zbus::fdo::Result<(String, Vec<String>)> {
+        self.writer.get_charge_behaviour(battery).map_err(failed)
+    }
+
+    async fn set_charge_behaviour(
+        &self,
+        battery: &str,
+        behaviour: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> zbus::fdo::Result<String> {
+        authorize(connection, &header, POLKIT_BEHAVIOUR_ACTION).await?;
+        self.writer
+            .set_charge_behaviour(battery, behaviour)
+            .map_err(failed)
+    }
 }
 
 fn failed(error: anyhow::Error) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(error.to_string())
 }
 
-async fn authorize(connection: &Connection, header: &Header<'_>) -> zbus::fdo::Result<()> {
+async fn authorize(
+    connection: &Connection,
+    header: &Header<'_>,
+    action: &str,
+) -> zbus::fdo::Result<()> {
     let sender = header
         .sender()
         .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no D-Bus identity".into()))?;
@@ -73,10 +98,7 @@ async fn authorize(connection: &Connection, header: &Header<'_>) -> zbus::fdo::R
     let subject = ("system-bus-name", subject_details);
     let details = HashMap::<&str, &str>::new();
     let (authorized, _challenge, _details): (bool, bool, HashMap<String, String>) = proxy
-        .call(
-            "CheckAuthorization",
-            &(subject, POLKIT_ACTION, details, 1u32, ""),
-        )
+        .call("CheckAuthorization", &(subject, action, details, 1u32, ""))
         .await
         .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
     if authorized {
@@ -110,7 +132,7 @@ impl ThresholdWriter {
     }
 
     pub fn get_thresholds(&self, battery: &str) -> Result<(u8, u8)> {
-        let directory = self.battery_directory(battery)?;
+        let directory = self.threshold_directory(battery)?;
         Ok((
             read_percent(&directory.join("charge_control_start_threshold"))?,
             read_percent(&directory.join("charge_control_end_threshold"))?,
@@ -126,7 +148,7 @@ impl ThresholdWriter {
         if start >= end || end > 100 {
             bail!("thresholds must satisfy 0 <= start < end <= 100");
         }
-        let directory = self.battery_directory(battery)?;
+        let directory = self.threshold_directory(battery)?;
         let start_path = directory.join("charge_control_start_threshold");
         let end_path = directory.join("charge_control_end_threshold");
         let (current_start, current_end) = (read_percent(&start_path)?, read_percent(&end_path)?);
@@ -165,6 +187,36 @@ impl ThresholdWriter {
         })
     }
 
+    pub fn get_charge_behaviour(&self, battery: &str) -> Result<(String, Vec<String>)> {
+        let directory = self.battery_directory(battery)?;
+        parse_choices(&std::fs::read_to_string(
+            directory.join("charge_behaviour"),
+        )?)
+    }
+
+    pub fn set_charge_behaviour(&self, battery: &str, behaviour: &str) -> Result<String> {
+        if !matches!(
+            behaviour,
+            "auto" | "inhibit-charge" | "inhibit-charge-awake" | "force-discharge"
+        ) {
+            bail!("unsupported charge behaviour: {behaviour}");
+        }
+        let directory = self.battery_directory(battery)?;
+        let path = directory.join("charge_behaviour");
+        let (_, available) = parse_choices(&std::fs::read_to_string(&path)?)?;
+        if !available.iter().any(|item| item == behaviour) {
+            bail!("battery {battery} does not support charge behaviour {behaviour}");
+        }
+        std::fs::write(&path, behaviour).with_context(|| format!("write {}", path.display()))?;
+        let (actual, _) = parse_choices(&std::fs::read_to_string(&path)?)?;
+        if actual != behaviour {
+            bail!(
+                "battery {battery} reported charge behaviour {actual} after requesting {behaviour}"
+            );
+        }
+        Ok(actual)
+    }
+
     fn battery_directory(&self, battery: &str) -> Result<PathBuf> {
         validate_battery_id(battery)?;
         let directory = self.root.join(battery);
@@ -173,6 +225,11 @@ impl ThresholdWriter {
         if supply_type.trim() != "Battery" {
             bail!("power supply {battery} is not a battery");
         }
+        Ok(directory)
+    }
+
+    fn threshold_directory(&self, battery: &str) -> Result<PathBuf> {
+        let directory = self.battery_directory(battery)?;
         for attribute in [
             "charge_control_start_threshold",
             "charge_control_end_threshold",
@@ -183,6 +240,21 @@ impl ThresholdWriter {
         }
         Ok(directory)
     }
+}
+
+fn parse_choices(contents: &str) -> Result<(String, Vec<String>)> {
+    let choices = contents
+        .split_whitespace()
+        .map(|value| value.trim_matches(['[', ']']).to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let selected = contents
+        .split_whitespace()
+        .find(|value| value.starts_with('[') && value.ends_with(']'))
+        .map(|value| value.trim_matches(['[', ']']).to_string())
+        .or_else(|| (choices.len() == 1).then(|| choices[0].clone()))
+        .context("charge_behaviour does not identify its selected value")?;
+    Ok((selected, choices))
 }
 
 fn validate_battery_id(battery: &str) -> Result<()> {
@@ -264,6 +336,19 @@ pub async fn set_thresholds(battery: &str, start: u8, end: u8) -> Result<Thresho
     })
 }
 
+pub async fn set_charge_behaviour(battery: &str, behaviour: &str) -> Result<String> {
+    let connection = Connection::system()
+        .await
+        .context("connect to system D-Bus")?;
+    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
+        .await
+        .context("connect to battery helper")?;
+    proxy
+        .call("SetChargeBehaviour", &(battery, behaviour))
+        .await
+        .context("set battery charge behaviour")
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -280,6 +365,11 @@ mod tests {
         fs::write(
             battery.join("charge_control_start_threshold"),
             start.to_string(),
+        )
+        .unwrap();
+        fs::write(
+            battery.join("charge_behaviour"),
+            "[auto] inhibit-charge force-discharge",
         )
         .unwrap();
         fs::write(
@@ -310,5 +400,22 @@ mod tests {
     fn raises_end_before_start_when_ranges_do_not_overlap() {
         let (_directory, writer) = writer(40, 60);
         assert!(writer.set_thresholds("BAT0", 75, 80).unwrap().verified);
+    }
+
+    #[test]
+    fn validates_charge_behaviour_choices() {
+        let (_directory, writer) = writer(75, 80);
+        assert_eq!(
+            writer.get_charge_behaviour("BAT0").unwrap(),
+            (
+                "auto".into(),
+                vec![
+                    "auto".into(),
+                    "inhibit-charge".into(),
+                    "force-discharge".into()
+                ]
+            )
+        );
+        assert!(writer.set_charge_behaviour("BAT0", "ship-mode").is_err());
     }
 }

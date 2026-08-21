@@ -125,9 +125,19 @@ pub struct BatteryState {
     pub warning: bool,
     pub critical: bool,
     pub policy: BatteryPolicyState,
+    pub operation: BatteryOperationState,
     pub protection: BatteryProtectionState,
     pub devices: Vec<BatteryDeviceState>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryOperationState {
+    pub kind: String,
+    pub battery_id: String,
+    pub phase: String,
+    pub started_unix_ms: u64,
+    pub expires_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

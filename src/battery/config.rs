@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub(crate) const CHARGE_ONCE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const CALIBRATION_MAX_AGE: Duration = Duration::from_secs(48 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -128,6 +129,13 @@ pub(crate) struct BatteryRuntimeState {
     pub charge_once_expires_unix_ms: u64,
     pub restore_start_percent: Option<u8>,
     pub restore_end_percent: Option<u8>,
+    pub operation: String,
+    pub operation_battery_id: String,
+    pub operation_phase: String,
+    pub operation_started_unix_ms: u64,
+    pub operation_expires_unix_ms: u64,
+    pub operation_restore_start_percent: Option<u8>,
+    pub operation_restore_end_percent: Option<u8>,
 }
 
 impl BatteryRuntimeState {
@@ -145,6 +153,7 @@ impl BatteryRuntimeState {
                 .saturating_add(CHARGE_ONCE_MAX_AGE.as_millis() as u64),
             restore_start_percent: Some(restore_start_percent),
             restore_end_percent: Some(restore_end_percent),
+            ..Self::default()
         }
     }
 
@@ -152,6 +161,51 @@ impl BatteryRuntimeState {
         self.charge_once_active
             && self.charge_once_expires_unix_ms != 0
             && now_unix_ms >= self.charge_once_expires_unix_ms
+    }
+
+    pub(crate) fn start_inhibit(now_unix_ms: u64, battery_id: String) -> Self {
+        Self {
+            operation: "inhibit".into(),
+            operation_battery_id: battery_id,
+            operation_phase: "paused".into(),
+            operation_started_unix_ms: now_unix_ms,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn start_calibration(
+        now_unix_ms: u64,
+        battery_id: String,
+        restore_start_percent: u8,
+        restore_end_percent: u8,
+    ) -> Self {
+        Self {
+            operation: "calibration".into(),
+            operation_battery_id: battery_id,
+            operation_phase: "discharging".into(),
+            operation_started_unix_ms: now_unix_ms,
+            operation_expires_unix_ms: now_unix_ms
+                .saturating_add(CALIBRATION_MAX_AGE.as_millis() as u64),
+            operation_restore_start_percent: Some(restore_start_percent),
+            operation_restore_end_percent: Some(restore_end_percent),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn operation_expired(&self, now_unix_ms: u64) -> bool {
+        !self.operation.is_empty()
+            && self.operation_expires_unix_ms != 0
+            && now_unix_ms >= self.operation_expires_unix_ms
+    }
+
+    pub(crate) fn clear_operation(&mut self) {
+        self.operation.clear();
+        self.operation_battery_id.clear();
+        self.operation_phase.clear();
+        self.operation_started_unix_ms = 0;
+        self.operation_expires_unix_ms = 0;
+        self.operation_restore_start_percent = None;
+        self.operation_restore_end_percent = None;
     }
 }
 
@@ -250,7 +304,7 @@ fn state_home() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatteryConfig, BatteryRuntimeState, CHARGE_ONCE_MAX_AGE};
+    use super::{BatteryConfig, BatteryRuntimeState, CALIBRATION_MAX_AGE, CHARGE_ONCE_MAX_AGE};
 
     #[test]
     fn config_defaults_are_conservative() {
@@ -295,6 +349,19 @@ mod tests {
         assert_eq!(runtime.restore_start_percent, Some(75));
         assert_eq!(runtime.restore_end_percent, Some(80));
         assert_eq!(runtime.charge_once_battery_id, "BAT0");
+    }
+
+    #[test]
+    fn calibration_has_a_bounded_lifetime_and_restore_range() {
+        let state = BatteryRuntimeState::start_calibration(1_000, "BAT1".into(), 70, 85);
+        assert_eq!(state.operation, "calibration");
+        assert_eq!(state.operation_battery_id, "BAT1");
+        assert_eq!(state.operation_restore_start_percent, Some(70));
+        assert_eq!(state.operation_restore_end_percent, Some(85));
+        assert_eq!(
+            state.operation_expires_unix_ms,
+            1_000 + CALIBRATION_MAX_AGE.as_millis() as u64
+        );
     }
 
     #[tokio::test]

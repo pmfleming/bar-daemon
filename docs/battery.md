@@ -10,7 +10,7 @@ The native battery module replaces UPower for bar-daemon's laptop use case. It r
 - every present battery under `devices`, with energy and voltage data when the kernel provides it;
 - observed threshold and `charge_behaviour` capabilities;
 - desired protection and alert policy separately from observed hardware values, including whether bar-daemon has taken policy ownership; and
-- `charge_once_active` plus non-fatal policy/helper errors.
+- durable pause/calibration operation state, `charge_once_active`, and non-fatal policy/helper errors.
 
 Multiple batteries are aggregated by energy. If every present battery lacks compatible energy values, the daemon falls back to the mean reported capacity. External power is determined from the `online` attribute of non-battery supplies rather than inferred from battery status.
 
@@ -25,12 +25,18 @@ Send these records to `bar-daemon client`:
 {"op":"call","id":"protect-off","method":"battery.setProtection","params":{"enabled":false}}
 {"op":"call","id":"protect-on","method":"battery.setProtection","params":{"enabled":true}}
 {"op":"call","id":"once","method":"battery.chargeOnce","params":{}}
+{"op":"call","id":"pause","method":"battery.setChargingInhibited","params":{"battery_id":"BAT0","enabled":true}}
+{"op":"call","id":"resume","method":"battery.setChargingInhibited","params":{"battery_id":"BAT0","enabled":false}}
+{"op":"call","id":"calibrate","method":"battery.startCalibration","params":{"battery_id":"BAT0"}}
+{"op":"call","id":"cancel-calibration","method":"battery.cancelCalibration","params":{"battery_id":"BAT0"}}
 {"op":"call","id":"alerts","method":"battery.setAlertPolicy","params":{"warning_percent":25,"critical_percent":12,"notify_when_full":true,"auto_power_saver":true}}
 ```
 
 `battery.setProtection` and `battery.chargeOnce` use the primary battery exposed in the aggregate state. `battery.setThresholds` accepts an explicit battery ID for machines that expose more than one battery. Threshold changes fail cleanly when the kernel does not expose both `charge_control_start_threshold` and `charge_control_end_threshold`.
 
 Charge-once requires external power. Before selecting `0–100`, the daemon durably records the observed range. The operation survives daemon restarts and restores that exact range when the battery reaches 100%, external power is removed, or 24 hours elapse. The runtime marker is cleared only after verified restoration.
+
+Charging inhibition uses the kernel's advertised `inhibit-charge` behavior and remains active across daemon restarts until explicitly resumed. Calibration requires external power, readable thresholds, and `force-discharge` support. It records the exact observed range, temporarily selects `0–100`, force-discharges to 1%, charges to 100%, and then restores the recorded range. Unplugging, cancelling, or reaching the 48-hour safety deadline returns the behavior to `auto` and restores the range. Only one charge-once, inhibition, or calibration operation can be active at a time.
 
 ## Persistence
 

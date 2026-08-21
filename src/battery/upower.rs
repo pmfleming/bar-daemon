@@ -59,6 +59,7 @@ pub(super) async fn read_state(
         warning: on_battery && percentage <= WARNING_PERCENT,
         critical: on_battery && percentage <= CRITICAL_PERCENT,
         policy: Default::default(),
+        operation: Default::default(),
         protection: Default::default(),
         devices: Vec::new(),
         error: None,

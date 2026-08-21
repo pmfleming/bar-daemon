@@ -34,6 +34,9 @@ pub const METHODS: &[&str] = &[
     "battery.setThresholds",
     "battery.setProtection",
     "battery.chargeOnce",
+    "battery.setChargingInhibited",
+    "battery.startCalibration",
+    "battery.cancelCalibration",
     "battery.setAlertPolicy",
     "powerProfile.set",
     "powerProfile.setBatteryAware",
@@ -83,6 +86,9 @@ pub fn registry() -> Value {
             { "name": "battery.setThresholds", "params": { "battery_id": "BAT0", "start_percent": 75, "end_percent": 80 }, "result": "battery" },
             { "name": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
             { "name": "battery.chargeOnce", "params": { "battery_id": "BAT0" }, "result": "battery" },
+            { "name": "battery.setChargingInhibited", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
+            { "name": "battery.startCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
+            { "name": "battery.cancelCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
             { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true }, "result": "battery" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
             { "name": "powerProfile.setBatteryAware", "params": { "enabled": true }, "result": "power_profile" },
@@ -174,6 +180,10 @@ fn generated_contract_fixture() -> Value {
                 "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
                 "critical": false,
                 "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true },
+                "operation": {
+                    "kind": "", "battery_id": "", "phase": "",
+                    "started_unix_ms": 0, "expires_unix_ms": 0
+                },
                 "protection": {
                     "supported": true, "backend": "thinkpad-sysfs", "managed": true, "enabled": true,
                     "start_percent": 75, "end_percent": 80,

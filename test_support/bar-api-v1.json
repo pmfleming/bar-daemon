@@ -121,6 +121,28 @@
         "result": "battery"
       },
       {
+        "name": "battery.setChargingInhibited",
+        "params": {
+          "battery_id": "BAT0",
+          "enabled": true
+        },
+        "result": "battery"
+      },
+      {
+        "name": "battery.startCalibration",
+        "params": {
+          "battery_id": "BAT0"
+        },
+        "result": "battery"
+      },
+      {
+        "name": "battery.cancelCalibration",
+        "params": {
+          "battery_id": "BAT0"
+        },
+        "result": "battery"
+      },
+      {
         "name": "battery.setAlertPolicy",
         "params": {
           "warning_percent": 25,
@@ -379,6 +401,13 @@
         "critical_percent": 12,
         "notify_when_full": true,
         "auto_power_saver": true
+      },
+      "operation": {
+        "kind": "",
+        "battery_id": "",
+        "phase": "",
+        "started_unix_ms": 0,
+        "expires_unix_ms": 0
       },
       "protection": {
         "supported": true,
