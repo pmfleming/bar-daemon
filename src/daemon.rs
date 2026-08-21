@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    env,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -265,12 +266,27 @@ pub async fn run() -> Result<()> {
         sequence: AtomicU64::new(1),
         subscriptions: Arc::clone(&subscriptions),
     };
-    let _connection = connection::Builder::session()
+    let native_notifications = env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("native"));
+    let builder = connection::Builder::session()
         .context("connect to session D-Bus")?
         .name(BUS_NAME)
         .context("claim bar-daemon bus name")?
         .serve_at(OBJECT_PATH, daemon)
-        .context("export bar-daemon interface")?
+        .context("export bar-daemon interface")?;
+    let builder = if native_notifications {
+        builder
+            .name(notifications::server::BUS_NAME)
+            .context("claim notification server bus name")?
+            .serve_at(
+                notifications::server::OBJECT_PATH,
+                notifications::server::NotificationServer::new(),
+            )
+            .context("export notification server interface")?
+    } else {
+        builder
+    };
+    let _connection = builder
         .build()
         .await
         .context("start bar-daemon D-Bus service")?;
@@ -282,7 +298,8 @@ pub async fn run() -> Result<()> {
     let brightness_task = tokio::spawn(brightness::monitor(state.clone()));
     let battery_task = tokio::spawn(battery::monitor(state.clone()));
     let power_task = tokio::spawn(power::monitor(state.clone()));
-    let notification_task = tokio::spawn(notifications::monitor(state.clone()));
+    let notification_task =
+        (!native_notifications).then(|| tokio::spawn(notifications::monitor(state.clone())));
     let update_task = tokio::spawn(updates::monitor(state.clone()));
     let timezone_task = tokio::spawn(timezone::monitor(state));
     tracing::info!(
@@ -302,7 +319,9 @@ pub async fn run() -> Result<()> {
     brightness_task.abort();
     battery_task.abort();
     power_task.abort();
-    notification_task.abort();
+    if let Some(task) = notification_task {
+        task.abort();
+    }
     update_task.abort();
     timezone_task.abort();
     result
