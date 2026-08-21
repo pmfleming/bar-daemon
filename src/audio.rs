@@ -101,7 +101,7 @@ async fn refresh(store: &StateStore) {
 pub async fn adjust(delta_percent: i16) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
         let (sink, _) = probe_default()?;
-        let volume = (sink.volume + f32::from(delta_percent) / 100.0).clamp(0.0, 1.0);
+        let volume = adjusted_volume(sink.volume, delta_percent);
         set_node(&sink, Some(volume), Some(false), "sink")?;
         probe()
     })
@@ -112,7 +112,7 @@ pub async fn adjust(delta_percent: i16) -> Result<AudioState> {
 pub async fn set_muted(muted: Option<bool>) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
         let (sink, _) = probe_default()?;
-        set_node(&sink, None, Some(muted.unwrap_or(!sink.muted)), "sink")?;
+        set_node(&sink, None, Some(requested_mute(sink.muted, muted)), "sink")?;
         probe()
     })
     .await
@@ -126,13 +126,21 @@ pub async fn set_input_muted(muted: Option<bool>) -> Result<AudioState> {
         set_node(
             &source,
             None,
-            Some(muted.unwrap_or(!source.muted)),
+            Some(requested_mute(source.muted, muted)),
             "source",
         )?;
         probe()
     })
     .await
     .context("join PipeWire input mute operation")?
+}
+
+fn adjusted_volume(current: f32, delta_percent: i16) -> f32 {
+    (current + f32::from(delta_percent) / 100.0).clamp(0.0, 1.0)
+}
+
+fn requested_mute(current: bool, requested: Option<bool>) -> bool {
+    requested.unwrap_or(!current)
 }
 
 fn initialize() {
@@ -569,7 +577,18 @@ fn pipewire_roundtrip(
 mod tests {
     use std::collections::HashMap;
 
-    use super::{SinkProbe, default_node_name, linear_to_raw, preferred_node, raw_to_linear};
+    use super::{
+        SinkProbe, adjusted_volume, default_node_name, linear_to_raw, preferred_node,
+        raw_to_linear, requested_mute,
+    };
+
+    #[test]
+    fn clamps_volume_adjustments_and_resolves_mute_toggles() {
+        assert_eq!(adjusted_volume(0.95, 10), 1.0);
+        assert_eq!(adjusted_volume(0.05, -10), 0.0);
+        assert!(!requested_mute(true, None));
+        assert!(requested_mute(false, Some(true)));
+    }
 
     #[test]
     fn converts_pipewire_cubic_volume() {

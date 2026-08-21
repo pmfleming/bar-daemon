@@ -157,6 +157,24 @@ mod tests {
         assert!(notifications.active().await.is_empty());
     }
     #[tokio::test]
+    async fn rejects_unsupported_media_operation_without_accessing_dbus() {
+        let response = api()
+            .await
+            .dispatch("media.operation", json!({ "operation": "shuffle" }))
+            .await;
+        assert_eq!(response["error"]["code"], "media-operation-failed");
+    }
+
+    #[tokio::test]
+    async fn validates_todo_priority_range() {
+        let response = api()
+            .await
+            .dispatch("todos.create", json!({ "title": "test", "priority": 300 }))
+            .await;
+        assert_eq!(response["error"]["code"], "validation-error");
+    }
+
+    #[tokio::test]
     async fn validates_input_mute_without_touching_pipewire() {
         let response = api()
             .await
