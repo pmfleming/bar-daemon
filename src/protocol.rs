@@ -200,9 +200,8 @@ fn generated_contract_fixture() -> Value {
     })
 }
 
-pub fn contract_fixture() -> Value {
+pub fn contract_fixture() -> serde_json::Result<Value> {
     serde_json::from_str(include_str!("../test_support/bar-api-v1.json"))
-        .expect("checked bar-api fixture must be valid JSON")
 }
 
 #[cfg(test)]
@@ -210,8 +209,9 @@ mod tests {
     use super::{METHODS, STREAMS, contract_fixture, generated_contract_fixture, registry};
 
     #[test]
-    fn checked_contract_fixture_is_current() {
-        assert_eq!(contract_fixture(), generated_contract_fixture());
+    fn checked_contract_fixture_is_current() -> serde_json::Result<()> {
+        assert_eq!(contract_fixture()?, generated_contract_fixture());
+        Ok(())
     }
 
     #[test]

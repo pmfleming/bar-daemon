@@ -51,18 +51,13 @@ pub async fn run() -> Result<()> {
         .context("claim bar-daemon bus name")?
         .serve_at(OBJECT_PATH, daemon)
         .context("export bar-daemon interface")?;
-    let builder = if native_notifications {
+    let builder = if let Some(engine) = notification_engine.as_ref() {
         builder
             .name(notifications::server::BUS_NAME)
             .context("claim notification server bus name")?
             .serve_at(
                 notifications::server::OBJECT_PATH,
-                notifications::server::NotificationServer::new(
-                    notification_engine
-                        .as_ref()
-                        .expect("native notification engine must exist")
-                        .clone(),
-                ),
+                notifications::server::NotificationServer::new(Arc::clone(engine)),
             )
             .context("export notification server interface")?
     } else {

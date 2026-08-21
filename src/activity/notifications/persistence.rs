@@ -173,11 +173,14 @@ impl NotificationStore {
         })
     }
 
-    fn load_active(&self) -> Result<Vec<ActiveNotification>> {
-        let connection = self
-            .connection
+    fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.connection
             .lock()
-            .expect("notification database poisoned");
+            .map_err(|_| anyhow::anyhow!("notification database lock poisoned"))
+    }
+
+    fn load_active(&self) -> Result<Vec<ActiveNotification>> {
+        let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT payload_json FROM notifications
              WHERE closed_unix_ms IS NULL ORDER BY history_id",
@@ -195,10 +198,7 @@ impl NotificationStore {
     }
 
     fn load_dnd(&self) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .expect("notification database poisoned");
+        let connection = self.connection()?;
         let value = connection
             .query_row(
                 "SELECT value FROM notification_meta WHERE key = 'dnd'",
@@ -210,10 +210,7 @@ impl NotificationStore {
     }
 
     fn save(&self, notification: &ActiveNotification) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .expect("notification database poisoned");
+        let connection = self.connection()?;
         if notification.hints.transient {
             connection.execute(
                 "DELETE FROM notifications WHERE session_id = ?1 AND closed_unix_ms IS NULL",
@@ -245,10 +242,7 @@ impl NotificationStore {
     }
 
     fn close(&self, id: u32, closed_unix_ms: u64, reason: u32) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .expect("notification database poisoned");
+        let connection = self.connection()?;
         connection.execute(
             "UPDATE notifications SET closed_unix_ms = ?2, close_reason = ?3
              WHERE session_id = ?1 AND closed_unix_ms IS NULL",
@@ -258,10 +252,7 @@ impl NotificationStore {
     }
 
     fn clear(&self, closed_unix_ms: u64, reason: u32) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .expect("notification database poisoned");
+        let connection = self.connection()?;
         connection.execute(
             "UPDATE notifications SET closed_unix_ms = ?1, close_reason = ?2
              WHERE closed_unix_ms IS NULL",
@@ -271,10 +262,7 @@ impl NotificationStore {
     }
 
     fn set_dnd(&self, enabled: bool) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .expect("notification database poisoned");
+        let connection = self.connection()?;
         connection.execute(
             "INSERT INTO notification_meta(key, value) VALUES ('dnd', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -288,10 +276,7 @@ impl NotificationStore {
         before_history_id: Option<i64>,
         limit: usize,
     ) -> Result<Vec<HistoryNotification>> {
-        let connection = self
-            .connection
-            .lock()
-            .expect("notification database poisoned");
+        let connection = self.connection()?;
         let before = before_history_id.unwrap_or(i64::MAX);
         let mut statement = connection.prepare(
             "SELECT history_id, payload_json, closed_unix_ms, close_reason
