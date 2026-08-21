@@ -1,72 +1,46 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::Mutex;
-use zbus::{fdo, object_server::SignalEmitter};
+use zbus::{Connection, fdo, object_server::SignalEmitter};
 use zvariant::OwnedValue;
+
+use super::{
+    engine::NotificationEngine,
+    model::{
+        IncomingNotification, NotificationAction, NotificationHints, NotificationSignal,
+        close_reason,
+    },
+};
 
 pub const BUS_NAME: &str = "org.freedesktop.Notifications";
 pub const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
+const INTERFACE: &str = "org.freedesktop.Notifications";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IncomingNotification {
-    pub app_name: String,
-    pub app_icon: String,
-    pub summary: String,
-    pub body: String,
-    pub actions: Vec<String>,
-    pub expire_timeout: i32,
-}
-
-#[derive(Default)]
-struct ServerState {
-    next_id: u32,
-    active: HashMap<u32, IncomingNotification>,
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct NotificationServer {
-    state: Arc<Mutex<ServerState>>,
+    engine: Arc<NotificationEngine>,
 }
 
 impl NotificationServer {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(engine: Arc<NotificationEngine>) -> Self {
+        Self { engine }
     }
 
-    async fn notify_inner(&self, replaces_id: u32, notification: IncomingNotification) -> u32 {
-        let mut state = self.state.lock().await;
-        let id = if replaces_id != 0 && state.active.contains_key(&replaces_id) {
-            replaces_id
-        } else {
-            next_notification_id(&mut state)
-        };
-        state.active.insert(id, notification);
-        id
-    }
-
-    async fn close_inner(&self, id: u32) -> bool {
-        self.state.lock().await.active.remove(&id).is_some()
-    }
-
-    #[cfg(test)]
-    async fn active_count(&self) -> usize {
-        self.state.lock().await.active.len()
-    }
-}
-
-fn next_notification_id(state: &mut ServerState) -> u32 {
-    loop {
-        state.next_id = state.next_id.wrapping_add(1).max(1);
-        if !state.active.contains_key(&state.next_id) {
-            return state.next_id;
-        }
+    pub fn engine(&self) -> Arc<NotificationEngine> {
+        Arc::clone(&self.engine)
     }
 }
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl NotificationServer {
     async fn get_capabilities(&self) -> Vec<String> {
-        vec!["body".into()]
+        vec![
+            "actions".into(),
+            "action-icons".into(),
+            "body".into(),
+            "body-markup".into(),
+            "icon-static".into(),
+            "persistence".into(),
+        ]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -78,7 +52,7 @@ impl NotificationServer {
         summary: &str,
         body: &str,
         actions: Vec<String>,
-        _hints: HashMap<String, OwnedValue>,
+        hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> fdo::Result<u32> {
         if actions.len() % 2 != 0 {
@@ -86,8 +60,15 @@ impl NotificationServer {
                 "notification actions must contain key/label pairs".into(),
             ));
         }
-        Ok(self
-            .notify_inner(
+        let actions = actions
+            .chunks_exact(2)
+            .map(|pair| NotificationAction {
+                key: pair[0].clone(),
+                label: pair[1].clone(),
+            })
+            .collect::<Vec<_>>();
+        self.engine
+            .notify(
                 replaces_id,
                 IncomingNotification {
                     app_name: app_name.into(),
@@ -95,20 +76,16 @@ impl NotificationServer {
                     summary: summary.into(),
                     body: body.into(),
                     actions,
+                    hints: normalize_hints(&hints),
                     expire_timeout,
                 },
             )
-            .await)
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))
     }
 
-    async fn close_notification(
-        &self,
-        id: u32,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> fdo::Result<()> {
-        if self.close_inner(id).await {
-            Self::notification_closed(&emitter, id, 3).await?;
-        }
+    async fn close_notification(&self, id: u32) -> fdo::Result<()> {
+        self.engine.close(id, close_reason::CLOSED_BY_CALL).await;
         Ok(())
     }
 
@@ -143,31 +120,118 @@ impl NotificationServer {
     ) -> zbus::Result<()>;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{IncomingNotification, NotificationServer};
-
-    fn notification(summary: &str) -> IncomingNotification {
-        IncomingNotification {
-            app_name: "test".into(),
-            app_icon: String::new(),
-            summary: summary.into(),
-            body: String::new(),
-            actions: Vec::new(),
-            expire_timeout: -1,
+pub async fn forward_signals(engine: Arc<NotificationEngine>, connection: Connection) {
+    let mut signals = engine.subscribe_signals();
+    loop {
+        let signal = match signals.recv().await {
+            Ok(signal) => signal,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                tracing::warn!(count, "notification D-Bus signal dispatcher lagged");
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        };
+        let result = match signal {
+            NotificationSignal::Closed { id, reason } => {
+                connection
+                    .emit_signal(
+                        None::<()>,
+                        OBJECT_PATH,
+                        INTERFACE,
+                        "NotificationClosed",
+                        &(id, reason),
+                    )
+                    .await
+            }
+            NotificationSignal::ActionInvoked { id, action_key } => {
+                connection
+                    .emit_signal(
+                        None::<()>,
+                        OBJECT_PATH,
+                        INTERFACE,
+                        "ActionInvoked",
+                        &(id, action_key),
+                    )
+                    .await
+            }
+            NotificationSignal::ActivationToken { id, token } => {
+                connection
+                    .emit_signal(
+                        None::<()>,
+                        OBJECT_PATH,
+                        INTERFACE,
+                        "ActivationToken",
+                        &(id, token),
+                    )
+                    .await
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, "notification D-Bus signal could not be emitted");
         }
     }
+}
 
-    #[tokio::test]
-    async fn allocates_and_replaces_active_ids() {
-        let server = NotificationServer::new();
-        let first = server.notify_inner(0, notification("first")).await;
-        let replaced = server
-            .notify_inner(first, notification("replacement"))
-            .await;
-        let second = server.notify_inner(999, notification("second")).await;
-        assert_eq!(first, replaced);
-        assert_ne!(first, second);
-        assert_eq!(server.active_count().await, 2);
+fn normalize_hints(hints: &HashMap<String, OwnedValue>) -> NotificationHints {
+    NotificationHints {
+        urgency: hint_u8(hints, "urgency").unwrap_or(1).min(2),
+        category: hint_string(hints, "category"),
+        desktop_entry: hint_string(hints, "desktop-entry"),
+        image_path: hint_string(hints, "image-path")
+            .or_else_empty(|| hint_string(hints, "image_path")),
+        sound_name: hint_string(hints, "sound-name"),
+        sound_file: hint_string(hints, "sound-file"),
+        resident: hint_bool(hints, "resident"),
+        transient: hint_bool(hints, "transient"),
+        suppress_sound: hint_bool(hints, "suppress-sound"),
+        image_data_present: hints.contains_key("image-data") || hints.contains_key("image_data"),
+    }
+}
+
+trait EmptyStringFallback {
+    fn or_else_empty(self, fallback: impl FnOnce() -> String) -> String;
+}
+
+impl EmptyStringFallback for String {
+    fn or_else_empty(self, fallback: impl FnOnce() -> String) -> String {
+        if self.is_empty() { fallback() } else { self }
+    }
+}
+
+fn hint_string(hints: &HashMap<String, OwnedValue>, key: &str) -> String {
+    hints
+        .get(key)
+        .and_then(|value| <&str>::try_from(value).ok())
+        .unwrap_or_default()
+        .into()
+}
+
+fn hint_bool(hints: &HashMap<String, OwnedValue>, key: &str) -> bool {
+    hints
+        .get(key)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false)
+}
+
+fn hint_u8(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<u8> {
+    hints.get(key).and_then(|value| u8::try_from(value).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use zvariant::OwnedValue;
+
+    use super::normalize_hints;
+
+    #[test]
+    fn normalizes_common_notification_hints() {
+        let mut hints = HashMap::new();
+        hints.insert("urgency".into(), OwnedValue::from(2_u8));
+        hints.insert("resident".into(), OwnedValue::from(true));
+        let normalized = normalize_hints(&hints);
+        assert_eq!(normalized.urgency, 2);
+        assert!(normalized.resident);
     }
 }

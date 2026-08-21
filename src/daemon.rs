@@ -268,6 +268,11 @@ pub async fn run() -> Result<()> {
     };
     let native_notifications = env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
         .is_ok_and(|value| value.eq_ignore_ascii_case("native"));
+    let notification_engine = if native_notifications {
+        Some(notifications::engine::NotificationEngine::new(state.clone()).await)
+    } else {
+        None
+    };
     let builder = connection::Builder::session()
         .context("connect to session D-Bus")?
         .name(BUS_NAME)
@@ -280,16 +285,30 @@ pub async fn run() -> Result<()> {
             .context("claim notification server bus name")?
             .serve_at(
                 notifications::server::OBJECT_PATH,
-                notifications::server::NotificationServer::new(),
+                notifications::server::NotificationServer::new(
+                    notification_engine
+                        .as_ref()
+                        .expect("native notification engine must exist")
+                        .clone(),
+                ),
             )
             .context("export notification server interface")?
     } else {
         builder
     };
-    let _connection = builder
+    let connection = builder
         .build()
         .await
         .context("start bar-daemon D-Bus service")?;
+    let notification_expiry_task = notification_engine
+        .as_ref()
+        .map(|engine| tokio::spawn(Arc::clone(engine).run_expiry()));
+    let notification_signal_task = notification_engine.as_ref().map(|engine| {
+        tokio::spawn(notifications::server::forward_signals(
+            Arc::clone(engine),
+            connection.clone(),
+        ))
+    });
 
     let activity_task = tokio::spawn(activity.monitor());
     let workspace_task = tokio::spawn(hyprland::monitor(state.clone()));
@@ -320,6 +339,12 @@ pub async fn run() -> Result<()> {
     battery_task.abort();
     power_task.abort();
     if let Some(task) = notification_task {
+        task.abort();
+    }
+    if let Some(task) = notification_expiry_task {
+        task.abort();
+    }
+    if let Some(task) = notification_signal_task {
         task.abort();
     }
     update_task.abort();
