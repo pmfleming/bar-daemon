@@ -83,11 +83,14 @@ impl HistoryStore {
         true
     }
 
-    fn state(&self) -> BatteryHistoryState {
+    fn state(&self, include_points: bool) -> BatteryHistoryState {
         BatteryHistoryState {
             retention_days: RETENTION_DAYS,
             last_charge_timestamp_ms: self.last_charge_timestamp_ms,
-            points: self.points.iter().cloned().collect(),
+            latest_timestamp_ms: self.points.back().map_or(0, |point| point.timestamp_ms),
+            points: include_points
+                .then(|| self.points.iter().cloned().collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -120,9 +123,9 @@ impl HistoryStore {
     }
 }
 
-pub(super) fn attach(mut state: BatteryState) -> BatteryState {
+pub(super) fn attach_summary(mut state: BatteryState) -> BatteryState {
     let now_ms = now_milliseconds();
-    let history = HISTORY.get_or_init(|| Mutex::new(HistoryStore::load(history_path(), now_ms)));
+    let history = shared_history(now_ms);
     let mut history = history
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -131,8 +134,22 @@ pub(super) fn attach(mut state: BatteryState) -> BatteryState {
     {
         tracing::warn!(%error, "battery history could not be saved");
     }
-    state.history = history.state();
+    state.history = history.state(false);
     state
+}
+
+pub(super) fn snapshot() -> BatteryHistoryState {
+    let now_ms = now_milliseconds();
+    let history = shared_history(now_ms);
+    let mut history = history
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.prune(now_ms);
+    history.state(true)
+}
+
+fn shared_history(now_ms: u64) -> &'static Mutex<HistoryStore> {
+    HISTORY.get_or_init(|| Mutex::new(HistoryStore::load(history_path(), now_ms)))
 }
 
 fn finite_nonnegative(value: f64) -> f64 {
@@ -198,6 +215,10 @@ mod tests {
         assert_eq!(history.points.len(), 2);
         assert_eq!(history.points[0].time_to_full_seconds, Some(3_600));
         assert_eq!(history.points[1].time_to_full_seconds, None);
+        let summary = history.state(false);
+        assert_eq!(summary.latest_timestamp_ms, 3_000);
+        assert!(summary.points.is_empty());
+        assert_eq!(history.state(true).points.len(), 2);
     }
 
     #[test]

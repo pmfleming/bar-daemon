@@ -7,7 +7,7 @@ The native battery module replaces UPower for bar-daemon's laptop use case. It r
 `battery.changed` and `bar.snapshot` include:
 
 - aggregate charge, charging state, external-power state, power rate, time estimates, health, and cycle count;
-- seven days of 15-minute charge/power/time-to-full samples under `history`, including the start time of the current post-charge session;
+- lightweight history metadata under `history`; full seven-day charge/power/time-to-full samples are fetched on demand with `battery.history` to keep frequent state events small;
 - every present battery under `devices`, with energy and voltage data when the kernel provides it;
 - observed threshold and `charge_behaviour` capabilities;
 - desired protection and alert policy separately from observed hardware values, including whether bar-daemon has taken policy ownership; and
@@ -22,6 +22,7 @@ The defaults are warning at 25%, critical at 12%, full notification enabled, aut
 Send these records to `bar-daemon client`:
 
 ```json
+{"op":"call","id":"history","method":"battery.history","params":{}}
 {"op":"call","id":"thresholds","method":"battery.setThresholds","params":{"battery_id":"BAT0","start_percent":75,"end_percent":80}}
 {"op":"call","id":"protect-off","method":"battery.setProtection","params":{"enabled":false}}
 {"op":"call","id":"protect-on","method":"battery.setProtection","params":{"enabled":true}}

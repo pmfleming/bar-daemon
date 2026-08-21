@@ -32,6 +32,7 @@ pub const METHODS: &[&str] = &[
     "audio.setInputMuted",
     "brightness.adjust",
     "brightness.set",
+    "battery.history",
     "battery.setThresholds",
     "battery.setProtection",
     "battery.chargeOnce",
@@ -88,6 +89,7 @@ pub fn registry() -> Value {
             { "name": "audio.setInputMuted", "params": { "muted": null }, "result": "audio" },
             { "name": "brightness.adjust", "params": { "delta_percent": 5 }, "result": "brightness" },
             { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
+            { "name": "battery.history", "params": {}, "result": "history" },
             { "name": "battery.setThresholds", "params": { "battery_id": "BAT0", "start_percent": 75, "end_percent": 80 }, "result": "battery" },
             { "name": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
             { "name": "battery.chargeOnce", "params": { "battery_id": "BAT0" }, "result": "battery" },
@@ -221,10 +223,7 @@ fn generated_contract_fixture() -> Value {
                 }],
                 "history": {
                     "retention_days": 7, "last_charge_timestamp_ms": 1768464000000_u64,
-                    "points": [
-                        { "timestamp_ms": 1768464000000_u64, "percentage": 82, "power_watts": 7.8, "time_to_full_seconds": null, "charging": false, "plugged": false },
-                        { "timestamp_ms": 1768464900000_u64, "percentage": 80, "power_watts": 8.2, "time_to_full_seconds": null, "charging": false, "plugged": false }
-                    ]
+                    "latest_timestamp_ms": 1768464900000_u64, "points": []
                 },
                 "error": null
             },

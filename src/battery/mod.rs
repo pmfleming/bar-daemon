@@ -42,9 +42,13 @@ pub async fn refresh_state(store: &StateStore) -> Result<BatteryState> {
     let state = tokio::task::spawn_blocking(|| sysfs::PowerSupplyFs::system().read_state())
         .await
         .context("join battery state refresh")??;
-    let state = history::attach(decorate_from_disk(state).await);
+    let state = history::attach_summary(decorate_from_disk(state).await);
     store.update_battery(state.clone()).await;
     Ok(state)
+}
+
+pub(crate) fn history_snapshot() -> crate::model::BatteryHistoryState {
+    history::snapshot()
 }
 
 pub async fn monitor(store: StateStore, notifications: NotificationSink) {
@@ -607,7 +611,7 @@ async fn publish(
     alerts: &mut AlertTracker,
     notifications: &NotificationSink,
 ) {
-    let state = history::attach(state);
+    let state = history::attach_summary(state);
     if let Some(alert) = alerts.observe(&state, state.policy.notify_when_full) {
         tokio::spawn(send_notification(alert, notifications.clone()));
     }

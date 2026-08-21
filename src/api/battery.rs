@@ -5,6 +5,10 @@ use crate::battery::{self, config};
 use super::{ApiService, error, success};
 
 impl ApiService {
+    pub(super) fn battery_history(&self) -> Value {
+        success(json!({ "history": battery::history_snapshot() }))
+    }
+
     pub(super) async fn battery_set_thresholds(&self, params: Value) -> Value {
         let Some(battery_id) = params.get("battery_id").and_then(Value::as_str) else {
             return error(

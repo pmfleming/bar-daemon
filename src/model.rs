@@ -158,6 +158,7 @@ pub struct BatteryState {
 pub struct BatteryHistoryState {
     pub retention_days: u8,
     pub last_charge_timestamp_ms: u64,
+    pub latest_timestamp_ms: u64,
     pub points: Vec<BatteryHistoryPoint>,
 }
 

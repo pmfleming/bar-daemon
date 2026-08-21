@@ -68,6 +68,7 @@ impl ApiService {
             "audio.setInputMuted" => self.audio_set_input_muted(params).await,
             "brightness.adjust" => self.brightness_adjust(params).await,
             "brightness.set" => self.brightness_set(params).await,
+            "battery.history" => self.battery_history(),
             "battery.setThresholds" => self.battery_set_thresholds(params).await,
             "battery.setProtection" => self.battery_set_protection(params).await,
             "battery.chargeOnce" => self.battery_charge_once(params).await,

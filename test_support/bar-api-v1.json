@@ -97,6 +97,11 @@
         "result": "brightness"
       },
       {
+        "name": "battery.history",
+        "params": {},
+        "result": "history"
+      },
+      {
         "name": "battery.setThresholds",
         "params": {
           "battery_id": "BAT0",
@@ -499,24 +504,8 @@
       "history": {
         "retention_days": 7,
         "last_charge_timestamp_ms": 1768464000000,
-        "points": [
-          {
-            "timestamp_ms": 1768464000000,
-            "percentage": 82,
-            "power_watts": 7.8,
-            "time_to_full_seconds": null,
-            "charging": false,
-            "plugged": false
-          },
-          {
-            "timestamp_ms": 1768464900000,
-            "percentage": 80,
-            "power_watts": 8.2,
-            "time_to_full_seconds": null,
-            "charging": false,
-            "plugged": false
-          }
-        ]
+        "points": [],
+        "latest_timestamp_ms": 1768464900000
       }
     },
     "brightness": {
