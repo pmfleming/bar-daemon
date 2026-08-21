@@ -35,12 +35,49 @@ fuzz_seconds = 30
 sanitizers = [] # address, leak, memory, or thread
 miri = false
 
-# Optional Cargo-qualified architecture constraints:
-# [[architecture.rules]]
-# id = "domain-does-not-use-infrastructure"
-# from = ["app::lib::domain::**"]
-# deny = ["app::lib::infrastructure::**"]
-# level = "error"
+# Cargo-qualified architecture constraints keep protocol and domain code
+# independent from transport orchestration.
+[[architecture.rules]]
+id = "protocol-does-not-depend-on-api"
+from = ["bar-daemon::shared::protocol"]
+deny = ["bar-daemon::shared::api", "bar-daemon::shared::api::**"]
+level = "error"
+
+[[architecture.rules]]
+id = "domains-do-not-depend-on-transport"
+from = [
+  "bar-daemon::shared::activity::**",
+  "bar-daemon::shared::audio",
+  "bar-daemon::shared::battery::**",
+  "bar-daemon::shared::brightness",
+  "bar-daemon::shared::hyprland",
+  "bar-daemon::shared::media",
+  "bar-daemon::shared::power",
+  "bar-daemon::shared::timezone",
+  "bar-daemon::shared::updates",
+]
+deny = [
+  "bar-daemon::shared::api",
+  "bar-daemon::shared::api::**",
+  "bar-daemon::shared::daemon",
+  "bar-daemon::shared::daemon::**",
+  "bar-daemon::shared::client",
+]
+level = "error"
+
+[[architecture.rules]]
+id = "state-does-not-depend-on-effects"
+from = ["bar-daemon::shared::state"]
+deny = [
+  "bar-daemon::shared::audio",
+  "bar-daemon::shared::battery::**",
+  "bar-daemon::shared::brightness",
+  "bar-daemon::shared::hyprland",
+  "bar-daemon::shared::media",
+  "bar-daemon::shared::power",
+  "bar-daemon::shared::updates",
+]
+level = "error"
 
 # Stable rule limits prevent new findings while allowing an explicit baseline:
 # [policy.rules."rust.reliability.expect"]
