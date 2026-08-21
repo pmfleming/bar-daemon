@@ -23,18 +23,18 @@
       {
         "name": "todos.create",
         "params": {
-          "title": "Plan release",
-          "due_unix_ms": null,
           "due_date": "2026-01-20",
-          "priority": 3
+          "due_unix_ms": null,
+          "priority": 3,
+          "title": "Plan release"
         },
         "result": "todo"
       },
       {
         "name": "todos.complete",
         "params": {
-          "id": "local-1",
-          "completed": true
+          "completed": true,
+          "id": "local-1"
         },
         "result": "todo"
       },
@@ -114,6 +114,50 @@
         "result": "operation"
       },
       {
+        "name": "notifications.setDnd",
+        "params": {
+          "enabled": true
+        },
+        "result": "notifications"
+      },
+      {
+        "name": "notifications.list",
+        "params": {
+          "before_history_id": null,
+          "limit": 50
+        },
+        "result": "notification_history"
+      },
+      {
+        "name": "notifications.dismiss",
+        "params": {
+          "id": 1
+        },
+        "result": "operation"
+      },
+      {
+        "name": "notifications.clear",
+        "params": {},
+        "result": "operation"
+      },
+      {
+        "name": "notifications.invokeAction",
+        "params": {
+          "action_key": "default",
+          "activation_token": null,
+          "id": 1
+        },
+        "result": "operation"
+      },
+      {
+        "name": "notifications.reply",
+        "params": {
+          "id": 1,
+          "text": "Reply"
+        },
+        "result": "operation"
+      },
+      {
         "name": "updates.refresh",
         "params": {},
         "result": "updates"
@@ -122,12 +166,12 @@
     "protocol": "bar-api",
     "streams": [
       {
-        "name": "activity.changed",
         "events": [
           "subscribed",
           "changed",
           "lagged"
-        ]
+        ],
+        "name": "activity.changed"
       },
       {
         "events": [
@@ -184,6 +228,14 @@
           "lagged"
         ],
         "name": "notifications.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "notifications.active.changed"
       },
       {
         "events": [
@@ -317,7 +369,9 @@
       "error": null,
       "inhibited": false,
       "text": "1",
-      "tooltip": "1 Notification"
+      "tooltip": "1 Notification",
+      "backend": "native",
+      "history_revision": 1
     },
     "power_profile": {
       "available": true,
@@ -390,6 +444,42 @@
         "fullscreen": false,
         "floating": false
       }
+    },
+    "notification_active": {
+      "available": true,
+      "revision": 1,
+      "notifications": [
+        {
+          "id": 1,
+          "app_name": "Calendar",
+          "app_icon": "calendar",
+          "summary": "Planning",
+          "body": "Meeting starts soon",
+          "actions": [
+            {
+              "key": "default",
+              "label": "Open"
+            }
+          ],
+          "hints": {
+            "urgency": 1,
+            "category": "calendar",
+            "desktop_entry": "calendar",
+            "image_path": "",
+            "sound_name": "",
+            "sound_file": "",
+            "resident": false,
+            "transient": false,
+            "suppress_sound": false,
+            "image_data_present": false
+          },
+          "created_unix_ms": 1768463900000,
+          "updated_unix_ms": 1768463900000,
+          "expires_unix_ms": 1768463905000,
+          "group_key": "calendar"
+        }
+      ],
+      "error": null
     }
   },
   "version": 1

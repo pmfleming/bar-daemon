@@ -11,6 +11,7 @@ pub mod stream {
     pub const BATTERY: &str = "battery.changed";
     pub const POWER_PROFILE: &str = "power-profile.changed";
     pub const NOTIFICATIONS: &str = "notifications.changed";
+    pub const NOTIFICATION_ACTIVE: &str = "notifications.active.changed";
     pub const UPDATES: &str = "updates.changed";
     pub const TIMEZONE: &str = "timezone.changed";
 }
@@ -32,6 +33,12 @@ pub const METHODS: &[&str] = &[
     "powerProfile.set",
     "notifications.togglePanel",
     "notifications.toggleDnd",
+    "notifications.setDnd",
+    "notifications.list",
+    "notifications.dismiss",
+    "notifications.clear",
+    "notifications.invokeAction",
+    "notifications.reply",
     "updates.refresh",
 ];
 pub const STREAMS: &[&str] = &[
@@ -43,6 +50,7 @@ pub const STREAMS: &[&str] = &[
     stream::BATTERY,
     stream::POWER_PROFILE,
     stream::NOTIFICATIONS,
+    stream::NOTIFICATION_ACTIVE,
     stream::UPDATES,
     stream::TIMEZONE,
 ];
@@ -68,6 +76,12 @@ pub fn registry() -> Value {
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
+            { "name": "notifications.setDnd", "params": { "enabled": true }, "result": "notifications" },
+            { "name": "notifications.list", "params": { "before_history_id": null, "limit": 50 }, "result": "notification_history" },
+            { "name": "notifications.dismiss", "params": { "id": 1 }, "result": "operation" },
+            { "name": "notifications.clear", "params": {}, "result": "operation" },
+            { "name": "notifications.invokeAction", "params": { "id": 1, "action_key": "default", "activation_token": null }, "result": "operation" },
+            { "name": "notifications.reply", "params": { "id": 1, "text": "Reply" }, "result": "operation" },
             { "name": "updates.refresh", "params": {}, "result": "updates" }
         ],
         "streams": [
@@ -79,6 +93,7 @@ pub fn registry() -> Value {
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::NOTIFICATION_ACTIVE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::TIMEZONE, "events": ["subscribed", "changed", "lagged"] }
         ]
@@ -153,7 +168,23 @@ fn generated_contract_fixture() -> Value {
             },
             "notifications": {
                 "available": true, "count": 1, "dnd": false, "inhibited": false, "text": "1",
-                "tooltip": "1 Notification", "alt": "notification", "class_name": "notification", "error": null
+                "tooltip": "1 Notification", "alt": "notification", "class_name": "notification",
+                "backend": "native", "history_revision": 1, "error": null
+            },
+            "notification_active": {
+                "available": true, "revision": 1,
+                "notifications": [{
+                    "id": 1, "app_name": "Calendar", "app_icon": "calendar", "summary": "Planning",
+                    "body": "Meeting starts soon", "actions": [{ "key": "default", "label": "Open" }],
+                    "hints": {
+                        "urgency": 1, "category": "calendar", "desktop_entry": "calendar", "image_path": "",
+                        "sound_name": "", "sound_file": "", "resident": false, "transient": false,
+                        "suppress_sound": false, "image_data_present": false
+                    },
+                    "created_unix_ms": 1768463900000_u64, "updated_unix_ms": 1768463900000_u64,
+                    "expires_unix_ms": 1768463905000_u64, "group_key": "calendar"
+                }],
+                "error": null
             },
             "updates": {
                 "available": true, "ready": true,

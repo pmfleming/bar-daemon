@@ -6,7 +6,8 @@ use tokio::sync::{RwLock, broadcast};
 
 use crate::model::{
     ActivityState, AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState,
-    NotificationState, PowerProfileState, TimezoneState, UpdateState, WorkspaceState,
+    NotificationActiveState, NotificationState, PowerProfileState, TimezoneState, UpdateState,
+    WorkspaceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -84,6 +85,16 @@ impl StateStore {
         snapshot.updates = value.clone();
         drop(snapshot);
         self.emit(crate::protocol::stream::UPDATES, value);
+    }
+
+    pub async fn update_notification_active(&self, value: NotificationActiveState) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.notification_active == value {
+            return;
+        }
+        snapshot.notification_active = value.clone();
+        drop(snapshot);
+        self.emit(crate::protocol::stream::NOTIFICATION_ACTIVE, value);
     }
 
     pub async fn update_notifications(&self, value: NotificationState) {

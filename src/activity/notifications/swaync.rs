@@ -104,6 +104,8 @@ fn parse_status(line: &str) -> Result<NotificationState> {
         tooltip: status.tooltip,
         alt: status.alt,
         class_name: status.class_name,
+        backend: "swaync".into(),
+        history_revision: 0,
         error: None,
     })
 }

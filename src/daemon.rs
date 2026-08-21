@@ -197,6 +197,9 @@ fn initial_stream_data(stream: &str, snapshot: &crate::model::BarSnapshot) -> Va
         protocol::stream::NOTIFICATIONS => {
             serde_json::to_value(&snapshot.notifications).unwrap_or(Value::Null)
         }
+        protocol::stream::NOTIFICATION_ACTIVE => {
+            serde_json::to_value(&snapshot.notification_active).unwrap_or(Value::Null)
+        }
         protocol::stream::UPDATES => serde_json::to_value(&snapshot.updates).unwrap_or(Value::Null),
         protocol::stream::TIMEZONE => {
             serde_json::to_value(&snapshot.timezone).unwrap_or(Value::Null)
@@ -257,15 +260,6 @@ async fn wait_for_owner_loss(connection: zbus::Connection, owner: String) {
 
 pub async fn run() -> Result<()> {
     let state = StateStore::default();
-    let activity = ActivityService::new(state.clone()).await;
-    let api = ApiService::new(state.clone(), Arc::clone(&activity));
-    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let daemon = BarDaemon {
-        api,
-        state: state.clone(),
-        sequence: AtomicU64::new(1),
-        subscriptions: Arc::clone(&subscriptions),
-    };
     let native_notifications = env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
         .is_ok_and(|value| value.eq_ignore_ascii_case("native"));
     let notification_engine = if native_notifications {
@@ -279,6 +273,19 @@ pub async fn run() -> Result<()> {
         )
     } else {
         None
+    };
+    let activity = ActivityService::new(state.clone()).await;
+    let api = ApiService::new(
+        state.clone(),
+        Arc::clone(&activity),
+        notification_engine.clone(),
+    );
+    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+    let daemon = BarDaemon {
+        api,
+        state: state.clone(),
+        sequence: AtomicU64::new(1),
+        subscriptions: Arc::clone(&subscriptions),
     };
     let builder = connection::Builder::session()
         .context("connect to session D-Bus")?

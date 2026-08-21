@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::{
+    activity::notifications::engine::NotificationEngine,
     activity::{ActivityService, notifications},
     audio, brightness,
     hyprland::HyprlandClient,
@@ -38,16 +39,22 @@ pub struct ApiService {
     hyprland: Arc<HyprlandClient>,
     audio_effects: Arc<Mutex<()>>,
     brightness_effects: Arc<Mutex<()>>,
+    notifications: Option<Arc<NotificationEngine>>,
 }
 
 impl ApiService {
-    pub fn new(state: StateStore, activity: Arc<ActivityService>) -> Self {
+    pub fn new(
+        state: StateStore,
+        activity: Arc<ActivityService>,
+        notifications: Option<Arc<NotificationEngine>>,
+    ) -> Self {
         Self {
             state,
             activity,
             hyprland: Arc::new(HyprlandClient::default()),
             audio_effects: Arc::new(Mutex::new(())),
             brightness_effects: Arc::new(Mutex::new(())),
+            notifications,
         }
     }
 
@@ -69,6 +76,12 @@ impl ApiService {
             "powerProfile.set" => self.power_profile_set(params).await,
             "notifications.togglePanel" => self.notification_action(false).await,
             "notifications.toggleDnd" => self.notification_action(true).await,
+            "notifications.setDnd" => self.notification_set_dnd(params).await,
+            "notifications.list" => self.notification_list(params).await,
+            "notifications.dismiss" => self.notification_dismiss(params).await,
+            "notifications.clear" => self.notification_clear().await,
+            "notifications.invokeAction" => self.notification_invoke_action(params).await,
+            "notifications.reply" => self.notification_reply(params).await,
             "updates.refresh" => self.updates_refresh().await,
             _ => error(
                 "unsupported-method",
@@ -163,6 +176,13 @@ impl ApiService {
     }
 
     async fn notification_action(&self, dnd: bool) -> Value {
+        if let Some(notifications) = &self.notifications {
+            if dnd {
+                let enabled = notifications.toggle_dnd().await;
+                return success(json!({ "operation": "toggle-dnd", "enabled": enabled }));
+            }
+            return success(json!({ "operation": "history-owned-by-client" }));
+        }
         let result = if dnd {
             notifications::toggle_dnd().await
         } else {
@@ -173,6 +193,141 @@ impl ApiService {
                 success(json!({ "operation": if dnd { "toggle-dnd" } else { "toggle-panel" } }))
             }
             Err(error_value) => error("notification-operation-failed", error_value.to_string()),
+        }
+    }
+
+    async fn notification_set_dnd(&self, params: Value) -> Value {
+        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
+            return error("validation-error", "notifications.setDnd requires enabled");
+        };
+        let Some(notifications) = &self.notifications else {
+            return error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            );
+        };
+        notifications.set_dnd(enabled).await;
+        success(json!({ "notifications": self.state.snapshot().await.notifications }))
+    }
+
+    async fn notification_list(&self, params: Value) -> Value {
+        let Some(notifications) = &self.notifications else {
+            return error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            );
+        };
+        let before = match params.get("before_history_id") {
+            None | Some(Value::Null) => None,
+            Some(value) => match value.as_i64() {
+                Some(value) if value > 0 => Some(value),
+                _ => {
+                    return error(
+                        "validation-error",
+                        "before_history_id must be positive or null",
+                    );
+                }
+            },
+        };
+        let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50);
+        let Ok(limit) = usize::try_from(limit.min(200)) else {
+            return error("validation-error", "notification history limit is invalid");
+        };
+        match notifications.history(before, limit).await {
+            Ok(history) => success(json!({ "notification_history": history })),
+            Err(error_value) => error("notification-history-failed", error_value.to_string()),
+        }
+    }
+
+    async fn notification_dismiss(&self, params: Value) -> Value {
+        let Some(id) = notification_id(&params) else {
+            return error(
+                "validation-error",
+                "notifications.dismiss requires a positive id",
+            );
+        };
+        let Some(notifications) = &self.notifications else {
+            return error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            );
+        };
+        if notifications.dismiss(id).await {
+            success(json!({ "operation": "dismiss", "id": id }))
+        } else {
+            error(
+                "notification-not-found",
+                format!("notification {id} is not active"),
+            )
+        }
+    }
+
+    async fn notification_clear(&self) -> Value {
+        let Some(notifications) = &self.notifications else {
+            return error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            );
+        };
+        success(json!({ "operation": "clear", "closed": notifications.clear().await }))
+    }
+
+    async fn notification_invoke_action(&self, params: Value) -> Value {
+        let Some(id) = notification_id(&params) else {
+            return error(
+                "validation-error",
+                "notifications.invokeAction requires a positive id",
+            );
+        };
+        let Some(action_key) = params.get("action_key").and_then(Value::as_str) else {
+            return error(
+                "validation-error",
+                "notifications.invokeAction requires action_key",
+            );
+        };
+        let token = params
+            .get("activation_token")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let Some(notifications) = &self.notifications else {
+            return error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            );
+        };
+        if notifications.invoke_action(id, action_key, token).await {
+            success(json!({ "operation": "invoke-action", "id": id, "action_key": action_key }))
+        } else {
+            error(
+                "notification-action-not-found",
+                "notification or action is unavailable",
+            )
+        }
+    }
+
+    async fn notification_reply(&self, params: Value) -> Value {
+        let Some(id) = notification_id(&params) else {
+            return error(
+                "validation-error",
+                "notifications.reply requires a positive id",
+            );
+        };
+        let Some(text) = params.get("text").and_then(Value::as_str) else {
+            return error("validation-error", "notifications.reply requires text");
+        };
+        let Some(notifications) = &self.notifications else {
+            return error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            );
+        };
+        if notifications.reply(id, text).await {
+            success(json!({ "operation": "reply", "id": id }))
+        } else {
+            error(
+                "notification-not-found",
+                format!("notification {id} is not active"),
+            )
         }
     }
 
@@ -328,17 +483,46 @@ impl ApiService {
     }
 }
 
+fn notification_id(params: &Value) -> Option<u32> {
+    params
+        .get("id")
+        .and_then(Value::as_u64)
+        .and_then(|id| u32::try_from(id).ok())
+        .filter(|id| *id > 0)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use serde_json::json;
 
     use super::ApiService;
-    use crate::{activity::ActivityService, state::StateStore};
+    use crate::{
+        activity::{
+            ActivityService,
+            notifications::{
+                engine::NotificationEngine,
+                model::{IncomingNotification, NotificationHints},
+            },
+        },
+        state::StateStore,
+    };
 
     async fn api() -> ApiService {
         let state = StateStore::default();
         let activity = ActivityService::new(state.clone()).await;
-        ApiService::new(state, activity)
+        ApiService::new(state, activity, None)
+    }
+
+    async fn native_api() -> (ApiService, Arc<NotificationEngine>) {
+        let state = StateStore::default();
+        let activity = ActivityService::new(state.clone()).await;
+        let notifications = NotificationEngine::new(state.clone()).await;
+        (
+            ApiService::new(state, activity, Some(Arc::clone(&notifications))),
+            notifications,
+        )
     }
 
     #[tokio::test]
@@ -355,6 +539,35 @@ mod tests {
         assert_eq!(response["protocol"], "bar-api");
         assert_eq!(response["version"], 1);
         assert_eq!(response["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn controls_native_notifications() {
+        let (api, notifications) = native_api().await;
+        let id = notifications
+            .notify(
+                0,
+                IncomingNotification {
+                    app_name: "test".into(),
+                    app_icon: String::new(),
+                    summary: "summary".into(),
+                    body: String::new(),
+                    actions: Vec::new(),
+                    hints: NotificationHints::default(),
+                    expire_timeout: 0,
+                },
+            )
+            .await
+            .unwrap();
+        let dnd = api
+            .dispatch("notifications.setDnd", json!({ "enabled": true }))
+            .await;
+        assert_eq!(dnd["data"]["notifications"]["dnd"], true);
+        let dismissed = api
+            .dispatch("notifications.dismiss", json!({ "id": id }))
+            .await;
+        assert_eq!(dismissed["ok"], true);
+        assert!(notifications.active().await.is_empty());
     }
 
     #[tokio::test]

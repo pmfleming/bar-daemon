@@ -101,6 +101,7 @@ pub enum NotificationSignal {
     Closed { id: u32, reason: u32 },
     ActionInvoked { id: u32, action_key: String },
     ActivationToken { id: u32, token: String },
+    Replied { id: u32, text: String },
 }
 
 pub mod close_reason {

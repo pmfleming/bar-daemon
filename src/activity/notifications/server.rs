@@ -39,6 +39,7 @@ impl NotificationServer {
             "body".into(),
             "body-markup".into(),
             "icon-static".into(),
+            "inline-reply".into(),
             "persistence".into(),
         ]
     }
@@ -113,6 +114,13 @@ impl NotificationServer {
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
+    pub async fn notification_replied(
+        emitter: &SignalEmitter<'_>,
+        id: u32,
+        text: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
     pub async fn activation_token(
         emitter: &SignalEmitter<'_>,
         id: u32,
@@ -162,6 +170,17 @@ pub async fn forward_signals(engine: Arc<NotificationEngine>, connection: Connec
                         INTERFACE,
                         "ActivationToken",
                         &(id, token),
+                    )
+                    .await
+            }
+            NotificationSignal::Replied { id, text } => {
+                connection
+                    .emit_signal(
+                        None::<()>,
+                        OBJECT_PATH,
+                        INTERFACE,
+                        "NotificationReplied",
+                        &(id, text),
                     )
                     .await
             }

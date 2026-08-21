@@ -39,6 +39,12 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `powerProfile.set`
 - `notifications.togglePanel`
 - `notifications.toggleDnd`
+- `notifications.setDnd`
+- `notifications.list`
+- `notifications.dismiss`
+- `notifications.clear`
+- `notifications.invokeAction`
+- `notifications.reply`
 - `updates.refresh`
 
 `activity.queryRange` requires integer `from_unix_ms` and `to_unix_ms` values and is bounded to 370 days. Todo creation accepts `title`, optional `due_unix_ms`, optional local `due_date` (`YYYY-MM-DD`), and priority 0–9.
@@ -55,10 +61,13 @@ Run `bar-daemon debug protocol-registry` for canonical parameter examples. `medi
 - `battery.changed`
 - `power-profile.changed`
 - `notifications.changed`
+- `notifications.active.changed`
 - `updates.changed`
 - `timezone.changed`
 
 `activity.changed` is a compact summary containing source health, counts, next event, and world-clock metadata. Clients query event/todo collections with `activity.queryRange`; large collections are intentionally excluded from `BarSnapshot`.
+
+In native mode, `notifications.changed` carries compact count, DND, backend, and history-revision state. `notifications.active.changed` carries the complete bounded active notification collection so clients can recover after lag. History is paginated with `notifications.list` using an optional `before_history_id` cursor and a maximum limit of 200.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::activity::notifications::model::ActiveNotification;
+
 pub use crate::activity::model::{
     ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, TodoItem, WorldClockState,
 };
@@ -14,6 +16,7 @@ pub struct BarSnapshot {
     pub battery: BatteryState,
     pub power_profile: PowerProfileState,
     pub notifications: NotificationState,
+    pub notification_active: NotificationActiveState,
     pub updates: UpdateState,
     pub timezone: TimezoneState,
 }
@@ -49,6 +52,14 @@ pub struct UpdateLane {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotificationActiveState {
+    pub available: bool,
+    pub revision: u64,
+    pub notifications: Vec<ActiveNotification>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NotificationState {
     pub available: bool,
     pub count: u32,
@@ -58,6 +69,8 @@ pub struct NotificationState {
     pub tooltip: String,
     pub alt: String,
     pub class_name: String,
+    pub backend: String,
+    pub history_revision: u64,
     pub error: Option<String>,
 }
 

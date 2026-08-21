@@ -11,7 +11,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use tokio::sync::{Mutex, Notify, Semaphore, broadcast};
 
-use crate::{model::NotificationState, state::StateStore};
+use crate::{
+    model::{NotificationActiveState, NotificationState},
+    state::StateStore,
+};
 
 use super::{
     model::{
@@ -248,6 +251,17 @@ impl NotificationEngine {
         }
     }
 
+    pub async fn reply(&self, id: u32, text: &str) -> bool {
+        if text.is_empty() || !self.data.lock().await.active.contains_key(&id) {
+            return false;
+        }
+        self.emit(NotificationSignal::Replied {
+            id,
+            text: text.into(),
+        });
+        true
+    }
+
     pub async fn invoke_action(&self, id: u32, action_key: &str, token: Option<String>) -> bool {
         let resident = {
             let data = self.data.lock().await;
@@ -337,36 +351,43 @@ impl NotificationEngine {
     }
 
     async fn publish_summary(&self) {
-        let data = self.data.lock().await;
-        let count = data.active.len().try_into().unwrap_or(u32::MAX);
-        let noun = if count == 1 {
-            "Notification"
-        } else {
-            "Notifications"
+        let (summary, active) = {
+            let data = self.data.lock().await;
+            let count = data.active.len().try_into().unwrap_or(u32::MAX);
+            let noun = if count == 1 {
+                "Notification"
+            } else {
+                "Notifications"
+            };
+            let class_name = if data.dnd {
+                "dnd-notification"
+            } else {
+                "notification"
+            };
+            (
+                NotificationState {
+                    available: true,
+                    count,
+                    dnd: data.dnd,
+                    inhibited: false,
+                    text: count.to_string(),
+                    tooltip: format!("{count} {noun}"),
+                    alt: class_name.into(),
+                    class_name: class_name.into(),
+                    backend: "native".into(),
+                    history_revision: data.history_revision,
+                    error: None,
+                },
+                NotificationActiveState {
+                    available: true,
+                    revision: data.history_revision,
+                    notifications: data.active.values().cloned().collect(),
+                    error: None,
+                },
+            )
         };
-        self.state
-            .update_notifications(NotificationState {
-                available: true,
-                count,
-                dnd: data.dnd,
-                inhibited: false,
-                text: count.to_string(),
-                tooltip: format!("{count} {noun}"),
-                alt: if data.dnd {
-                    "dnd-notification"
-                } else {
-                    "notification"
-                }
-                .into(),
-                class_name: if data.dnd {
-                    "dnd-notification"
-                } else {
-                    "notification"
-                }
-                .into(),
-                error: None,
-            })
-            .await;
+        self.state.update_notifications(summary).await;
+        self.state.update_notification_active(active).await;
     }
 }
 
