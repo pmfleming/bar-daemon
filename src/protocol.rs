@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
-use crate::api::VERSION;
+pub const NAME: &str = "bar-api";
+pub const VERSION: u8 = 1;
 
 pub mod stream {
     pub const ACTIVITY: &str = "activity.changed";
@@ -57,7 +58,7 @@ pub const STREAMS: &[&str] = &[
 
 pub fn registry() -> Value {
     json!({
-        "protocol": "bar-api",
+        "protocol": NAME,
         "version": VERSION,
         "methods": [
             { "name": "bar.snapshot", "params": {}, "result": "snapshot" },
@@ -103,7 +104,7 @@ pub fn registry() -> Value {
 #[cfg(test)]
 fn generated_contract_fixture() -> Value {
     json!({
-        "protocol": "bar-api",
+        "protocol": NAME,
         "version": VERSION,
         "registry": registry(),
         "snapshot": {
