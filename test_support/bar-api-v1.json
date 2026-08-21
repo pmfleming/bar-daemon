@@ -108,13 +108,16 @@
       {
         "name": "battery.setProtection",
         "params": {
+          "battery_id": "BAT0",
           "enabled": true
         },
         "result": "battery"
       },
       {
         "name": "battery.chargeOnce",
-        "params": {},
+        "params": {
+          "battery_id": "BAT0"
+        },
         "result": "battery"
       },
       {

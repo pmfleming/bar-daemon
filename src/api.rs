@@ -70,7 +70,7 @@ impl ApiService {
             "brightness.set" => self.brightness_set(params).await,
             "battery.setThresholds" => self.battery_set_thresholds(params).await,
             "battery.setProtection" => self.battery_set_protection(params).await,
-            "battery.chargeOnce" => self.battery_charge_once().await,
+            "battery.chargeOnce" => self.battery_charge_once(params).await,
             "battery.setAlertPolicy" => self.battery_set_alert_policy(params).await,
             "powerProfile.set" => Self::power_profile_set(params).await,
             "powerProfile.setBatteryAware" => Self::power_profile_set_battery_aware(params).await,

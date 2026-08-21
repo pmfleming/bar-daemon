@@ -52,7 +52,7 @@ impl ApiService {
         let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
             return error("validation-error", "battery.setProtection requires enabled");
         };
-        let battery_id = match primary_battery_id(&self.state).await {
+        let battery_id = match requested_battery_id(&params, &self.state).await {
             Ok(id) => id,
             Err(response) => return response,
         };
@@ -76,7 +76,7 @@ impl ApiService {
             .await
     }
 
-    pub(super) async fn battery_charge_once(&self) -> Value {
+    pub(super) async fn battery_charge_once(&self, params: Value) -> Value {
         let snapshot = self.state.snapshot().await.battery;
         if !snapshot.plugged {
             return error(
@@ -84,10 +84,22 @@ impl ApiService {
                 "battery.chargeOnce requires external power",
             );
         }
-        let Some(device) = snapshot.devices.first() else {
+        let requested_id = params.get("battery_id").and_then(Value::as_str);
+        let device = requested_id
+            .and_then(|id| snapshot.devices.iter().find(|device| device.id == id))
+            .or_else(|| {
+                requested_id
+                    .is_none()
+                    .then(|| snapshot.devices.first())
+                    .flatten()
+            });
+        let Some(device) = device else {
             return error(
                 "battery-unavailable",
-                "no controllable system battery is available",
+                requested_id.map_or_else(
+                    || "no controllable system battery is available".into(),
+                    |id| format!("battery {id} is unavailable"),
+                ),
             );
         };
         let battery_id = device.id.clone();
@@ -250,6 +262,31 @@ async fn primary_battery_id(state: &crate::state::StateStore) -> Result<String, 
                 "no controllable system battery is available",
             )
         })
+}
+
+async fn requested_battery_id(
+    params: &Value,
+    state: &crate::state::StateStore,
+) -> Result<String, Value> {
+    if let Some(value) = params.get("battery_id") {
+        let Some(battery_id) = value.as_str() else {
+            return Err(error("validation-error", "battery_id must be a string"));
+        };
+        let available = state
+            .snapshot()
+            .await
+            .battery
+            .devices
+            .iter()
+            .any(|device| device.id == battery_id);
+        return available.then(|| battery_id.to_string()).ok_or_else(|| {
+            error(
+                "battery-unavailable",
+                format!("battery {battery_id} is unavailable"),
+            )
+        });
+    }
+    primary_battery_id(state).await
 }
 
 #[cfg(test)]
