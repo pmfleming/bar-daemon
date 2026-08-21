@@ -1,0 +1,22 @@
+[Unit]
+Description=Privileged ThinkPad battery threshold helper
+Documentation=https://github.com/pmfleming/bar-daemon
+
+[Service]
+Type=dbus
+BusName=org.laufan.BarBatteryHelper
+ExecStart=@out@/bin/bar-battery-helper
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/sys/class/power_supply
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

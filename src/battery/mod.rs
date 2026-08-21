@@ -20,6 +20,8 @@ mod policy;
 mod sysfs;
 mod upower;
 
+pub mod helper;
+
 use policy::{AlertTracker, send_notification};
 
 pub(crate) const WARNING_PERCENT: u8 = 25;

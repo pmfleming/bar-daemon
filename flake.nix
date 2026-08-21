@@ -29,8 +29,17 @@
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service
               install -Dm644 ${./packaging/dbus/org.freedesktop.Notifications.service} \
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service
+              install -Dm644 ${./packaging/systemd/bar-battery-helper.service} \
+                $out/lib/systemd/system/bar-battery-helper.service
+              install -Dm644 ${./packaging/dbus/org.laufan.BarBatteryHelper.service} \
+                $out/share/dbus-1/system-services/org.laufan.BarBatteryHelper.service
+              install -Dm644 ${./packaging/dbus/org.laufan.BarBatteryHelper.conf} \
+                $out/share/dbus-1/system.d/org.laufan.BarBatteryHelper.conf
+              install -Dm644 ${./packaging/polkit/org.laufan.bar-daemon.policy} \
+                $out/share/polkit-1/actions/org.laufan.bar-daemon.policy
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
+                $out/lib/systemd/system/bar-battery-helper.service \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service \
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service \
                 --replace-fail @out@ $out
@@ -50,6 +59,18 @@
           program = "${self.packages.${system}.default}/bin/bar-daemon";
         };
       });
+
+      nixosModules.default = { config, lib, pkgs, ... }:
+        let cfg = config.services.bar-daemon;
+        in {
+          options.services.bar-daemon.enable = lib.mkEnableOption "bar-daemon services";
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ self.packages.${pkgs.system}.default ];
+            services.dbus.packages = [ self.packages.${pkgs.system}.default ];
+            security.polkit.enable = true;
+            systemd.packages = [ self.packages.${pkgs.system}.default ];
+          };
+        };
 
       checks = forAllSystems (system: pkgs: { default = self.packages.${system}.default; });
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt-tree);

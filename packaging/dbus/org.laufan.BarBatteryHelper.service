@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.laufan.BarBatteryHelper
+SystemdService=bar-battery-helper.service
+User=root
