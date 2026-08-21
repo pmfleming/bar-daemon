@@ -10,6 +10,9 @@ use tokio::{
 
 use crate::{model::NotificationState, state::StateStore};
 
+const INITIAL_RETRY: Duration = Duration::from_millis(1500);
+const MAXIMUM_RETRY: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Default, Deserialize)]
 struct WaybarStatus {
     #[serde(default)]
@@ -23,12 +26,12 @@ struct WaybarStatus {
 }
 
 pub async fn monitor(store: StateStore) {
-    let mut retry = Duration::from_millis(1500);
+    let mut retry = INITIAL_RETRY;
     loop {
         match run_subscription(&store).await {
             Ok(had_value) => {
                 if had_value {
-                    retry = Duration::from_millis(1500);
+                    retry = INITIAL_RETRY;
                 }
                 store
                     .update_notifications(NotificationState {
@@ -48,7 +51,7 @@ pub async fn monitor(store: StateStore) {
             }
         }
         sleep(retry).await;
-        retry = (retry * 2).min(Duration::from_secs(30));
+        retry = next_retry(retry);
     }
 }
 
@@ -98,6 +101,10 @@ async fn run_subscription(store: &StateStore) -> Result<bool> {
         bail!("swaync-client exited with {status}: {}", detail.trim());
     }
     Ok(had_value)
+}
+
+fn next_retry(current: Duration) -> Duration {
+    (current * 2).min(MAXIMUM_RETRY)
 }
 
 fn parse_status(line: &str) -> Result<NotificationState> {
@@ -150,7 +157,9 @@ async fn run_action(action: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{notification_count, parse_status};
+    use std::time::Duration;
+
+    use super::{next_retry, notification_count, parse_status};
 
     #[test]
     fn parses_waybar_status_and_dnd_class() {
@@ -158,6 +167,16 @@ mod tests {
         assert_eq!(state.count, 3);
         assert!(state.dnd);
         assert_eq!(state.tooltip, "3 Notifications");
+    }
+
+    #[test]
+    fn caps_subscription_retry_backoff() {
+        assert_eq!(
+            next_retry(Duration::from_millis(1500)),
+            Duration::from_secs(3)
+        );
+        assert_eq!(next_retry(Duration::from_secs(20)), Duration::from_secs(30));
+        assert_eq!(next_retry(Duration::from_secs(30)), Duration::from_secs(30));
     }
 
     #[test]

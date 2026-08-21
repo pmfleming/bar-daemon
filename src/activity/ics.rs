@@ -256,8 +256,10 @@ fn unfold_lines(contents: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for raw in contents.lines() {
         let line = raw.trim_end_matches('\r');
-        if (line.starts_with(' ') || line.starts_with('\t')) && !lines.is_empty() {
-            lines.last_mut().unwrap().push_str(&line[1..]);
+        if (line.starts_with(' ') || line.starts_with('\t'))
+            && let Some(previous) = lines.last_mut()
+        {
+            previous.push_str(&line[1..]);
         } else {
             lines.push(line.to_string());
         }

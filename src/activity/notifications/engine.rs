@@ -104,8 +104,9 @@ impl NotificationEngine {
             } else {
                 self.allocate_id(&data.active)?
             };
-            if let Some(existing) = data.active.get_mut(&id) {
+            let stored = if let Some(existing) = data.active.get_mut(&id) {
                 existing.replace_from(notification, now);
+                existing.clone()
             } else {
                 if data.active.len() >= self.policy.maximum_active
                     && let Some(oldest) = data
@@ -117,14 +118,12 @@ impl NotificationEngine {
                     data.active.remove(&oldest);
                     evicted = Some(oldest);
                 }
-                data.active
-                    .insert(id, ActiveNotification::from_incoming(id, notification, now));
-            }
+                let stored = ActiveNotification::from_incoming(id, notification, now);
+                data.active.insert(id, stored.clone());
+                stored
+            };
             data.history_revision = data.history_revision.wrapping_add(1);
-            (
-                id,
-                data.active.get(&id).expect("inserted notification").clone(),
-            )
+            (id, stored)
         };
         if let Some(persistence) = &self.persistence {
             persistence.save(stored);

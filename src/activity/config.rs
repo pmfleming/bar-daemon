@@ -132,6 +132,8 @@ mod tests {
         let config: ActivityConfig =
             serde_json::from_str(include_str!("../../docs/activity.example.json")).unwrap();
         super::validate(&config).unwrap();
+        assert!(!config.calendar_sources.is_empty());
+        assert!(!config.world_clocks.is_empty());
     }
 
     #[test]

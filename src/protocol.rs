@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
-use crate::api::VERSION;
+pub const NAME: &str = "bar-api";
+pub const VERSION: u8 = 1;
 
 pub mod stream {
     pub const ACTIVITY: &str = "activity.changed";
@@ -61,7 +62,7 @@ pub const STREAMS: &[&str] = &[
 
 pub fn registry() -> Value {
     json!({
-        "protocol": "bar-api",
+        "protocol": NAME,
         "version": VERSION,
         "methods": [
             { "name": "bar.snapshot", "params": {}, "result": "snapshot" },
@@ -111,7 +112,7 @@ pub fn registry() -> Value {
 #[cfg(test)]
 fn generated_contract_fixture() -> Value {
     json!({
-        "protocol": "bar-api",
+        "protocol": NAME,
         "version": VERSION,
         "registry": registry(),
         "snapshot": {
@@ -233,9 +234,8 @@ fn generated_contract_fixture() -> Value {
     })
 }
 
-pub fn contract_fixture() -> Value {
+pub fn contract_fixture() -> serde_json::Result<Value> {
     serde_json::from_str(include_str!("../test_support/bar-api-v1.json"))
-        .expect("checked bar-api fixture must be valid JSON")
 }
 
 #[cfg(test)]
@@ -243,8 +243,9 @@ mod tests {
     use super::{METHODS, STREAMS, contract_fixture, generated_contract_fixture, registry};
 
     #[test]
-    fn checked_contract_fixture_is_current() {
-        assert_eq!(contract_fixture(), generated_contract_fixture());
+    fn checked_contract_fixture_is_current() -> serde_json::Result<()> {
+        assert_eq!(contract_fixture()?, generated_contract_fixture());
+        Ok(())
     }
 
     #[test]

@@ -271,7 +271,20 @@ pub fn select_active_player(players: &[MediaPlayer]) -> Option<&MediaPlayer> {
         .or_else(|| players.first())
 }
 
+fn operation_method(operation: &str) -> Result<&'static str> {
+    match operation {
+        "play-pause" => Ok("PlayPause"),
+        "play" => Ok("Play"),
+        "pause" => Ok("Pause"),
+        "stop" => Ok("Stop"),
+        "next" => Ok("Next"),
+        "previous" => Ok("Previous"),
+        _ => bail!("unsupported media operation: {operation}"),
+    }
+}
+
 pub async fn operation(player_id: Option<&str>, operation: &str) -> Result<String> {
+    let method = operation_method(operation)?;
     let connection = zbus::Connection::session()
         .await
         .context("connect to session D-Bus")?;
@@ -293,15 +306,6 @@ pub async fn operation(player_id: Option<&str>, operation: &str) -> Result<Strin
             .context("no MPRIS player is available")?
     };
     let proxy = zbus::Proxy::new(&connection, selected.as_str(), PATH, PLAYER_INTERFACE).await?;
-    let method = match operation {
-        "play-pause" => "PlayPause",
-        "play" => "Play",
-        "pause" => "Pause",
-        "stop" => "Stop",
-        "next" => "Next",
-        "previous" => "Previous",
-        _ => bail!("unsupported media operation: {operation}"),
-    };
     proxy
         .call_method(method, &())
         .await
@@ -311,7 +315,7 @@ pub async fn operation(player_id: Option<&str>, operation: &str) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::select_active_player;
+    use super::{operation_method, select_active_player};
     use crate::model::MediaPlayer;
 
     fn player(id: &str, status: &str, spotify: bool, controllable: bool) -> MediaPlayer {
@@ -323,6 +327,14 @@ mod tests {
             can_control: controllable,
             ..MediaPlayer::default()
         }
+    }
+
+    #[test]
+    fn maps_operations_before_accessing_dbus() {
+        assert_eq!(operation_method("play-pause").unwrap(), "PlayPause");
+        assert_eq!(operation_method("next").unwrap(), "Next");
+        assert_eq!(operation_method("previous").unwrap(), "Previous");
+        assert!(operation_method("shuffle").is_err());
     }
 
     #[test]
