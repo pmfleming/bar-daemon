@@ -46,6 +46,14 @@ pub struct ActiveNotification {
     pub group_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryNotification {
+    pub history_id: i64,
+    pub notification: ActiveNotification,
+    pub closed_unix_ms: Option<u64>,
+    pub close_reason: Option<u32>,
+}
+
 impl ActiveNotification {
     pub fn from_incoming(id: u32, incoming: IncomingNotification, now: u64) -> Self {
         let timeout = effective_timeout_ms(incoming.expire_timeout, incoming.hints.urgency);

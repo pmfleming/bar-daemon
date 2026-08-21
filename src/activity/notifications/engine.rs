@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
@@ -13,7 +14,11 @@ use tokio::sync::{Mutex, Notify, Semaphore, broadcast};
 use crate::{model::NotificationState, state::StateStore};
 
 use super::{
-    model::{ActiveNotification, IncomingNotification, NotificationSignal, close_reason},
+    model::{
+        ActiveNotification, HistoryNotification, IncomingNotification, NotificationSignal,
+        close_reason,
+    },
+    persistence::NotificationPersistence,
     policy::NotificationPolicy,
 };
 
@@ -31,23 +36,44 @@ pub struct NotificationEngine {
     signals: broadcast::Sender<NotificationSignal>,
     state: StateStore,
     policy: NotificationPolicy,
+    persistence: Option<NotificationPersistence>,
 }
 
 impl NotificationEngine {
     pub async fn new(state: StateStore) -> Arc<Self> {
+        Self::build(state, None, Vec::new(), false).await
+    }
+
+    pub async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
+        let (persistence, active, dnd) =
+            tokio::task::spawn_blocking(move || NotificationPersistence::open(&path))
+                .await
+                .context("join notification database initialization")??;
+        Ok(Self::build(state, Some(persistence), active, dnd).await)
+    }
+
+    async fn build(
+        state: StateStore,
+        persistence: Option<NotificationPersistence>,
+        active: Vec<ActiveNotification>,
+        dnd: bool,
+    ) -> Arc<Self> {
+        let next_id = active.iter().map(|item| item.id).max().unwrap_or(0);
+        let active = active.into_iter().map(|item| (item.id, item)).collect();
         let (signals, _) = broadcast::channel(256);
         let engine = Arc::new(Self {
             data: Mutex::new(EngineData {
-                active: BTreeMap::new(),
-                dnd: false,
+                active,
+                dnd,
                 history_revision: 0,
             }),
-            next_id: AtomicU32::new(0),
+            next_id: AtomicU32::new(next_id),
             ingress: Arc::new(Semaphore::new(256)),
             expiry_wakeup: Notify::new(),
             signals,
             state,
             policy: NotificationPolicy::default(),
+            persistence,
         });
         engine.publish_summary().await;
         engine
@@ -68,7 +94,7 @@ impl NotificationEngine {
         self.policy.validate(&notification)?;
         let now = unix_ms();
         let mut evicted = None;
-        let id = {
+        let (id, stored) = {
             let mut data = self.data.lock().await;
             let id = if replaces_id != 0 && data.active.contains_key(&replaces_id) {
                 replaces_id
@@ -92,13 +118,22 @@ impl NotificationEngine {
                     .insert(id, ActiveNotification::from_incoming(id, notification, now));
             }
             data.history_revision = data.history_revision.wrapping_add(1);
-            id
+            (
+                id,
+                data.active.get(&id).expect("inserted notification").clone(),
+            )
         };
+        if let Some(persistence) = &self.persistence {
+            persistence.save(stored);
+        }
         if let Some(id) = evicted {
             self.emit(NotificationSignal::Closed {
                 id,
                 reason: close_reason::UNDEFINED,
             });
+            if let Some(persistence) = &self.persistence {
+                persistence.close(id, now, close_reason::UNDEFINED);
+            }
         }
         self.expiry_wakeup.notify_one();
         self.publish_summary().await;
@@ -115,6 +150,9 @@ impl NotificationEngine {
             removed
         };
         if removed {
+            if let Some(persistence) = &self.persistence {
+                persistence.close(id, unix_ms(), reason);
+            }
             self.emit(NotificationSignal::Closed { id, reason });
             self.expiry_wakeup.notify_one();
             self.publish_summary().await;
@@ -136,6 +174,11 @@ impl NotificationEngine {
             }
             ids
         };
+        if let Some(persistence) = &self.persistence
+            && !ids.is_empty()
+        {
+            persistence.clear(unix_ms(), close_reason::DISMISSED);
+        }
         for id in &ids {
             self.emit(NotificationSignal::Closed {
                 id: *id,
@@ -157,6 +200,9 @@ impl NotificationEngine {
             changed
         };
         if changed {
+            if let Some(persistence) = &self.persistence {
+                persistence.set_dnd(enabled);
+            }
             self.publish_summary().await;
         }
     }
@@ -167,6 +213,9 @@ impl NotificationEngine {
             data.dnd = !data.dnd;
             data.dnd
         };
+        if let Some(persistence) = &self.persistence {
+            persistence.set_dnd(enabled);
+        }
         self.publish_summary().await;
         enabled
     }
@@ -177,6 +226,17 @@ impl NotificationEngine {
 
     pub async fn active(&self) -> Vec<ActiveNotification> {
         self.data.lock().await.active.values().cloned().collect()
+    }
+
+    pub async fn history(
+        &self,
+        before_history_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<HistoryNotification>> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(Vec::new());
+        };
+        persistence.list(before_history_id, limit).await
     }
 
     pub async fn visible(&self) -> Vec<ActiveNotification> {

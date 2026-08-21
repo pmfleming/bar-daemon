@@ -51,6 +51,12 @@ pub fn todo_path() -> PathBuf {
         .unwrap_or_else(|| state_home().join("bar-daemon/todos.json"))
 }
 
+pub fn notification_database_path() -> PathBuf {
+    env::var_os("BAR_DAEMON_NOTIFICATION_DATABASE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_home().join("bar-daemon/notifications.sqlite3"))
+}
+
 pub fn validate(config: &ActivityConfig) -> Result<()> {
     let mut ids = HashSet::new();
     for source in &config.calendar_sources {

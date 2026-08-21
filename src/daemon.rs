@@ -269,7 +269,14 @@ pub async fn run() -> Result<()> {
     let native_notifications = env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
         .is_ok_and(|value| value.eq_ignore_ascii_case("native"));
     let notification_engine = if native_notifications {
-        Some(notifications::engine::NotificationEngine::new(state.clone()).await)
+        Some(
+            notifications::engine::NotificationEngine::persistent(
+                state.clone(),
+                crate::activity::config::notification_database_path(),
+            )
+            .await
+            .context("initialize native notification engine")?,
+        )
     } else {
         None
     };

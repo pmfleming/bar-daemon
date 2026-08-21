@@ -5,6 +5,7 @@
 
 pub mod engine;
 pub mod model;
+pub mod persistence;
 pub mod policy;
 pub mod server;
 mod swaync;
