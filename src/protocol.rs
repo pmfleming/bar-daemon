@@ -174,7 +174,8 @@ fn generated_contract_fixture() -> Value {
                     "supported": true, "backend": "thinkpad-sysfs", "managed": true, "enabled": true,
                     "start_percent": 75, "end_percent": 80,
                     "desired_start_percent": 75, "desired_end_percent": 80,
-                    "desired_enabled": true, "charge_once_active": false, "supports_start": true,
+                    "desired_enabled": true, "thresholds_verified": true,
+                    "charge_once_active": false, "supports_start": true,
                     "supports_end": true, "supports_charge_behaviour": true,
                     "charge_behaviour": "auto",
                     "available_behaviours": ["auto", "inhibit-charge", "force-discharge"], "error": null
@@ -188,7 +189,8 @@ fn generated_contract_fixture() -> Value {
                         "supported": true, "backend": "thinkpad-sysfs", "managed": true, "enabled": true,
                         "start_percent": 75, "end_percent": 80,
                         "desired_start_percent": 75, "desired_end_percent": 80,
-                        "desired_enabled": true, "charge_once_active": false, "supports_start": true,
+                        "desired_enabled": true, "thresholds_verified": true,
+                        "charge_once_active": false, "supports_start": true,
                         "supports_end": true, "supports_charge_behaviour": true,
                         "charge_behaviour": "auto",
                         "available_behaviours": ["auto", "inhibit-charge", "force-discharge"], "error": null

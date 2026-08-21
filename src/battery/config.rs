@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -19,6 +20,31 @@ pub(crate) struct BatteryConfig {
     pub protection_enabled: bool,
     pub protected_start_percent: u8,
     pub protected_end_percent: u8,
+    pub devices: BTreeMap<String, BatteryDeviceConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct BatteryDeviceConfig {
+    pub manage_thresholds: bool,
+    pub protection_enabled: bool,
+    pub protected_start_percent: u8,
+    pub protected_end_percent: u8,
+    pub accepted_reported_start_percent: Option<u8>,
+    pub accepted_reported_end_percent: Option<u8>,
+}
+
+impl Default for BatteryDeviceConfig {
+    fn default() -> Self {
+        Self {
+            manage_thresholds: false,
+            protection_enabled: false,
+            protected_start_percent: 75,
+            protected_end_percent: 80,
+            accepted_reported_start_percent: None,
+            accepted_reported_end_percent: None,
+        }
+    }
 }
 
 impl Default for BatteryConfig {
@@ -31,6 +57,7 @@ impl Default for BatteryConfig {
             protection_enabled: false,
             protected_start_percent: 75,
             protected_end_percent: 80,
+            devices: BTreeMap::new(),
         }
     }
 }
@@ -45,7 +72,48 @@ impl BatteryConfig {
         {
             bail!("protection thresholds must satisfy 0 <= start < end <= 100");
         }
+        for (battery_id, device) in &self.devices {
+            validate_battery_id(battery_id)?;
+            device.validate()?;
+        }
         Ok(())
+    }
+
+    pub(crate) fn device(&self, battery_id: &str) -> BatteryDeviceConfig {
+        self.devices
+            .get(battery_id)
+            .cloned()
+            .unwrap_or_else(|| BatteryDeviceConfig {
+                manage_thresholds: self.manage_thresholds,
+                protection_enabled: self.protection_enabled,
+                protected_start_percent: self.protected_start_percent,
+                protected_end_percent: self.protected_end_percent,
+                ..BatteryDeviceConfig::default()
+            })
+    }
+
+    pub(crate) fn device_mut(&mut self, battery_id: &str) -> &mut BatteryDeviceConfig {
+        let inherited = self.device(battery_id);
+        self.devices
+            .entry(battery_id.to_string())
+            .or_insert(inherited)
+    }
+}
+
+impl BatteryDeviceConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.protected_start_percent >= self.protected_end_percent
+            || self.protected_end_percent > 100
+        {
+            bail!("protection thresholds must satisfy 0 <= start < end <= 100");
+        }
+        match (
+            self.accepted_reported_start_percent,
+            self.accepted_reported_end_percent,
+        ) {
+            (Some(_), Some(_)) | (None, None) => Ok(()),
+            _ => bail!("accepted reported thresholds must both be present or absent"),
+        }
     }
 }
 
@@ -53,6 +121,7 @@ impl BatteryConfig {
 #[serde(default)]
 pub(crate) struct BatteryRuntimeState {
     pub charge_once_active: bool,
+    pub charge_once_battery_id: String,
     pub charge_once_started_unix_ms: u64,
     pub charge_once_expires_unix_ms: u64,
     pub restore_start_percent: Option<u8>,
@@ -62,11 +131,13 @@ pub(crate) struct BatteryRuntimeState {
 impl BatteryRuntimeState {
     pub(crate) fn start_charge_once(
         now_unix_ms: u64,
+        battery_id: String,
         restore_start_percent: u8,
         restore_end_percent: u8,
     ) -> Self {
         Self {
             charge_once_active: true,
+            charge_once_battery_id: battery_id,
             charge_once_started_unix_ms: now_unix_ms,
             charge_once_expires_unix_ms: now_unix_ms
                 .saturating_add(CHARGE_ONCE_MAX_AGE.as_millis() as u64),
@@ -80,6 +151,16 @@ impl BatteryRuntimeState {
             && self.charge_once_expires_unix_ms != 0
             && now_unix_ms >= self.charge_once_expires_unix_ms
     }
+}
+
+fn validate_battery_id(battery_id: &str) -> Result<()> {
+    let suffix = battery_id
+        .strip_prefix("BAT")
+        .with_context(|| format!("battery id {battery_id} must start with BAT"))?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("battery id must match BAT followed by digits");
+    }
+    Ok(())
 }
 
 pub(crate) fn config_path() -> PathBuf {
@@ -203,13 +284,14 @@ mod tests {
 
     #[test]
     fn charge_once_has_a_bounded_lifetime() {
-        let runtime = BatteryRuntimeState::start_charge_once(1_000, 75, 80);
+        let runtime = BatteryRuntimeState::start_charge_once(1_000, "BAT0".into(), 75, 80);
         let expires = 1_000 + CHARGE_ONCE_MAX_AGE.as_millis() as u64;
         assert_eq!(runtime.charge_once_expires_unix_ms, expires);
         assert!(!runtime.is_expired(expires - 1));
         assert!(runtime.is_expired(expires));
         assert_eq!(runtime.restore_start_percent, Some(75));
         assert_eq!(runtime.restore_end_percent, Some(80));
+        assert_eq!(runtime.charge_once_battery_id, "BAT0");
     }
 
     #[tokio::test]
@@ -225,5 +307,21 @@ mod tests {
         let actual: BatteryConfig = super::load_or_default(&path).await.unwrap();
         assert_eq!(actual, expected);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn device_policy_inherits_legacy_defaults_then_diverges() {
+        let mut config = BatteryConfig {
+            manage_thresholds: true,
+            protection_enabled: true,
+            protected_start_percent: 70,
+            protected_end_percent: 85,
+            ..BatteryConfig::default()
+        };
+        assert_eq!(config.device("BAT0").protected_start_percent, 70);
+        config.device_mut("BAT1").protected_end_percent = 90;
+        assert_eq!(config.device("BAT1").protected_end_percent, 90);
+        assert_eq!(config.device("BAT0").protected_end_percent, 85);
+        config.validate().unwrap();
     }
 }

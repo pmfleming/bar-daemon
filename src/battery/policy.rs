@@ -7,7 +7,7 @@ use crate::{
 pub(super) enum BatteryAlert {
     Warning,
     Critical,
-    Full,
+    ChargeComplete(u8),
 }
 
 #[derive(Default)]
@@ -28,22 +28,30 @@ impl AlertTracker {
             self.initialized = true;
             return None;
         }
+        let charge_complete_percent = if state.protection.charge_once_active {
+            100
+        } else if state.protection.enabled {
+            state.protection.end_percent.unwrap_or(100)
+        } else {
+            100
+        };
         if !self.initialized {
             self.initialized = true;
             self.warning_sent = state.warning;
             self.critical_sent = state.critical;
-            self.full_sent = state.plugged && state.percentage >= 100;
+            self.full_sent = state.plugged && state.percentage >= charge_complete_percent;
             return None;
         }
         if state.plugged {
             self.warning_sent = false;
             self.critical_sent = false;
-            if state.percentage < 100 {
+            if state.percentage < charge_complete_percent {
                 self.full_sent = false;
             }
-            if state.percentage >= 100 && !self.full_sent {
+            if state.percentage >= charge_complete_percent && !self.full_sent {
                 self.full_sent = true;
-                return notify_when_full.then_some(BatteryAlert::Full);
+                return notify_when_full
+                    .then_some(BatteryAlert::ChargeComplete(charge_complete_percent));
             }
             return None;
         }
@@ -63,17 +71,35 @@ impl AlertTracker {
 
 pub(super) async fn send_notification(alert: BatteryAlert, notifications: NotificationSink) {
     let (icon, summary, body, urgency) = match alert {
-        BatteryAlert::Warning => ("battery-caution", "Battery low", "Plug in soon.", 1u8),
-        BatteryAlert::Critical => ("battery-empty", "Battery critical", "Plug in now.", 2u8),
-        BatteryAlert::Full => (
+        BatteryAlert::Warning => (
+            "battery-caution",
+            "Battery low",
+            "Plug in soon.".into(),
+            1u8,
+        ),
+        BatteryAlert::Critical => (
+            "battery-empty",
+            "Battery critical",
+            "Plug in now.".into(),
+            2u8,
+        ),
+        BatteryAlert::ChargeComplete(percent) => (
             "battery-full-charged",
-            "Battery full",
-            "Unplug to reduce wear.",
+            if percent < 100 {
+                "Charge limit reached"
+            } else {
+                "Battery full"
+            },
+            if percent < 100 {
+                format!("Charging paused at the protected limit of {percent}%.")
+            } else {
+                "Unplug to reduce wear.".into()
+            },
             0u8,
         ),
     };
     if let Err(error) = notifications
-        .send(internal_notification(icon, summary, body, urgency))
+        .send(internal_notification(icon, summary, &body, urgency))
         .await
     {
         tracing::warn!(%error, "battery notification failed");
@@ -124,7 +150,7 @@ mod tests {
         assert_eq!(tracker.observe(&state(99, true), true), None);
         assert_eq!(
             tracker.observe(&state(100, true), true),
-            Some(BatteryAlert::Full)
+            Some(BatteryAlert::ChargeComplete(100))
         );
     }
 
@@ -133,5 +159,21 @@ mod tests {
         let mut tracker = AlertTracker::default();
         assert_eq!(tracker.observe(&state(99, true), false), None);
         assert_eq!(tracker.observe(&state(100, true), false), None);
+    }
+
+    #[test]
+    fn protected_limit_counts_as_charge_complete() {
+        let mut tracker = AlertTracker::default();
+        let mut below = state(79, true);
+        below.protection.enabled = true;
+        below.protection.end_percent = Some(80);
+        assert_eq!(tracker.observe(&below, true), None);
+        let mut complete = state(80, true);
+        complete.protection.enabled = true;
+        complete.protection.end_percent = Some(80);
+        assert_eq!(
+            tracker.observe(&complete, true),
+            Some(BatteryAlert::ChargeComplete(80))
+        );
     }
 }

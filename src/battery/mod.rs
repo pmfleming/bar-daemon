@@ -179,72 +179,130 @@ async fn publish_native(
 
 async fn reconcile_and_decorate(mut state: BatteryState) -> BatteryState {
     let _guard = lock_effects().await;
-    let (config, mut runtime, mut policy_error) = load_policy_data().await;
+    let (mut config, mut runtime, mut policy_error) = load_policy_data().await;
+    if runtime.charge_once_active && runtime.charge_once_battery_id.is_empty() {
+        runtime.charge_once_battery_id = state.native_path.clone();
+        if let Err(error) = config::save_runtime(&runtime).await {
+            append_error(&mut policy_error, error.to_string());
+        }
+    }
+    let charge_once_percentage = state
+        .devices
+        .iter()
+        .find(|device| device.id == runtime.charge_once_battery_id)
+        .map(|device| device.percentage)
+        .unwrap_or(0);
     let should_finish_charge_once = runtime.charge_once_active
-        && (!state.plugged || state.percentage >= 100 || runtime.is_expired(config::unix_ms()));
-    let target = reconciliation_target(&config, &runtime, should_finish_charge_once);
-
-    let can_control = state.protection.supports_start
-        && state.protection.supports_end
-        && !state.native_path.is_empty();
-    let already_applied = target.is_some_and(|target| {
-        (state.protection.start_percent, state.protection.end_percent)
-            == (Some(target.0), Some(target.1))
-    });
-    let restored = match target {
-        Some(target) if can_control && !already_applied => {
-            match helper::set_thresholds(&state.native_path, target.0, target.1).await {
-                Ok((start, end)) => {
-                    update_observed_thresholds(&mut state, start, end);
-                    true
-                }
-                Err(error) => {
-                    append_error(&mut policy_error, error.to_string());
-                    false
+        && (!state.plugged
+            || charge_once_percentage >= 100
+            || runtime.is_expired(config::unix_ms()));
+    let mut restored = false;
+    let mut config_changed = false;
+    let battery_ids = state
+        .devices
+        .iter()
+        .map(|device| device.id.clone())
+        .collect::<Vec<_>>();
+    for battery_id in battery_ids {
+        let device_policy = config.device(&battery_id);
+        let target = reconciliation_target(
+            &device_policy,
+            &runtime,
+            should_finish_charge_once,
+            &battery_id,
+        );
+        let Some(device) = state.devices.iter().find(|device| device.id == battery_id) else {
+            continue;
+        };
+        let observed = (
+            device.protection.start_percent,
+            device.protection.end_percent,
+        );
+        let accepted = device_policy
+            .accepted_reported_start_percent
+            .zip(device_policy.accepted_reported_end_percent);
+        let already_applied = target.is_some_and(|target| {
+            observed == (Some(target.0), Some(target.1))
+                || accepted.is_some_and(|accepted| observed == (Some(accepted.0), Some(accepted.1)))
+        });
+        let can_control = device.protection.supports_start && device.protection.supports_end;
+        let applied = match target {
+            Some(target) if can_control && !already_applied => {
+                match helper::set_thresholds(&battery_id, target.0, target.1).await {
+                    Ok(result) => {
+                        update_observed_thresholds(
+                            &mut state,
+                            &battery_id,
+                            result.actual_start_percent,
+                            result.actual_end_percent,
+                        );
+                        let policy = config.device_mut(&battery_id);
+                        policy.accepted_reported_start_percent = Some(result.actual_start_percent);
+                        policy.accepted_reported_end_percent = Some(result.actual_end_percent);
+                        config_changed = true;
+                        true
+                    }
+                    Err(error) => {
+                        append_error(&mut policy_error, error.to_string());
+                        false
+                    }
                 }
             }
+            Some(_) => already_applied,
+            None => false,
+        };
+        if runtime.charge_once_active && battery_id == runtime.charge_once_battery_id {
+            restored = applied;
         }
-        Some(_) => already_applied,
-        None => false,
-    };
+    }
+
+    if config_changed && let Err(error) = config::save_config(&config).await {
+        append_error(&mut policy_error, error.to_string());
+    }
 
     if should_finish_charge_once && restored {
         runtime = config::BatteryRuntimeState::default();
         if let Err(error) = config::save_runtime(&runtime).await {
             append_error(&mut policy_error, error.to_string());
         }
-    } else if should_finish_charge_once && (!can_control || target.is_none()) {
+    } else if should_finish_charge_once && !restored {
         append_error(
             &mut policy_error,
-            "cannot restore charge thresholds: this battery does not expose ThinkPad threshold controls"
-                .into(),
+            format!(
+                "cannot restore charge thresholds for {}: the battery is absent or does not expose threshold controls",
+                runtime.charge_once_battery_id
+            ),
         );
     }
     decorate(state, &config, &runtime, policy_error)
 }
 
 fn reconciliation_target(
-    config: &config::BatteryConfig,
+    device: &config::BatteryDeviceConfig,
     runtime: &config::BatteryRuntimeState,
     should_finish_charge_once: bool,
+    battery_id: &str,
 ) -> Option<(u8, u8)> {
-    if runtime.charge_once_active && !should_finish_charge_once {
+    let charge_once_target = runtime.charge_once_active
+        && (runtime.charge_once_battery_id.is_empty()
+            || runtime.charge_once_battery_id == battery_id);
+    if charge_once_target && !should_finish_charge_once {
         return Some((0, 100));
     }
-    if should_finish_charge_once {
+    if charge_once_target && should_finish_charge_once {
         return runtime
             .restore_start_percent
             .zip(runtime.restore_end_percent)
-            .or_else(|| configured_target(config));
+            .or_else(|| configured_target(device));
     }
-    configured_target(config)
+    configured_target(device)
 }
 
-fn configured_target(config: &config::BatteryConfig) -> Option<(u8, u8)> {
-    config
+fn configured_target(device: &config::BatteryDeviceConfig) -> Option<(u8, u8)> {
+    device
         .manage_thresholds
-        .then_some(if config.protection_enabled {
-            (config.protected_start_percent, config.protected_end_percent)
+        .then_some(if device.protection_enabled {
+            (device.protected_start_percent, device.protected_end_percent)
         } else {
             (0, 100)
         })
@@ -292,29 +350,49 @@ fn decorate(
         critical_percent: config.critical_percent,
         notify_when_full: config.notify_when_full,
     };
-    decorate_protection(&mut state.protection, config, runtime, policy_error.clone());
     for device in &mut state.devices {
+        let device_config = config.device(&device.id);
         decorate_protection(
             &mut device.protection,
-            config,
+            &device_config,
             runtime,
+            &device.id,
             policy_error.clone(),
         );
     }
+    state.protection = state
+        .devices
+        .iter()
+        .find(|device| device.id == state.native_path)
+        .map(|device| device.protection.clone())
+        .unwrap_or_default();
+    state.state = semantic_state(&state);
     state
 }
 
 fn decorate_protection(
     protection: &mut crate::model::BatteryProtectionState,
-    config: &config::BatteryConfig,
+    config: &config::BatteryDeviceConfig,
     runtime: &config::BatteryRuntimeState,
+    battery_id: &str,
     policy_error: Option<String>,
 ) {
     protection.managed = config.manage_thresholds;
     protection.desired_start_percent = Some(config.protected_start_percent);
     protection.desired_end_percent = Some(config.protected_end_percent);
     protection.desired_enabled = config.protection_enabled;
-    protection.charge_once_active = runtime.charge_once_active;
+    protection.thresholds_verified = if config.protection_enabled {
+        (protection.start_percent, protection.end_percent)
+            == (
+                Some(config.protected_start_percent),
+                Some(config.protected_end_percent),
+            )
+    } else {
+        (protection.start_percent, protection.end_percent) == (Some(0), Some(100))
+    };
+    protection.charge_once_active = runtime.charge_once_active
+        && (runtime.charge_once_battery_id.is_empty()
+            || runtime.charge_once_battery_id == battery_id);
     if let Some(error) = policy_error {
         protection.error = Some(match protection.error.take() {
             Some(existing) => format!("{existing}; {error}"),
@@ -323,18 +401,36 @@ fn decorate_protection(
     }
 }
 
-fn update_observed_thresholds(state: &mut BatteryState, start: u8, end: u8) {
-    state.protection.start_percent = Some(start);
-    state.protection.end_percent = Some(end);
-    state.protection.enabled = start > 0 || end < 100;
+fn update_observed_thresholds(state: &mut BatteryState, battery_id: &str, start: u8, end: u8) {
     if let Some(device) = state
         .devices
         .iter_mut()
-        .find(|device| device.id == state.native_path)
+        .find(|device| device.id == battery_id)
     {
         device.protection.start_percent = Some(start);
         device.protection.end_percent = Some(end);
         device.protection.enabled = start > 0 || end < 100;
+    }
+}
+
+fn semantic_state(state: &BatteryState) -> String {
+    if state.charging {
+        return "charging".into();
+    }
+    if !state.plugged {
+        return if state.state == "fully-charged" {
+            "fully-charged".into()
+        } else {
+            "discharging".into()
+        };
+    }
+    match state.protection.charge_behaviour.as_deref() {
+        Some("force-discharge") => "calibrating".into(),
+        Some("inhibit-charge" | "inhibit-charge-awake") => "charging-inhibited".into(),
+        _ if state.state == "fully-charged" => "fully-charged".into(),
+        _ if state.state == "pending-charge" => "charge-paused".into(),
+        _ if state.protection.enabled => "charge-paused".into(),
+        _ => "not-charging".into(),
     }
 }
 
@@ -372,37 +468,51 @@ mod tests {
 
     #[test]
     fn unmanaged_thresholds_are_left_alone() {
-        let config = config::BatteryConfig::default();
+        let config = config::BatteryDeviceConfig::default();
         assert_eq!(
-            reconciliation_target(&config, &config::BatteryRuntimeState::default(), false),
+            reconciliation_target(
+                &config,
+                &config::BatteryRuntimeState::default(),
+                false,
+                "BAT0"
+            ),
             None
         );
     }
 
     #[test]
     fn managed_policy_is_reapplied() {
-        let config = config::BatteryConfig {
+        let config = config::BatteryDeviceConfig {
             manage_thresholds: true,
             protection_enabled: true,
-            ..config::BatteryConfig::default()
+            ..config::BatteryDeviceConfig::default()
         };
         assert_eq!(
-            reconciliation_target(&config, &config::BatteryRuntimeState::default(), false),
+            reconciliation_target(
+                &config,
+                &config::BatteryRuntimeState::default(),
+                false,
+                "BAT0"
+            ),
             Some((75, 80))
         );
     }
 
     #[test]
     fn charge_once_restores_the_preexisting_thresholds() {
-        let config = config::BatteryConfig::default();
-        let runtime = config::BatteryRuntimeState::start_charge_once(1_000, 60, 85);
+        let config = config::BatteryDeviceConfig::default();
+        let runtime = config::BatteryRuntimeState::start_charge_once(1_000, "BAT1".into(), 60, 85);
         assert_eq!(
-            reconciliation_target(&config, &runtime, false),
+            reconciliation_target(&config, &runtime, false, "BAT1"),
             Some((0, 100))
         );
         assert_eq!(
-            reconciliation_target(&config, &runtime, true),
+            reconciliation_target(&config, &runtime, true, "BAT1"),
             Some((60, 85))
+        );
+        assert_eq!(
+            reconciliation_target(&config, &runtime, false, "BAT0"),
+            None
         );
     }
 }

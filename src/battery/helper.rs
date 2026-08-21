@@ -44,11 +44,17 @@ impl BatteryHelper {
         end_percent: u8,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> zbus::fdo::Result<(u8, u8)> {
+    ) -> zbus::fdo::Result<(u8, u8, bool)> {
         authorize(connection, &header).await?;
-        self.writer
+        let result = self
+            .writer
             .set_thresholds(battery, start_percent, end_percent)
-            .map_err(failed)
+            .map_err(failed)?;
+        Ok((
+            result.actual_start_percent,
+            result.actual_end_percent,
+            result.verified,
+        ))
     }
 }
 
@@ -87,6 +93,13 @@ pub struct ThresholdWriter {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThresholdWriteResult {
+    pub actual_start_percent: u8,
+    pub actual_end_percent: u8,
+    pub verified: bool,
+}
+
 impl ThresholdWriter {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
@@ -104,7 +117,12 @@ impl ThresholdWriter {
         ))
     }
 
-    pub fn set_thresholds(&self, battery: &str, start: u8, end: u8) -> Result<(u8, u8)> {
+    pub fn set_thresholds(
+        &self,
+        battery: &str,
+        start: u8,
+        end: u8,
+    ) -> Result<ThresholdWriteResult> {
         if start >= end || end > 100 {
             bail!("thresholds must satisfy 0 <= start < end <= 100");
         }
@@ -113,7 +131,11 @@ impl ThresholdWriter {
         let end_path = directory.join("charge_control_end_threshold");
         let (current_start, current_end) = (read_percent(&start_path)?, read_percent(&end_path)?);
         if (current_start, current_end) == (start, end) {
-            return Ok((start, end));
+            return Ok(ThresholdWriteResult {
+                actual_start_percent: start,
+                actual_end_percent: end,
+                verified: true,
+            });
         }
 
         let (first_path, first_value, second_path, second_value, rollback_value) =
@@ -136,14 +158,11 @@ impl ThresholdWriter {
         }
 
         let actual = self.get_thresholds(battery)?;
-        if actual != (start, end) {
-            bail!(
-                "firmware applied thresholds {}-{} instead of requested {start}-{end}",
-                actual.0,
-                actual.1
-            );
-        }
-        Ok(actual)
+        Ok(ThresholdWriteResult {
+            actual_start_percent: actual.0,
+            actual_end_percent: actual.1,
+            verified: actual == (start, end),
+        })
     }
 
     fn battery_directory(&self, battery: &str) -> Result<PathBuf> {
@@ -227,17 +246,22 @@ pub async fn get_thresholds(battery: &str) -> Result<(u8, u8)> {
         .context("read battery thresholds")
 }
 
-pub async fn set_thresholds(battery: &str, start: u8, end: u8) -> Result<(u8, u8)> {
+pub async fn set_thresholds(battery: &str, start: u8, end: u8) -> Result<ThresholdWriteResult> {
     let connection = Connection::system()
         .await
         .context("connect to system D-Bus")?;
     let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
         .await
         .context("connect to battery helper")?;
-    proxy
+    let (actual_start_percent, actual_end_percent, verified): (u8, u8, bool) = proxy
         .call("SetThresholds", &(battery, start, end))
         .await
-        .context("set battery thresholds")
+        .context("set battery thresholds")?;
+    Ok(ThresholdWriteResult {
+        actual_start_percent,
+        actual_end_percent,
+        verified,
+    })
 }
 
 #[cfg(test)]
@@ -272,12 +296,19 @@ mod tests {
         let (_directory, writer) = writer(75, 80);
         assert!(writer.set_thresholds("../../etc", 60, 80).is_err());
         assert!(writer.set_thresholds("BAT0", 80, 80).is_err());
-        assert_eq!(writer.set_thresholds("BAT0", 60, 80).unwrap(), (60, 80));
+        assert_eq!(
+            writer.set_thresholds("BAT0", 60, 80).unwrap(),
+            super::ThresholdWriteResult {
+                actual_start_percent: 60,
+                actual_end_percent: 80,
+                verified: true,
+            }
+        );
     }
 
     #[test]
     fn raises_end_before_start_when_ranges_do_not_overlap() {
         let (_directory, writer) = writer(40, 60);
-        assert_eq!(writer.set_thresholds("BAT0", 75, 80).unwrap(), (75, 80));
+        assert!(writer.set_thresholds("BAT0", 75, 80).unwrap().verified);
     }
 }

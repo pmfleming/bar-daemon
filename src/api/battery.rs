@@ -37,10 +37,13 @@ impl ApiService {
             Err(error_value) => return error("battery-config-failed", error_value.to_string()),
         };
         let mut next_config = previous_config.clone();
-        next_config.protected_start_percent = start;
-        next_config.protected_end_percent = end;
-        next_config.manage_thresholds = true;
-        next_config.protection_enabled = true;
+        let device = next_config.device_mut(battery_id);
+        device.protected_start_percent = start;
+        device.protected_end_percent = end;
+        device.manage_thresholds = true;
+        device.protection_enabled = true;
+        device.accepted_reported_start_percent = None;
+        device.accepted_reported_end_percent = None;
         self.apply_policy_change(battery_id, start, end, previous_config, next_config)
             .await
     }
@@ -59,16 +62,16 @@ impl ApiService {
             Err(error_value) => return error("battery-config-failed", error_value.to_string()),
         };
         let mut next_config = previous_config.clone();
+        let device = next_config.device_mut(&battery_id);
         let (start, end) = if enabled {
-            (
-                next_config.protected_start_percent,
-                next_config.protected_end_percent,
-            )
+            (device.protected_start_percent, device.protected_end_percent)
         } else {
             (0, 100)
         };
-        next_config.manage_thresholds = true;
-        next_config.protection_enabled = enabled;
+        device.manage_thresholds = true;
+        device.protection_enabled = enabled;
+        device.accepted_reported_start_percent = None;
+        device.accepted_reported_end_percent = None;
         self.apply_policy_change(&battery_id, start, end, previous_config, next_config)
             .await
     }
@@ -104,6 +107,7 @@ impl ApiService {
         };
         let runtime = config::BatteryRuntimeState::start_charge_once(
             config::unix_ms(),
+            battery_id.clone(),
             restore_start,
             restore_end,
         );
@@ -111,10 +115,7 @@ impl ApiService {
             return error("battery-state-failed", error_value.to_string());
         }
         match battery::helper::set_thresholds(&battery_id, 0, 100).await {
-            Ok((actual_start, actual_end)) => {
-                self.battery_operation_response(&battery_id, actual_start, actual_end)
-                    .await
-            }
+            Ok(result) => self.battery_operation_response(&battery_id, result).await,
             Err(error_value) => {
                 if let Err(rollback_error) = config::save_runtime(&previous_runtime).await {
                     return error(
@@ -181,15 +182,20 @@ impl ApiService {
         start: u8,
         end: u8,
         previous_config: config::BatteryConfig,
-        next_config: config::BatteryConfig,
+        mut next_config: config::BatteryConfig,
     ) -> Value {
         if let Err(error_value) = config::save_config(&next_config).await {
             return error("battery-config-failed", error_value.to_string());
         }
         match battery::helper::set_thresholds(battery_id, start, end).await {
-            Ok((actual_start, actual_end)) => {
-                self.battery_operation_response(battery_id, actual_start, actual_end)
-                    .await
+            Ok(result) => {
+                let device = next_config.device_mut(battery_id);
+                device.accepted_reported_start_percent = Some(result.actual_start_percent);
+                device.accepted_reported_end_percent = Some(result.actual_end_percent);
+                if let Err(error_value) = config::save_config(&next_config).await {
+                    return error("battery-config-failed", error_value.to_string());
+                }
+                self.battery_operation_response(battery_id, result).await
             }
             Err(error_value) => {
                 if let Err(rollback_error) = config::save_config(&previous_config).await {
@@ -208,16 +214,16 @@ impl ApiService {
     async fn battery_operation_response(
         &self,
         battery_id: &str,
-        actual_start: u8,
-        actual_end: u8,
+        result: battery::helper::ThresholdWriteResult,
     ) -> Value {
         match battery::refresh_state(&self.state).await {
             Ok(state) => success(json!({
                 "battery": state,
                 "operation": {
                     "battery_id": battery_id,
-                    "start_percent": actual_start,
-                    "end_percent": actual_end
+                    "start_percent": result.actual_start_percent,
+                    "end_percent": result.actual_end_percent,
+                    "verified": result.verified
                 }
             })),
             Err(error_value) => error("battery-refresh-failed", error_value.to_string()),

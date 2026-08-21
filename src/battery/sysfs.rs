@@ -204,6 +204,7 @@ fn device_state(battery: &NativeBattery) -> BatteryDeviceState {
         desired_start_percent: None,
         desired_end_percent: None,
         desired_enabled: false,
+        thresholds_verified: false,
         charge_once_active: false,
         supports_start: battery.start_threshold.is_some(),
         supports_end: battery.end_threshold.is_some(),

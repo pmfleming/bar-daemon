@@ -34,7 +34,7 @@ Charge-once requires external power. Before selecting `0–100`, the daemon dura
 
 ## Persistence
 
-Policy is stored in `$XDG_CONFIG_HOME/bar-daemon/battery.json`, falling back to `~/.config/bar-daemon/battery.json`. Runtime recovery state is stored in `$XDG_STATE_HOME/bar-daemon/battery-state.json`, falling back to `~/.local/state/bar-daemon/battery-state.json`. Writes use a temporary file and atomic rename.
+Policy is stored in `$XDG_CONFIG_HOME/bar-daemon/battery.json`, falling back to `~/.config/bar-daemon/battery.json`. Runtime recovery state is stored in `$XDG_STATE_HOME/bar-daemon/battery-state.json`, falling back to `~/.local/state/bar-daemon/battery-state.json`. Writes use a temporary file and atomic rename. Per-device entries under `devices` override the legacy top-level protection defaults, so dual-battery ThinkPads retain independent BAT0 and BAT1 ranges. Charge-once recovery records the target battery ID and never restores a range to a different battery.
 
 The paths can be overridden for testing or unusual deployments:
 
@@ -51,13 +51,23 @@ The API is the preferred way to update the files because it validates ranges and
   "manage_thresholds": true,
   "protection_enabled": true,
   "protected_start_percent": 75,
-  "protected_end_percent": 80
+  "protected_end_percent": 80,
+  "devices": {
+    "BAT0": {
+      "manage_thresholds": true,
+      "protection_enabled": true,
+      "protected_start_percent": 75,
+      "protected_end_percent": 80,
+      "accepted_reported_start_percent": 75,
+      "accepted_reported_end_percent": 80
+    }
+  }
 }
 ```
 
 ## Privileged helper
 
-Monitoring is unprivileged. Threshold writes go through `org.laufan.BarBatteryHelper` on the system bus. The packaged systemd service runs the narrowly scoped helper as root; the D-Bus policy permits calls, and polkit authorizes active local sessions. The helper validates the battery ID and sysfs type, requires both threshold files, validates the range, orders writes so an intermediate value remains valid, verifies firmware readback, and attempts rollback if the second write fails.
+Monitoring is unprivileged. Threshold writes go through `org.laufan.BarBatteryHelper` on the system bus. The packaged systemd service runs the narrowly scoped helper as root; the D-Bus policy permits calls, and polkit authorizes active local sessions. The helper validates the battery ID and sysfs type, requires both threshold files, validates the range, orders writes so an intermediate value remains valid, reads back the firmware result, and attempts rollback if the second write fails. Kernel drivers may round thresholds and some ThinkPad firmware reports values differently from those requested, so a successful write with different readback is retained as an unverified result rather than retried forever. State exposes `thresholds_verified` so clients can distinguish exact readback from an accepted firmware result.
 
 With the NixOS module, enable the package integration with:
 

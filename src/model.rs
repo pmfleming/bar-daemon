@@ -149,6 +149,7 @@ pub struct BatteryProtectionState {
     pub desired_start_percent: Option<u8>,
     pub desired_end_percent: Option<u8>,
     pub desired_enabled: bool,
+    pub thresholds_verified: bool,
     pub charge_once_active: bool,
     pub supports_start: bool,
     pub supports_end: bool,
