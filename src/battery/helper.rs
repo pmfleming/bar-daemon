@@ -214,6 +214,32 @@ pub async fn run() -> Result<()> {
     }
 }
 
+pub async fn get_thresholds(battery: &str) -> Result<(u8, u8)> {
+    let connection = Connection::system()
+        .await
+        .context("connect to system D-Bus")?;
+    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
+        .await
+        .context("connect to battery helper")?;
+    proxy
+        .call("GetThresholds", &(battery))
+        .await
+        .context("read battery thresholds")
+}
+
+pub async fn set_thresholds(battery: &str, start: u8, end: u8) -> Result<(u8, u8)> {
+    let connection = Connection::system()
+        .await
+        .context("connect to system D-Bus")?;
+    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
+        .await
+        .context("connect to battery helper")?;
+    proxy
+        .call("SetThresholds", &(battery, start, end))
+        .await
+        .context("set battery thresholds")
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

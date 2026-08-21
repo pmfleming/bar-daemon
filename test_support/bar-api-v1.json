@@ -97,6 +97,27 @@
         "result": "brightness"
       },
       {
+        "name": "battery.setThresholds",
+        "params": {
+          "battery_id": "BAT0",
+          "start_percent": 75,
+          "end_percent": 80
+        },
+        "result": "battery"
+      },
+      {
+        "name": "battery.setProtection",
+        "params": {
+          "enabled": true
+        },
+        "result": "battery"
+      },
+      {
+        "name": "battery.chargeOnce",
+        "params": {},
+        "result": "battery"
+      },
+      {
         "name": "powerProfile.set",
         "params": {
           "profile": "balanced"

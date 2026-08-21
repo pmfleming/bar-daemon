@@ -18,6 +18,8 @@ pub const BUS_NAME: &str = "org.laufan.BarDaemon";
 pub const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
 pub const INTERFACE: &str = "org.laufan.BarDaemon1";
 
+mod battery;
+
 pub fn success(data: Value) -> Value {
     json!({ "protocol": PROTOCOL, "version": VERSION, "ok": true, "data": data })
 }
@@ -38,6 +40,7 @@ pub struct ApiService {
     hyprland: Arc<HyprlandClient>,
     audio_effects: Arc<Mutex<()>>,
     brightness_effects: Arc<Mutex<()>>,
+    battery_effects: Arc<Mutex<()>>,
     notifications: Arc<NotificationService>,
 }
 
@@ -53,6 +56,7 @@ impl ApiService {
             hyprland: Arc::new(HyprlandClient::default()),
             audio_effects: Arc::new(Mutex::new(())),
             brightness_effects: Arc::new(Mutex::new(())),
+            battery_effects: Arc::new(Mutex::new(())),
             notifications,
         }
     }
@@ -72,6 +76,9 @@ impl ApiService {
             "audio.setInputMuted" => self.audio_set_input_muted(params).await,
             "brightness.adjust" => self.brightness_adjust(params).await,
             "brightness.set" => self.brightness_set(params).await,
+            "battery.setThresholds" => self.battery_set_thresholds(params).await,
+            "battery.setProtection" => self.battery_set_protection(params).await,
+            "battery.chargeOnce" => self.battery_charge_once().await,
             "powerProfile.set" => self.power_profile_set(params).await,
             "notifications.togglePanel" => self.notification_action(false).await,
             "notifications.toggleDnd" => self.notification_action(true).await,

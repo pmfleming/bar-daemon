@@ -5,7 +5,7 @@
 
 use std::{env, path::PathBuf, time::Duration};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use tokio::time::{interval, sleep};
 use zvariant::OwnedObjectPath;
@@ -26,6 +26,14 @@ use policy::{AlertTracker, send_notification};
 
 pub(crate) const WARNING_PERCENT: u8 = 25;
 pub(crate) const CRITICAL_PERCENT: u8 = 12;
+
+pub async fn refresh_state(store: &StateStore) -> Result<BatteryState> {
+    let state = tokio::task::spawn_blocking(|| sysfs::PowerSupplyFs::system().read_state())
+        .await
+        .context("join battery state refresh")??;
+    store.update_battery(state.clone()).await;
+    Ok(state)
+}
 
 pub async fn monitor(store: StateStore, notifications: NotificationSink) {
     if env::var("BAR_DAEMON_BATTERY_BACKEND").as_deref() == Ok("upower") {
