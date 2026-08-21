@@ -58,9 +58,9 @@ impl HistoryStore {
         let power_transition = previous.is_some_and(|point| {
             point.plugged != state.plugged || point.charging != state.charging
         });
-        if previous.is_some_and(|point| point.plugged && !state.plugged) {
-            self.last_charge_timestamp_ms = now_ms;
-        } else if self.last_charge_timestamp_ms == 0 && !state.plugged {
+        if !state.plugged
+            && (self.last_charge_timestamp_ms == 0 || previous.is_some_and(|point| point.plugged))
+        {
             self.last_charge_timestamp_ms = now_ms;
         }
         let current_bucket = now_ms - now_ms % BUCKET_MILLISECONDS;
