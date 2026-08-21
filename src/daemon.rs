@@ -274,11 +274,15 @@ pub async fn run() -> Result<()> {
     } else {
         None
     };
-    let activity = ActivityService::new(state.clone()).await;
+    let notification_service = match notification_engine.as_ref() {
+        Some(engine) => notifications::service::NotificationService::native(Arc::clone(engine)),
+        None => notifications::service::NotificationService::swaync(),
+    };
+    let activity = ActivityService::new(state.clone(), notification_service.sink()).await;
     let api = ApiService::new(
         state.clone(),
         Arc::clone(&activity),
-        notification_engine.clone(),
+        Arc::clone(&notification_service),
     );
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
     let daemon = BarDaemon {
@@ -329,7 +333,7 @@ pub async fn run() -> Result<()> {
     let media_task = tokio::spawn(media::monitor(state.clone()));
     let audio_task = tokio::spawn(audio::monitor(state.clone()));
     let brightness_task = tokio::spawn(brightness::monitor(state.clone()));
-    let battery_task = tokio::spawn(battery::monitor(state.clone()));
+    let battery_task = tokio::spawn(battery::monitor(state.clone(), notification_service.sink()));
     let power_task = tokio::spawn(power::monitor(state.clone()));
     let notification_task =
         (!native_notifications).then(|| tokio::spawn(notifications::monitor(state.clone())));

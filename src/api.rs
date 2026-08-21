@@ -4,8 +4,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::{
-    activity::notifications::engine::NotificationEngine,
-    activity::{ActivityService, notifications},
+    activity::{ActivityService, notifications::service::NotificationService},
     audio, brightness,
     hyprland::HyprlandClient,
     media, power,
@@ -39,14 +38,14 @@ pub struct ApiService {
     hyprland: Arc<HyprlandClient>,
     audio_effects: Arc<Mutex<()>>,
     brightness_effects: Arc<Mutex<()>>,
-    notifications: Option<Arc<NotificationEngine>>,
+    notifications: Arc<NotificationService>,
 }
 
 impl ApiService {
     pub fn new(
         state: StateStore,
         activity: Arc<ActivityService>,
-        notifications: Option<Arc<NotificationEngine>>,
+        notifications: Arc<NotificationService>,
     ) -> Self {
         Self {
             state,
@@ -176,22 +175,19 @@ impl ApiService {
     }
 
     async fn notification_action(&self, dnd: bool) -> Value {
-        if let Some(notifications) = &self.notifications {
-            if dnd {
-                let enabled = notifications.toggle_dnd().await;
-                return success(json!({ "operation": "toggle-dnd", "enabled": enabled }));
-            }
-            return success(json!({ "operation": "history-owned-by-client" }));
-        }
         let result = if dnd {
-            notifications::toggle_dnd().await
+            self.notifications
+                .toggle_dnd()
+                .await
+                .map(|enabled| json!({ "operation": "toggle-dnd", "enabled": enabled }))
         } else {
-            notifications::toggle_panel().await
+            self.notifications
+                .toggle_panel()
+                .await
+                .map(|()| json!({ "operation": "toggle-panel" }))
         };
         match result {
-            Ok(()) => {
-                success(json!({ "operation": if dnd { "toggle-dnd" } else { "toggle-panel" } }))
-            }
+            Ok(operation) => success(operation),
             Err(error_value) => error("notification-operation-failed", error_value.to_string()),
         }
     }
@@ -200,7 +196,7 @@ impl ApiService {
         let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
             return error("validation-error", "notifications.setDnd requires enabled");
         };
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = self.notifications.native_engine() else {
             return error(
                 "native-notifications-required",
                 "native notifications are disabled",
@@ -211,7 +207,7 @@ impl ApiService {
     }
 
     async fn notification_list(&self, params: Value) -> Value {
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = self.notifications.native_engine() else {
             return error(
                 "native-notifications-required",
                 "native notifications are disabled",
@@ -246,7 +242,7 @@ impl ApiService {
                 "notifications.dismiss requires a positive id",
             );
         };
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = self.notifications.native_engine() else {
             return error(
                 "native-notifications-required",
                 "native notifications are disabled",
@@ -263,7 +259,7 @@ impl ApiService {
     }
 
     async fn notification_clear(&self) -> Value {
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = self.notifications.native_engine() else {
             return error(
                 "native-notifications-required",
                 "native notifications are disabled",
@@ -289,7 +285,7 @@ impl ApiService {
             .get("activation_token")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = self.notifications.native_engine() else {
             return error(
                 "native-notifications-required",
                 "native notifications are disabled",
@@ -315,7 +311,7 @@ impl ApiService {
         let Some(text) = params.get("text").and_then(Value::as_str) else {
             return error("validation-error", "notifications.reply requires text");
         };
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = self.notifications.native_engine() else {
             return error(
                 "native-notifications-required",
                 "native notifications are disabled",
@@ -504,6 +500,7 @@ mod tests {
             notifications::{
                 engine::NotificationEngine,
                 model::{IncomingNotification, NotificationHints},
+                service::NotificationService,
             },
         },
         state::StateStore,
@@ -511,18 +508,17 @@ mod tests {
 
     async fn api() -> ApiService {
         let state = StateStore::default();
-        let activity = ActivityService::new(state.clone()).await;
-        ApiService::new(state, activity, None)
+        let notifications = NotificationService::swaync();
+        let activity = ActivityService::new(state.clone(), notifications.sink()).await;
+        ApiService::new(state, activity, notifications)
     }
 
     async fn native_api() -> (ApiService, Arc<NotificationEngine>) {
         let state = StateStore::default();
-        let activity = ActivityService::new(state.clone()).await;
         let notifications = NotificationEngine::new(state.clone()).await;
-        (
-            ApiService::new(state, activity, Some(Arc::clone(&notifications))),
-            notifications,
-        )
+        let service = NotificationService::native(Arc::clone(&notifications));
+        let activity = ActivityService::new(state.clone(), service.sink()).await;
+        (ApiService::new(state, activity, service), notifications)
     }
 
     #[tokio::test]

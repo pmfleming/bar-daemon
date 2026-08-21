@@ -1,11 +1,15 @@
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use tokio::time::{interval, sleep};
-use zvariant::{OwnedObjectPath, OwnedValue};
+use zvariant::OwnedObjectPath;
 
-use crate::{model::BatteryState, state::StateStore};
+use crate::{
+    activity::notifications::service::{NotificationSink, internal_notification},
+    model::BatteryState,
+    state::StateStore,
+};
 
 const BUS: &str = "org.freedesktop.UPower";
 const ROOT_PATH: &str = "/org/freedesktop/UPower";
@@ -15,14 +19,16 @@ const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const WARNING_PERCENT: u8 = 25;
 const CRITICAL_PERCENT: u8 = 12;
 
-pub async fn monitor(store: StateStore) {
+pub async fn monitor(store: StateStore, notifications: NotificationSink) {
     let mut alerts = AlertTracker::default();
     loop {
         match zbus::Connection::system().await {
             Ok(connection) => {
-                if let Err(error) = monitor_connection(&connection, &store, &mut alerts).await {
+                if let Err(error) =
+                    monitor_connection(&connection, &store, &mut alerts, &notifications).await
+                {
                     tracing::warn!(%error, "UPower monitor disconnected; using sysfs fallback");
-                    refresh_sysfs(&store, &mut alerts).await;
+                    refresh_sysfs(&store, &mut alerts, &notifications).await;
                 }
             }
             Err(error) => {
@@ -42,6 +48,7 @@ async fn monitor_connection(
     connection: &zbus::Connection,
     store: &StateStore,
     alerts: &mut AlertTracker,
+    notifications: &NotificationSink,
 ) -> Result<()> {
     let device_path = display_device_path(connection).await?;
     let root_properties =
@@ -54,18 +61,18 @@ async fn monitor_connection(
         .await?;
     let mut fallback = interval(Duration::from_secs(30));
     fallback.tick().await;
-    refresh(connection, store, alerts, &device_path).await;
+    refresh(connection, store, alerts, &device_path, notifications).await;
     loop {
         tokio::select! {
             signal = root_changes.next() => {
                 if signal.is_none() { anyhow::bail!("UPower root property stream ended"); }
-                refresh(connection, store, alerts, &device_path).await;
+                refresh(connection, store, alerts, &device_path, notifications).await;
             }
             signal = device_changes.next() => {
                 if signal.is_none() { anyhow::bail!("UPower device property stream ended"); }
-                refresh(connection, store, alerts, &device_path).await;
+                refresh(connection, store, alerts, &device_path, notifications).await;
             }
-            _ = fallback.tick() => refresh(connection, store, alerts, &device_path).await,
+            _ = fallback.tick() => refresh(connection, store, alerts, &device_path, notifications).await,
         }
     }
 }
@@ -75,11 +82,12 @@ async fn refresh(
     store: &StateStore,
     alerts: &mut AlertTracker,
     path: &OwnedObjectPath,
+    notifications: &NotificationSink,
 ) {
     match read_state(connection, path).await {
         Ok(state) => {
             if let Some(alert) = alerts.observe(&state) {
-                tokio::spawn(send_notification(alert));
+                tokio::spawn(send_notification(alert, notifications.clone()));
             }
             store.update_battery(state).await;
         }
@@ -94,11 +102,15 @@ async fn refresh(
     }
 }
 
-async fn refresh_sysfs(store: &StateStore, alerts: &mut AlertTracker) {
+async fn refresh_sysfs(
+    store: &StateStore,
+    alerts: &mut AlertTracker,
+    notifications: &NotificationSink,
+) {
     match tokio::task::spawn_blocking(read_sysfs_state).await {
         Ok(Ok(state)) => {
             if let Some(alert) = alerts.observe(&state) {
-                tokio::spawn(send_notification(alert));
+                tokio::spawn(send_notification(alert, notifications.clone()));
             }
             store.update_battery(state).await;
         }
@@ -332,47 +344,21 @@ impl AlertTracker {
     }
 }
 
-async fn send_notification(alert: BatteryAlert) {
-    let result = async {
-        let connection = zbus::Connection::session().await?;
-        let proxy = zbus::Proxy::new(
-            &connection,
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
-        )
-        .await?;
-        let (icon, summary, body, urgency) = match alert {
-            BatteryAlert::Warning => ("battery-caution", "Battery low", "Plug in soon.", 1u8),
-            BatteryAlert::Critical => ("battery-empty", "Battery critical", "Plug in now.", 2u8),
-            BatteryAlert::Full => (
-                "battery-full-charged",
-                "Battery full",
-                "Unplug to reduce wear.",
-                0u8,
-            ),
-        };
-        let mut hints = HashMap::<String, OwnedValue>::new();
-        hints.insert("urgency".into(), OwnedValue::from(urgency));
-        let _: u32 = proxy
-            .call(
-                "Notify",
-                &(
-                    "bar-daemon",
-                    0u32,
-                    icon,
-                    summary,
-                    body,
-                    Vec::<String>::new(),
-                    hints,
-                    -1i32,
-                ),
-            )
-            .await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    if let Err(error) = result {
+async fn send_notification(alert: BatteryAlert, notifications: NotificationSink) {
+    let (icon, summary, body, urgency) = match alert {
+        BatteryAlert::Warning => ("battery-caution", "Battery low", "Plug in soon.", 1u8),
+        BatteryAlert::Critical => ("battery-empty", "Battery critical", "Plug in now.", 2u8),
+        BatteryAlert::Full => (
+            "battery-full-charged",
+            "Battery full",
+            "Unplug to reduce wear.",
+            0u8,
+        ),
+    };
+    if let Err(error) = notifications
+        .send(internal_notification(icon, summary, body, urgency))
+        .await
+    {
         tracing::warn!(%error, "battery notification failed");
     }
 }

@@ -3,7 +3,7 @@ use std::{process::Stdio, time::Duration};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
     time::sleep,
 };
@@ -32,6 +32,7 @@ pub async fn monitor(store: StateStore) {
                 }
                 store
                     .update_notifications(NotificationState {
+                        available: false,
                         error: Some("SwayNC subscription ended".into()),
                         ..store.snapshot().await.notifications
                     })
@@ -63,6 +64,18 @@ async fn run_subscription(store: &StateStore) -> Result<bool> {
         .stdout
         .take()
         .context("capture swaync-client stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("capture swaync-client stderr")?;
+    let stderr_task = tokio::spawn(async move {
+        let mut detail = String::new();
+        BufReader::new(stderr)
+            .take(64 * 1024)
+            .read_to_string(&mut detail)
+            .await
+            .map(|_| detail)
+    });
     let mut lines = BufReader::new(stdout).lines();
     let mut had_value = false;
     while let Some(line) = lines.next_line().await.context("read SwayNC status")? {
@@ -78,15 +91,11 @@ async fn run_subscription(store: &StateStore) -> Result<bool> {
         }
     }
     let status = child.wait().await.context("wait for swaync-client")?;
+    let detail = stderr_task
+        .await
+        .context("join swaync-client stderr reader")??;
     if !status.success() {
-        let stderr = child.stderr.take();
-        let detail = if let Some(stderr) = stderr {
-            let mut lines = BufReader::new(stderr).lines();
-            lines.next_line().await.ok().flatten().unwrap_or_default()
-        } else {
-            String::new()
-        };
-        bail!("swaync-client exited with {status}: {detail}");
+        bail!("swaync-client exited with {status}: {}", detail.trim());
     }
     Ok(had_value)
 }

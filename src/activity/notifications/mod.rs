@@ -8,6 +8,7 @@ pub mod model;
 pub mod persistence;
 pub mod policy;
 pub mod server;
+pub mod service;
 mod swaync;
 
-pub use swaync::{monitor, toggle_dnd, toggle_panel};
+pub use swaync::monitor;

@@ -14,6 +14,8 @@ The daemon exports one session D-Bus object and starts one monitor per domain. M
 
 Unavailable integrations produce a typed domain state rather than terminating the daemon. Monitors reconnect with bounded delays or periodic recovery checks.
 
+Set `BAR_DAEMON_NOTIFICATION_BACKEND=native` to claim `org.freedesktop.Notifications`; the default remains the SwayNC adapter during migration. Native notification state is initialized before Activity and other providers. Internal producers receive a `NotificationSink`, so battery alerts and future reminders enter the native engine directly rather than calling back through D-Bus.
+
 ## Domain integrations
 
 | Domain | Integration | Policy/effects |
@@ -25,7 +27,7 @@ Unavailable integrations produce a typed domain state rather than terminating th
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
 | Battery | UPower system D-Bus with sysfs fallback | Warning/critical/full deduplication per power cycle |
 | Power profile | power-profiles-daemon system D-Bus | Available-profile validation |
-| Notifications | Long-lived SwayNC Waybar subscription | Restart backoff and normalized count/DND state |
+| Notifications | Native `org.freedesktop.Notifications` server with SQLite WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
 | Timezone | systemd-timedated system D-Bus | IANA city, abbreviation, and current offset |
 

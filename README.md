@@ -13,7 +13,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
 - UPower battery state, health, cycle count, threshold classification, and deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
-- Resilient SwayNC status subscription with normalized count/DND state and panel actions
+- Native Freedesktop notification server with expiry, actions, DND, active state, and persistent SQLite history; resilient SwayNC fallback adapter
 - Event-driven NixOS delayed-update readiness across fast and delayed lanes
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
 
@@ -21,6 +21,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 
 ```sh
 bar-daemon daemon
+BAR_DAEMON_NOTIFICATION_BACKEND=native bar-daemon daemon
 bar-daemon client
 bar-daemon debug protocol-registry
 bar-daemon debug contract-fixture

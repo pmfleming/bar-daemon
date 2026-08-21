@@ -13,7 +13,7 @@ use chrono::{Local, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::state::StateStore;
+use crate::{activity::notifications::service::NotificationSink, state::StateStore};
 
 use super::{
     config::{self, ActivityConfig},
@@ -40,10 +40,11 @@ pub struct ActivityService {
     refresh_guard: Mutex<()>,
     todo_guard: Mutex<()>,
     todo_sequence: AtomicU64,
+    _notifications: NotificationSink,
 }
 
 impl ActivityService {
-    pub async fn new(state: StateStore) -> Arc<Self> {
+    pub async fn new(state: StateStore, notifications: NotificationSink) -> Arc<Self> {
         let todo_path = config::todo_path();
         let todos = load_todos(&todo_path).await.unwrap_or_else(|error| {
             tracing::warn!(%error, "local todo store could not be loaded");
@@ -61,6 +62,7 @@ impl ActivityService {
             refresh_guard: Mutex::new(()),
             todo_guard: Mutex::new(()),
             todo_sequence: AtomicU64::new(1),
+            _notifications: notifications,
         })
     }
 
@@ -435,7 +437,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::state::StateStore;
+    use crate::{activity::notifications::service::NotificationSink, state::StateStore};
 
     use super::{ActivityService, ProviderRegistry};
 
@@ -451,6 +453,7 @@ mod tests {
             refresh_guard: Default::default(),
             todo_guard: Default::default(),
             todo_sequence: AtomicU64::new(1),
+            _notifications: NotificationSink::unavailable(),
         };
         let todo = service
             .create_todo("Write tests".into(), None, Some("2026-01-20".into()), 3)
@@ -510,6 +513,7 @@ mod tests {
             refresh_guard: Default::default(),
             todo_guard: Default::default(),
             todo_sequence: AtomicU64::new(1),
+            _notifications: NotificationSink::unavailable(),
         };
         service.refresh().await;
         let snapshot = state.snapshot().await.activity;
@@ -536,6 +540,7 @@ mod tests {
             refresh_guard: Default::default(),
             todo_guard: Default::default(),
             todo_sequence: AtomicU64::new(1),
+            _notifications: NotificationSink::unavailable(),
         };
         assert!(service.query_range(10, 10).await.is_err());
     }
