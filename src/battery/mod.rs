@@ -3,7 +3,7 @@
 //! The public module boundary stays stable while providers and policy are kept
 //! isolated so the UPower compatibility backend can be removed independently.
 
-use std::time::Duration;
+use std::{env, path::PathBuf, time::Duration};
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
@@ -14,6 +14,8 @@ use crate::{
     activity::notifications::service::NotificationSink, model::BatteryState, state::StateStore,
 };
 
+mod model;
+mod monitor;
 mod policy;
 mod sysfs;
 mod upower;
@@ -24,6 +26,28 @@ pub(crate) const WARNING_PERCENT: u8 = 25;
 pub(crate) const CRITICAL_PERCENT: u8 = 12;
 
 pub async fn monitor(store: StateStore, notifications: NotificationSink) {
+    if env::var("BAR_DAEMON_BATTERY_BACKEND").as_deref() == Ok("upower") {
+        monitor_upower_forever(store, notifications).await;
+    } else {
+        monitor_native(store, notifications).await;
+    }
+}
+
+async fn monitor_native(store: StateStore, notifications: NotificationSink) {
+    let mut alerts = AlertTracker::default();
+    let mut native = monitor::NativeMonitor::new(PathBuf::from("/sys/class/power_supply"));
+    loop {
+        let power_supply = native.power_supply().clone();
+        match tokio::task::spawn_blocking(move || power_supply.read_state()).await {
+            Ok(Ok(state)) => publish(state, &store, &mut alerts, &notifications).await,
+            Ok(Err(error)) => publish_error(error, &store).await,
+            Err(error) => publish_error(error, &store).await,
+        }
+        native.changed().await;
+    }
+}
+
+async fn monitor_upower_forever(store: StateStore, notifications: NotificationSink) {
     let mut alerts = AlertTracker::default();
     loop {
         match zbus::Connection::system().await {
@@ -32,7 +56,7 @@ pub async fn monitor(store: StateStore, notifications: NotificationSink) {
                     monitor_upower(&connection, &store, &mut alerts, &notifications).await
                 {
                     tracing::warn!(%error, "UPower monitor disconnected; using sysfs fallback");
-                    refresh_sysfs(&store, &mut alerts, &notifications).await;
+                    refresh_native_once(&store, &mut alerts, &notifications).await;
                 }
             }
             Err(error) => {
@@ -104,12 +128,12 @@ async fn refresh_upower(
     }
 }
 
-async fn refresh_sysfs(
+async fn refresh_native_once(
     store: &StateStore,
     alerts: &mut AlertTracker,
     notifications: &NotificationSink,
 ) {
-    match tokio::task::spawn_blocking(sysfs::read_state).await {
+    match tokio::task::spawn_blocking(|| sysfs::PowerSupplyFs::system().read_state()).await {
         Ok(Ok(state)) => publish(state, store, alerts, notifications).await,
         Ok(Err(error)) => publish_error(error, store).await,
         Err(error) => publish_error(error, store).await,

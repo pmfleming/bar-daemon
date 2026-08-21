@@ -16,7 +16,7 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config pkgs.llvmPackages.libclang ];
-            buildInputs = [ pkgs.pipewire ];
+            buildInputs = [ pkgs.pipewire pkgs.systemd ];
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
@@ -56,7 +56,7 @@
 
       devShells = forAllSystems (system: pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ brightnessctl cargo clippy jq llvmPackages.libclang pkg-config pipewire rust-analyzer rustc rustfmt ];
+          packages = with pkgs; [ brightnessctl cargo clippy jq llvmPackages.libclang pkg-config pipewire rust-analyzer rustc rustfmt systemd ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
           RUST_BACKTRACE = "1";
