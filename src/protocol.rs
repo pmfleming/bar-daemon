@@ -33,6 +33,7 @@ pub const METHODS: &[&str] = &[
     "battery.setThresholds",
     "battery.setProtection",
     "battery.chargeOnce",
+    "battery.setAlertPolicy",
     "powerProfile.set",
     "notifications.togglePanel",
     "notifications.toggleDnd",
@@ -79,6 +80,7 @@ pub fn registry() -> Value {
             { "name": "battery.setThresholds", "params": { "battery_id": "BAT0", "start_percent": 75, "end_percent": 80 }, "result": "battery" },
             { "name": "battery.setProtection", "params": { "enabled": true }, "result": "battery" },
             { "name": "battery.chargeOnce", "params": {}, "result": "battery" },
+            { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true }, "result": "battery" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
@@ -166,9 +168,12 @@ fn generated_contract_fixture() -> Value {
                 "charging": false, "plugged": false, "power_watts": 8.2, "time_to_empty_seconds": 14400,
                 "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
                 "critical": false,
+                "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true },
                 "protection": {
                     "supported": true, "backend": "thinkpad-sysfs", "enabled": true,
-                    "start_percent": 75, "end_percent": 80, "supports_start": true,
+                    "start_percent": 75, "end_percent": 80,
+                    "desired_start_percent": 75, "desired_end_percent": 80,
+                    "desired_enabled": true, "charge_once_active": false, "supports_start": true,
                     "supports_end": true, "supports_charge_behaviour": true,
                     "charge_behaviour": "auto",
                     "available_behaviours": ["auto", "inhibit-charge", "force-discharge"], "error": null
@@ -180,7 +185,9 @@ fn generated_contract_fixture() -> Value {
                     "voltage_volts": 15.48, "health_percent": 85, "cycles": 101,
                     "protection": {
                         "supported": true, "backend": "thinkpad-sysfs", "enabled": true,
-                        "start_percent": 75, "end_percent": 80, "supports_start": true,
+                        "start_percent": 75, "end_percent": 80,
+                        "desired_start_percent": 75, "desired_end_percent": 80,
+                        "desired_enabled": true, "charge_once_active": false, "supports_start": true,
                         "supports_end": true, "supports_charge_behaviour": true,
                         "charge_behaviour": "auto",
                         "available_behaviours": ["auto", "inhibit-charge", "force-discharge"], "error": null

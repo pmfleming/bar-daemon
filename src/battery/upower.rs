@@ -58,6 +58,7 @@ pub(super) async fn read_state(
         cycles: sysfs::read_cycle_count(&native_path),
         warning: on_battery && percentage <= WARNING_PERCENT,
         critical: on_battery && percentage <= CRITICAL_PERCENT,
+        policy: Default::default(),
         protection: Default::default(),
         devices: Vec::new(),
         error: None,

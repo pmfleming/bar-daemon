@@ -40,7 +40,6 @@ pub struct ApiService {
     hyprland: Arc<HyprlandClient>,
     audio_effects: Arc<Mutex<()>>,
     brightness_effects: Arc<Mutex<()>>,
-    battery_effects: Arc<Mutex<()>>,
     notifications: Arc<NotificationService>,
 }
 
@@ -56,7 +55,6 @@ impl ApiService {
             hyprland: Arc::new(HyprlandClient::default()),
             audio_effects: Arc::new(Mutex::new(())),
             brightness_effects: Arc::new(Mutex::new(())),
-            battery_effects: Arc::new(Mutex::new(())),
             notifications,
         }
     }
@@ -79,6 +77,7 @@ impl ApiService {
             "battery.setThresholds" => self.battery_set_thresholds(params).await,
             "battery.setProtection" => self.battery_set_protection(params).await,
             "battery.chargeOnce" => self.battery_charge_once().await,
+            "battery.setAlertPolicy" => self.battery_set_alert_policy(params).await,
             "powerProfile.set" => self.power_profile_set(params).await,
             "notifications.togglePanel" => self.notification_action(false).await,
             "notifications.toggleDnd" => self.notification_action(true).await,

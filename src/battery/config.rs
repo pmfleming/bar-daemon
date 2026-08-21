@@ -1,0 +1,229 @@
+use std::{
+    env,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+pub(crate) const CHARGE_ONCE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct BatteryConfig {
+    pub warning_percent: u8,
+    pub critical_percent: u8,
+    pub notify_when_full: bool,
+    pub manage_thresholds: bool,
+    pub protection_enabled: bool,
+    pub protected_start_percent: u8,
+    pub protected_end_percent: u8,
+}
+
+impl Default for BatteryConfig {
+    fn default() -> Self {
+        Self {
+            warning_percent: 25,
+            critical_percent: 12,
+            notify_when_full: true,
+            manage_thresholds: false,
+            protection_enabled: false,
+            protected_start_percent: 75,
+            protected_end_percent: 80,
+        }
+    }
+}
+
+impl BatteryConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.critical_percent > self.warning_percent || self.warning_percent > 100 {
+            bail!("alert percentages must satisfy 0 <= critical <= warning <= 100");
+        }
+        if self.protected_start_percent >= self.protected_end_percent
+            || self.protected_end_percent > 100
+        {
+            bail!("protection thresholds must satisfy 0 <= start < end <= 100");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct BatteryRuntimeState {
+    pub charge_once_active: bool,
+    pub charge_once_started_unix_ms: u64,
+    pub charge_once_expires_unix_ms: u64,
+    pub restore_start_percent: Option<u8>,
+    pub restore_end_percent: Option<u8>,
+}
+
+impl BatteryRuntimeState {
+    pub(crate) fn start_charge_once(
+        now_unix_ms: u64,
+        restore_start_percent: u8,
+        restore_end_percent: u8,
+    ) -> Self {
+        Self {
+            charge_once_active: true,
+            charge_once_started_unix_ms: now_unix_ms,
+            charge_once_expires_unix_ms: now_unix_ms
+                .saturating_add(CHARGE_ONCE_MAX_AGE.as_millis() as u64),
+            restore_start_percent: Some(restore_start_percent),
+            restore_end_percent: Some(restore_end_percent),
+        }
+    }
+
+    pub(crate) fn is_expired(&self, now_unix_ms: u64) -> bool {
+        self.charge_once_active
+            && self.charge_once_expires_unix_ms != 0
+            && now_unix_ms >= self.charge_once_expires_unix_ms
+    }
+}
+
+pub(crate) fn config_path() -> PathBuf {
+    env::var_os("BAR_DAEMON_BATTERY_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_home().join("bar-daemon/battery.json"))
+}
+
+pub(crate) fn state_path() -> PathBuf {
+    env::var_os("BAR_DAEMON_BATTERY_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_home().join("bar-daemon/battery-state.json"))
+}
+
+pub(crate) async fn load_config() -> Result<BatteryConfig> {
+    let config: BatteryConfig = load_or_default(&config_path()).await?;
+    config.validate()?;
+    Ok(config)
+}
+
+pub(crate) async fn save_config(config: &BatteryConfig) -> Result<()> {
+    config.validate()?;
+    save_atomic(&config_path(), config).await
+}
+
+pub(crate) async fn load_runtime() -> Result<BatteryRuntimeState> {
+    load_or_default(&state_path()).await
+}
+
+pub(crate) async fn save_runtime(state: &BatteryRuntimeState) -> Result<()> {
+    save_atomic(&state_path(), state).await
+}
+
+async fn load_or_default<T>(path: &Path) -> Result<T>
+where
+    T: DeserializeOwned + Default,
+{
+    match tokio::fs::read(path).await {
+        Ok(contents) => serde_json::from_slice(&contents)
+            .with_context(|| format!("parse battery data {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+async fn save_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("battery data path {} has no parent", path.display()))?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("create {}", parent.display()))?;
+    let temporary = path.with_extension("json.tmp");
+    let contents = serde_json::to_vec_pretty(value)?;
+    tokio::fs::write(&temporary, contents)
+        .await
+        .with_context(|| format!("write {}", temporary.display()))?;
+    tokio::fs::rename(&temporary, path)
+        .await
+        .with_context(|| format!("replace {}", path.display()))
+}
+
+pub(crate) fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn config_home() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn state_home() -> PathBuf {
+    env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatteryConfig, BatteryRuntimeState, CHARGE_ONCE_MAX_AGE};
+
+    #[test]
+    fn config_defaults_are_conservative() {
+        let config: BatteryConfig = serde_json::from_str("{}").unwrap();
+        assert!(!config.manage_thresholds);
+        assert!(!config.protection_enabled);
+        assert_eq!(config.protected_start_percent, 75);
+        assert_eq!(config.protected_end_percent, 80);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validates_alert_and_protection_ranges() {
+        assert!(
+            BatteryConfig {
+                warning_percent: 10,
+                critical_percent: 20,
+                ..BatteryConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            BatteryConfig {
+                protected_start_percent: 80,
+                protected_end_percent: 80,
+                ..BatteryConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn charge_once_has_a_bounded_lifetime() {
+        let runtime = BatteryRuntimeState::start_charge_once(1_000, 75, 80);
+        let expires = 1_000 + CHARGE_ONCE_MAX_AGE.as_millis() as u64;
+        assert_eq!(runtime.charge_once_expires_unix_ms, expires);
+        assert!(!runtime.is_expired(expires - 1));
+        assert!(runtime.is_expired(expires));
+        assert_eq!(runtime.restore_start_percent, Some(75));
+        assert_eq!(runtime.restore_end_percent, Some(80));
+    }
+
+    #[tokio::test]
+    async fn persisted_data_round_trips() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("nested/battery.json");
+        let expected = BatteryConfig {
+            manage_thresholds: true,
+            protection_enabled: true,
+            ..BatteryConfig::default()
+        };
+        super::save_atomic(&path, &expected).await.unwrap();
+        let actual: BatteryConfig = super::load_or_default(&path).await.unwrap();
+        assert_eq!(actual, expected);
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+}

@@ -19,7 +19,11 @@ pub(super) struct AlertTracker {
 }
 
 impl AlertTracker {
-    pub(super) fn observe(&mut self, state: &BatteryState) -> Option<BatteryAlert> {
+    pub(super) fn observe(
+        &mut self,
+        state: &BatteryState,
+        notify_when_full: bool,
+    ) -> Option<BatteryAlert> {
         if !state.available {
             self.initialized = true;
             return None;
@@ -39,7 +43,7 @@ impl AlertTracker {
             }
             if state.percentage >= 100 && !self.full_sent {
                 self.full_sent = true;
-                return Some(BatteryAlert::Full);
+                return notify_when_full.then_some(BatteryAlert::Full);
             }
             return None;
         }
@@ -95,20 +99,20 @@ mod tests {
     #[test]
     fn alerts_once_per_discharge_cycle_without_startup_noise() {
         let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&state(50, false)), None);
+        assert_eq!(tracker.observe(&state(50, false), true), None);
         assert_eq!(
-            tracker.observe(&state(25, false)),
+            tracker.observe(&state(25, false), true),
             Some(BatteryAlert::Warning)
         );
-        assert_eq!(tracker.observe(&state(20, false)), None);
+        assert_eq!(tracker.observe(&state(20, false), true), None);
         assert_eq!(
-            tracker.observe(&state(12, false)),
+            tracker.observe(&state(12, false), true),
             Some(BatteryAlert::Critical)
         );
-        assert_eq!(tracker.observe(&state(10, false)), None);
-        assert_eq!(tracker.observe(&state(50, true)), None);
+        assert_eq!(tracker.observe(&state(10, false), true), None);
+        assert_eq!(tracker.observe(&state(50, true), true), None);
         assert_eq!(
-            tracker.observe(&state(25, false)),
+            tracker.observe(&state(25, false), true),
             Some(BatteryAlert::Warning)
         );
     }
@@ -116,8 +120,18 @@ mod tests {
     #[test]
     fn reports_full_only_after_initial_state() {
         let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&state(100, true)), None);
-        assert_eq!(tracker.observe(&state(99, true)), None);
-        assert_eq!(tracker.observe(&state(100, true)), Some(BatteryAlert::Full));
+        assert_eq!(tracker.observe(&state(100, true), true), None);
+        assert_eq!(tracker.observe(&state(99, true), true), None);
+        assert_eq!(
+            tracker.observe(&state(100, true), true),
+            Some(BatteryAlert::Full)
+        );
+    }
+
+    #[test]
+    fn full_notification_can_be_disabled() {
+        let mut tracker = AlertTracker::default();
+        assert_eq!(tracker.observe(&state(99, true), false), None);
+        assert_eq!(tracker.observe(&state(100, true), false), None);
     }
 }

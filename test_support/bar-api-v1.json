@@ -118,6 +118,15 @@
         "result": "battery"
       },
       {
+        "name": "battery.setAlertPolicy",
+        "params": {
+          "warning_percent": 25,
+          "critical_percent": 12,
+          "notify_when_full": true
+        },
+        "result": "battery"
+      },
+      {
         "name": "powerProfile.set",
         "params": {
           "profile": "balanced"
@@ -346,12 +355,21 @@
       "time_to_empty_seconds": 14400,
       "time_to_full_seconds": 0,
       "warning": false,
+      "policy": {
+        "warning_percent": 25,
+        "critical_percent": 12,
+        "notify_when_full": true
+      },
       "protection": {
         "supported": true,
         "backend": "thinkpad-sysfs",
         "enabled": true,
         "start_percent": 75,
         "end_percent": 80,
+        "desired_start_percent": 75,
+        "desired_end_percent": 80,
+        "desired_enabled": true,
+        "charge_once_active": false,
         "supports_start": true,
         "supports_end": true,
         "supports_charge_behaviour": true,
@@ -381,6 +399,10 @@
             "enabled": true,
             "start_percent": 75,
             "end_percent": 80,
+            "desired_start_percent": 75,
+            "desired_end_percent": 80,
+            "desired_enabled": true,
+            "charge_once_active": false,
             "supports_start": true,
             "supports_end": true,
             "supports_charge_behaviour": true,
