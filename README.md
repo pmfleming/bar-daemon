@@ -11,7 +11,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - MPRIS discovery, deterministic active-player selection, artwork and playback timing, seek correction, and playback actions
 - Native PipeWire default-output volume/mute and default-input mute state, with bounded output adjustments
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
-- UPower battery state, health, cycle count, threshold classification, and deduplicated alerts
+- Native Linux power-supply monitoring, ThinkPad charge protection, recoverable charge-once, health/cycle telemetry, and configurable deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
 - Native Freedesktop notification server with expiry, actions, DND, active state, and persistent SQLite history; resilient SwayNC fallback adapter
 - Event-driven NixOS delayed-update readiness across fast and delayed lanes
@@ -35,10 +35,11 @@ JSONL example:
 {"op":"subscribe","id":"subscribe","streams":["workspaces.changed","media.changed"]}
 {"op":"call","id":"media","method":"media.operation","params":{"operation":"play-pause"}}
 {"op":"call","id":"focus","method":"workspace.focus","params":{"workspace_id":2,"on_current_monitor":true}}
+{"op":"call","id":"protect","method":"battery.setProtection","params":{"enabled":true}}
 {"op":"shutdown","id":"shutdown"}
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries, [`docs/activity-module-plan.md`](docs/activity-module-plan.md) for the Activity roadmap and configuration, and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
+See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries, [`docs/battery.md`](docs/battery.md) for ThinkPad setup, policy, and migration details, [`docs/activity-module-plan.md`](docs/activity-module-plan.md) for the Activity roadmap and configuration, and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
 
 D-Bus endpoint:
 

@@ -25,7 +25,7 @@ The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NO
 | Media | MPRIS session D-Bus | Playing → Spotify → controllable → first selection; artwork and timing normalization |
 | Audio | Native PipeWire default sink/source metadata and node properties | Output cubic/linear conversion and 0–100% clamp; output and microphone mute |
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
-| Battery | UPower system D-Bus with sysfs fallback | Warning/critical/full deduplication per power cycle |
+| Battery | Native power-supply sysfs plus udev events; temporary opt-in UPower adapter | Energy-weighted multi-battery telemetry, persistent alert policy, ThinkPad thresholds, crash-safe charge-once recovery |
 | Power profile | power-profiles-daemon system D-Bus | Available-profile validation |
 | Notifications | Native `org.freedesktop.Notifications` server with SQLite WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
@@ -34,3 +34,5 @@ The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NO
 ## Transport
 
 The D-Bus API uses JSON payloads so QML can consume the same versioned envelopes through the `bar-daemon client` JSONL bridge. Subscription signals are directed to their calling D-Bus owner, and owner loss terminates and removes the subscription. The JSONL client reports service-owner replacement as a transport failure so its supervisor reconnects and restores subscriptions. Protocol drift is guarded by `test_support/bar-api-v1.json`, registry tests, unit tests, and the Nix build check.
+
+ThinkPad threshold writes cross a separate system-bus boundary. The root helper accepts only `BAT` followed by digits, validates that the target is a battery with both threshold attributes, authorizes the caller with polkit, writes in a firmware-safe order, verifies readback, and rolls back a partial write. The session daemon never writes sysfs directly. See [`battery.md`](battery.md) for the complete policy and recovery model.

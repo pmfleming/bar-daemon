@@ -48,6 +48,9 @@ pub async fn refresh_state(store: &StateStore) -> Result<BatteryState> {
 
 pub async fn monitor(store: StateStore, notifications: NotificationSink) {
     if env::var("BAR_DAEMON_BATTERY_BACKEND").as_deref() == Ok("upower") {
+        tracing::warn!(
+            "using the compatibility UPower battery backend; ThinkPad protection controls are unavailable"
+        );
         monitor_upower_forever(store, notifications).await;
     } else {
         monitor_native(store, notifications).await;
@@ -307,6 +310,7 @@ fn decorate_protection(
     runtime: &config::BatteryRuntimeState,
     policy_error: Option<String>,
 ) {
+    protection.managed = config.manage_thresholds;
     protection.desired_start_percent = Some(config.protected_start_percent);
     protection.desired_end_percent = Some(config.protected_end_percent);
     protection.desired_enabled = config.protection_enabled;

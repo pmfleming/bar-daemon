@@ -363,6 +363,7 @@
       "protection": {
         "supported": true,
         "backend": "thinkpad-sysfs",
+        "managed": true,
         "enabled": true,
         "start_percent": 75,
         "end_percent": 80,
@@ -396,6 +397,7 @@
           "protection": {
             "supported": true,
             "backend": "thinkpad-sysfs",
+            "managed": true,
             "enabled": true,
             "start_percent": 75,
             "end_percent": 80,

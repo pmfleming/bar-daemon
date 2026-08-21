@@ -170,7 +170,7 @@ fn generated_contract_fixture() -> Value {
                 "critical": false,
                 "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true },
                 "protection": {
-                    "supported": true, "backend": "thinkpad-sysfs", "enabled": true,
+                    "supported": true, "backend": "thinkpad-sysfs", "managed": true, "enabled": true,
                     "start_percent": 75, "end_percent": 80,
                     "desired_start_percent": 75, "desired_end_percent": 80,
                     "desired_enabled": true, "charge_once_active": false, "supports_start": true,
@@ -184,7 +184,7 @@ fn generated_contract_fixture() -> Value {
                     "energy_now_wh": 35.8, "energy_full_wh": 44.75, "energy_full_design_wh": 52.5,
                     "voltage_volts": 15.48, "health_percent": 85, "cycles": 101,
                     "protection": {
-                        "supported": true, "backend": "thinkpad-sysfs", "enabled": true,
+                        "supported": true, "backend": "thinkpad-sysfs", "managed": true, "enabled": true,
                         "start_percent": 75, "end_percent": 80,
                         "desired_start_percent": 75, "desired_end_percent": 80,
                         "desired_enabled": true, "charge_once_active": false, "supports_start": true,

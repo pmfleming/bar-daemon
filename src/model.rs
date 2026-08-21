@@ -142,6 +142,7 @@ pub struct BatteryDeviceState {
 pub struct BatteryProtectionState {
     pub supported: bool,
     pub backend: String,
+    pub managed: bool,
     pub enabled: bool,
     pub start_percent: Option<u8>,
     pub end_percent: Option<u8>,

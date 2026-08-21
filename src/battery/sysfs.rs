@@ -196,6 +196,7 @@ fn device_state(battery: &NativeBattery) -> BatteryDeviceState {
     let protection = BatteryProtectionState {
         supported: battery.start_threshold.is_some() || battery.end_threshold.is_some(),
         backend: "thinkpad-sysfs".into(),
+        managed: false,
         enabled: battery.start_threshold.is_some_and(|value| value > 0)
             || battery.end_threshold.is_some_and(|value| value < 100),
         start_percent: battery.start_threshold,
