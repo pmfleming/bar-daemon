@@ -36,6 +36,8 @@ pub const METHODS: &[&str] = &[
     "battery.chargeOnce",
     "battery.setAlertPolicy",
     "powerProfile.set",
+    "powerProfile.setBatteryAware",
+    "powerProfile.setActionEnabled",
     "notifications.togglePanel",
     "notifications.toggleDnd",
     "notifications.setDnd",
@@ -83,6 +85,8 @@ pub fn registry() -> Value {
             { "name": "battery.chargeOnce", "params": {}, "result": "battery" },
             { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true }, "result": "battery" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
+            { "name": "powerProfile.setBatteryAware", "params": { "enabled": true }, "result": "power_profile" },
+            { "name": "powerProfile.setActionEnabled", "params": { "action": "amdgpu_panel_power", "enabled": true }, "result": "power_profile" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true }, "result": "notifications" },
@@ -201,7 +205,10 @@ fn generated_contract_fixture() -> Value {
             "power_profile": {
                 "available": true, "profile": "balanced", "driver": "amd_pstate",
                 "profiles": [{ "name": "balanced", "driver": "amd_pstate", "platform_driver": "platform_profile" }],
-                "performance_degraded": "", "error": null
+                "performance_degraded": "", "version": "0.30", "battery_aware": true,
+                "actions": [{ "name": "amdgpu_panel_power", "description": "Panel power savings", "enabled": true }],
+                "active_holds": [{ "application_id": "org.example.Compiler", "profile": "performance", "reason": "Building" }],
+                "error": null
             },
             "notifications": {
                 "available": true, "count": 1, "dnd": false, "inhibited": false, "text": "1",

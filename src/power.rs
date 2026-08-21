@@ -6,7 +6,7 @@ use tokio::time::{interval, sleep};
 use zvariant::OwnedValue;
 
 use crate::{
-    model::{PowerProfile, PowerProfileState},
+    model::{PowerProfile, PowerProfileAction, PowerProfileHold, PowerProfileState},
     state::StateStore,
 };
 
@@ -91,6 +91,32 @@ async fn read_state(connection: &zbus::Connection) -> Result<PowerProfileState> 
         .find(|item| item.name == profile)
         .map(|item| item.driver.clone())
         .unwrap_or_default();
+    let raw_action_info: Vec<HashMap<String, OwnedValue>> =
+        proxy.get_property("ActionsInfo").await.unwrap_or_default();
+    let mut actions = raw_action_info
+        .iter()
+        .filter_map(parse_action)
+        .collect::<Vec<_>>();
+    if actions.is_empty() {
+        actions = proxy
+            .get_property::<Vec<String>>("Actions")
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| PowerProfileAction {
+                name,
+                description: String::new(),
+                enabled: true,
+            })
+            .collect();
+    }
+    let active_holds = proxy
+        .get_property::<Vec<HashMap<String, OwnedValue>>>("ActiveProfileHolds")
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(parse_hold)
+        .collect();
     Ok(PowerProfileState {
         available: true,
         profile,
@@ -100,6 +126,10 @@ async fn read_state(connection: &zbus::Connection) -> Result<PowerProfileState> 
             .get_property("PerformanceDegraded")
             .await
             .unwrap_or_default(),
+        version: proxy.get_property("Version").await.unwrap_or_default(),
+        battery_aware: proxy.get_property("BatteryAware").await.ok(),
+        actions,
+        active_holds,
         error: None,
     })
 }
@@ -115,11 +145,31 @@ fn parse_profile(values: &HashMap<String, OwnedValue>) -> Option<PowerProfile> {
     })
 }
 
+fn parse_action(values: &HashMap<String, OwnedValue>) -> Option<PowerProfileAction> {
+    Some(PowerProfileAction {
+        name: property_string(values, "Action")?,
+        description: property_string(values, "Description").unwrap_or_default(),
+        enabled: property_bool(values, "Enabled").unwrap_or(true),
+    })
+}
+
+fn parse_hold(values: &HashMap<String, OwnedValue>) -> Option<PowerProfileHold> {
+    Some(PowerProfileHold {
+        application_id: property_string(values, "ApplicationId")?,
+        profile: property_string(values, "Profile")?,
+        reason: property_string(values, "Reason").unwrap_or_default(),
+    })
+}
+
 fn property_string(values: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     values
         .get(key)
         .and_then(|value| <&str>::try_from(value).ok())
         .map(str::to_string)
+}
+
+fn property_bool(values: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
+    values.get(key).and_then(|value| bool::try_from(value).ok())
 }
 
 pub async fn set_profile(profile: &str) -> Result<PowerProfileState> {
@@ -143,12 +193,48 @@ pub async fn set_profile(profile: &str) -> Result<PowerProfileState> {
     read_state(&connection).await
 }
 
+pub async fn set_battery_aware(enabled: bool) -> Result<PowerProfileState> {
+    let connection = zbus::Connection::system()
+        .await
+        .context("connect to system D-Bus")?;
+    let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE)
+        .await
+        .context("connect to Power Profiles service")?;
+    let current = read_state(&connection).await?;
+    if current.battery_aware.is_none() {
+        bail!("Power Profiles service does not expose battery-aware control");
+    }
+    proxy
+        .set_property("BatteryAware", &enabled)
+        .await
+        .context("set battery-aware power profile behavior")?;
+    read_state(&connection).await
+}
+
+pub async fn set_action_enabled(action: &str, enabled: bool) -> Result<PowerProfileState> {
+    let connection = zbus::Connection::system()
+        .await
+        .context("connect to system D-Bus")?;
+    let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE)
+        .await
+        .context("connect to Power Profiles service")?;
+    let current = read_state(&connection).await?;
+    if !current.actions.iter().any(|item| item.name == action) {
+        bail!("power profile action is unavailable: {action}");
+    }
+    proxy
+        .call_method("SetActionEnabled", &(action, enabled))
+        .await
+        .context("configure power profile action")?;
+    read_state(&connection).await
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use zvariant::{OwnedValue, Value};
 
-    use super::parse_profile;
+    use super::{parse_action, parse_hold, parse_profile};
 
     fn owned(value: &str) -> OwnedValue {
         OwnedValue::try_from(Value::new(value)).unwrap()
@@ -164,5 +250,29 @@ mod tests {
         let profile = parse_profile(&values).unwrap();
         assert_eq!(profile.name, "balanced");
         assert_eq!(profile.driver, "amd_pstate");
+    }
+
+    #[test]
+    fn parses_action_and_hold_dictionaries() {
+        let action = HashMap::from([
+            ("Action".into(), owned("amdgpu_panel_power")),
+            ("Description".into(), owned("Panel power savings")),
+            (
+                "Enabled".into(),
+                OwnedValue::try_from(Value::new(true)).unwrap(),
+            ),
+        ]);
+        let action = parse_action(&action).unwrap();
+        assert_eq!(action.name, "amdgpu_panel_power");
+        assert!(action.enabled);
+
+        let hold = HashMap::from([
+            ("ApplicationId".into(), owned("org.example.Compiler")),
+            ("Profile".into(), owned("performance")),
+            ("Reason".into(), owned("Building")),
+        ]);
+        let hold = parse_hold(&hold).unwrap();
+        assert_eq!(hold.profile, "performance");
+        assert_eq!(hold.reason, "Building");
     }
 }

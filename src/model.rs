@@ -81,6 +81,10 @@ pub struct PowerProfileState {
     pub driver: String,
     pub profiles: Vec<PowerProfile>,
     pub performance_degraded: String,
+    pub version: String,
+    pub battery_aware: Option<bool>,
+    pub actions: Vec<PowerProfileAction>,
+    pub active_holds: Vec<PowerProfileHold>,
     pub error: Option<String>,
 }
 
@@ -89,6 +93,20 @@ pub struct PowerProfile {
     pub name: String,
     pub driver: String,
     pub platform_driver: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PowerProfileAction {
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PowerProfileHold {
+    pub application_id: String,
+    pub profile: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

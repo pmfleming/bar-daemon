@@ -26,7 +26,7 @@ The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NO
 | Audio | Native PipeWire default sink/source metadata and node properties | Output cubic/linear conversion and 0–100% clamp; output and microphone mute |
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
 | Battery | Native power-supply sysfs plus udev events; temporary opt-in UPower adapter | Energy-weighted multi-battery telemetry, persistent alert policy, ThinkPad thresholds, crash-safe charge-once recovery |
-| Power profile | power-profiles-daemon system D-Bus | Available-profile validation |
+| Power profile | Standard Power Profiles system D-Bus (`power-profiles-daemon`, `tuned-ppd`, or `tlp-pd`) | Available-profile validation, optional battery-aware/actions capability discovery, active holds and degradation state |
 | Notifications | Native `org.freedesktop.Notifications` server with SQLite WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
 | Timezone | systemd-timedated system D-Bus | IANA city, abbreviation, and current offset |

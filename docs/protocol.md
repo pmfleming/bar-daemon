@@ -41,6 +41,8 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `battery.chargeOnce`
 - `battery.setAlertPolicy`
 - `powerProfile.set`
+- `powerProfile.setBatteryAware`
+- `powerProfile.setActionEnabled`
 - `notifications.togglePanel`
 - `notifications.toggleDnd`
 - `notifications.setDnd`

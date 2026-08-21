@@ -18,6 +18,36 @@ impl ApiService {
             Err(value) => error("power-profile-operation-failed", value.to_string()),
         }
     }
+    pub(super) async fn power_profile_set_battery_aware(params: Value) -> Value {
+        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
+            return error(
+                "validation-error",
+                "powerProfile.setBatteryAware requires enabled",
+            );
+        };
+        match power::set_battery_aware(enabled).await {
+            Ok(state) => success(json!({"power_profile": state})),
+            Err(value) => error("power-profile-operation-failed", value.to_string()),
+        }
+    }
+    pub(super) async fn power_profile_set_action_enabled(params: Value) -> Value {
+        let Some(action) = params.get("action").and_then(Value::as_str) else {
+            return error(
+                "validation-error",
+                "powerProfile.setActionEnabled requires action",
+            );
+        };
+        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
+            return error(
+                "validation-error",
+                "powerProfile.setActionEnabled requires enabled",
+            );
+        };
+        match power::set_action_enabled(action, enabled).await {
+            Ok(state) => success(json!({"power_profile": state})),
+            Err(value) => error("power-profile-operation-failed", value.to_string()),
+        }
+    }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let Some(delta) = params.get("delta_percent").and_then(Value::as_i64) else {
             return error(

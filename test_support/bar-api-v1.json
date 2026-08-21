@@ -134,6 +134,21 @@
         "result": "power_profile"
       },
       {
+        "name": "powerProfile.setBatteryAware",
+        "params": {
+          "enabled": true
+        },
+        "result": "power_profile"
+      },
+      {
+        "name": "powerProfile.setActionEnabled",
+        "params": {
+          "action": "amdgpu_panel_power",
+          "enabled": true
+        },
+        "result": "power_profile"
+      },
+      {
         "name": "notifications.togglePanel",
         "params": {},
         "result": "operation"
@@ -465,7 +480,22 @@
       "history_revision": 1
     },
     "power_profile": {
+      "actions": [
+        {
+          "description": "Panel power savings",
+          "enabled": true,
+          "name": "amdgpu_panel_power"
+        }
+      ],
+      "active_holds": [
+        {
+          "application_id": "org.example.Compiler",
+          "profile": "performance",
+          "reason": "Building"
+        }
+      ],
       "available": true,
+      "battery_aware": true,
       "driver": "amd_pstate",
       "error": null,
       "performance_degraded": "",
@@ -476,7 +506,8 @@
           "name": "balanced",
           "platform_driver": "platform_profile"
         }
-      ]
+      ],
+      "version": "0.30"
     },
     "timezone": {
       "abbreviation": "CEST",

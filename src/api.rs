@@ -73,6 +73,8 @@ impl ApiService {
             "battery.chargeOnce" => self.battery_charge_once().await,
             "battery.setAlertPolicy" => self.battery_set_alert_policy(params).await,
             "powerProfile.set" => Self::power_profile_set(params).await,
+            "powerProfile.setBatteryAware" => Self::power_profile_set_battery_aware(params).await,
+            "powerProfile.setActionEnabled" => Self::power_profile_set_action_enabled(params).await,
             "notifications.togglePanel" => self.notification_action(false).await,
             "notifications.toggleDnd" => self.notification_action(true).await,
             "notifications.setDnd" => self.notification_set_dnd(params).await,
