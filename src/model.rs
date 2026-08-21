@@ -106,6 +106,42 @@ pub struct BatteryState {
     pub cycles: Option<u32>,
     pub warning: bool,
     pub critical: bool,
+    pub protection: BatteryProtectionState,
+    pub devices: Vec<BatteryDeviceState>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryDeviceState {
+    pub id: String,
+    pub vendor: String,
+    pub model: String,
+    pub serial: String,
+    pub present: bool,
+    pub percentage: u8,
+    pub state: String,
+    pub power_watts: f64,
+    pub energy_now_wh: Option<f64>,
+    pub energy_full_wh: Option<f64>,
+    pub energy_full_design_wh: Option<f64>,
+    pub voltage_volts: Option<f64>,
+    pub health_percent: Option<u8>,
+    pub cycles: Option<u32>,
+    pub protection: BatteryProtectionState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryProtectionState {
+    pub supported: bool,
+    pub backend: String,
+    pub enabled: bool,
+    pub start_percent: Option<u8>,
+    pub end_percent: Option<u8>,
+    pub supports_start: bool,
+    pub supports_end: bool,
+    pub supports_charge_behaviour: bool,
+    pub charge_behaviour: Option<String>,
+    pub available_behaviours: Vec<String>,
     pub error: Option<String>,
 }
 

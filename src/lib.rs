@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod activity;
 pub mod api;
 pub mod audio;

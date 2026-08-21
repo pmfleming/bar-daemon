@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::model::BatteryState;
+use crate::model::{BatteryDeviceState, BatteryProtectionState, BatteryState};
 
 use super::{
     CRITICAL_PERCENT, WARNING_PERCENT,
@@ -160,6 +160,14 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
     } else {
         0
     };
+    let devices = present
+        .iter()
+        .map(|battery| device_state(battery))
+        .collect::<Vec<_>>();
+    let protection = devices
+        .first()
+        .map(|device| device.protection.clone())
+        .unwrap_or_default();
 
     BatteryState {
         available: !present.is_empty(),
@@ -177,8 +185,48 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         cycles: (present.len() == 1).then(|| present[0].cycles).flatten(),
         warning: !snapshot.plugged && percentage <= WARNING_PERCENT,
         critical: !snapshot.plugged && percentage <= CRITICAL_PERCENT,
+        protection,
+        devices,
         error: None,
     }
+}
+
+fn device_state(battery: &NativeBattery) -> BatteryDeviceState {
+    let protection = BatteryProtectionState {
+        supported: battery.start_threshold.is_some() || battery.end_threshold.is_some(),
+        backend: "thinkpad-sysfs".into(),
+        enabled: battery.start_threshold.is_some_and(|value| value > 0)
+            || battery.end_threshold.is_some_and(|value| value < 100),
+        start_percent: battery.start_threshold,
+        end_percent: battery.end_threshold,
+        supports_start: battery.start_threshold.is_some(),
+        supports_end: battery.end_threshold.is_some(),
+        supports_charge_behaviour: !battery.available_behaviours.is_empty(),
+        charge_behaviour: battery.charge_behaviour.clone(),
+        available_behaviours: battery.available_behaviours.clone(),
+        error: None,
+    };
+    BatteryDeviceState {
+        id: battery.id.clone(),
+        vendor: battery.vendor.clone(),
+        model: battery.model.clone(),
+        serial: battery.serial.clone(),
+        present: battery.present,
+        percentage: battery.percentage,
+        state: battery.status.to_lowercase().replace(' ', "-"),
+        power_watts: battery.power_uw as f64 / 1_000_000.0,
+        energy_now_wh: micro_to_base(battery.energy_now_uwh),
+        energy_full_wh: micro_to_base(battery.energy_full_uwh),
+        energy_full_design_wh: micro_to_base(battery.energy_full_design_uwh),
+        voltage_volts: micro_to_base(battery.voltage_uv),
+        health_percent: ratio_percent(battery.energy_full_uwh, battery.energy_full_design_uwh),
+        cycles: battery.cycles,
+        protection,
+    }
+}
+
+fn micro_to_base(value: Option<u64>) -> Option<f64> {
+    value.map(|value| value as f64 / 1_000_000.0)
 }
 
 fn read_energy(
@@ -318,5 +366,39 @@ mod tests {
         assert_eq!(state.percentage, 80);
         assert_eq!(state.power_watts, 10.0);
         assert_eq!(state.time_to_empty_seconds, 14_400);
+    }
+
+    #[test]
+    fn exposes_thinkpad_protection_capabilities() {
+        let directory = TempDir::new().unwrap();
+        write(directory.path(), "BAT0", "type", "Battery\n");
+        write(directory.path(), "BAT0", "status", "Not charging\n");
+        write(directory.path(), "BAT0", "capacity", "80\n");
+        write(
+            directory.path(),
+            "BAT0",
+            "charge_control_start_threshold",
+            "75\n",
+        );
+        write(
+            directory.path(),
+            "BAT0",
+            "charge_control_end_threshold",
+            "80\n",
+        );
+        write(
+            directory.path(),
+            "BAT0",
+            "charge_behaviour",
+            "[auto] inhibit-charge force-discharge\n",
+        );
+        let state = PowerSupplyFs::new(directory.path().into())
+            .read_state()
+            .unwrap();
+        assert!(state.protection.supported);
+        assert!(state.protection.enabled);
+        assert_eq!(state.protection.start_percent, Some(75));
+        assert_eq!(state.protection.charge_behaviour.as_deref(), Some("auto"));
+        assert_eq!(state.devices[0].id, "BAT0");
     }
 }

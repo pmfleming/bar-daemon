@@ -324,7 +324,51 @@
       "state": "discharging",
       "time_to_empty_seconds": 14400,
       "time_to_full_seconds": 0,
-      "warning": false
+      "warning": false,
+      "protection": {
+        "supported": true,
+        "backend": "thinkpad-sysfs",
+        "enabled": true,
+        "start_percent": 75,
+        "end_percent": 80,
+        "supports_start": true,
+        "supports_end": true,
+        "supports_charge_behaviour": true,
+        "charge_behaviour": "auto",
+        "available_behaviours": ["auto", "inhibit-charge", "force-discharge"],
+        "error": null
+      },
+      "devices": [
+        {
+          "id": "BAT0",
+          "vendor": "Sunwoda",
+          "model": "5B11H56418",
+          "serial": "5878",
+          "present": true,
+          "percentage": 80,
+          "state": "discharging",
+          "power_watts": 8.2,
+          "energy_now_wh": 35.8,
+          "energy_full_wh": 44.75,
+          "energy_full_design_wh": 52.5,
+          "voltage_volts": 15.48,
+          "health_percent": 85,
+          "cycles": 101,
+          "protection": {
+            "supported": true,
+            "backend": "thinkpad-sysfs",
+            "enabled": true,
+            "start_percent": 75,
+            "end_percent": 80,
+            "supports_start": true,
+            "supports_end": true,
+            "supports_charge_behaviour": true,
+            "charge_behaviour": "auto",
+            "available_behaviours": ["auto", "inhibit-charge", "force-discharge"],
+            "error": null
+          }
+        }
+      ]
     },
     "brightness": {
       "available": true,
