@@ -6,7 +6,7 @@ use crate::model::{BatteryDeviceState, BatteryProtectionState, BatteryState};
 
 use super::{
     CRITICAL_PERCENT, WARNING_PERCENT,
-    model::{NativeBattery, NativeSnapshot},
+    model::{BatteryIdentity, BatteryTelemetry, NativeBattery, NativeProtection, NativeSnapshot},
 };
 
 #[derive(Debug, Clone)]
@@ -75,23 +75,29 @@ fn read_battery(path: &Path) -> Result<NativeBattery> {
     let (charge_behaviour, available_behaviours) = read_choices(&path.join("charge_behaviour"));
 
     Ok(NativeBattery {
-        id,
-        vendor: read_string(&path.join("manufacturer")).unwrap_or_default(),
-        model: read_string(&path.join("model_name")).unwrap_or_default(),
-        serial: read_string(&path.join("serial_number")).unwrap_or_default(),
-        present,
-        status: read_string(&path.join("status")).unwrap_or_else(|| "Unknown".into()),
-        percentage,
-        energy_now_uwh,
-        energy_full_uwh,
-        energy_full_design_uwh,
-        power_uw,
-        voltage_uv,
-        cycles: read_u64(&path.join("cycle_count")).and_then(|value| value.try_into().ok()),
-        start_threshold: read_percent(&path.join("charge_control_start_threshold")),
-        end_threshold: read_percent(&path.join("charge_control_end_threshold")),
-        charge_behaviour,
-        available_behaviours,
+        identity: BatteryIdentity {
+            id,
+            vendor: read_string(&path.join("manufacturer")).unwrap_or_default(),
+            model: read_string(&path.join("model_name")).unwrap_or_default(),
+            serial: read_string(&path.join("serial_number")).unwrap_or_default(),
+        },
+        telemetry: BatteryTelemetry {
+            present,
+            status: read_string(&path.join("status")).unwrap_or_else(|| "Unknown".into()),
+            percentage,
+            energy_now_uwh,
+            energy_full_uwh,
+            energy_full_design_uwh,
+            power_uw,
+            voltage_uv,
+            cycles: read_u64(&path.join("cycle_count")).and_then(|value| value.try_into().ok()),
+        },
+        protection: NativeProtection {
+            start_threshold: read_percent(&path.join("charge_control_start_threshold")),
+            end_threshold: read_percent(&path.join("charge_control_end_threshold")),
+            charge_behaviour,
+            available_behaviours,
+        },
     })
 }
 
@@ -99,21 +105,21 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
     let present = snapshot
         .batteries
         .iter()
-        .filter(|battery| battery.present)
+        .filter(|battery| battery.telemetry.present)
         .collect::<Vec<_>>();
-    let all_energy = present
-        .iter()
-        .all(|battery| battery.energy_now_uwh.is_some() && battery.energy_full_uwh.is_some());
+    let all_energy = present.iter().all(|battery| {
+        battery.telemetry.energy_now_uwh.is_some() && battery.telemetry.energy_full_uwh.is_some()
+    });
     let energy_now = all_energy.then(|| {
         present
             .iter()
-            .filter_map(|battery| battery.energy_now_uwh)
+            .filter_map(|battery| battery.telemetry.energy_now_uwh)
             .sum::<u64>()
     });
     let energy_full = all_energy.then(|| {
         present
             .iter()
-            .filter_map(|battery| battery.energy_full_uwh)
+            .filter_map(|battery| battery.telemetry.energy_full_uwh)
             .sum::<u64>()
     });
     let percentage = ratio_percent(energy_now, energy_full).unwrap_or_else(|| {
@@ -122,7 +128,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         } else {
             let total = present
                 .iter()
-                .map(|battery| u64::from(battery.percentage))
+                .map(|battery| u64::from(battery.telemetry.percentage))
                 .sum::<u64>();
             ((total + present.len() as u64 / 2) / present.len() as u64).min(100) as u8
         }
@@ -138,10 +144,13 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
     } else {
         "not-charging"
     };
-    let power_uw = present.iter().map(|battery| battery.power_uw).sum::<u64>();
+    let power_uw = present
+        .iter()
+        .map(|battery| battery.telemetry.power_uw)
+        .sum::<u64>();
     let design_total = present
         .iter()
-        .map(|battery| battery.energy_full_design_uwh)
+        .map(|battery| battery.telemetry.energy_full_design_uwh)
         .collect::<Option<Vec<_>>>()
         .map(|values| values.into_iter().sum::<u64>());
     let health_percent = ratio_percent(energy_full, design_total);
@@ -173,7 +182,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         available: !present.is_empty(),
         native_path: present
             .first()
-            .map_or_else(String::new, |battery| battery.id.clone()),
+            .map_or_else(String::new, |battery| battery.identity.id.clone()),
         percentage,
         state: state.into(),
         charging,
@@ -182,7 +191,9 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         time_to_empty_seconds,
         time_to_full_seconds,
         health_percent,
-        cycles: (present.len() == 1).then(|| present[0].cycles).flatten(),
+        cycles: (present.len() == 1)
+            .then(|| present[0].telemetry.cycles)
+            .flatten(),
         warning: !snapshot.plugged && percentage <= WARNING_PERCENT,
         critical: !snapshot.plugged && percentage <= CRITICAL_PERCENT,
         policy: Default::default(),
@@ -196,40 +207,50 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
 
 fn device_state(battery: &NativeBattery) -> BatteryDeviceState {
     let protection = BatteryProtectionState {
-        supported: battery.start_threshold.is_some() || battery.end_threshold.is_some(),
+        supported: battery.protection.start_threshold.is_some()
+            || battery.protection.end_threshold.is_some(),
         backend: "thinkpad-sysfs".into(),
         managed: false,
-        enabled: battery.start_threshold.is_some_and(|value| value > 0)
-            || battery.end_threshold.is_some_and(|value| value < 100),
-        start_percent: battery.start_threshold,
-        end_percent: battery.end_threshold,
+        enabled: battery
+            .protection
+            .start_threshold
+            .is_some_and(|value| value > 0)
+            || battery
+                .protection
+                .end_threshold
+                .is_some_and(|value| value < 100),
+        start_percent: battery.protection.start_threshold,
+        end_percent: battery.protection.end_threshold,
         desired_start_percent: None,
         desired_end_percent: None,
         desired_enabled: false,
         thresholds_verified: false,
         charge_once_active: false,
-        supports_start: battery.start_threshold.is_some(),
-        supports_end: battery.end_threshold.is_some(),
-        supports_charge_behaviour: !battery.available_behaviours.is_empty(),
-        charge_behaviour: battery.charge_behaviour.clone(),
-        available_behaviours: battery.available_behaviours.clone(),
+        supports_start: battery.protection.start_threshold.is_some(),
+        supports_end: battery.protection.end_threshold.is_some(),
+        supports_charge_behaviour: !battery.protection.available_behaviours.is_empty(),
+        charge_behaviour: battery.protection.charge_behaviour.clone(),
+        available_behaviours: battery.protection.available_behaviours.clone(),
         error: None,
     };
     BatteryDeviceState {
-        id: battery.id.clone(),
-        vendor: battery.vendor.clone(),
-        model: battery.model.clone(),
-        serial: battery.serial.clone(),
-        present: battery.present,
-        percentage: battery.percentage,
-        state: battery.status.to_lowercase().replace(' ', "-"),
-        power_watts: battery.power_uw as f64 / 1_000_000.0,
-        energy_now_wh: micro_to_base(battery.energy_now_uwh),
-        energy_full_wh: micro_to_base(battery.energy_full_uwh),
-        energy_full_design_wh: micro_to_base(battery.energy_full_design_uwh),
-        voltage_volts: micro_to_base(battery.voltage_uv),
-        health_percent: ratio_percent(battery.energy_full_uwh, battery.energy_full_design_uwh),
-        cycles: battery.cycles,
+        id: battery.identity.id.clone(),
+        vendor: battery.identity.vendor.clone(),
+        model: battery.identity.model.clone(),
+        serial: battery.identity.serial.clone(),
+        present: battery.telemetry.present,
+        percentage: battery.telemetry.percentage,
+        state: battery.telemetry.status.to_lowercase().replace(' ', "-"),
+        power_watts: battery.telemetry.power_uw as f64 / 1_000_000.0,
+        energy_now_wh: micro_to_base(battery.telemetry.energy_now_uwh),
+        energy_full_wh: micro_to_base(battery.telemetry.energy_full_uwh),
+        energy_full_design_wh: micro_to_base(battery.telemetry.energy_full_design_uwh),
+        voltage_volts: micro_to_base(battery.telemetry.voltage_uv),
+        health_percent: ratio_percent(
+            battery.telemetry.energy_full_uwh,
+            battery.telemetry.energy_full_design_uwh,
+        ),
+        cycles: battery.telemetry.cycles,
         protection,
     }
 }
