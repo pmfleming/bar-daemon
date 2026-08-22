@@ -44,6 +44,10 @@ pub(crate) struct ActiveNotification {
     pub updated_unix_ms: u64,
     pub expires_unix_ms: Option<u64>,
     pub group_key: String,
+    #[serde(default)]
+    pub source_monitor: String,
+    #[serde(default)]
+    pub snoozed_until_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +81,8 @@ impl ActiveNotification {
             updated_unix_ms: now,
             expires_unix_ms,
             group_key,
+            source_monitor: String::new(),
+            snoozed_until_unix_ms: None,
         }
     }
 

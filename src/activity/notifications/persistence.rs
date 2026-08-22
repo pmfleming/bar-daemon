@@ -24,7 +24,10 @@ enum PersistenceCommand {
         closed_unix_ms: u64,
         reason: u32,
     },
-    SetDnd(bool),
+    SetDnd {
+        enabled: bool,
+        until_unix_ms: Option<u64>,
+    },
     List {
         before_history_id: Option<i64>,
         limit: usize,
@@ -38,17 +41,17 @@ pub(crate) struct NotificationPersistence {
 }
 
 impl NotificationPersistence {
-    pub(crate) fn open(path: &Path) -> Result<(Self, Vec<ActiveNotification>, bool)> {
+    pub(crate) fn open(path: &Path) -> Result<(Self, Vec<ActiveNotification>, bool, Option<u64>)> {
         let store = Arc::new(NotificationStore::open(path)?);
         let active = store.load_active()?;
-        let dnd = store.load_dnd()?;
+        let (dnd, dnd_until_unix_ms) = store.load_dnd()?;
         let (commands, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let worker_store = Arc::clone(&store);
         std::thread::Builder::new()
             .name("notification-history".into())
             .spawn(move || persistence_worker(worker_store, receiver))
             .context("start notification persistence worker")?;
-        Ok((Self { commands }, active, dnd))
+        Ok((Self { commands }, active, dnd, dnd_until_unix_ms))
     }
 
     pub(crate) fn save(&self, notification: ActiveNotification) {
@@ -70,8 +73,11 @@ impl NotificationPersistence {
         });
     }
 
-    pub(crate) fn set_dnd(&self, enabled: bool) {
-        self.enqueue(PersistenceCommand::SetDnd(enabled));
+    pub(crate) fn set_dnd(&self, enabled: bool, until_unix_ms: Option<u64>) {
+        self.enqueue(PersistenceCommand::SetDnd {
+            enabled,
+            until_unix_ms,
+        });
     }
 
     pub(crate) async fn list(
@@ -113,7 +119,10 @@ fn persistence_worker(store: Arc<NotificationStore>, receiver: mpsc::Receiver<Pe
                 closed_unix_ms,
                 reason,
             } => store.clear(closed_unix_ms, reason),
-            PersistenceCommand::SetDnd(enabled) => store.set_dnd(enabled),
+            PersistenceCommand::SetDnd {
+                enabled,
+                until_unix_ms,
+            } => store.set_dnd(enabled, until_unix_ms),
             PersistenceCommand::List {
                 before_history_id,
                 limit,
@@ -197,16 +206,20 @@ impl NotificationStore {
         Ok(active)
     }
 
-    fn load_dnd(&self) -> Result<bool> {
+    fn load_dnd(&self) -> Result<(bool, Option<u64>)> {
         let connection = self.connection()?;
-        let value = connection
-            .query_row(
-                "SELECT value FROM notification_meta WHERE key = 'dnd'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        Ok(value.as_deref() == Some("true"))
+        let value = |key: &str| -> Result<Option<String>> {
+            Ok(connection
+                .query_row(
+                    "SELECT value FROM notification_meta WHERE key = ?1",
+                    [key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        };
+        let enabled = value("dnd")?.as_deref() == Some("true");
+        let until = value("dnd_until_unix_ms")?.and_then(|stored| stored.parse::<u64>().ok());
+        Ok((enabled, enabled.then_some(until).flatten()))
     }
 
     fn save(&self, notification: &ActiveNotification) -> Result<()> {
@@ -261,13 +274,27 @@ impl NotificationStore {
         Ok(())
     }
 
-    fn set_dnd(&self, enabled: bool) -> Result<()> {
-        let connection = self.connection()?;
-        connection.execute(
+    fn set_dnd(&self, enabled: bool, until_unix_ms: Option<u64>) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO notification_meta(key, value) VALUES ('dnd', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [if enabled { "true" } else { "false" }],
         )?;
+        if let Some(until) = enabled.then_some(until_unix_ms).flatten() {
+            transaction.execute(
+                "INSERT INTO notification_meta(key, value) VALUES ('dnd_until_unix_ms', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [until.to_string()],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM notification_meta WHERE key = 'dnd_until_unix_ms'",
+                [],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 

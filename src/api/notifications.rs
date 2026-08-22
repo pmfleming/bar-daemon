@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 #[derive(Deserialize)]
 struct DndRequest {
     enabled: bool,
+    #[serde(default)]
+    until_unix_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -20,6 +22,17 @@ struct HistoryRequest {
 #[derive(Deserialize)]
 struct NotificationRequest {
     id: u32,
+}
+
+#[derive(Deserialize)]
+struct SnoozeRequest {
+    id: u32,
+    until_unix_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct GroupRequest {
+    group_key: String,
 }
 
 #[derive(Deserialize)]
@@ -75,7 +88,7 @@ impl NotificationApi {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        engine.set_dnd(request.enabled).await;
+        engine.set_dnd(request.enabled, request.until_unix_ms).await;
         success(json!({"notifications": self.state.snapshot().await.notifications}))
     }
     pub(super) async fn notification_list(&self, params: Value) -> Value {
@@ -119,6 +132,41 @@ impl NotificationApi {
             return native_required();
         };
         success(json!({"operation":"clear","closed":engine.clear().await}))
+    }
+    pub(super) async fn notification_clear_group(&self, params: Value) -> Value {
+        let request = request!(params, GroupRequest, "notifications.clearGroup");
+        if request.group_key.trim().is_empty() {
+            return error("validation-error", "group_key must not be empty");
+        }
+        let Some(engine) = self.notifications.native_engine() else {
+            return native_required();
+        };
+        success(json!({
+            "operation":"clear-group",
+            "group_key":request.group_key,
+            "closed":engine.clear_group(&request.group_key).await
+        }))
+    }
+    pub(super) async fn notification_snooze(&self, params: Value) -> Value {
+        let request = request!(params, SnoozeRequest, "notifications.snooze");
+        let Some(id) = positive_id(request.id) else {
+            return error("validation-error", "notification id must be positive");
+        };
+        let Some(engine) = self.notifications.native_engine() else {
+            return native_required();
+        };
+        if engine.snooze(id, request.until_unix_ms).await {
+            success(json!({
+                "operation":"snooze",
+                "id":id,
+                "until_unix_ms":request.until_unix_ms
+            }))
+        } else {
+            error(
+                "notification-snooze-failed",
+                "notification is unavailable or duration has elapsed",
+            )
+        }
     }
     pub(super) async fn notification_invoke_action(&self, params: Value) -> Value {
         let request = request!(params, ActionRequest, "notifications.invokeAction");

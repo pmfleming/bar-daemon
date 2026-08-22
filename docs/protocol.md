@@ -49,6 +49,8 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.list`
 - `notifications.dismiss`
 - `notifications.clear`
+- `notifications.clearGroup`
+- `notifications.snooze`
 - `notifications.invokeAction`
 - `notifications.reply`
 - `updates.refresh`
@@ -79,7 +81,7 @@ Run `bar-daemon debug protocol-registry` for canonical parameter examples. `medi
 
 `activity.changed` is a compact summary containing source health, counts, next event, and world-clock metadata. Clients query event/todo collections with `activity.queryRange`; large collections are intentionally excluded from `BarSnapshot`.
 
-In native mode, `notifications.changed` carries compact count, DND, backend, and history-revision state. `notifications.active.changed` carries the complete bounded active notification collection so clients can recover after lag. History is paginated with `notifications.list` using an optional `before_history_id` cursor and a maximum limit of 200.
+In native mode, `notifications.changed` carries compact count, DND (including an optional expiry), backend, and history-revision state. `notifications.active.changed` carries the complete bounded unsnoozed notification collection so clients can recover after lag. Active records include a stable group key and the focused source monitor captured at ingress. History is paginated with `notifications.list` using an optional `before_history_id` cursor and a maximum limit of 200. `notifications.clearGroup` dismisses one application/group stack, while `notifications.snooze` suppresses a record until its requested wake time.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 

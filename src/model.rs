@@ -84,6 +84,7 @@ pub(crate) struct NotificationState {
     pub available: bool,
     pub count: u32,
     pub dnd: bool,
+    pub dnd_until_unix_ms: Option<u64>,
     pub inhibited: bool,
     pub text: String,
     pub tooltip: String,

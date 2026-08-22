@@ -115,6 +115,7 @@ fn parse_status(line: &str) -> Result<NotificationState> {
         available: true,
         count: notification_count(&status.text),
         dnd: normalized.contains("dnd") || normalized.contains("do-not-disturb"),
+        dnd_until_unix_ms: None,
         inhibited: normalized.contains("inhibited"),
         text: status.text,
         tooltip: status.tooltip,

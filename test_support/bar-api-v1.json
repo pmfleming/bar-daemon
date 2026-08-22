@@ -105,8 +105,8 @@
         "name": "battery.setThresholds",
         "params": {
           "battery_id": "BAT0",
-          "start_percent": 75,
-          "end_percent": 80
+          "end_percent": 80,
+          "start_percent": 75
         },
         "result": "battery"
       },
@@ -150,10 +150,10 @@
       {
         "name": "battery.setAlertPolicy",
         "params": {
-          "warning_percent": 25,
+          "auto_power_saver": true,
           "critical_percent": 12,
           "notify_when_full": true,
-          "auto_power_saver": true
+          "warning_percent": 25
         },
         "result": "battery"
       },
@@ -207,7 +207,8 @@
       {
         "name": "notifications.setDnd",
         "params": {
-          "enabled": true
+          "enabled": true,
+          "until_unix_ms": 1768467500000
         },
         "result": "notifications"
       },
@@ -229,6 +230,21 @@
       {
         "name": "notifications.clear",
         "params": {},
+        "result": "operation"
+      },
+      {
+        "name": "notifications.clearGroup",
+        "params": {
+          "group_key": "calendar"
+        },
+        "result": "operation"
+      },
+      {
+        "name": "notifications.snooze",
+        "params": {
+          "id": 1,
+          "until_unix_ms": 1768467500000
+        },
         "result": "operation"
       },
       {
@@ -358,155 +374,155 @@
   "snapshot": {
     "activity": {
       "available": true,
-      "syncing": false,
+      "error": null,
       "event_count": 1,
       "incomplete_todo_count": 1,
       "next_event": {
-        "id": "work:meeting:1768464000000",
-        "source_id": "work",
+        "all_day": false,
         "calendar_name": "Work",
         "color": "#7aa2f7",
-        "title": "Planning",
-        "start_unix_ms": 1768464000000,
-        "end_unix_ms": 1768467600000,
-        "all_day": false,
-        "start_date": null,
         "end_date": null,
-        "timezone": "Europe/Amsterdam",
+        "end_unix_ms": 1768467600000,
+        "id": "work:meeting:1768464000000",
         "location": "Room 1",
+        "source_id": "work",
+        "start_date": null,
+        "start_unix_ms": 1768464000000,
+        "timezone": "Europe/Amsterdam",
+        "title": "Planning",
         "url": ""
       },
       "sources": [
         {
-          "id": "work",
-          "name": "Work",
-          "kind": "ics-directory",
           "available": true,
+          "error": null,
+          "id": "work",
           "item_count": 1,
-          "error": null
+          "kind": "ics-directory",
+          "name": "Work"
         }
       ],
+      "syncing": false,
       "world_clocks": [
         {
-          "timezone": "Asia/Tokyo",
-          "label": "Tokyo",
-          "city": "Tokyo",
           "abbreviation": "JST",
+          "city": "Tokyo",
+          "label": "Tokyo",
+          "timezone": "Asia/Tokyo",
           "utc_offset_seconds": 32400
         }
-      ],
-      "error": null
+      ]
     },
     "audio": {
       "available": true,
       "error": null,
+      "input_available": true,
+      "input_muted": false,
       "muted": false,
       "sink_description": "Speakers",
       "sink_name": "alsa_output.test",
-      "volume_percent": 50,
-      "input_available": true,
-      "source_name": "alsa_input.test",
       "source_description": "Microphone",
-      "input_muted": false
+      "source_name": "alsa_input.test",
+      "volume_percent": 50
     },
     "battery": {
       "available": true,
       "charging": false,
       "critical": false,
       "cycles": 101,
-      "error": null,
-      "health_percent": 85,
-      "native_path": "BAT0",
-      "percentage": 80,
-      "plugged": false,
-      "power_watts": 8.2,
-      "state": "discharging",
-      "time_to_empty_seconds": 14400,
-      "time_to_full_seconds": 0,
-      "warning": false,
-      "policy": {
-        "warning_percent": 25,
-        "critical_percent": 12,
-        "notify_when_full": true,
-        "auto_power_saver": true
-      },
-      "operation": {
-        "kind": "",
-        "battery_id": "",
-        "phase": "",
-        "started_unix_ms": 0,
-        "expires_unix_ms": 0
-      },
-      "protection": {
-        "supported": true,
-        "backend": "thinkpad-sysfs",
-        "managed": true,
-        "enabled": true,
-        "start_percent": 75,
-        "end_percent": 80,
-        "desired_start_percent": 75,
-        "desired_end_percent": 80,
-        "desired_enabled": true,
-        "thresholds_verified": true,
-        "charge_once_active": false,
-        "supports_start": true,
-        "supports_end": true,
-        "supports_charge_behaviour": true,
-        "charge_behaviour": "auto",
-        "available_behaviours": [
-          "auto",
-          "inhibit-charge",
-          "force-discharge"
-        ],
-        "error": null
-      },
       "devices": [
         {
-          "id": "BAT0",
-          "vendor": "Sunwoda",
-          "model": "5B11H56418",
-          "serial": "5878",
-          "present": true,
-          "percentage": 80,
-          "state": "discharging",
-          "power_watts": 8.2,
-          "energy_now_wh": 35.8,
-          "energy_full_wh": 44.75,
-          "energy_full_design_wh": 52.5,
-          "voltage_volts": 15.48,
-          "health_percent": 85,
           "cycles": 101,
+          "energy_full_design_wh": 52.5,
+          "energy_full_wh": 44.75,
+          "energy_now_wh": 35.8,
+          "health_percent": 85,
+          "id": "BAT0",
+          "model": "5B11H56418",
+          "percentage": 80,
+          "power_watts": 8.2,
+          "present": true,
           "protection": {
-            "supported": true,
-            "backend": "thinkpad-sysfs",
-            "managed": true,
-            "enabled": true,
-            "start_percent": 75,
-            "end_percent": 80,
-            "desired_start_percent": 75,
-            "desired_end_percent": 80,
-            "desired_enabled": true,
-            "thresholds_verified": true,
-            "charge_once_active": false,
-            "supports_start": true,
-            "supports_end": true,
-            "supports_charge_behaviour": true,
-            "charge_behaviour": "auto",
             "available_behaviours": [
               "auto",
               "inhibit-charge",
               "force-discharge"
             ],
-            "error": null
-          }
+            "backend": "thinkpad-sysfs",
+            "charge_behaviour": "auto",
+            "charge_once_active": false,
+            "desired_enabled": true,
+            "desired_end_percent": 80,
+            "desired_start_percent": 75,
+            "enabled": true,
+            "end_percent": 80,
+            "error": null,
+            "managed": true,
+            "start_percent": 75,
+            "supported": true,
+            "supports_charge_behaviour": true,
+            "supports_end": true,
+            "supports_start": true,
+            "thresholds_verified": true
+          },
+          "serial": "5878",
+          "state": "discharging",
+          "vendor": "Sunwoda",
+          "voltage_volts": 15.48
         }
       ],
+      "error": null,
+      "health_percent": 85,
       "history": {
-        "retention_days": 7,
         "last_charge_timestamp_ms": 1768464000000,
+        "latest_timestamp_ms": 1768464900000,
         "points": [],
-        "latest_timestamp_ms": 1768464900000
-      }
+        "retention_days": 7
+      },
+      "native_path": "BAT0",
+      "operation": {
+        "battery_id": "",
+        "expires_unix_ms": 0,
+        "kind": "",
+        "phase": "",
+        "started_unix_ms": 0
+      },
+      "percentage": 80,
+      "plugged": false,
+      "policy": {
+        "auto_power_saver": true,
+        "critical_percent": 12,
+        "notify_when_full": true,
+        "warning_percent": 25
+      },
+      "power_watts": 8.2,
+      "protection": {
+        "available_behaviours": [
+          "auto",
+          "inhibit-charge",
+          "force-discharge"
+        ],
+        "backend": "thinkpad-sysfs",
+        "charge_behaviour": "auto",
+        "charge_once_active": false,
+        "desired_enabled": true,
+        "desired_end_percent": 80,
+        "desired_start_percent": 75,
+        "enabled": true,
+        "end_percent": 80,
+        "error": null,
+        "managed": true,
+        "start_percent": 75,
+        "supported": true,
+        "supports_charge_behaviour": true,
+        "supports_end": true,
+        "supports_start": true,
+        "thresholds_verified": true
+      },
+      "state": "discharging",
+      "time_to_empty_seconds": 14400,
+      "time_to_full_seconds": 0,
+      "warning": false
     },
     "brightness": {
       "available": true,
@@ -533,27 +549,66 @@
           "desktop_entry": "spotify",
           "id": "org.mpris.MediaPlayer2.spotify",
           "identity": "Spotify",
-          "playback_status": "playing",
-          "title": "Track",
           "length_us": 240000000,
-          "position_us": 60000000,
+          "playback_rate": 1.0,
+          "playback_status": "playing",
           "position_observed_at_unix_ms": 1234567890000,
-          "playback_rate": 1.0
+          "position_us": 60000000,
+          "title": "Track"
         }
       ]
     },
-    "notifications": {
-      "alt": "notification",
+    "notification_active": {
       "available": true,
-      "class_name": "notification",
-      "count": 1,
-      "dnd": false,
       "error": null,
+      "notifications": [
+        {
+          "actions": [
+            {
+              "key": "default",
+              "label": "Open"
+            }
+          ],
+          "app_icon": "calendar",
+          "app_name": "Calendar",
+          "body": "Meeting starts soon",
+          "created_unix_ms": 1768463900000,
+          "expires_unix_ms": 1768463905000,
+          "group_key": "calendar",
+          "hints": {
+            "category": "calendar",
+            "desktop_entry": "calendar",
+            "image_data_present": false,
+            "image_path": "",
+            "resident": false,
+            "sound_file": "",
+            "sound_name": "",
+            "suppress_sound": false,
+            "transient": false,
+            "urgency": 1
+          },
+          "id": 1,
+          "snoozed_until_unix_ms": null,
+          "source_monitor": "eDP-1",
+          "summary": "Planning",
+          "updated_unix_ms": 1768463900000
+        }
+      ],
+      "revision": 1
+    },
+    "notifications": {
+      "alt": "dnd-notification",
+      "available": true,
+      "backend": "native",
+      "class_name": "dnd-notification",
+      "count": 1,
+      "dnd": true,
+      "dnd_until_unix_ms": 1768467500000,
+      "error": null,
+      "history_revision": 1,
       "inhibited": false,
       "text": "1",
-      "tooltip": "1 Notification",
-      "backend": "native",
-      "history_revision": 1
+      "tooltip": "1 Notification"
     },
     "power_profile": {
       "actions": [
@@ -587,21 +642,21 @@
     },
     "power_sleep": {
       "available": true,
-      "can_suspend": "yes",
       "can_hibernate": "challenge",
-      "preparing_for_sleep": false,
-      "lock_before_sleep": true,
+      "can_suspend": "yes",
+      "error": null,
       "inhibitors": [
         {
+          "mode": "delay",
+          "pid": 4242,
+          "uid": 1000,
           "what": "sleep",
           "who": "Backup",
-          "why": "Writing snapshot",
-          "mode": "delay",
-          "uid": 1000,
-          "pid": 4242
+          "why": "Writing snapshot"
         }
       ],
-      "error": null
+      "lock_before_sleep": true,
+      "preparing_for_sleep": false
     },
     "timezone": {
       "abbreviation": "CEST",
@@ -629,6 +684,15 @@
       "state_directory": "/var/lib/nixos-delayed-updates-v2"
     },
     "workspaces": {
+      "active_window": {
+        "address": "0x123",
+        "class_name": "com.mitchellh.ghostty",
+        "floating": false,
+        "fullscreen": false,
+        "initial_class": "ghostty",
+        "title": "Terminal",
+        "workspace_id": 1
+      },
       "available": true,
       "error": null,
       "focused_monitor": "eDP-1",
@@ -650,52 +714,7 @@
           "urgent": false,
           "windows": 1
         }
-      ],
-      "active_window": {
-        "address": "0x123",
-        "title": "Terminal",
-        "class_name": "com.mitchellh.ghostty",
-        "initial_class": "ghostty",
-        "workspace_id": 1,
-        "fullscreen": false,
-        "floating": false
-      }
-    },
-    "notification_active": {
-      "available": true,
-      "revision": 1,
-      "notifications": [
-        {
-          "id": 1,
-          "app_name": "Calendar",
-          "app_icon": "calendar",
-          "summary": "Planning",
-          "body": "Meeting starts soon",
-          "actions": [
-            {
-              "key": "default",
-              "label": "Open"
-            }
-          ],
-          "hints": {
-            "urgency": 1,
-            "category": "calendar",
-            "desktop_entry": "calendar",
-            "image_path": "",
-            "sound_name": "",
-            "sound_file": "",
-            "resident": false,
-            "transient": false,
-            "suppress_sound": false,
-            "image_data_present": false
-          },
-          "created_unix_ms": 1768463900000,
-          "updated_unix_ms": 1768463900000,
-          "expires_unix_ms": 1768463905000,
-          "group_key": "calendar"
-        }
-      ],
-      "error": null
+      ]
     }
   },
   "version": 1

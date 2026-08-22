@@ -120,6 +120,8 @@ impl ApiService {
             "notifications.list" => self.notifications.notification_list(params).await,
             "notifications.dismiss" => self.notifications.notification_dismiss(params).await,
             "notifications.clear" => self.notifications.notification_clear().await,
+            "notifications.clearGroup" => self.notifications.notification_clear_group(params).await,
+            "notifications.snooze" => self.notifications.notification_snooze(params).await,
             "notifications.invokeAction" => {
                 self.notifications.notification_invoke_action(params).await
             }

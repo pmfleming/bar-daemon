@@ -29,6 +29,7 @@ use super::{
 struct EngineData {
     active: BTreeMap<u32, ActiveNotification>,
     dnd: bool,
+    dnd_until_unix_ms: Option<u64>,
     history_revision: u64,
 }
 
@@ -46,15 +47,15 @@ pub(crate) struct NotificationEngine {
 impl NotificationEngine {
     #[cfg(test)]
     pub(crate) async fn new(state: StateStore) -> Arc<Self> {
-        Self::build(state, None, Vec::new(), false).await
+        Self::build(state, None, Vec::new(), false, None).await
     }
 
     pub(crate) async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
-        let (persistence, active, dnd) =
+        let (persistence, active, dnd, dnd_until_unix_ms) =
             tokio::task::spawn_blocking(move || NotificationPersistence::open(&path))
                 .await
                 .context("join notification database initialization")??;
-        Ok(Self::build(state, Some(persistence), active, dnd).await)
+        Ok(Self::build(state, Some(persistence), active, dnd, dnd_until_unix_ms).await)
     }
 
     async fn build(
@@ -62,14 +63,17 @@ impl NotificationEngine {
         persistence: Option<NotificationPersistence>,
         active: Vec<ActiveNotification>,
         dnd: bool,
+        dnd_until_unix_ms: Option<u64>,
     ) -> Arc<Self> {
         let next_id = active.iter().map(|item| item.id).max().unwrap_or(0);
         let active = active.into_iter().map(|item| (item.id, item)).collect();
+        let dnd_expired = dnd_until_unix_ms.is_some_and(|until| until <= unix_ms());
         let (signals, _) = broadcast::channel(256);
         let engine = Arc::new(Self {
             data: Mutex::new(EngineData {
                 active,
-                dnd,
+                dnd: dnd && !dnd_expired,
+                dnd_until_unix_ms: (!dnd_expired).then_some(dnd_until_unix_ms).flatten(),
                 history_revision: 0,
             }),
             next_id: AtomicU32::new(next_id),
@@ -80,6 +84,11 @@ impl NotificationEngine {
             policy: NotificationPolicy::default(),
             persistence,
         });
+        if dnd_expired
+            && let Some(persistence) = &engine.persistence
+        {
+            persistence.set_dnd(false, None);
+        }
         engine.publish_summary().await;
         engine
     }
@@ -98,6 +107,13 @@ impl NotificationEngine {
             .context("notification ingress is full")?;
         self.policy.validate(&notification)?;
         let now = unix_ms();
+        let source_monitor = self
+            .state
+            .snapshot()
+            .await
+            .workspaces
+            .focused_monitor
+            .unwrap_or_default();
         let mut evicted = None;
         let (id, stored) = {
             let mut data = self.data.lock().await;
@@ -108,6 +124,7 @@ impl NotificationEngine {
             };
             let stored = if let Some(existing) = data.active.get_mut(&id) {
                 existing.replace_from(notification, now);
+                existing.source_monitor.clone_from(&source_monitor);
                 existing.clone()
             } else {
                 if data.active.len() >= self.policy.maximum_active
@@ -120,7 +137,8 @@ impl NotificationEngine {
                     data.active.remove(&oldest);
                     evicted = Some(oldest);
                 }
-                let stored = ActiveNotification::from_incoming(id, notification, now);
+                let mut stored = ActiveNotification::from_incoming(id, notification, now);
+                stored.source_monitor.clone_from(&source_monitor);
                 data.active.insert(id, stored.clone());
                 stored
             };
@@ -196,32 +214,70 @@ impl NotificationEngine {
         ids.len()
     }
 
-    pub(crate) async fn set_dnd(&self, enabled: bool) {
+    pub(crate) async fn set_dnd(&self, enabled: bool, until_unix_ms: Option<u64>) {
+        let until = enabled.then_some(until_unix_ms).flatten();
         let changed = {
             let mut data = self.data.lock().await;
-            let changed = data.dnd != enabled;
+            let changed = data.dnd != enabled || data.dnd_until_unix_ms != until;
             data.dnd = enabled;
+            data.dnd_until_unix_ms = until;
             changed
         };
         if changed {
             if let Some(persistence) = &self.persistence {
-                persistence.set_dnd(enabled);
+                persistence.set_dnd(enabled, until);
             }
+            self.expiry_wakeup.notify_one();
             self.publish_summary().await;
         }
     }
 
     pub(crate) async fn toggle_dnd(&self) -> bool {
-        let enabled = {
+        let enabled = !self.data.lock().await.dnd;
+        self.set_dnd(enabled, None).await;
+        enabled
+    }
+
+    pub(crate) async fn snooze(&self, id: u32, until_unix_ms: u64) -> bool {
+        let now = unix_ms();
+        if until_unix_ms <= now {
+            return false;
+        }
+        let stored = {
             let mut data = self.data.lock().await;
-            data.dnd = !data.dnd;
-            data.dnd
+            let Some(notification) = data.active.get_mut(&id) else {
+                return false;
+            };
+            notification.snoozed_until_unix_ms = Some(until_unix_ms);
+            notification.updated_unix_ms = now;
+            if notification.expires_unix_ms.is_some() {
+                notification.expires_unix_ms = Some(until_unix_ms.saturating_add(5_000));
+            }
+            let stored = notification.clone();
+            data.history_revision = data.history_revision.wrapping_add(1);
+            stored
         };
         if let Some(persistence) = &self.persistence {
-            persistence.set_dnd(enabled);
+            persistence.save(stored);
         }
+        self.expiry_wakeup.notify_one();
         self.publish_summary().await;
-        enabled
+        true
+    }
+
+    pub(crate) async fn clear_group(&self, group_key: &str) -> usize {
+        let ids = {
+            let data = self.data.lock().await;
+            data.active
+                .values()
+                .filter(|item| item.group_key == group_key)
+                .map(|item| item.id)
+                .collect::<Vec<_>>()
+        };
+        for id in &ids {
+            self.close(*id, close_reason::DISMISSED).await;
+        }
+        ids.len()
     }
 
     #[cfg(test)]
@@ -300,30 +356,60 @@ impl NotificationEngine {
     }
 
     async fn next_expiry_delay(&self) -> Option<Duration> {
-        let next = self
-            .data
-            .lock()
-            .await
+        let data = self.data.lock().await;
+        let notification_wakeup = data
             .active
             .values()
-            .filter_map(|item| item.expires_unix_ms)
-            .min()?;
+            .filter_map(|item| item.snoozed_until_unix_ms.or(item.expires_unix_ms));
+        let next = notification_wakeup.chain(data.dnd_until_unix_ms).min()?;
         Some(Duration::from_millis(next.saturating_sub(unix_ms())))
     }
 
     async fn expire_due(&self) {
         let now = unix_ms();
-        let ids = {
-            let data = self.data.lock().await;
-            data.active
+        let (ids, awakened, dnd_expired) = {
+            let mut data = self.data.lock().await;
+            let mut awakened = Vec::new();
+            for notification in data.active.values_mut() {
+                if notification
+                    .snoozed_until_unix_ms
+                    .is_some_and(|until| until <= now)
+                {
+                    notification.snoozed_until_unix_ms = None;
+                    awakened.push(notification.clone());
+                }
+            }
+            let ids = data
+                .active
                 .values()
-                .filter(|item| item.expires_unix_ms.is_some_and(|expiry| expiry <= now))
+                .filter(|item| {
+                    item.snoozed_until_unix_ms.is_none()
+                        && item.expires_unix_ms.is_some_and(|expiry| expiry <= now)
+                })
                 .map(|item| item.id)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let dnd_expired = data.dnd && data.dnd_until_unix_ms.is_some_and(|until| until <= now);
+            if dnd_expired {
+                data.dnd = false;
+                data.dnd_until_unix_ms = None;
+            }
+            if !awakened.is_empty() || dnd_expired {
+                data.history_revision = data.history_revision.wrapping_add(1);
+            }
+            (ids, awakened, dnd_expired)
         };
+        if let Some(persistence) = &self.persistence {
+            for notification in awakened {
+                persistence.save(notification);
+            }
+            if dnd_expired {
+                persistence.set_dnd(false, None);
+            }
+        }
         for id in ids {
             self.close(id, close_reason::EXPIRED).await;
         }
+        self.publish_summary().await;
     }
 
     fn allocate_id(&self, active: &BTreeMap<u32, ActiveNotification>) -> Result<u32> {
@@ -347,7 +433,13 @@ impl NotificationEngine {
     async fn publish_summary(&self) {
         let (summary, active) = {
             let data = self.data.lock().await;
-            let count = data.active.len().try_into().unwrap_or(u32::MAX);
+            let visible = data
+                .active
+                .values()
+                .filter(|item| item.snoozed_until_unix_ms.is_none())
+                .cloned()
+                .collect::<Vec<_>>();
+            let count = visible.len().try_into().unwrap_or(u32::MAX);
             let noun = if count == 1 {
                 "Notification"
             } else {
@@ -363,6 +455,7 @@ impl NotificationEngine {
                     available: true,
                     count,
                     dnd: data.dnd,
+                    dnd_until_unix_ms: data.dnd_until_unix_ms,
                     inhibited: false,
                     text: count.to_string(),
                     tooltip: format!("{count} {noun}"),
@@ -375,7 +468,7 @@ impl NotificationEngine {
                 NotificationActiveState {
                     available: true,
                     revision: data.history_revision,
-                    notifications: data.active.values().cloned().collect(),
+                    notifications: visible,
                     error: None,
                 },
             )
@@ -422,6 +515,49 @@ mod tests {
         assert_eq!(first, replaced);
         assert_eq!(engine.active().await[0].summary, "replacement");
         assert_eq!(state.snapshot().await.notifications.count, 1);
+    }
+
+    #[tokio::test]
+    async fn snoozes_restores_and_clears_groups() {
+        let state = StateStore::default();
+        let engine = NotificationEngine::new(state.clone()).await;
+        let first = engine.notify(0, notification("first", 0)).await.unwrap();
+        engine.notify(0, notification("second", 0)).await.unwrap();
+        assert!(engine.snooze(first, crate::time::unix_ms() + 10).await);
+        assert_eq!(state.snapshot().await.notifications.count, 1);
+
+        let task = tokio::spawn(Arc::clone(&engine).run_expiry());
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if state.snapshot().await.notifications.count == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(engine.clear_group("test").await, 2);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn timed_dnd_expires() {
+        let state = StateStore::default();
+        let engine = NotificationEngine::new(state.clone()).await;
+        engine
+            .set_dnd(true, Some(crate::time::unix_ms() + 10))
+            .await;
+        let task = tokio::spawn(Arc::clone(&engine).run_expiry());
+        timeout(Duration::from_secs(1), async {
+            while state.snapshot().await.notifications.dnd {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state.snapshot().await.notifications.dnd_until_unix_ms, None);
+        task.abort();
     }
 
     #[tokio::test]

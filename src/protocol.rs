@@ -68,6 +68,8 @@ pub const METHODS: &[&str] = &[
     "notifications.list",
     "notifications.dismiss",
     "notifications.clear",
+    "notifications.clearGroup",
+    "notifications.snooze",
     "notifications.invokeAction",
     "notifications.reply",
     "updates.refresh",
@@ -123,10 +125,12 @@ pub fn registry() -> Value {
             { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
-            { "name": "notifications.setDnd", "params": { "enabled": true }, "result": "notifications" },
+            { "name": "notifications.setDnd", "params": { "enabled": true, "until_unix_ms": 1768467500000_u64 }, "result": "notifications" },
             { "name": "notifications.list", "params": { "before_history_id": null, "limit": 50 }, "result": "notification_history" },
             { "name": "notifications.dismiss", "params": { "id": 1 }, "result": "operation" },
             { "name": "notifications.clear", "params": {}, "result": "operation" },
+            { "name": "notifications.clearGroup", "params": { "group_key": "calendar" }, "result": "operation" },
+            { "name": "notifications.snooze", "params": { "id": 1, "until_unix_ms": 1768467500000_u64 }, "result": "operation" },
             { "name": "notifications.invokeAction", "params": { "id": 1, "action_key": "default", "activation_token": null }, "result": "operation" },
             { "name": "notifications.reply", "params": { "id": 1, "text": "Reply" }, "result": "operation" },
             { "name": "updates.refresh", "params": {}, "result": "updates" }
@@ -260,9 +264,10 @@ fn generated_contract_fixture() -> Value {
                 "error": null
             },
             "notifications": {
-                "available": true, "count": 1, "dnd": false, "inhibited": false, "text": "1",
-                "tooltip": "1 Notification", "alt": "notification", "class_name": "notification",
-                "backend": "native", "history_revision": 1, "error": null
+                "available": true, "count": 1, "dnd": true, "inhibited": false, "text": "1",
+                "tooltip": "1 Notification", "alt": "dnd-notification", "class_name": "dnd-notification",
+                "backend": "native", "history_revision": 1,
+                "dnd_until_unix_ms": 1768467500000_u64, "error": null
             },
             "notification_active": {
                 "available": true, "revision": 1,
@@ -275,7 +280,8 @@ fn generated_contract_fixture() -> Value {
                         "suppress_sound": false, "image_data_present": false
                     },
                     "created_unix_ms": 1768463900000_u64, "updated_unix_ms": 1768463900000_u64,
-                    "expires_unix_ms": 1768463905000_u64, "group_key": "calendar"
+                    "expires_unix_ms": 1768463905000_u64, "group_key": "calendar",
+                    "source_monitor": "eDP-1", "snoozed_until_unix_ms": null
                 }],
                 "error": null
             },
