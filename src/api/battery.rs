@@ -98,12 +98,12 @@ impl BatteryApi {
 
     pub(super) async fn battery_set_protection(&self, params: Value) -> Value {
         let request = request!(params, ProtectionRequest, "battery.setProtection");
+        let _guard = battery::lock_effects().await;
         let battery_id =
             match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
                 Ok(id) => id,
                 Err(response) => return response,
             };
-        let _guard = battery::lock_effects().await;
         let previous_config = match config::load_config().await {
             Ok(config) => config,
             Err(error_value) => return error("battery-config-failed", error_value.to_string()),
@@ -135,6 +135,7 @@ impl BatteryApi {
 
     pub(super) async fn battery_charge_once(&self, params: Value) -> Value {
         let request = request!(params, BatteryRequest, "battery.chargeOnce");
+        let _guard = battery::lock_effects().await;
         let snapshot = self.state.snapshot().await.battery;
         if !snapshot.plugged {
             return error(
@@ -170,7 +171,6 @@ impl BatteryApi {
                 "battery.chargeOnce requires readable charge thresholds",
             );
         };
-        let _guard = battery::lock_effects().await;
         let previous_runtime = match config::load_runtime().await {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
@@ -208,6 +208,7 @@ impl BatteryApi {
 
     pub(super) async fn battery_set_charging_inhibited(&self, params: Value) -> Value {
         let request = request!(params, InhibitionRequest, "battery.setChargingInhibited");
+        let _guard = battery::lock_effects().await;
         let battery_id =
             match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
                 Ok(id) => id,
@@ -235,7 +236,6 @@ impl BatteryApi {
                 format!("battery {battery_id} cannot inhibit charging"),
             );
         }
-        let _guard = battery::lock_effects().await;
         let previous = match config::load_runtime().await {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
@@ -253,6 +253,7 @@ impl BatteryApi {
 
     pub(super) async fn battery_start_calibration(&self, params: Value) -> Value {
         let request = request!(params, BatteryRequest, "battery.startCalibration");
+        let _guard = battery::lock_effects().await;
         let battery_id =
             match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
                 Ok(id) => id,
@@ -295,7 +296,6 @@ impl BatteryApi {
                 "battery calibration requires readable charge thresholds",
             );
         };
-        let _guard = battery::lock_effects().await;
         let previous = match config::load_runtime().await {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
@@ -316,36 +316,51 @@ impl BatteryApi {
             return error("battery-state-failed", error_value.to_string());
         }
         if let Err(error_value) = battery::helper::set_thresholds(&battery_id, 0, 100).await {
-            let _ = config::save_runtime(&previous).await;
-            return error("battery-operation-failed", error_value.to_string());
+            return match config::save_runtime(&previous).await {
+                Ok(()) => error("battery-operation-failed", error_value.to_string()),
+                Err(rollback_error) => error(
+                    "battery-operation-failed",
+                    format!(
+                        "{error_value}; calibration state rollback also failed: {rollback_error}"
+                    ),
+                ),
+            };
         }
         if let Err(error_value) =
             battery::helper::set_charge_behaviour(&battery_id, "force-discharge").await
         {
             let restore_result =
                 battery::helper::set_thresholds(&battery_id, restore_start, restore_end).await;
-            let _ = config::save_runtime(&previous).await;
-            return error(
-                "battery-operation-failed",
-                match restore_result {
-                    Ok(_) => error_value.to_string(),
-                    Err(restore_error) => {
-                        format!("{error_value}; threshold rollback also failed: {restore_error}")
-                    }
-                },
-            );
+            let state_rollback = config::save_runtime(&previous).await;
+            let mut message = error_value.to_string();
+            match restore_result {
+                Ok(result) if !result.verified => message.push_str(&format!(
+                    "; threshold rollback reported {}–{} instead of {restore_start}–{restore_end}",
+                    result.actual_start_percent, result.actual_end_percent
+                )),
+                Ok(_) => {}
+                Err(restore_error) => message.push_str(&format!(
+                    "; threshold rollback also failed: {restore_error}"
+                )),
+            }
+            if let Err(rollback_error) = state_rollback {
+                message.push_str(&format!(
+                    "; calibration state rollback also failed: {rollback_error}"
+                ));
+            }
+            return error("battery-operation-failed", message);
         }
         self.battery_response(None).await
     }
 
     pub(super) async fn battery_cancel_calibration(&self, params: Value) -> Value {
         let request = request!(params, BatteryRequest, "battery.cancelCalibration");
+        let _guard = battery::lock_effects().await;
         let battery_id =
             match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
                 Ok(id) => id,
                 Err(response) => return response,
             };
-        let _guard = battery::lock_effects().await;
         let mut runtime = match config::load_runtime().await {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
@@ -490,8 +505,13 @@ async fn start_charging_inhibition(
         .await
         .map_err(|value| error("battery-state-failed", value.to_string()))?;
     if let Err(value) = battery::helper::set_charge_behaviour(battery_id, "inhibit-charge").await {
-        let _ = config::save_runtime(previous).await;
-        return Err(error("battery-operation-failed", value.to_string()));
+        return match config::save_runtime(previous).await {
+            Ok(()) => Err(error("battery-operation-failed", value.to_string())),
+            Err(rollback_error) => Err(error(
+                "battery-operation-failed",
+                format!("{value}; inhibition state rollback also failed: {rollback_error}"),
+            )),
+        };
     }
     Ok(())
 }

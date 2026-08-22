@@ -5,7 +5,7 @@ use crate::{
     protocol,
     state::StateStore,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 macro_rules! request {
@@ -46,13 +46,6 @@ fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T,
             format!("{method} parameters are invalid: {value}"),
         )
     })
-}
-
-fn result<T: Serialize>(value: anyhow::Result<T>, key: &'static str, code: &str) -> Value {
-    match value {
-        Ok(value) => success(json!({(key): value})),
-        Err(value) => error(code, value.to_string()),
-    }
 }
 
 #[derive(Clone)]

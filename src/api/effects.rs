@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{error, result, success};
+use super::{error, success};
 use crate::{
     audio, brightness, hyprland::HyprlandClient, media, power, sleep, state::StateStore, updates,
 };
@@ -90,19 +90,14 @@ impl DesktopEffects {
     }
     pub(super) async fn power_profile_set(&self, params: Value) -> Value {
         let request = request!(params, ProfileRequest, "powerProfile.set");
-        result(
-            power::set_profile(&request.profile).await,
-            "power_profile",
-            "power-profile-operation-failed",
-        )
+        let battery = self.state.snapshot().await.battery;
+        self.power_profile_result(power::set_profile(&request.profile, &battery).await)
+            .await
     }
     pub(super) async fn power_profile_set_battery_aware(&self, params: Value) -> Value {
         let request = request!(params, EnabledRequest, "powerProfile.setBatteryAware");
-        result(
-            power::set_battery_aware(request.enabled).await,
-            "power_profile",
-            "power-profile-operation-failed",
-        )
+        self.power_profile_result(power::set_battery_aware(request.enabled).await)
+            .await
     }
     pub(super) async fn power_profile_set_action_enabled(&self, params: Value) -> Value {
         let request = request!(
@@ -110,11 +105,21 @@ impl DesktopEffects {
             ProfileActionRequest,
             "powerProfile.setActionEnabled"
         );
-        result(
-            power::set_action_enabled(&request.action, request.enabled).await,
-            "power_profile",
-            "power-profile-operation-failed",
-        )
+        self.power_profile_result(power::set_action_enabled(&request.action, request.enabled).await)
+            .await
+    }
+    async fn power_profile_result(
+        &self,
+        value: anyhow::Result<crate::model::PowerProfileState>,
+    ) -> Value {
+        match value {
+            Ok(state) => {
+                let response = success(json!({"power_profile": state}));
+                self.state.update_power_profile(state).await;
+                response
+            }
+            Err(value) => error("power-profile-operation-failed", value.to_string()),
+        }
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "brightness.adjust");
@@ -199,5 +204,28 @@ impl DesktopEffects {
             })),
             Err(value) => error("workspace-focus-failed", value.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{model::PowerProfileState, state::StateStore};
+
+    use super::DesktopEffects;
+
+    #[tokio::test]
+    async fn successful_power_profile_effect_updates_the_snapshot() {
+        let store = StateStore::default();
+        let effects = DesktopEffects::new(store.clone());
+        let state = PowerProfileState {
+            available: true,
+            profile: "balanced".into(),
+            ..PowerProfileState::default()
+        };
+
+        let response = effects.power_profile_result(Ok(state.clone())).await;
+
+        assert_eq!(response["data"]["power_profile"]["profile"], "balanced");
+        assert_eq!(store.snapshot().await.power_profile, state);
     }
 }

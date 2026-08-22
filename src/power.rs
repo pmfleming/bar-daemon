@@ -1,8 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use tokio::time::{interval, sleep};
+use tokio::{
+    sync::Mutex,
+    time::{interval, sleep},
+};
 use zvariant::OwnedValue;
 
 use crate::{
@@ -17,6 +20,12 @@ const INTERFACE: &str = "org.freedesktop.UPower.PowerProfiles";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const HOLD_APPLICATION_ID: &str = "org.laufan.BarDaemon";
 const HOLD_REASON: &str = "Battery level is low";
+
+static POWER_ENVELOPE: OnceLock<Mutex<PowerEnvelope>> = OnceLock::new();
+
+fn power_envelope() -> &'static Mutex<PowerEnvelope> {
+    POWER_ENVELOPE.get_or_init(|| Mutex::new(PowerEnvelope::default()))
+}
 
 pub(crate) async fn monitor(store: StateStore) {
     loop {
@@ -45,16 +54,23 @@ pub(crate) async fn monitor(store: StateStore) {
 }
 
 async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -> Result<()> {
+    power_envelope().lock().await.attach(connection.clone());
+    let result = monitor_attached_connection(connection, store).await;
+    power_envelope().lock().await.detach();
+    result
+}
+
+async fn monitor_attached_connection(
+    connection: &zbus::Connection,
+    store: &StateStore,
+) -> Result<()> {
     let properties = zbus::Proxy::new(connection, BUS, PATH, PROPERTIES_INTERFACE).await?;
     let mut changes = properties.receive_signal("PropertiesChanged").await?;
     let mut events = store.subscribe();
     let mut fallback = interval(Duration::from_secs(60));
-    let mut low_battery_hold = LowBatteryHold::default();
     fallback.tick().await;
     refresh(connection, store).await;
-    low_battery_hold
-        .reconcile(connection, &store.snapshot().await.battery)
-        .await?;
+    reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
     loop {
         tokio::select! {
             signal = changes.next() => {
@@ -64,16 +80,12 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
             event = events.recv() => {
                 match event {
                     Ok(event) if event.stream == protocol::stream::BATTERY => {
-                        low_battery_hold
-                            .reconcile(connection, &store.snapshot().await.battery)
-                            .await?;
+                        reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
                         refresh(connection, store).await;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        low_battery_hold
-                            .reconcile(connection, &store.snapshot().await.battery)
-                            .await?;
+                        reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         bail!("state event stream ended");
@@ -81,9 +93,7 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
                 }
             }
             _ = fallback.tick() => {
-                low_battery_hold
-                    .reconcile(connection, &store.snapshot().await.battery)
-                    .await?;
+                reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
                 refresh(connection, store).await;
             },
         }
@@ -91,20 +101,38 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
 }
 
 #[derive(Default)]
-struct LowBatteryHold {
+struct PowerEnvelope {
     cookie: Option<u32>,
+    connection: Option<zbus::Connection>,
+    low_battery_episode: bool,
+    manual_override: bool,
 }
 
-impl LowBatteryHold {
-    async fn reconcile(
-        &mut self,
-        connection: &zbus::Connection,
-        battery: &BatteryState,
-    ) -> Result<()> {
-        let desired = should_hold_power_saver(battery);
+impl PowerEnvelope {
+    fn attach(&mut self, connection: zbus::Connection) {
+        self.connection = Some(connection);
+        self.cookie = None;
+    }
+
+    fn detach(&mut self) {
+        self.connection = None;
+        self.cookie = None;
+    }
+
+    fn should_hold(&mut self, desired: bool) -> bool {
         if !desired {
-            return self.release(connection).await;
+            self.low_battery_episode = false;
+            self.manual_override = false;
+            return false;
         }
+        if !self.low_battery_episode {
+            self.low_battery_episode = true;
+            self.manual_override = false;
+        }
+        !self.manual_override
+    }
+
+    async fn acquire(&mut self, connection: &zbus::Connection) -> Result<()> {
         if self.cookie.is_some() {
             return Ok(());
         }
@@ -123,7 +151,7 @@ impl LowBatteryHold {
     }
 
     async fn release(&mut self, connection: &zbus::Connection) -> Result<()> {
-        let Some(cookie) = self.cookie.take() else {
+        let Some(cookie) = self.cookie else {
             return Ok(());
         };
         let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE)
@@ -133,8 +161,46 @@ impl LowBatteryHold {
             .call("ReleaseProfile", &(cookie,))
             .await
             .context("release low-battery power-saver hold")?;
+        self.cookie = None;
         Ok(())
     }
+}
+
+async fn reconcile_low_battery_hold(
+    connection: &zbus::Connection,
+    battery: &BatteryState,
+) -> Result<()> {
+    let mut envelope = power_envelope().lock().await;
+    if envelope.should_hold(should_hold_power_saver(battery)) {
+        envelope.acquire(connection).await
+    } else {
+        envelope.release(connection).await
+    }
+}
+
+async fn suppress_low_battery_hold(battery: &BatteryState) -> Result<bool> {
+    let mut envelope = power_envelope().lock().await;
+    if !should_hold_power_saver(battery) {
+        return Ok(false);
+    }
+    envelope.low_battery_episode = true;
+    if let Some(connection) = envelope.connection.clone() {
+        envelope.release(&connection).await?;
+    }
+    envelope.manual_override = true;
+    Ok(true)
+}
+
+async fn restore_low_battery_hold(battery: &BatteryState) -> Result<()> {
+    let mut envelope = power_envelope().lock().await;
+    envelope.manual_override = false;
+    if !should_hold_power_saver(battery) {
+        return Ok(());
+    }
+    if let Some(connection) = envelope.connection.clone() {
+        envelope.acquire(&connection).await?;
+    }
+    Ok(())
 }
 
 fn should_hold_power_saver(battery: &BatteryState) -> bool {
@@ -255,7 +321,10 @@ fn property_bool(values: &HashMap<String, OwnedValue>, key: &str) -> Option<bool
     values.get(key).and_then(|value| bool::try_from(value).ok())
 }
 
-pub(crate) async fn set_profile(profile: &str) -> Result<PowerProfileState> {
+pub(crate) async fn set_profile(
+    profile: &str,
+    battery: &BatteryState,
+) -> Result<PowerProfileState> {
     if !matches!(profile, "power-saver" | "balanced" | "performance") {
         bail!("unsupported power profile: {profile}");
     }
@@ -269,10 +338,13 @@ pub(crate) async fn set_profile(profile: &str) -> Result<PowerProfileState> {
     if !current.profiles.iter().any(|item| item.name == profile) {
         bail!("power profile is unavailable: {profile}");
     }
-    proxy
-        .set_property("ActiveProfile", &profile)
-        .await
-        .context("set active power profile")?;
+    let hold_suppressed = suppress_low_battery_hold(battery).await?;
+    if let Err(error) = proxy.set_property("ActiveProfile", &profile).await {
+        if hold_suppressed && let Err(restore_error) = restore_low_battery_hold(battery).await {
+            bail!("set active power profile: {error}; restore low-battery hold: {restore_error}");
+        }
+        return Err(error).context("set active power profile");
+    }
     read_state(&connection).await
 }
 
@@ -319,7 +391,7 @@ mod tests {
 
     use crate::model::{BatteryPolicyState, BatteryState};
 
-    use super::{parse_action, parse_hold, parse_profile, should_hold_power_saver};
+    use super::{PowerEnvelope, parse_action, parse_hold, parse_profile, should_hold_power_saver};
 
     fn owned(value: &str) -> OwnedValue {
         OwnedValue::try_from(Value::new(value)).unwrap()
@@ -359,6 +431,16 @@ mod tests {
         let hold = parse_hold(&hold).unwrap();
         assert_eq!(hold.profile, "performance");
         assert_eq!(hold.reason, "Building");
+    }
+
+    #[test]
+    fn manual_override_lasts_only_for_the_current_low_battery_episode() {
+        let mut envelope = PowerEnvelope::default();
+        assert!(envelope.should_hold(true));
+        envelope.manual_override = true;
+        assert!(!envelope.should_hold(true));
+        assert!(!envelope.should_hold(false));
+        assert!(envelope.should_hold(true));
     }
 
     #[test]

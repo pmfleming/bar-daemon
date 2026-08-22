@@ -227,7 +227,7 @@ async fn reconcile_and_decorate(mut state: BatteryState) -> BatteryState {
         append_error(
             &mut policy_error,
             format!(
-                "cannot restore charge thresholds for {}: the battery is absent or does not expose threshold controls",
+                "cannot verify restored charge thresholds for {}: the battery is absent, unsupported, or reported different values",
                 runtime.charge_once_battery_id
             ),
         );
@@ -263,9 +263,16 @@ async fn reconcile_thresholds(
         let accepted = device_policy
             .accepted_reported_start_percent
             .zip(device_policy.accepted_reported_end_percent);
+        let charge_once_target = runtime.charge_once_active
+            && (runtime.charge_once_battery_id.is_empty()
+                || runtime.charge_once_battery_id == battery_id);
+        let temporary_target = (runtime.operation == config::OperationKind::Calibration
+            && runtime.operation_battery_id == battery_id)
+            || (charge_once_target && !finish_charge_once);
+        let restoration_target = charge_once_target && finish_charge_once;
+        let policy_target = !temporary_target && !restoration_target;
         let already_applied = target.is_some_and(|target| {
-            observed == (Some(target.0), Some(target.1))
-                || accepted.is_some_and(|accepted| observed == (Some(accepted.0), Some(accepted.1)))
+            target_is_applied(observed, target, accepted, temporary_target, policy_target)
         });
         let can_control = device.protection.supports_start && device.protection.supports_end;
         let applied = match target {
@@ -278,11 +285,29 @@ async fn reconcile_thresholds(
                             result.actual_start_percent,
                             result.actual_end_percent,
                         );
-                        let policy = config.device_mut(&battery_id);
-                        policy.accepted_reported_start_percent = Some(result.actual_start_percent);
-                        policy.accepted_reported_end_percent = Some(result.actual_end_percent);
-                        config_changed = true;
-                        true
+                        if restoration_target && !result.verified {
+                            append_error(
+                                policy_error,
+                                format!(
+                                    "battery {battery_id} reported thresholds {}–{} after restoring {}–{}",
+                                    result.actual_start_percent,
+                                    result.actual_end_percent,
+                                    target.0,
+                                    target.1
+                                ),
+                            );
+                            false
+                        } else {
+                            if policy_target {
+                                let policy = config.device_mut(&battery_id);
+                                policy.accepted_reported_start_percent =
+                                    Some(result.actual_start_percent);
+                                policy.accepted_reported_end_percent =
+                                    Some(result.actual_end_percent);
+                                config_changed = true;
+                            }
+                            true
+                        }
                     }
                     Err(error) => {
                         append_error(policy_error, error.to_string());
@@ -298,6 +323,19 @@ async fn reconcile_thresholds(
         }
     }
     (restored, config_changed)
+}
+
+fn target_is_applied(
+    observed: (Option<u8>, Option<u8>),
+    target: (u8, u8),
+    accepted: Option<(u8, u8)>,
+    temporary_target: bool,
+    policy_target: bool,
+) -> bool {
+    observed == (Some(target.0), Some(target.1))
+        || (temporary_target && observed.1 == Some(100))
+        || (policy_target
+            && accepted.is_some_and(|accepted| observed == (Some(accepted.0), Some(accepted.1))))
 }
 
 fn reconciliation_target(
@@ -462,6 +500,16 @@ async fn finish_runtime_operation(
                     thresholds.actual_start_percent,
                     thresholds.actual_end_percent,
                 );
+                if !thresholds.verified {
+                    append_error(
+                        policy_error,
+                        format!(
+                            "battery {battery_id} reported thresholds {}–{} after calibration restoration",
+                            thresholds.actual_start_percent, thresholds.actual_end_percent
+                        ),
+                    );
+                    return false;
+                }
             }
             runtime.clear_operation();
             true
@@ -669,7 +717,7 @@ async fn publish_error(error: impl std::fmt::Display, store: &StateStore) {
 
 #[cfg(test)]
 mod tests {
-    use super::{config, reconciliation_target};
+    use super::{config, reconciliation_target, target_is_applied};
 
     #[test]
     fn unmanaged_thresholds_are_left_alone() {
@@ -701,6 +749,26 @@ mod tests {
             ),
             Some((75, 80))
         );
+    }
+
+    #[test]
+    fn temporary_readback_cannot_satisfy_a_restoration_target() {
+        let observed = (Some(5), Some(100));
+        let accepted_temporary_readback = Some((5, 100));
+        assert!(target_is_applied(
+            observed,
+            (0, 100),
+            accepted_temporary_readback,
+            true,
+            false
+        ));
+        assert!(!target_is_applied(
+            observed,
+            (75, 80),
+            accepted_temporary_readback,
+            false,
+            false
+        ));
     }
 
     #[test]
