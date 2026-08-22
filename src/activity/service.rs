@@ -35,6 +35,7 @@ struct ActivityData {
     source_states: HashMap<String, ActivitySourceState>,
     todos: Vec<TodoItem>,
     weather: WeatherState,
+    weather_locations: Vec<WeatherState>,
 }
 
 pub(crate) struct ActivityService {
@@ -115,6 +116,9 @@ impl ActivityService {
             .collect::<BTreeSet<_>>();
         {
             let mut data = self.data.write().await;
+            if data.config.configured_weather_locations() != config.configured_weather_locations() {
+                data.weather_locations.clear();
+            }
             data.config = config.clone();
             data.events_by_source
                 .retain(|source_id, _| configured_ids.contains(source_id));
@@ -169,31 +173,54 @@ impl ActivityService {
     }
 
     async fn refresh_weather(&self, config: &ActivityConfig) {
-        let Some(weather_config) = &config.weather else {
-            self.data.write().await.weather = WeatherState {
+        let locations = config.configured_weather_locations();
+        if locations.is_empty() {
+            let mut data = self.data.write().await;
+            data.weather = WeatherState {
                 location: "Local".into(),
                 error: Some("Weather is not configured".into()),
                 ..WeatherState::default()
             };
-            return;
-        };
-        let should_refresh = {
-            let data = self.data.read().await;
-            !data.weather.available
-                || data.weather.location != weather_config.location
-                || unix_ms().saturating_sub(data.weather.updated_unix_ms) >= 15 * 60 * 1_000
-        };
-        if !should_refresh {
+            data.weather_locations.clear();
             return;
         }
-        match weather::fetch(weather_config).await {
-            Ok(forecast) => self.data.write().await.weather = forecast,
-            Err(error) => {
-                let mut data = self.data.write().await;
-                data.weather.location = weather_config.location.clone();
-                data.weather.error = Some(error.to_string());
+        let cached = self.data.read().await.weather_locations.clone();
+        let now = unix_ms();
+        let forecasts = futures::future::join_all(locations.iter().map(|location| {
+            let previous = cached
+                .iter()
+                .find(|weather| weather.id == location.id)
+                .cloned();
+            async move {
+                if let Some(weather) = &previous
+                    && weather.available
+                    && now.saturating_sub(weather.updated_unix_ms) < 15 * 60 * 1_000
+                {
+                    return weather.clone();
+                }
+                match weather::fetch(location).await {
+                    Ok(forecast) => forecast,
+                    Err(error) => WeatherState {
+                        id: location.id.clone(),
+                        location: location.location.clone(),
+                        home: location.home,
+                        timezone: location.timezone.clone(),
+                        error: Some(error.to_string()),
+                        ..previous.unwrap_or_default()
+                    },
+                }
             }
-        }
+        }))
+        .await;
+        let primary = forecasts
+            .iter()
+            .find(|weather| weather.home)
+            .or_else(|| forecasts.first())
+            .cloned()
+            .unwrap_or_default();
+        let mut data = self.data.write().await;
+        data.weather = primary;
+        data.weather_locations = forecasts;
     }
 
     pub(crate) async fn query_range(
@@ -390,6 +417,7 @@ impl ActivityService {
             sources,
             world_clocks,
             weather: data.weather.clone(),
+            weather_locations: data.weather_locations.clone(),
             error,
         };
         drop(data);

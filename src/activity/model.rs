@@ -10,6 +10,7 @@ pub(crate) struct ActivityState {
     pub sources: Vec<ActivitySourceState>,
     pub world_clocks: Vec<WorldClockState>,
     pub weather: WeatherState,
+    pub weather_locations: Vec<WeatherState>,
     pub error: Option<String>,
 }
 
@@ -65,8 +66,11 @@ pub(crate) struct WorldClockState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WeatherState {
     pub available: bool,
+    pub id: String,
     pub location: String,
+    pub home: bool,
     pub timezone: String,
+    pub utc_offset_seconds: i32,
     pub condition: String,
     pub temperature_c: f64,
     pub apparent_temperature_c: f64,
@@ -88,6 +92,7 @@ pub(crate) struct WeatherHour {
     pub time_unix_ms: i64,
     pub temperature_c: f64,
     pub precipitation_probability: u8,
+    pub wind_speed_kmh: f64,
     pub condition: String,
 }
 

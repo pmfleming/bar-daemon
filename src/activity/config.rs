@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub(crate) struct ActivityConfig {
     pub calendar_sources: Vec<CalendarSourceConfig>,
     pub world_clocks: Vec<WorldClockConfig>,
+    pub weather_locations: Vec<WeatherConfig>,
     pub weather: Option<WeatherConfig>,
 }
 
@@ -43,7 +44,9 @@ pub(crate) struct WorldClockConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub(crate) struct WeatherConfig {
+    pub id: String,
     pub location: String,
+    pub home: bool,
     pub latitude: f64,
     pub longitude: f64,
     pub timezone: String,
@@ -52,7 +55,9 @@ pub(crate) struct WeatherConfig {
 impl Default for WeatherConfig {
     fn default() -> Self {
         Self {
+            id: String::new(),
             location: "Local".into(),
+            home: false,
             latitude: 0.0,
             longitude: 0.0,
             timezone: "auto".into(),
@@ -78,6 +83,26 @@ pub(crate) fn notification_database_path() -> PathBuf {
         .unwrap_or_else(|| state_home().join("bar-daemon/notifications.sqlite3"))
 }
 
+impl ActivityConfig {
+    pub(crate) fn configured_weather_locations(&self) -> Vec<WeatherConfig> {
+        if self.weather_locations.is_empty() {
+            self.weather
+                .iter()
+                .cloned()
+                .map(|mut weather| {
+                    if weather.id.trim().is_empty() {
+                        weather.id = "home".into();
+                    }
+                    weather.home = true;
+                    weather
+                })
+                .collect()
+        } else {
+            self.weather_locations.clone()
+        }
+    }
+}
+
 pub(crate) fn validate(config: &ActivityConfig) -> Result<()> {
     let mut ids = HashSet::new();
     for source in &config.calendar_sources {
@@ -100,12 +125,21 @@ pub(crate) fn validate(config: &ActivityConfig) -> Result<()> {
             .parse::<chrono_tz::Tz>()
             .with_context(|| format!("parse world-clock timezone {}", clock.timezone))?;
     }
-    if let Some(weather) = &config.weather {
+    let weather_locations = config.configured_weather_locations();
+    let mut weather_ids = HashSet::new();
+    let mut home_count = 0;
+    for weather in &weather_locations {
         if !(-90.0..=90.0).contains(&weather.latitude) {
             anyhow::bail!("weather latitude must be between -90 and 90");
         }
         if !(-180.0..=180.0).contains(&weather.longitude) {
             anyhow::bail!("weather longitude must be between -180 and 180");
+        }
+        if weather.id.trim().is_empty() {
+            anyhow::bail!("weather location id cannot be empty");
+        }
+        if !weather_ids.insert(weather.id.as_str()) {
+            anyhow::bail!("duplicate weather location id {}", weather.id);
         }
         if weather.location.trim().is_empty() {
             anyhow::bail!("weather location cannot be empty");
@@ -113,6 +147,10 @@ pub(crate) fn validate(config: &ActivityConfig) -> Result<()> {
         if weather.timezone.trim().is_empty() {
             anyhow::bail!("weather timezone cannot be empty");
         }
+        home_count += usize::from(weather.home);
+    }
+    if home_count > 1 {
+        anyhow::bail!("only one weather location can be marked as home");
     }
     Ok(())
 }
@@ -153,14 +191,17 @@ mod tests {
                 {"id":"home","name":"Home","kind":"ics-file","path":"/tmp/home.ics"}
               ],
               "world_clocks": [{"timezone":"Asia/Tokyo","label":"Tokyo"}],
-              "weather": {"location":"Leiden","latitude":52.16,"longitude":4.49,"timezone":"Europe/Amsterdam"}
+              "weather_locations": [
+                {"id":"home","location":"Amsterdam","home":true,"latitude":52.37,"longitude":4.90,"timezone":"Europe/Amsterdam"},
+                {"id":"dublin","location":"Dublin","latitude":53.35,"longitude":-6.26,"timezone":"Europe/Dublin"}
+              ]
             }"##,
         )
         .unwrap();
         assert_eq!(config.calendar_sources.len(), 2);
         assert_eq!(config.calendar_sources[1].color, "#7aa2f7");
         assert_eq!(config.world_clocks[0].timezone, "Asia/Tokyo");
-        assert_eq!(config.weather.as_ref().unwrap().location, "Leiden");
+        assert_eq!(config.weather_locations[0].location, "Amsterdam");
         super::validate(&config).unwrap();
     }
 

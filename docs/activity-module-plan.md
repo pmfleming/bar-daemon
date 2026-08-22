@@ -80,12 +80,10 @@ Example (also checked in as [`activity.example.json`](activity.example.json)):
       "color": "#9ece6a"
     }
   ],
-  "weather": {
-    "location": "Leiden",
-    "latitude": 52.1601,
-    "longitude": 4.497,
-    "timezone": "Europe/Amsterdam"
-  },
+  "weather_locations": [
+    { "id": "home", "location": "Amsterdam", "home": true, "latitude": 52.3676, "longitude": 4.9041, "timezone": "Europe/Amsterdam" },
+    { "id": "dublin", "location": "Dublin", "latitude": 53.3498, "longitude": -6.2603, "timezone": "Europe/Dublin" }
+  ],
   "world_clocks": [
     { "timezone": "America/New_York", "label": "New York" },
     { "timezone": "Asia/Tokyo", "label": "Tokyo" }
@@ -93,7 +91,7 @@ Example (also checked in as [`activity.example.json`](activity.example.json)):
 }
 ```
 
-Weather is optional. When configured, `bar-daemon` requests the public Open-Meteo forecast no more than once every 15 minutes and retains the last successful result during transient failures. Local todos are stored atomically at `$BAR_DAEMON_TODO_FILE` or `$XDG_STATE_HOME/bar-daemon/todos.json`. Provider credentials will use Secret Service and will never be written to this configuration.
+Weather locations are optional and configuration-owned; city names and coordinates are never compiled into the daemon or UI. One location can be marked as `home`. When configured, `bar-daemon` requests public Open-Meteo forecasts concurrently no more than once every 15 minutes and retains each location's last successful result during transient failures. Local todos are stored atomically at `$BAR_DAEMON_TODO_FILE` or `$XDG_STATE_HOME/bar-daemon/todos.json`. Provider credentials will use Secret Service and will never be written to this configuration.
 
 ## API
 

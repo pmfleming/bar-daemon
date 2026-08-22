@@ -158,6 +158,18 @@ pub fn registry() -> Value {
 
 #[cfg(test)]
 fn generated_contract_fixture() -> Value {
+    let weather = json!({
+        "available": true, "id": "home", "location": "Amsterdam", "home": true,
+        "timezone": "Europe/Amsterdam", "utc_offset_seconds": 7200,
+        "condition": "Clear", "temperature_c": 17.0, "apparent_temperature_c": 16.0,
+        "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5,
+        "wind_speed_kmh": 12.0, "humidity_percent": 73,
+        "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64,
+        "updated_unix_ms": 1766446800000_i64,
+        "hourly": [{ "time_unix_ms": 1766448000000_i64, "temperature_c": 17.0, "precipitation_probability": 5, "wind_speed_kmh": 12.0, "condition": "Clear" }],
+        "daily": [{ "date_unix_ms": 1766361600000_i64, "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5, "condition": "Clear", "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64 }],
+        "error": null
+    });
     json!({
         "protocol": NAME,
         "version": VERSION,
@@ -176,17 +188,8 @@ fn generated_contract_fixture() -> Value {
                 },
                 "sources": [{ "id": "work", "name": "Work", "kind": "ics-directory", "available": true, "item_count": 1, "error": null }],
                 "world_clocks": [{ "timezone": "Asia/Tokyo", "label": "Tokyo", "city": "Tokyo", "abbreviation": "JST", "utc_offset_seconds": 32400 }],
-                "weather": {
-                    "available": true, "location": "Leiden", "timezone": "Europe/Amsterdam",
-                    "condition": "Clear", "temperature_c": 17.0, "apparent_temperature_c": 16.0,
-                    "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5,
-                    "wind_speed_kmh": 12.0, "humidity_percent": 73,
-                    "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64,
-                    "updated_unix_ms": 1766446800000_i64,
-                    "hourly": [{ "time_unix_ms": 1766448000000_i64, "temperature_c": 17.0, "precipitation_probability": 5, "condition": "Clear" }],
-                    "daily": [{ "date_unix_ms": 1766361600000_i64, "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5, "condition": "Clear", "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64 }],
-                    "error": null
-                },
+                "weather": weather.clone(),
+                "weather_locations": [weather],
                 "error": null
             },
             "workspaces": {

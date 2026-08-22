@@ -11,6 +11,7 @@ const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
 #[derive(Debug, Deserialize)]
 struct ForecastResponse {
     timezone: String,
+    utc_offset_seconds: i32,
     current: CurrentWeather,
     hourly: HourlyWeather,
     daily: DailyWeather,
@@ -30,6 +31,7 @@ struct HourlyWeather {
     time: Vec<i64>,
     temperature_2m: Vec<f64>,
     precipitation_probability: Vec<u8>,
+    wind_speed_10m: Vec<f64>,
     weather_code: Vec<u16>,
 }
 
@@ -59,7 +61,7 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
             ),
             (
                 "hourly",
-                "temperature_2m,precipitation_probability,weather_code".into(),
+                "temperature_2m,precipitation_probability,wind_speed_10m,weather_code".into(),
             ),
             (
                 "daily",
@@ -88,6 +90,7 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
             time_unix_ms: *time * 1_000,
             temperature_c: value(&response.hourly.temperature_2m, index),
             precipitation_probability: value(&response.hourly.precipitation_probability, index),
+            wind_speed_kmh: value(&response.hourly.wind_speed_10m, index),
             condition: condition(value(&response.hourly.weather_code, index)).into(),
         })
         .collect();
@@ -111,8 +114,11 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
 
     Ok(WeatherState {
         available: true,
+        id: config.id.clone(),
         location: config.location.clone(),
+        home: config.home,
         timezone: response.timezone,
+        utc_offset_seconds: response.utc_offset_seconds,
         condition: condition(response.current.weather_code).into(),
         temperature_c: response.current.temperature_2m,
         apparent_temperature_c: response.current.apparent_temperature,
