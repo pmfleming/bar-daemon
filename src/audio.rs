@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use pipewire as pw;
 use pw::{
+    device::Device,
     metadata::Metadata,
     node::Node,
     proxy::{Listener, ProxyT},
@@ -42,12 +43,27 @@ struct SinkProbe {
     channels: usize,
     volume: f32,
     muted: bool,
+    device_id: Option<u32>,
+    route_device: Option<i32>,
+    route: Option<RouteProbe>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RouteProbe {
+    device_id: u32,
+    index: i32,
+    route_device: i32,
+    direction: u32,
+    channels: usize,
+    volume: f32,
+    muted: bool,
 }
 
 #[derive(Default)]
 struct ProbeState {
     sinks: Rc<RefCell<HashMap<u32, SinkProbe>>>,
     sources: Rc<RefCell<HashMap<u32, SinkProbe>>>,
+    routes: Rc<RefCell<Vec<RouteProbe>>>,
     default_sink_name: Rc<RefCell<String>>,
     default_source_name: Rc<RefCell<String>>,
     objects: Rc<RefCell<Objects>>,
@@ -207,6 +223,9 @@ fn relevant_global(global: &pw::registry::GlobalObject<&pw::spa::utils::dict::Di
                 Some("Audio/Sink" | "Audio/Source")
             )
         }),
+        ObjectType::Device => global
+            .props
+            .is_some_and(|props| props.get("media.class") == Some("Audio/Device")),
         ObjectType::Metadata => global
             .props
             .is_some_and(|props| props.get("metadata.name") == Some("default")),
@@ -232,6 +251,19 @@ fn bind_monitor_object(
                 .param(move |_, _, _, _, _| event())
                 .register();
             objects.borrow_mut().retain(global.id, node, listener);
+        }
+        ObjectType::Device => {
+            let device = registry.bind::<Device, _>(global)?;
+            device.subscribe_params(&[pw::spa::param::ParamType::Route]);
+            let listener = device
+                .add_listener_local()
+                .param(move |_, parameter, _, _, _| {
+                    if parameter == pw::spa::param::ParamType::Route {
+                        event();
+                    }
+                })
+                .register();
+            objects.borrow_mut().retain(global.id, device, listener);
         }
         ObjectType::Metadata => {
             let metadata = registry.bind::<Metadata, _>(global)?;
@@ -296,10 +328,36 @@ fn probe_default() -> Result<(SinkProbe, Option<SinkProbe>)> {
     let sources = state.sources.borrow();
     let default_sink_name = state.default_sink_name.borrow();
     let default_source_name = state.default_source_name.borrow();
-    let sink = preferred_node(&sinks, &default_sink_name)
+    let mut sink = preferred_node(&sinks, &default_sink_name)
         .context("no PipeWire audio sink is available")?;
-    let source = preferred_node(&sources, &default_source_name);
+    let mut source = preferred_node(&sources, &default_source_name);
+    let routes = state.routes.borrow();
+    apply_route(&mut sink, &routes, pw::spa::sys::SPA_DIRECTION_OUTPUT);
+    if let Some(source) = &mut source {
+        apply_route(source, &routes, pw::spa::sys::SPA_DIRECTION_INPUT);
+    }
     Ok((sink, source))
+}
+
+fn apply_route(node: &mut SinkProbe, routes: &[RouteProbe], direction: u32) {
+    let candidates = routes
+        .iter()
+        .filter(|route| Some(route.device_id) == node.device_id && route.direction == direction)
+        .collect::<Vec<_>>();
+    let route = node
+        .route_device
+        .and_then(|device| {
+            candidates
+                .iter()
+                .find(|route| route.route_device == device)
+                .copied()
+        })
+        .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
+    let Some(route) = route else { return };
+    node.channels = route.channels;
+    node.volume = route.volume;
+    node.muted = route.muted;
+    node.route = Some(route.clone());
 }
 
 fn preferred_node(nodes: &HashMap<u32, SinkProbe>, default_name: &str) -> Option<SinkProbe> {
@@ -320,6 +378,9 @@ fn bind_probe_global(
     };
     match global.type_ {
         ObjectType::Node => bind_probe_node(state, registry, global, props),
+        ObjectType::Device if props.get("media.class") == Some("Audio/Device") => {
+            bind_probe_device(state, registry, global)
+        }
         ObjectType::Metadata if props.get("metadata.name") == Some("default") => {
             bind_default_metadata(state, registry, global);
         }
@@ -354,6 +415,11 @@ fn bind_probe_node(
             channels: 2,
             volume: 0.0,
             muted: false,
+            device_id: props.get("device.id").and_then(|value| value.parse().ok()),
+            route_device: props
+                .get("card.profile.device")
+                .and_then(|value| value.parse().ok()),
+            route: None,
         },
     );
     let id = global.id;
@@ -375,6 +441,45 @@ fn bind_probe_node(
         .register();
     node.enum_params(1, Some(pw::spa::param::ParamType::Props), 0, 1);
     state.objects.borrow_mut().retain(global.id, node, listener);
+}
+
+fn bind_probe_device(
+    state: &Rc<ProbeState>,
+    registry: &pw::registry::RegistryRc,
+    global: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>,
+) {
+    let Ok(device) = registry.bind::<Device, _>(global) else {
+        return;
+    };
+    let routes = Rc::clone(&state.routes);
+    let device_id = global.id;
+    let listener = device
+        .add_listener_local()
+        .param(move |_, parameter, _, _, pod| {
+            if parameter != pw::spa::param::ParamType::Route {
+                return;
+            }
+            let Some(pod) = pod else {
+                return;
+            };
+            if let Some(mut route) = parse_route(pod) {
+                route.device_id = device_id;
+                let mut routes = routes.borrow_mut();
+                if let Some(existing) = routes.iter_mut().find(|existing| {
+                    existing.device_id == device_id && existing.index == route.index
+                }) {
+                    *existing = route;
+                } else {
+                    routes.push(route);
+                }
+            }
+        })
+        .register();
+    device.enum_params(1, Some(pw::spa::param::ParamType::Route), 0, u32::MAX);
+    state
+        .objects
+        .borrow_mut()
+        .retain(global.id, device, listener);
 }
 
 fn apply_props(node: &mut SinkProbe, values: PropsValues) {
@@ -425,12 +530,17 @@ struct PropsValues {
 }
 
 fn parse_props(pod: &pw::spa::pod::Pod) -> Option<PropsValues> {
-    use pw::spa::pod::{Value, ValueArray, deserialize::PodDeserializer};
+    use pw::spa::pod::{Value, deserialize::PodDeserializer};
     let (_, Value::Object(object)) =
         PodDeserializer::deserialize_from::<Value>(pod.as_bytes()).ok()?
     else {
         return None;
     };
+    Some(parse_props_object(object))
+}
+
+fn parse_props_object(object: pw::spa::pod::Object) -> PropsValues {
+    use pw::spa::pod::{Value, ValueArray};
     let mut values = PropsValues::default();
     for property in object.properties {
         match property.value {
@@ -453,7 +563,47 @@ fn parse_props(pod: &pw::spa::pod::Pod) -> Option<PropsValues> {
             _ => {}
         }
     }
-    Some(values)
+    values
+}
+
+fn parse_route(pod: &pw::spa::pod::Pod) -> Option<RouteProbe> {
+    use pw::spa::pod::{Value, deserialize::PodDeserializer};
+    let (_, Value::Object(object)) =
+        PodDeserializer::deserialize_from::<Value>(pod.as_bytes()).ok()?
+    else {
+        return None;
+    };
+    let mut index = None;
+    let mut route_device = None;
+    let mut direction = None;
+    let mut values = None;
+    for property in object.properties {
+        match property.value {
+            Value::Int(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_index => {
+                index = Some(value)
+            }
+            Value::Int(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_device => {
+                route_device = Some(value)
+            }
+            Value::Id(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_direction => {
+                direction = Some(value.0)
+            }
+            Value::Object(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_props => {
+                values = Some(parse_props_object(value))
+            }
+            _ => {}
+        }
+    }
+    let values = values?;
+    Some(RouteProbe {
+        index: index?,
+        route_device: route_device?,
+        direction: direction?,
+        channels: values.channels.unwrap_or(1),
+        volume: values.volume.unwrap_or(0.0),
+        muted: values.muted.unwrap_or(false),
+        ..RouteProbe::default()
+    })
 }
 
 fn set_node(
@@ -463,6 +613,9 @@ fn set_node(
     node_kind: &str,
 ) -> Result<()> {
     use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
+    if let Some(route) = &node_probe.route {
+        return set_route(route, volume, muted, node_kind);
+    }
     initialize();
     let mut properties = Vec::new();
     if let Some(volume) = volume {
@@ -524,6 +677,79 @@ fn set_node(
     Ok(())
 }
 
+fn set_route(
+    route: &RouteProbe,
+    volume: Option<f32>,
+    muted: Option<bool>,
+    node_kind: &str,
+) -> Result<()> {
+    use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
+    initialize();
+    let volume = linear_to_raw(volume.unwrap_or(route.volume));
+    let muted = muted.unwrap_or(route.muted);
+    let props = Value::Object(Object {
+        type_: pw::spa::sys::SPA_TYPE_OBJECT_Props,
+        id: pw::spa::sys::SPA_PARAM_Props,
+        properties: vec![
+            Property::new(
+                pw::spa::sys::SPA_PROP_channelVolumes,
+                Value::ValueArray(ValueArray::Float(vec![volume; route.channels.max(1)])),
+            ),
+            Property::new(pw::spa::sys::SPA_PROP_mute, Value::Bool(muted)),
+        ],
+    });
+    let value = Value::Object(Object {
+        type_: pw::spa::sys::SPA_TYPE_OBJECT_ParamRoute,
+        id: pw::spa::sys::SPA_PARAM_Route,
+        properties: vec![
+            Property::new(pw::spa::sys::SPA_PARAM_ROUTE_index, Value::Int(route.index)),
+            Property::new(
+                pw::spa::sys::SPA_PARAM_ROUTE_device,
+                Value::Int(route.route_device),
+            ),
+            Property::new(pw::spa::sys::SPA_PARAM_ROUTE_props, props),
+            Property::new(pw::spa::sys::SPA_PARAM_ROUTE_save, Value::Bool(true)),
+        ],
+    });
+    let bytes = PodSerializer::serialize(Cursor::new(Vec::new()), &value)?
+        .0
+        .into_inner();
+    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::ContextRc::new(&main_loop, None)?;
+    let core = context.connect_rc(None)?;
+    let registry = core.get_registry_rc()?;
+    let applied = Rc::new(Cell::new(false));
+    let applied_for_listener = Rc::clone(&applied);
+    let requested_id = route.device_id;
+    let registry_weak = registry.downgrade();
+    let retained = Rc::new(RefCell::new(None::<Device>));
+    let retained_for_listener = Rc::clone(&retained);
+    let _listener = registry
+        .add_listener_local()
+        .global(move |global| {
+            if global.id != requested_id || global.type_ != ObjectType::Device {
+                return;
+            }
+            let Some(registry) = registry_weak.upgrade() else {
+                return;
+            };
+            if let Ok(device) = registry.bind::<Device, _>(global) {
+                let Some(pod) = pw::spa::pod::Pod::from_bytes(&bytes) else {
+                    return;
+                };
+                device.set_param(pw::spa::param::ParamType::Route, 0, pod);
+                *retained_for_listener.borrow_mut() = Some(device);
+                applied_for_listener.set(true);
+            }
+        })
+        .register();
+    pipewire_roundtrip(&main_loop, &core)?;
+    if !applied.get() {
+        bail!("default PipeWire {node_kind} route disappeared");
+    }
+    Ok(())
+}
+
 fn default_node_name(value: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(value).ok()?["name"]
         .as_str()
@@ -577,9 +803,11 @@ fn pipewire_roundtrip(
 mod tests {
     use std::collections::HashMap;
 
+    use pipewire as pw;
+
     use super::{
-        SinkProbe, adjusted_volume, default_node_name, linear_to_raw, preferred_node,
-        raw_to_linear, requested_mute,
+        RouteProbe, SinkProbe, adjusted_volume, apply_route, default_node_name, linear_to_raw,
+        preferred_node, raw_to_linear, requested_mute,
     };
 
     #[test]
@@ -602,6 +830,31 @@ mod tests {
             Some("alsa_output.test")
         );
         assert!(default_node_name("invalid").is_none());
+    }
+
+    #[test]
+    fn applies_the_only_matching_hardware_route() {
+        let mut node = SinkProbe {
+            device_id: Some(42),
+            volume: 1.0,
+            ..SinkProbe::default()
+        };
+        let routes = [RouteProbe {
+            device_id: 42,
+            index: 1,
+            route_device: 1,
+            direction: pw::spa::sys::SPA_DIRECTION_OUTPUT,
+            channels: 2,
+            volume: 0.64,
+            muted: true,
+        }];
+
+        apply_route(&mut node, &routes, pw::spa::sys::SPA_DIRECTION_OUTPUT);
+
+        assert_eq!(node.volume, 0.64);
+        assert_eq!(node.channels, 2);
+        assert!(node.muted);
+        assert_eq!(node.route.as_ref().map(|route| route.index), Some(1));
     }
 
     #[test]
