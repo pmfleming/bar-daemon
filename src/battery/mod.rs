@@ -306,7 +306,9 @@ fn reconciliation_target(
     should_finish_charge_once: bool,
     battery_id: &str,
 ) -> Option<(u8, u8)> {
-    if runtime.operation == "calibration" && runtime.operation_battery_id == battery_id {
+    if runtime.operation == config::OperationKind::Calibration
+        && runtime.operation_battery_id == battery_id
+    {
         return Some((0, 100));
     }
     let charge_once_target = runtime.charge_once_active
@@ -335,7 +337,7 @@ async fn reconcile_runtime_operation(
     runtime: &mut config::BatteryRuntimeState,
     policy_error: &mut Option<String>,
 ) -> bool {
-    if runtime.operation.is_empty() {
+    if runtime.operation == config::OperationKind::None {
         return false;
     }
     let Some(device) = state
@@ -357,19 +359,15 @@ async fn reconcile_runtime_operation(
         );
         return false;
     };
-    match runtime.operation.as_str() {
-        "inhibit" => {
+    match runtime.operation {
+        config::OperationKind::Inhibit => {
             ensure_charge_behaviour(state, &device, "inhibit-charge", policy_error).await;
             false
         }
-        "calibration" => reconcile_calibration(state, runtime, policy_error, &device).await,
-        operation => {
-            append_error(
-                policy_error,
-                format!("unknown battery operation: {operation}"),
-            );
-            finish_runtime_operation(state, runtime, policy_error).await
+        config::OperationKind::Calibration => {
+            reconcile_calibration(state, runtime, policy_error, &device).await
         }
+        config::OperationKind::None => false,
     }
 }
 
@@ -382,19 +380,19 @@ async fn reconcile_calibration(
     if runtime.operation_expired(crate::time::unix_ms()) || !state.plugged {
         return finish_runtime_operation(state, runtime, policy_error).await;
     }
-    match runtime.operation_phase.as_str() {
-        "discharging" => {
+    match runtime.operation_phase {
+        config::OperationPhase::Discharging => {
             reconcile_calibration_discharge(state, runtime, policy_error, device).await
         }
-        "charging" if device.percentage >= 100 => {
+        config::OperationPhase::Charging if device.percentage >= 100 => {
             finish_runtime_operation(state, runtime, policy_error).await
         }
-        "charging" => {
+        config::OperationPhase::Charging => {
             ensure_charge_behaviour(state, device, "auto", policy_error).await;
             false
         }
         phase => {
-            append_error(policy_error, format!("unknown calibration phase: {phase}"));
+            append_error(policy_error, format!("invalid calibration phase: {phase}"));
             finish_runtime_operation(state, runtime, policy_error).await
         }
     }
@@ -411,7 +409,7 @@ async fn reconcile_calibration_discharge(
         return false;
     }
     if ensure_charge_behaviour(state, device, "auto", policy_error).await {
-        runtime.operation_phase = "charging".into();
+        runtime.operation_phase = config::OperationPhase::Charging;
         return true;
     }
     false
@@ -534,9 +532,9 @@ fn decorate(
         auto_power_saver: config.auto_power_saver,
     };
     state.operation = BatteryOperationState {
-        kind: runtime.operation.clone(),
+        kind: runtime.operation.as_str().into(),
         battery_id: runtime.operation_battery_id.clone(),
-        phase: runtime.operation_phase.clone(),
+        phase: runtime.operation_phase.as_str().into(),
         started_unix_ms: runtime.operation_started_unix_ms,
         expires_unix_ms: runtime.operation_expires_unix_ms,
     };

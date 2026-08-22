@@ -44,7 +44,7 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if runtime.charge_once_active || !runtime.operation.is_empty() {
+        if runtime.has_durable_operation() {
             return error(
                 "battery-operation-active",
                 "charge policy cannot change during a durable battery operation",
@@ -79,7 +79,7 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if runtime.charge_once_active || !runtime.operation.is_empty() {
+        if runtime.has_durable_operation() {
             return error(
                 "battery-operation-active",
                 "charge policy cannot change during a durable battery operation",
@@ -141,7 +141,7 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if previous_runtime.charge_once_active || !previous_runtime.operation.is_empty() {
+        if previous_runtime.has_durable_operation() {
             return error(
                 "battery-operation-active",
                 "another durable battery operation is already active",
@@ -268,7 +268,7 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if previous.charge_once_active || !previous.operation.is_empty() {
+        if previous.has_durable_operation() {
             return error(
                 "battery-operation-active",
                 "another durable battery operation is already active",
@@ -316,7 +316,9 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if runtime.operation != "calibration" || runtime.operation_battery_id != battery_id {
+        if runtime.operation != config::OperationKind::Calibration
+            || runtime.operation_battery_id != battery_id
+        {
             return error(
                 "battery-operation-inactive",
                 format!("battery {battery_id} is not being calibrated"),
@@ -459,7 +461,7 @@ async fn start_charging_inhibition(
     battery_id: &str,
     previous: &config::BatteryRuntimeState,
 ) -> Result<(), Value> {
-    if previous.charge_once_active || !previous.operation.is_empty() {
+    if previous.has_durable_operation() {
         return Err(error(
             "battery-operation-active",
             "another durable battery operation is already active",
@@ -481,7 +483,9 @@ async fn stop_charging_inhibition(
     battery_id: &str,
     mut runtime: config::BatteryRuntimeState,
 ) -> Result<(), Value> {
-    if runtime.operation != "inhibit" || runtime.operation_battery_id != battery_id {
+    if runtime.operation != config::OperationKind::Inhibit
+        || runtime.operation_battery_id != battery_id
+    {
         return Err(error(
             "battery-operation-inactive",
             format!("charging is not durably inhibited for {battery_id}"),
