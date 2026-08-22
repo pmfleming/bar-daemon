@@ -15,6 +15,12 @@
       "color": "#9ece6a"
     }
   ],
+  "weather": {
+    "location": "Leiden",
+    "latitude": 52.1601,
+    "longitude": 4.4970,
+    "timezone": "Europe/Amsterdam"
+  },
   "world_clocks": [
     {
       "timezone": "America/New_York",

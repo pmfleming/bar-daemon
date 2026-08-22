@@ -9,6 +9,7 @@ pub(crate) struct ActivityState {
     pub next_event: Option<ActivityEvent>,
     pub sources: Vec<ActivitySourceState>,
     pub world_clocks: Vec<WorldClockState>,
+    pub weather: WeatherState,
     pub error: Option<String>,
 }
 
@@ -59,6 +60,46 @@ pub(crate) struct WorldClockState {
     pub city: String,
     pub abbreviation: String,
     pub utc_offset_seconds: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WeatherState {
+    pub available: bool,
+    pub location: String,
+    pub timezone: String,
+    pub condition: String,
+    pub temperature_c: f64,
+    pub apparent_temperature_c: f64,
+    pub high_c: f64,
+    pub low_c: f64,
+    pub precipitation_probability: u8,
+    pub wind_speed_kmh: f64,
+    pub humidity_percent: u8,
+    pub sunrise_unix_ms: i64,
+    pub sunset_unix_ms: i64,
+    pub updated_unix_ms: i64,
+    pub hourly: Vec<WeatherHour>,
+    pub daily: Vec<WeatherDay>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WeatherHour {
+    pub time_unix_ms: i64,
+    pub temperature_c: f64,
+    pub precipitation_probability: u8,
+    pub condition: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WeatherDay {
+    pub date_unix_ms: i64,
+    pub high_c: f64,
+    pub low_c: f64,
+    pub precipitation_probability: u8,
+    pub condition: String,
+    pub sunrise_unix_ms: i64,
+    pub sunset_unix_ms: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

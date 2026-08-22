@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub(crate) struct ActivityConfig {
     pub calendar_sources: Vec<CalendarSourceConfig>,
     pub world_clocks: Vec<WorldClockConfig>,
+    pub weather: Option<WeatherConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +38,26 @@ impl Default for CalendarSourceConfig {
 pub(crate) struct WorldClockConfig {
     pub timezone: String,
     pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub(crate) struct WeatherConfig {
+    pub location: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub timezone: String,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self {
+            location: "Local".into(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: "auto".into(),
+        }
+    }
 }
 
 pub(crate) fn config_path() -> PathBuf {
@@ -79,6 +100,20 @@ pub(crate) fn validate(config: &ActivityConfig) -> Result<()> {
             .parse::<chrono_tz::Tz>()
             .with_context(|| format!("parse world-clock timezone {}", clock.timezone))?;
     }
+    if let Some(weather) = &config.weather {
+        if !(-90.0..=90.0).contains(&weather.latitude) {
+            anyhow::bail!("weather latitude must be between -90 and 90");
+        }
+        if !(-180.0..=180.0).contains(&weather.longitude) {
+            anyhow::bail!("weather longitude must be between -180 and 180");
+        }
+        if weather.location.trim().is_empty() {
+            anyhow::bail!("weather location cannot be empty");
+        }
+        if weather.timezone.trim().is_empty() {
+            anyhow::bail!("weather timezone cannot be empty");
+        }
+    }
     Ok(())
 }
 
@@ -117,13 +152,15 @@ mod tests {
                 {"id":"work","name":"Work","kind":"ics-directory","path":"/tmp/work","color":"#123456"},
                 {"id":"home","name":"Home","kind":"ics-file","path":"/tmp/home.ics"}
               ],
-              "world_clocks": [{"timezone":"Asia/Tokyo","label":"Tokyo"}]
+              "world_clocks": [{"timezone":"Asia/Tokyo","label":"Tokyo"}],
+              "weather": {"location":"Leiden","latitude":52.16,"longitude":4.49,"timezone":"Europe/Amsterdam"}
             }"##,
         )
         .unwrap();
         assert_eq!(config.calendar_sources.len(), 2);
         assert_eq!(config.calendar_sources[1].color, "#7aa2f7");
         assert_eq!(config.world_clocks[0].timezone, "Asia/Tokyo");
+        assert_eq!(config.weather.as_ref().unwrap().location, "Leiden");
         super::validate(&config).unwrap();
     }
 

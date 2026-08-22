@@ -80,6 +80,12 @@ Example (also checked in as [`activity.example.json`](activity.example.json)):
       "color": "#9ece6a"
     }
   ],
+  "weather": {
+    "location": "Leiden",
+    "latitude": 52.1601,
+    "longitude": 4.497,
+    "timezone": "Europe/Amsterdam"
+  },
   "world_clocks": [
     { "timezone": "America/New_York", "label": "New York" },
     { "timezone": "Asia/Tokyo", "label": "Tokyo" }
@@ -87,7 +93,7 @@ Example (also checked in as [`activity.example.json`](activity.example.json)):
 }
 ```
 
-Local todos are stored atomically at `$BAR_DAEMON_TODO_FILE` or `$XDG_STATE_HOME/bar-daemon/todos.json`. Provider credentials will use Secret Service and will never be written to this configuration.
+Weather is optional. When configured, `bar-daemon` requests the public Open-Meteo forecast no more than once every 15 minutes and retains the last successful result during transient failures. Local todos are stored atomically at `$BAR_DAEMON_TODO_FILE` or `$XDG_STATE_HOME/bar-daemon/todos.json`. Provider credentials will use Secret Service and will never be written to this configuration.
 
 ## API
 
@@ -119,7 +125,7 @@ The native engine will start before network providers and communicate through bo
 
 ## Provider roadmap
 
-1. **Implemented foundation:** multiple local ICS files/directories, compact state, range query, local todos, world clocks, and Activity UI.
+1. **Implemented foundation:** multiple local ICS files/directories, compact state, range query, local todos, world clocks, Open-Meteo weather, and Activity UI.
 2. File watching, recurrence expansion, reminder scheduler, and SQLite cache.
 3. Generic CalDAV with discovery, ETags, sync tokens, VEVENT and VTODO.
 4. Native Google Calendar and Google Tasks OAuth.

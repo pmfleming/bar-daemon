@@ -21,9 +21,11 @@ use crate::{
 use super::{
     config::{self, ActivityConfig},
     model::{
-        ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, TodoItem, WorldClockState,
+        ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, TodoItem, WeatherState,
+        WorldClockState,
     },
     provider::ProviderRegistry,
+    weather,
 };
 
 #[derive(Default)]
@@ -32,6 +34,7 @@ struct ActivityData {
     events_by_source: HashMap<String, Vec<ActivityEvent>>,
     source_states: HashMap<String, ActivitySourceState>,
     todos: Vec<TodoItem>,
+    weather: WeatherState,
 }
 
 pub(crate) struct ActivityService {
@@ -161,7 +164,36 @@ impl ActivityService {
                 }
             }
         }
+        self.refresh_weather(&config).await;
         self.publish_state(first_error, false).await;
+    }
+
+    async fn refresh_weather(&self, config: &ActivityConfig) {
+        let Some(weather_config) = &config.weather else {
+            self.data.write().await.weather = WeatherState {
+                location: "Local".into(),
+                error: Some("Weather is not configured".into()),
+                ..WeatherState::default()
+            };
+            return;
+        };
+        let should_refresh = {
+            let data = self.data.read().await;
+            !data.weather.available
+                || data.weather.location != weather_config.location
+                || unix_ms().saturating_sub(data.weather.updated_unix_ms) >= 15 * 60 * 1_000
+        };
+        if !should_refresh {
+            return;
+        }
+        match weather::fetch(weather_config).await {
+            Ok(forecast) => self.data.write().await.weather = forecast,
+            Err(error) => {
+                let mut data = self.data.write().await;
+                data.weather.location = weather_config.location.clone();
+                data.weather.error = Some(error.to_string());
+            }
+        }
     }
 
     pub(crate) async fn query_range(
@@ -357,6 +389,7 @@ impl ActivityService {
             next_event,
             sources,
             world_clocks,
+            weather: data.weather.clone(),
             error,
         };
         drop(data);
