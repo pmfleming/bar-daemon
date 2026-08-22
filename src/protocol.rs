@@ -1,23 +1,39 @@
 use serde_json::{Value, json};
 
+/// Stable protocol family name.
 pub const NAME: &str = "bar-api";
+/// Current protocol contract version.
 pub const VERSION: u8 = 1;
 
+/// Event stream names accepted by subscriptions.
 pub mod stream {
+    /// Activity summary changed.
     pub const ACTIVITY: &str = "activity.changed";
+    /// Workspace state changed.
     pub const WORKSPACES: &str = "workspaces.changed";
+    /// Media player state changed.
     pub const MEDIA: &str = "media.changed";
+    /// Audio state changed.
     pub const AUDIO: &str = "audio.changed";
+    /// Backlight state changed.
     pub const BRIGHTNESS: &str = "brightness.changed";
+    /// Battery state changed.
     pub const BATTERY: &str = "battery.changed";
+    /// Power profile state changed.
     pub const POWER_PROFILE: &str = "power-profile.changed";
+    /// Sleep capability or inhibitor state changed.
     pub const POWER_SLEEP: &str = "power-sleep.changed";
+    /// Notification summary changed.
     pub const NOTIFICATIONS: &str = "notifications.changed";
+    /// Active notification collection changed.
     pub const NOTIFICATION_ACTIVE: &str = "notifications.active.changed";
+    /// Update readiness changed.
     pub const UPDATES: &str = "updates.changed";
+    /// System timezone changed.
     pub const TIMEZONE: &str = "timezone.changed";
 }
 
+/// Complete ordered method registry for protocol version 1.
 pub const METHODS: &[&str] = &[
     "bar.snapshot",
     "activity.queryRange",
@@ -56,6 +72,7 @@ pub const METHODS: &[&str] = &[
     "notifications.reply",
     "updates.refresh",
 ];
+/// Complete ordered event-stream registry for protocol version 1.
 pub const STREAMS: &[&str] = &[
     stream::ACTIVITY,
     stream::WORKSPACES,
@@ -71,6 +88,7 @@ pub const STREAMS: &[&str] = &[
     stream::TIMEZONE,
 ];
 
+/// Returns machine-readable method and stream metadata.
 pub fn registry() -> Value {
     json!({
         "protocol": NAME,
@@ -274,6 +292,7 @@ fn generated_contract_fixture() -> Value {
     })
 }
 
+/// Loads the checked protocol contract fixture shipped with the crate.
 pub fn contract_fixture() -> serde_json::Result<Value> {
     serde_json::from_str(include_str!("../test_support/bar-api-v1.json"))
 }

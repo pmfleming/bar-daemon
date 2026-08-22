@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NotificationAction {
+pub(crate) struct NotificationAction {
     pub key: String,
     pub label: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NotificationHints {
+pub(crate) struct NotificationHints {
     pub urgency: u8,
     pub category: String,
     pub desktop_entry: String,
@@ -21,7 +21,7 @@ pub struct NotificationHints {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IncomingNotification {
+pub(crate) struct IncomingNotification {
     pub app_name: String,
     pub app_icon: String,
     pub summary: String,
@@ -32,7 +32,7 @@ pub struct IncomingNotification {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActiveNotification {
+pub(crate) struct ActiveNotification {
     pub id: u32,
     pub app_name: String,
     pub app_icon: String,
@@ -47,7 +47,7 @@ pub struct ActiveNotification {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryNotification {
+pub(crate) struct HistoryNotification {
     pub history_id: i64,
     pub notification: ActiveNotification,
     pub closed_unix_ms: Option<u64>,
@@ -55,7 +55,7 @@ pub struct HistoryNotification {
 }
 
 impl ActiveNotification {
-    pub fn from_incoming(id: u32, incoming: IncomingNotification, now: u64) -> Self {
+    pub(crate) fn from_incoming(id: u32, incoming: IncomingNotification, now: u64) -> Self {
         let timeout = effective_timeout_ms(incoming.expire_timeout, incoming.hints.urgency);
         let expires_unix_ms = timeout.map(|timeout| now.saturating_add(timeout));
         let group_key = if !incoming.hints.desktop_entry.is_empty() {
@@ -80,7 +80,7 @@ impl ActiveNotification {
         }
     }
 
-    pub fn replace_from(&mut self, incoming: IncomingNotification, now: u64) {
+    pub(crate) fn replace_from(&mut self, incoming: IncomingNotification, now: u64) {
         let created = self.created_unix_ms;
         *self = Self::from_incoming(self.id, incoming, now);
         self.created_unix_ms = created;
@@ -97,16 +97,16 @@ fn effective_timeout_ms(requested: i32, urgency: u8) -> Option<u64> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotificationSignal {
+pub(crate) enum NotificationSignal {
     Closed { id: u32, reason: u32 },
     ActionInvoked { id: u32, action_key: String },
     ActivationToken { id: u32, token: String },
     Replied { id: u32, text: String },
 }
 
-pub mod close_reason {
-    pub const EXPIRED: u32 = 1;
-    pub const DISMISSED: u32 = 2;
-    pub const CLOSED_BY_CALL: u32 = 3;
-    pub const UNDEFINED: u32 = 4;
+pub(crate) mod close_reason {
+    pub(crate) const EXPIRED: u32 = 1;
+    pub(crate) const DISMISSED: u32 = 2;
+    pub(crate) const CLOSED_BY_CALL: u32 = 3;
+    pub(crate) const UNDEFINED: u32 = 4;
 }

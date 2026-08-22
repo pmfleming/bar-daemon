@@ -2,12 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::activity::notifications::model::ActiveNotification;
 
-pub use crate::activity::model::{
-    ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, TodoItem, WorldClockState,
-};
+pub(crate) use crate::activity::model::ActivityState;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BarSnapshot {
+pub(crate) struct BarSnapshot {
     pub activity: ActivityState,
     pub workspaces: WorkspaceState,
     pub media: MediaState,
@@ -23,7 +21,7 @@ pub struct BarSnapshot {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PowerSleepState {
+pub(crate) struct PowerSleepState {
     pub available: bool,
     pub can_suspend: String,
     pub can_hibernate: String,
@@ -34,7 +32,7 @@ pub struct PowerSleepState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SleepInhibitor {
+pub(crate) struct SleepInhibitor {
     pub what: String,
     pub who: String,
     pub why: String,
@@ -44,7 +42,7 @@ pub struct SleepInhibitor {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TimezoneState {
+pub(crate) struct TimezoneState {
     pub available: bool,
     pub timezone: String,
     pub city: String,
@@ -54,7 +52,7 @@ pub struct TimezoneState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct UpdateState {
+pub(crate) struct UpdateState {
     pub available: bool,
     pub ready: bool,
     pub lanes: Vec<UpdateLane>,
@@ -63,7 +61,7 @@ pub struct UpdateState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct UpdateLane {
+pub(crate) struct UpdateLane {
     pub name: String,
     pub ready: bool,
     pub revision: Option<String>,
@@ -74,7 +72,7 @@ pub struct UpdateLane {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct NotificationActiveState {
+pub(crate) struct NotificationActiveState {
     pub available: bool,
     pub revision: u64,
     pub notifications: Vec<ActiveNotification>,
@@ -82,7 +80,7 @@ pub struct NotificationActiveState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct NotificationState {
+pub(crate) struct NotificationState {
     pub available: bool,
     pub count: u32,
     pub dnd: bool,
@@ -97,7 +95,7 @@ pub struct NotificationState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PowerProfileState {
+pub(crate) struct PowerProfileState {
     pub available: bool,
     pub profile: String,
     pub driver: String,
@@ -111,28 +109,28 @@ pub struct PowerProfileState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PowerProfile {
+pub(crate) struct PowerProfile {
     pub name: String,
     pub driver: String,
     pub platform_driver: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PowerProfileAction {
+pub(crate) struct PowerProfileAction {
     pub name: String,
     pub description: String,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PowerProfileHold {
+pub(crate) struct PowerProfileHold {
     pub application_id: String,
     pub profile: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryState {
+pub(crate) struct BatteryState {
     pub available: bool,
     pub native_path: String,
     pub percentage: u8,
@@ -155,7 +153,7 @@ pub struct BatteryState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryHistoryState {
+pub(crate) struct BatteryHistoryState {
     pub retention_days: u8,
     pub last_charge_timestamp_ms: u64,
     pub latest_timestamp_ms: u64,
@@ -163,7 +161,7 @@ pub struct BatteryHistoryState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryHistoryPoint {
+pub(crate) struct BatteryHistoryPoint {
     pub timestamp_ms: u64,
     pub percentage: u8,
     pub power_watts: f64,
@@ -173,7 +171,7 @@ pub struct BatteryHistoryPoint {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryOperationState {
+pub(crate) struct BatteryOperationState {
     pub kind: String,
     pub battery_id: String,
     pub phase: String,
@@ -182,7 +180,7 @@ pub struct BatteryOperationState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryPolicyState {
+pub(crate) struct BatteryPolicyState {
     pub warning_percent: u8,
     pub critical_percent: u8,
     pub notify_when_full: bool,
@@ -190,7 +188,7 @@ pub struct BatteryPolicyState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryDeviceState {
+pub(crate) struct BatteryDeviceState {
     pub id: String,
     pub vendor: String,
     pub model: String,
@@ -209,7 +207,7 @@ pub struct BatteryDeviceState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BatteryProtectionState {
+pub(crate) struct BatteryProtectionState {
     pub supported: bool,
     pub backend: String,
     pub managed: bool,
@@ -230,7 +228,7 @@ pub struct BatteryProtectionState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BrightnessState {
+pub(crate) struct BrightnessState {
     pub available: bool,
     pub device: String,
     pub brightness: u64,
@@ -240,7 +238,7 @@ pub struct BrightnessState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AudioState {
+pub(crate) struct AudioState {
     pub available: bool,
     pub sink_name: String,
     pub sink_description: String,
@@ -254,7 +252,7 @@ pub struct AudioState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct MediaState {
+pub(crate) struct MediaState {
     pub available: bool,
     pub active_player: Option<String>,
     pub players: Vec<MediaPlayer>,
@@ -262,7 +260,7 @@ pub struct MediaState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct MediaPlayer {
+pub(crate) struct MediaPlayer {
     pub id: String,
     pub identity: String,
     pub desktop_entry: String,
@@ -283,7 +281,7 @@ pub struct MediaPlayer {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceState {
+pub(crate) struct WorkspaceState {
     pub available: bool,
     pub focused_monitor: Option<String>,
     pub active_window: Option<ActiveWindow>,
@@ -293,7 +291,7 @@ pub struct WorkspaceState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActiveWindow {
+pub(crate) struct ActiveWindow {
     pub address: String,
     pub title: String,
     pub class_name: String,
@@ -304,7 +302,7 @@ pub struct ActiveWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MonitorState {
+pub(crate) struct MonitorState {
     pub id: i64,
     pub name: String,
     pub focused: bool,
@@ -312,7 +310,7 @@ pub struct MonitorState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Workspace {
+pub(crate) struct Workspace {
     pub id: i64,
     pub name: String,
     pub monitor: String,

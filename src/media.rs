@@ -16,7 +16,7 @@ const PATH: &str = "/org/mpris/MediaPlayer2";
 const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     loop {
         match zbus::Connection::session().await {
             Ok(connection) => {
@@ -246,7 +246,7 @@ fn property_strings(values: &HashMap<String, OwnedValue>, key: &str) -> Vec<Stri
         .unwrap_or_default()
 }
 
-pub fn select_active_player(players: &[MediaPlayer]) -> Option<&MediaPlayer> {
+pub(crate) fn select_active_player(players: &[MediaPlayer]) -> Option<&MediaPlayer> {
     players
         .iter()
         .find(|player| player.playback_status == "playing")
@@ -272,7 +272,7 @@ fn operation_method(operation: &str) -> Result<&'static str> {
     }
 }
 
-pub async fn operation(player_id: Option<&str>, operation: &str) -> Result<String> {
+pub(crate) async fn operation(player_id: Option<&str>, operation: &str) -> Result<String> {
     let method = operation_method(operation)?;
     let connection = zbus::Connection::session()
         .await

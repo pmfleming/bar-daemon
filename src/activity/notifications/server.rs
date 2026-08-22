@@ -11,22 +11,18 @@ use super::{
     },
 };
 
-pub const BUS_NAME: &str = "org.freedesktop.Notifications";
-pub const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
+pub(crate) const BUS_NAME: &str = "org.freedesktop.Notifications";
+pub(crate) const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
 const INTERFACE: &str = "org.freedesktop.Notifications";
 
 #[derive(Clone)]
-pub struct NotificationServer {
+pub(crate) struct NotificationServer {
     engine: Arc<NotificationEngine>,
 }
 
 impl NotificationServer {
-    pub fn new(engine: Arc<NotificationEngine>) -> Self {
+    pub(crate) fn new(engine: Arc<NotificationEngine>) -> Self {
         Self { engine }
-    }
-
-    pub fn engine(&self) -> Arc<NotificationEngine> {
-        Arc::clone(&self.engine)
     }
 }
 
@@ -100,35 +96,35 @@ impl NotificationServer {
     }
 
     #[zbus(signal)]
-    pub async fn notification_closed(
+    pub(crate) async fn notification_closed(
         emitter: &SignalEmitter<'_>,
         id: u32,
         reason: u32,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    pub async fn action_invoked(
+    pub(crate) async fn action_invoked(
         emitter: &SignalEmitter<'_>,
         id: u32,
         action_key: &str,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    pub async fn notification_replied(
+    pub(crate) async fn notification_replied(
         emitter: &SignalEmitter<'_>,
         id: u32,
         text: &str,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    pub async fn activation_token(
+    pub(crate) async fn activation_token(
         emitter: &SignalEmitter<'_>,
         id: u32,
         activation_token: &str,
     ) -> zbus::Result<()>;
 }
 
-pub async fn forward_signals(engine: Arc<NotificationEngine>, connection: Connection) {
+pub(crate) async fn forward_signals(engine: Arc<NotificationEngine>, connection: Connection) {
     let mut signals = engine.subscribe_signals();
     loop {
         let signal = match signals.recv().await {

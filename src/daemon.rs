@@ -18,7 +18,7 @@ use self::{subscriptions::BarDaemon, tasks::MonitorTasks};
 mod subscriptions;
 mod tasks;
 
-pub async fn run() -> Result<()> {
+pub(crate) async fn run() -> Result<()> {
     let state = StateStore::default();
     let native_notifications = !env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
         .is_ok_and(|value| value.eq_ignore_ascii_case("swaync"));

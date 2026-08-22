@@ -32,7 +32,7 @@ struct EngineData {
     history_revision: u64,
 }
 
-pub struct NotificationEngine {
+pub(crate) struct NotificationEngine {
     data: Mutex<EngineData>,
     next_id: AtomicU32,
     ingress: Arc<Semaphore>,
@@ -44,11 +44,12 @@ pub struct NotificationEngine {
 }
 
 impl NotificationEngine {
-    pub async fn new(state: StateStore) -> Arc<Self> {
+    #[cfg(test)]
+    pub(crate) async fn new(state: StateStore) -> Arc<Self> {
         Self::build(state, None, Vec::new(), false).await
     }
 
-    pub async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
+    pub(crate) async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
         let (persistence, active, dnd) =
             tokio::task::spawn_blocking(move || NotificationPersistence::open(&path))
                 .await
@@ -83,11 +84,11 @@ impl NotificationEngine {
         engine
     }
 
-    pub fn subscribe_signals(&self) -> broadcast::Receiver<NotificationSignal> {
+    pub(crate) fn subscribe_signals(&self) -> broadcast::Receiver<NotificationSignal> {
         self.signals.subscribe()
     }
 
-    pub async fn notify(
+    pub(crate) async fn notify(
         &self,
         replaces_id: u32,
         notification: IncomingNotification,
@@ -143,7 +144,7 @@ impl NotificationEngine {
         Ok(id)
     }
 
-    pub async fn close(&self, id: u32, reason: u32) -> bool {
+    pub(crate) async fn close(&self, id: u32, reason: u32) -> bool {
         let removed = {
             let mut data = self.data.lock().await;
             let removed = data.active.remove(&id).is_some();
@@ -163,11 +164,11 @@ impl NotificationEngine {
         removed
     }
 
-    pub async fn dismiss(&self, id: u32) -> bool {
+    pub(crate) async fn dismiss(&self, id: u32) -> bool {
         self.close(id, close_reason::DISMISSED).await
     }
 
-    pub async fn clear(&self) -> usize {
+    pub(crate) async fn clear(&self) -> usize {
         let ids = {
             let mut data = self.data.lock().await;
             let ids = data.active.keys().copied().collect::<Vec<_>>();
@@ -195,7 +196,7 @@ impl NotificationEngine {
         ids.len()
     }
 
-    pub async fn set_dnd(&self, enabled: bool) {
+    pub(crate) async fn set_dnd(&self, enabled: bool) {
         let changed = {
             let mut data = self.data.lock().await;
             let changed = data.dnd != enabled;
@@ -210,7 +211,7 @@ impl NotificationEngine {
         }
     }
 
-    pub async fn toggle_dnd(&self) -> bool {
+    pub(crate) async fn toggle_dnd(&self) -> bool {
         let enabled = {
             let mut data = self.data.lock().await;
             data.dnd = !data.dnd;
@@ -223,15 +224,12 @@ impl NotificationEngine {
         enabled
     }
 
-    pub async fn dnd(&self) -> bool {
-        self.data.lock().await.dnd
-    }
-
-    pub async fn active(&self) -> Vec<ActiveNotification> {
+    #[cfg(test)]
+    pub(crate) async fn active(&self) -> Vec<ActiveNotification> {
         self.data.lock().await.active.values().cloned().collect()
     }
 
-    pub async fn history(
+    pub(crate) async fn history(
         &self,
         before_history_id: Option<i64>,
         limit: usize,
@@ -242,16 +240,7 @@ impl NotificationEngine {
         persistence.list(before_history_id, limit).await
     }
 
-    pub async fn visible(&self) -> Vec<ActiveNotification> {
-        let data = self.data.lock().await;
-        if data.dnd {
-            Vec::new()
-        } else {
-            data.active.values().cloned().collect()
-        }
-    }
-
-    pub async fn reply(&self, id: u32, text: &str) -> bool {
+    pub(crate) async fn reply(&self, id: u32, text: &str) -> bool {
         if text.is_empty() || !self.data.lock().await.active.contains_key(&id) {
             return false;
         }
@@ -262,7 +251,12 @@ impl NotificationEngine {
         true
     }
 
-    pub async fn invoke_action(&self, id: u32, action_key: &str, token: Option<String>) -> bool {
+    pub(crate) async fn invoke_action(
+        &self,
+        id: u32,
+        action_key: &str,
+        token: Option<String>,
+    ) -> bool {
         let resident = {
             let data = self.data.lock().await;
             let Some(notification) = data.active.get(&id) else {
@@ -290,7 +284,7 @@ impl NotificationEngine {
         true
     }
 
-    pub async fn run_expiry(self: Arc<Self>) {
+    pub(crate) async fn run_expiry(self: Arc<Self>) {
         loop {
             let delay = self.next_expiry_delay().await;
             match delay {

@@ -71,7 +71,7 @@ struct HyprActiveWindow {
 }
 
 #[derive(Debug, Clone)]
-pub struct HyprlandClient {
+pub(crate) struct HyprlandClient {
     runtime_dir: PathBuf,
     signature: Option<String>,
 }
@@ -83,7 +83,7 @@ impl Default for HyprlandClient {
 }
 
 impl HyprlandClient {
-    pub fn from_environment() -> Self {
+    pub(crate) fn from_environment() -> Self {
         let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -140,7 +140,7 @@ impl HyprlandClient {
         request_socket(&socket, command).await
     }
 
-    pub async fn snapshot(&self) -> Result<WorkspaceState> {
+    pub(crate) async fn snapshot(&self) -> Result<WorkspaceState> {
         let (workspaces, monitors, active_window) = tokio::try_join!(
             self.request("j/workspaces"),
             self.request("j/monitors"),
@@ -149,7 +149,11 @@ impl HyprlandClient {
         parse_snapshot(&workspaces, &monitors, &active_window)
     }
 
-    pub async fn focus_workspace(&self, workspace_id: i64, on_current_monitor: bool) -> Result<()> {
+    pub(crate) async fn focus_workspace(
+        &self,
+        workspace_id: i64,
+        on_current_monitor: bool,
+    ) -> Result<()> {
         if workspace_id <= 0 {
             bail!("workspace_id must be a positive integer");
         }
@@ -248,7 +252,7 @@ fn parse_snapshot(
     })
 }
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     let client = HyprlandClient::default();
     loop {
         match client.event_socket().await {

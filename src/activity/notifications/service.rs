@@ -10,7 +10,7 @@ use super::{
 };
 
 #[derive(Clone)]
-pub struct NotificationService {
+pub(crate) struct NotificationService {
     backend: NotificationBackend,
 }
 
@@ -21,26 +21,26 @@ enum NotificationBackend {
 }
 
 impl NotificationService {
-    pub fn native(engine: Arc<NotificationEngine>) -> Arc<Self> {
+    pub(crate) fn native(engine: Arc<NotificationEngine>) -> Arc<Self> {
         Arc::new(Self {
             backend: NotificationBackend::Native(engine),
         })
     }
 
-    pub fn swaync() -> Arc<Self> {
+    pub(crate) fn swaync() -> Arc<Self> {
         Arc::new(Self {
             backend: NotificationBackend::SwayNc,
         })
     }
 
-    pub fn native_engine(&self) -> Option<Arc<NotificationEngine>> {
+    pub(crate) fn native_engine(&self) -> Option<Arc<NotificationEngine>> {
         match &self.backend {
             NotificationBackend::Native(engine) => Some(Arc::clone(engine)),
             NotificationBackend::SwayNc => None,
         }
     }
 
-    pub fn sink(&self) -> NotificationSink {
+    pub(crate) fn sink(&self) -> NotificationSink {
         match &self.backend {
             NotificationBackend::Native(engine) => NotificationSink {
                 backend: SinkBackend::Native(Arc::clone(engine)),
@@ -51,7 +51,7 @@ impl NotificationService {
         }
     }
 
-    pub async fn toggle_dnd(&self) -> Result<bool> {
+    pub(crate) async fn toggle_dnd(&self) -> Result<bool> {
         match &self.backend {
             NotificationBackend::Native(engine) => Ok(engine.toggle_dnd().await),
             NotificationBackend::SwayNc => {
@@ -61,7 +61,7 @@ impl NotificationService {
         }
     }
 
-    pub async fn toggle_panel(&self) -> Result<()> {
+    pub(crate) async fn toggle_panel(&self) -> Result<()> {
         match &self.backend {
             NotificationBackend::Native(_) => Ok(()),
             NotificationBackend::SwayNc => swaync::toggle_panel().await,
@@ -70,7 +70,7 @@ impl NotificationService {
 }
 
 #[derive(Clone)]
-pub struct NotificationSink {
+pub(crate) struct NotificationSink {
     backend: SinkBackend,
 }
 
@@ -84,13 +84,13 @@ enum SinkBackend {
 
 impl NotificationSink {
     #[cfg(test)]
-    pub fn unavailable() -> Self {
+    pub(crate) fn unavailable() -> Self {
         Self {
             backend: SinkBackend::Unavailable,
         }
     }
 
-    pub async fn send(&self, notification: IncomingNotification) -> Result<u32> {
+    pub(crate) async fn send(&self, notification: IncomingNotification) -> Result<u32> {
         match &self.backend {
             SinkBackend::Native(engine) => engine.notify(0, notification).await,
             SinkBackend::Freedesktop => send_freedesktop(notification).await,
@@ -147,7 +147,7 @@ async fn send_freedesktop(notification: IncomingNotification) -> Result<u32> {
         .context("send notification")
 }
 
-pub fn internal_notification(
+pub(crate) fn internal_notification(
     icon: &str,
     summary: &str,
     body: &str,

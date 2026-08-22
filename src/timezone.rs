@@ -13,7 +13,7 @@ const PATH: &str = "/org/freedesktop/timedate1";
 const INTERFACE: &str = "org.freedesktop.timedate1";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     loop {
         match zbus::Connection::system().await {
             Ok(connection) => {

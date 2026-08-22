@@ -14,13 +14,13 @@ use crate::{
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/nixos-delayed-updates-v2";
 
-pub fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     std::env::var_os("BAR_DAEMON_UPDATE_STATE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR))
 }
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     let directory = state_dir();
     let (tx, mut rx) = mpsc::channel(16);
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
@@ -73,7 +73,7 @@ fn watch_target(directory: &Path) -> Option<(PathBuf, RecursiveMode)> {
         .map(|path| (path.to_path_buf(), RecursiveMode::NonRecursive))
 }
 
-pub async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
+pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
     let directory = state_dir();
     let state = tokio::task::spawn_blocking(move || read_state(&directory))
         .await

@@ -25,7 +25,7 @@ struct WaybarStatus {
     class_name: String,
 }
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     let mut retry = INITIAL_RETRY;
     loop {
         match run_subscription(&store).await {
@@ -133,10 +133,10 @@ fn notification_count(text: &str) -> u32 {
         .unwrap_or(0)
 }
 
-pub async fn toggle_panel() -> Result<()> {
+pub(crate) async fn toggle_panel() -> Result<()> {
     run_action("--toggle-panel").await
 }
-pub async fn toggle_dnd() -> Result<()> {
+pub(crate) async fn toggle_dnd() -> Result<()> {
     run_action("--toggle-dnd").await
 }
 

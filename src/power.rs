@@ -18,7 +18,7 @@ const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const HOLD_APPLICATION_ID: &str = "org.laufan.BarDaemon";
 const HOLD_REASON: &str = "Battery level is low";
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     loop {
         match zbus::Connection::system().await {
             Ok(connection) => {
@@ -255,7 +255,7 @@ fn property_bool(values: &HashMap<String, OwnedValue>, key: &str) -> Option<bool
     values.get(key).and_then(|value| bool::try_from(value).ok())
 }
 
-pub async fn set_profile(profile: &str) -> Result<PowerProfileState> {
+pub(crate) async fn set_profile(profile: &str) -> Result<PowerProfileState> {
     if !matches!(profile, "power-saver" | "balanced" | "performance") {
         bail!("unsupported power profile: {profile}");
     }
@@ -276,7 +276,7 @@ pub async fn set_profile(profile: &str) -> Result<PowerProfileState> {
     read_state(&connection).await
 }
 
-pub async fn set_battery_aware(enabled: bool) -> Result<PowerProfileState> {
+pub(crate) async fn set_battery_aware(enabled: bool) -> Result<PowerProfileState> {
     let connection = zbus::Connection::system()
         .await
         .context("connect to system D-Bus")?;
@@ -294,7 +294,7 @@ pub async fn set_battery_aware(enabled: bool) -> Result<PowerProfileState> {
     read_state(&connection).await
 }
 
-pub async fn set_action_enabled(action: &str, enabled: bool) -> Result<PowerProfileState> {
+pub(crate) async fn set_action_enabled(action: &str, enabled: bool) -> Result<PowerProfileState> {
     let connection = zbus::Connection::system()
         .await
         .context("connect to system D-Bus")?;

@@ -25,15 +25,15 @@ mod battery;
 mod effects;
 mod notifications;
 
-pub use protocol::{NAME as PROTOCOL, VERSION};
-pub const BUS_NAME: &str = "org.laufan.BarDaemon";
-pub const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
-pub const INTERFACE: &str = "org.laufan.BarDaemon1";
+pub(crate) use protocol::{NAME as PROTOCOL, VERSION};
+pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
+pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
+pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon1";
 
-pub fn success(data: Value) -> Value {
+pub(crate) fn success(data: Value) -> Value {
     json!({ "protocol": PROTOCOL, "version": VERSION, "ok": true, "data": data })
 }
-pub fn error(code: &str, message: impl Into<String>) -> Value {
+pub(crate) fn error(code: &str, message: impl Into<String>) -> Value {
     json!({ "protocol": PROTOCOL, "version": VERSION, "ok": false, "error": { "code": code, "message": message.into() } })
 }
 
@@ -54,7 +54,7 @@ fn result<T: Serialize>(value: anyhow::Result<T>, key: &'static str, code: &str)
 }
 
 #[derive(Clone)]
-pub struct ApiService {
+pub(crate) struct ApiService {
     state: StateStore,
     activity: Arc<ActivityService>,
     hyprland: Arc<HyprlandClient>,
@@ -64,7 +64,7 @@ pub struct ApiService {
 }
 
 impl ApiService {
-    pub fn new(
+    pub(crate) fn new(
         state: StateStore,
         activity: Arc<ActivityService>,
         notifications: Arc<NotificationService>,
@@ -79,7 +79,7 @@ impl ApiService {
         }
     }
 
-    pub async fn dispatch(&self, method: &str, params: Value) -> Value {
+    pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
         match method {
             "bar.snapshot" => success(json!({ "snapshot": self.state.snapshot().await })),
             "activity.queryRange" => self.activity_query_range(params).await,

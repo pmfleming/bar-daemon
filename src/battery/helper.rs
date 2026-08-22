@@ -11,16 +11,16 @@ use tokio::signal::{
 use zbus::{Connection, connection, message::Header};
 use zvariant::Value;
 
-pub const BUS_NAME: &str = "org.laufan.BarBatteryHelper";
-pub const OBJECT_PATH: &str = "/org/laufan/BarBatteryHelper";
-pub const INTERFACE: &str = "org.laufan.BarBatteryHelper1";
+pub(crate) const BUS_NAME: &str = "org.laufan.BarBatteryHelper";
+pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarBatteryHelper";
+pub(crate) const INTERFACE: &str = "org.laufan.BarBatteryHelper1";
 const POLKIT_BUS: &str = "org.freedesktop.PolicyKit1";
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const POLKIT_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 const POLKIT_THRESHOLDS_ACTION: &str = "org.laufan.bar-daemon.set-battery-thresholds";
 const POLKIT_BEHAVIOUR_ACTION: &str = "org.laufan.bar-daemon.set-battery-charge-behaviour";
 
-pub struct BatteryHelper {
+pub(crate) struct BatteryHelper {
     writer: ThresholdWriter,
 }
 
@@ -111,27 +111,27 @@ async fn authorize(
 }
 
 #[derive(Debug, Clone)]
-pub struct ThresholdWriter {
+pub(crate) struct ThresholdWriter {
     root: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ThresholdWriteResult {
+pub(crate) struct ThresholdWriteResult {
     pub actual_start_percent: u8,
     pub actual_end_percent: u8,
     pub verified: bool,
 }
 
 impl ThresholdWriter {
-    pub fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
-    pub fn system() -> Self {
+    pub(crate) fn system() -> Self {
         Self::new(PathBuf::from("/sys/class/power_supply"))
     }
 
-    pub fn get_thresholds(&self, battery: &str) -> Result<(u8, u8)> {
+    pub(crate) fn get_thresholds(&self, battery: &str) -> Result<(u8, u8)> {
         let directory = self.threshold_directory(battery)?;
         Ok((
             read_percent(&directory.join("charge_control_start_threshold"))?,
@@ -139,7 +139,7 @@ impl ThresholdWriter {
         ))
     }
 
-    pub fn set_thresholds(
+    pub(crate) fn set_thresholds(
         &self,
         battery: &str,
         start: u8,
@@ -187,14 +187,14 @@ impl ThresholdWriter {
         })
     }
 
-    pub fn get_charge_behaviour(&self, battery: &str) -> Result<(String, Vec<String>)> {
+    pub(crate) fn get_charge_behaviour(&self, battery: &str) -> Result<(String, Vec<String>)> {
         let directory = self.battery_directory(battery)?;
         parse_choices(&std::fs::read_to_string(
             directory.join("charge_behaviour"),
         )?)
     }
 
-    pub fn set_charge_behaviour(&self, battery: &str, behaviour: &str) -> Result<String> {
+    pub(crate) fn set_charge_behaviour(&self, battery: &str, behaviour: &str) -> Result<String> {
         if !matches!(
             behaviour,
             "auto" | "inhibit-charge" | "inhibit-charge-awake" | "force-discharge"
@@ -283,7 +283,7 @@ fn write_percent(path: &Path, value: u8) -> Result<()> {
     std::fs::write(path, value.to_string()).with_context(|| format!("write {}", path.display()))
 }
 
-pub async fn run() -> Result<()> {
+pub(crate) async fn run() -> Result<()> {
     let _connection = connection::Builder::system()
         .context("connect battery helper to system D-Bus")?
         .name(BUS_NAME)
@@ -305,20 +305,11 @@ pub async fn run() -> Result<()> {
     }
 }
 
-pub async fn get_thresholds(battery: &str) -> Result<(u8, u8)> {
-    let connection = Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
-    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
-        .await
-        .context("connect to battery helper")?;
-    proxy
-        .call("GetThresholds", &(battery))
-        .await
-        .context("read battery thresholds")
-}
-
-pub async fn set_thresholds(battery: &str, start: u8, end: u8) -> Result<ThresholdWriteResult> {
+pub(crate) async fn set_thresholds(
+    battery: &str,
+    start: u8,
+    end: u8,
+) -> Result<ThresholdWriteResult> {
     let connection = Connection::system()
         .await
         .context("connect to system D-Bus")?;
@@ -336,7 +327,7 @@ pub async fn set_thresholds(battery: &str, start: u8, end: u8) -> Result<Thresho
     })
 }
 
-pub async fn set_charge_behaviour(battery: &str, behaviour: &str) -> Result<String> {
+pub(crate) async fn set_charge_behaviour(battery: &str, behaviour: &str) -> Result<String> {
     let connection = Connection::system()
         .await
         .context("connect to system D-Bus")?;

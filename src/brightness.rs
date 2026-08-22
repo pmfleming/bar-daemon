@@ -32,7 +32,7 @@ impl BacklightDevice {
     }
 }
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     let root = PathBuf::from(
         std::env::var_os("BAR_DAEMON_BACKLIGHT_ROOT")
             .unwrap_or_else(|| DEFAULT_BACKLIGHT_ROOT.into()),
@@ -101,7 +101,7 @@ async fn refresh(store: &StateStore, root: &Path) {
     }
 }
 
-pub async fn adjust(delta_percent: i16) -> Result<BrightnessState> {
+pub(crate) async fn adjust(delta_percent: i16) -> Result<BrightnessState> {
     let device = discover(Path::new(DEFAULT_BACKLIGHT_ROOT))?;
     let current = i64::from(percent(device.brightness, device.max_brightness));
     set_for_device(
@@ -111,7 +111,7 @@ pub async fn adjust(delta_percent: i16) -> Result<BrightnessState> {
     .await
 }
 
-pub async fn set(percent: u8) -> Result<BrightnessState> {
+pub(crate) async fn set(percent: u8) -> Result<BrightnessState> {
     if !(1..=100).contains(&percent) {
         bail!("brightness percent must be between 1 and 100");
     }

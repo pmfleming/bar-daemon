@@ -20,15 +20,15 @@ pub(super) struct NativeBattery {
 }
 
 impl NativeBattery {
-    pub fn charging(&self) -> bool {
+    pub(crate) fn charging(&self) -> bool {
         self.status.eq_ignore_ascii_case("charging")
     }
 
-    pub fn discharging(&self) -> bool {
+    pub(crate) fn discharging(&self) -> bool {
         self.status.eq_ignore_ascii_case("discharging")
     }
 
-    pub fn fully_charged(&self) -> bool {
+    pub(crate) fn fully_charged(&self) -> bool {
         self.status.eq_ignore_ascii_case("full")
     }
 }

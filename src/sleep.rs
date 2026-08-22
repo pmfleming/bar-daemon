@@ -17,7 +17,7 @@ const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 
 type RawInhibitor = (String, String, String, String, u32, u32);
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     loop {
         match zbus::Connection::system().await {
             Ok(connection) => {
@@ -129,7 +129,7 @@ async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
         .context("connect to systemd-logind")
 }
 
-pub async fn perform(action: &str) -> Result<PowerSleepState> {
+pub(crate) async fn perform(action: &str) -> Result<PowerSleepState> {
     if !matches!(action, "lock" | "suspend" | "hibernate") {
         bail!("unsupported power and sleep action: {action}");
     }

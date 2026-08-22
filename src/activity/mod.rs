@@ -1,8 +1,8 @@
-pub mod config;
+pub(crate) mod config;
 mod ics;
-pub mod model;
-pub mod notifications;
-pub mod provider;
+pub(crate) mod model;
+pub(crate) mod notifications;
+pub(crate) mod provider;
 mod service;
 
-pub use service::ActivityService;
+pub(crate) use service::ActivityService;

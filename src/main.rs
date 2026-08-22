@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 
 use anyhow::Result;
-use bar_daemon::{client, daemon, protocol};
+use bar_daemon::{protocol, run_client, run_daemon};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -42,8 +42,8 @@ async fn main() -> Result<()> {
         .init();
 
     match Cli::parse().command {
-        Command::Daemon => daemon::run().await,
-        Command::Client => client::run().await,
+        Command::Daemon => run_daemon().await,
+        Command::Client => run_client().await,
         Command::Debug { command } => {
             let value = match command {
                 DebugCommand::ProtocolRegistry => protocol::registry(),

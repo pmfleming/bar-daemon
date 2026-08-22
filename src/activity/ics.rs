@@ -10,7 +10,7 @@ use super::{
     provider::{CalendarProvider, ProviderFuture},
 };
 
-pub struct IcsProvider;
+pub(crate) struct IcsProvider;
 
 impl CalendarProvider for IcsProvider {
     fn kinds(&self) -> &'static [&'static str] {

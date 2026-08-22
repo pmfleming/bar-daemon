@@ -12,5 +12,5 @@ async fn main() -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("bar_daemon=info")),
         )
         .init();
-    bar_daemon::battery::helper::run().await
+    bar_daemon::run_battery_helper().await
 }

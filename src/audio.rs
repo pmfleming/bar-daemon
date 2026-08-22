@@ -53,7 +53,7 @@ struct ProbeState {
     objects: Rc<RefCell<Objects>>,
 }
 
-pub async fn monitor(store: StateStore) {
+pub(crate) async fn monitor(store: StateStore) {
     let (changes_tx, mut changes_rx) = mpsc::channel::<()>(8);
     std::thread::Builder::new()
         .name("bar-pipewire-monitor".into())
@@ -98,7 +98,7 @@ async fn refresh(store: &StateStore) {
     }
 }
 
-pub async fn adjust(delta_percent: i16) -> Result<AudioState> {
+pub(crate) async fn adjust(delta_percent: i16) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
         let (sink, _) = probe_default()?;
         let volume = adjusted_volume(sink.volume, delta_percent);
@@ -109,7 +109,7 @@ pub async fn adjust(delta_percent: i16) -> Result<AudioState> {
     .context("join PipeWire volume operation")?
 }
 
-pub async fn set_muted(muted: Option<bool>) -> Result<AudioState> {
+pub(crate) async fn set_muted(muted: Option<bool>) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
         let (sink, _) = probe_default()?;
         set_node(&sink, None, Some(requested_mute(sink.muted, muted)), "sink")?;
@@ -119,7 +119,7 @@ pub async fn set_muted(muted: Option<bool>) -> Result<AudioState> {
     .context("join PipeWire mute operation")?
 }
 
-pub async fn set_input_muted(muted: Option<bool>) -> Result<AudioState> {
+pub(crate) async fn set_input_muted(muted: Option<bool>) -> Result<AudioState> {
     tokio::task::spawn_blocking(move || {
         let (_, source) = probe_default()?;
         let source = source.context("no PipeWire audio source is available")?;

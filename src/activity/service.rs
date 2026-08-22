@@ -34,7 +34,7 @@ struct ActivityData {
     todos: Vec<TodoItem>,
 }
 
-pub struct ActivityService {
+pub(crate) struct ActivityService {
     data: RwLock<ActivityData>,
     state: StateStore,
     config_path: PathBuf,
@@ -47,7 +47,7 @@ pub struct ActivityService {
 }
 
 impl ActivityService {
-    pub async fn new(state: StateStore, notifications: NotificationSink) -> Arc<Self> {
+    pub(crate) async fn new(state: StateStore, notifications: NotificationSink) -> Arc<Self> {
         let todo_path = config::todo_path();
         let todos = load_todos(&todo_path).await.unwrap_or_else(|error| {
             tracing::warn!(%error, "local todo store could not be loaded");
@@ -69,7 +69,7 @@ impl ActivityService {
         })
     }
 
-    pub async fn monitor(self: Arc<Self>) {
+    pub(crate) async fn monitor(self: Arc<Self>) {
         self.refresh().await;
         let mut refresh = tokio::time::interval(Duration::from_secs(60));
         refresh.tick().await;
@@ -79,7 +79,7 @@ impl ActivityService {
         }
     }
 
-    pub async fn refresh(&self) {
+    pub(crate) async fn refresh(&self) {
         let Ok(_guard) = self.refresh_guard.try_lock() else {
             return;
         };
@@ -164,7 +164,11 @@ impl ActivityService {
         self.publish_state(first_error, false).await;
     }
 
-    pub async fn query_range(&self, from_unix_ms: i64, to_unix_ms: i64) -> Result<ActivityRange> {
+    pub(crate) async fn query_range(
+        &self,
+        from_unix_ms: i64,
+        to_unix_ms: i64,
+    ) -> Result<ActivityRange> {
         if to_unix_ms <= from_unix_ms {
             bail!("to_unix_ms must be greater than from_unix_ms");
         }
@@ -226,7 +230,7 @@ impl ActivityService {
         })
     }
 
-    pub async fn create_todo(
+    pub(crate) async fn create_todo(
         &self,
         title: String,
         due_unix_ms: Option<i64>,
@@ -268,7 +272,7 @@ impl ActivityService {
         Ok(todo)
     }
 
-    pub async fn complete_todo(&self, id: &str, completed: bool) -> Result<TodoItem> {
+    pub(crate) async fn complete_todo(&self, id: &str, completed: bool) -> Result<TodoItem> {
         let _guard = self.todo_guard.lock().await;
         let mut todos = self.data.read().await.todos.clone();
         let todo = todos
@@ -284,7 +288,7 @@ impl ActivityService {
         Ok(result)
     }
 
-    pub async fn delete_todo(&self, id: &str) -> Result<()> {
+    pub(crate) async fn delete_todo(&self, id: &str) -> Result<()> {
         let _guard = self.todo_guard.lock().await;
         let mut todos = self.data.read().await.todos.clone();
         let previous = todos.len();

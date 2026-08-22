@@ -11,13 +11,13 @@ use crate::model::{
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct DomainEvent {
+pub(crate) struct DomainEvent {
     pub stream: String,
     pub data: Value,
 }
 
 #[derive(Clone)]
-pub struct StateStore {
+pub(crate) struct StateStore {
     snapshot: Arc<RwLock<BarSnapshot>>,
     events: broadcast::Sender<DomainEvent>,
 }
@@ -35,7 +35,7 @@ impl Default for StateStore {
 macro_rules! state_updates {
     ($($method:ident($state:ty) => $field:ident, $stream:expr;)*) => {
         $(
-            pub async fn $method(&self, value: $state) {
+            pub(crate) async fn $method(&self, value: $state) {
                 self.update(value, $stream, |snapshot| &mut snapshot.$field).await;
             }
         )*
@@ -43,17 +43,19 @@ macro_rules! state_updates {
 }
 
 impl StateStore {
-    pub async fn snapshot(&self) -> BarSnapshot {
+    pub(crate) async fn snapshot(&self) -> BarSnapshot {
         self.snapshot.read().await.clone()
     }
 
-    pub async fn snapshot_and_subscribe(&self) -> (BarSnapshot, broadcast::Receiver<DomainEvent>) {
+    pub(crate) async fn snapshot_and_subscribe(
+        &self,
+    ) -> (BarSnapshot, broadcast::Receiver<DomainEvent>) {
         let snapshot = self.snapshot.read().await;
         let events = self.events.subscribe();
         (snapshot.clone(), events)
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<DomainEvent> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<DomainEvent> {
         self.events.subscribe()
     }
 

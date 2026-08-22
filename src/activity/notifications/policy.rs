@@ -3,7 +3,7 @@ use anyhow::{Result, bail};
 use super::model::IncomingNotification;
 
 #[derive(Debug, Clone)]
-pub struct NotificationPolicy {
+pub(crate) struct NotificationPolicy {
     pub maximum_active: usize,
     pub maximum_summary_bytes: usize,
     pub maximum_body_bytes: usize,
@@ -22,7 +22,7 @@ impl Default for NotificationPolicy {
 }
 
 impl NotificationPolicy {
-    pub fn validate(&self, notification: &IncomingNotification) -> Result<()> {
+    pub(crate) fn validate(&self, notification: &IncomingNotification) -> Result<()> {
         if notification.summary.len() > self.maximum_summary_bytes {
             bail!("notification summary exceeds configured size limit");
         }

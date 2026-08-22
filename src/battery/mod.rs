@@ -25,7 +25,7 @@ mod policy;
 mod sysfs;
 mod upower;
 
-pub mod helper;
+pub(crate) mod helper;
 
 use policy::{AlertTracker, send_notification};
 
@@ -38,7 +38,7 @@ pub(crate) async fn lock_effects() -> MutexGuard<'static, ()> {
     BATTERY_EFFECTS.get_or_init(|| Mutex::new(())).lock().await
 }
 
-pub async fn refresh_state(store: &StateStore) -> Result<BatteryState> {
+pub(crate) async fn refresh_state(store: &StateStore) -> Result<BatteryState> {
     let state = tokio::task::spawn_blocking(|| sysfs::PowerSupplyFs::system().read_state())
         .await
         .context("join battery state refresh")??;
@@ -51,7 +51,7 @@ pub(crate) fn history_snapshot() -> crate::model::BatteryHistoryState {
     history::snapshot()
 }
 
-pub async fn monitor(store: StateStore, notifications: NotificationSink) {
+pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) {
     if env::var("BAR_DAEMON_BATTERY_BACKEND").as_deref() == Ok("upower") {
         tracing::warn!(
             "using the compatibility UPower battery backend; ThinkPad protection controls are unavailable"

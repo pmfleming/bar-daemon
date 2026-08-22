@@ -36,7 +36,7 @@ enum Request {
 
 type Output = Arc<Mutex<tokio::io::Stdout>>;
 
-pub async fn run() -> Result<()> {
+pub(crate) async fn run() -> Result<()> {
     let connection = zbus::Connection::session().await.ok();
     let output = Arc::new(Mutex::new(tokio::io::stdout()));
     if let Some(connection) = connection.as_ref().cloned() {

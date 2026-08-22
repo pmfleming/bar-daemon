@@ -33,12 +33,12 @@ enum PersistenceCommand {
 }
 
 #[derive(Clone)]
-pub struct NotificationPersistence {
+pub(crate) struct NotificationPersistence {
     commands: mpsc::SyncSender<PersistenceCommand>,
 }
 
 impl NotificationPersistence {
-    pub fn open(path: &Path) -> Result<(Self, Vec<ActiveNotification>, bool)> {
+    pub(crate) fn open(path: &Path) -> Result<(Self, Vec<ActiveNotification>, bool)> {
         let store = Arc::new(NotificationStore::open(path)?);
         let active = store.load_active()?;
         let dnd = store.load_dnd()?;
@@ -51,11 +51,11 @@ impl NotificationPersistence {
         Ok((Self { commands }, active, dnd))
     }
 
-    pub fn save(&self, notification: ActiveNotification) {
+    pub(crate) fn save(&self, notification: ActiveNotification) {
         self.enqueue(PersistenceCommand::Save(Box::new(notification)));
     }
 
-    pub fn close(&self, id: u32, closed_unix_ms: u64, reason: u32) {
+    pub(crate) fn close(&self, id: u32, closed_unix_ms: u64, reason: u32) {
         self.enqueue(PersistenceCommand::Close {
             id,
             closed_unix_ms,
@@ -63,18 +63,18 @@ impl NotificationPersistence {
         });
     }
 
-    pub fn clear(&self, closed_unix_ms: u64, reason: u32) {
+    pub(crate) fn clear(&self, closed_unix_ms: u64, reason: u32) {
         self.enqueue(PersistenceCommand::Clear {
             closed_unix_ms,
             reason,
         });
     }
 
-    pub fn set_dnd(&self, enabled: bool) {
+    pub(crate) fn set_dnd(&self, enabled: bool) {
         self.enqueue(PersistenceCommand::SetDnd(enabled));
     }
 
-    pub async fn list(
+    pub(crate) async fn list(
         &self,
         before_history_id: Option<i64>,
         limit: usize,

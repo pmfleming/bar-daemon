@@ -5,14 +5,14 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct ActivityConfig {
+pub(crate) struct ActivityConfig {
     pub calendar_sources: Vec<CalendarSourceConfig>,
     pub world_clocks: Vec<WorldClockConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct CalendarSourceConfig {
+pub(crate) struct CalendarSourceConfig {
     pub id: String,
     pub name: String,
     pub kind: String,
@@ -34,30 +34,30 @@ impl Default for CalendarSourceConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct WorldClockConfig {
+pub(crate) struct WorldClockConfig {
     pub timezone: String,
     pub label: String,
 }
 
-pub fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     env::var_os("BAR_DAEMON_ACTIVITY_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|| config_home().join("bar-daemon/activity.json"))
 }
 
-pub fn todo_path() -> PathBuf {
+pub(crate) fn todo_path() -> PathBuf {
     env::var_os("BAR_DAEMON_TODO_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| state_home().join("bar-daemon/todos.json"))
 }
 
-pub fn notification_database_path() -> PathBuf {
+pub(crate) fn notification_database_path() -> PathBuf {
     env::var_os("BAR_DAEMON_NOTIFICATION_DATABASE")
         .map(PathBuf::from)
         .unwrap_or_else(|| state_home().join("bar-daemon/notifications.sqlite3"))
 }
 
-pub fn validate(config: &ActivityConfig) -> Result<()> {
+pub(crate) fn validate(config: &ActivityConfig) -> Result<()> {
     let mut ids = HashSet::new();
     for source in &config.calendar_sources {
         if source.id.trim().is_empty() {
@@ -82,7 +82,7 @@ pub fn validate(config: &ActivityConfig) -> Result<()> {
     Ok(())
 }
 
-pub async fn load(path: &PathBuf) -> Result<ActivityConfig> {
+pub(crate) async fn load(path: &PathBuf) -> Result<ActivityConfig> {
     match tokio::fs::read(path).await {
         Ok(contents) => serde_json::from_slice(&contents)
             .with_context(|| format!("parse activity configuration {}", path.display())),
