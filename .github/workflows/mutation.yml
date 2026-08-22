@@ -1,0 +1,28 @@
+name: mutation
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  battery-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v17
+      - name: Test battery policy mutations
+        run: |
+          nix develop --command cargo mutants \
+            --file src/battery/config.rs \
+            --file src/battery/history.rs \
+            --file src/battery/policy.rs \
+            --timeout 120 --jobs 2 --cargo-arg=--locked
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: mutants.out

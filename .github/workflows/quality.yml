@@ -20,6 +20,11 @@ jobs:
         run: nix develop --command cargo fmt --all -- --check
       - name: Clippy
         run: nix develop --command cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Dependency policy
+        run: |
+          nix develop --command cargo audit
+          nix develop --command cargo deny check
+          nix develop --command cargo shear
       - name: Test and collect coverage
         run: nix develop --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml
       - name: Check changed-line coverage

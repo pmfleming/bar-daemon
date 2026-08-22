@@ -14,12 +14,11 @@ timeout_seconds = 600
 workspace = true
 all_targets = true
 all_features = false
-# Enable in CI when Cargo.lock is committed.
-locked = false
-audit = false
-deny = false
+locked = true
+audit = true
+deny = true
 geiger = false
-unused_dependencies = false
+unused_dependencies = true
 unused_dependency_backend = "cargo-shear"
 semver = false
 # Optional compiler-derived reachable API inventory (cargo-public-api):

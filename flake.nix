@@ -80,7 +80,11 @@
           packages = with pkgs; [
             brightnessctl
             cargo
+            cargo-audit
+            cargo-deny
             cargo-llvm-cov
+            cargo-mutants
+            cargo-shear
             clippy
             jq
             llvmPackages.libclang
