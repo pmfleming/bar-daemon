@@ -1,4 +1,7 @@
-use super::{ApiService, error, success};
+use std::sync::Arc;
+
+use super::{error, success};
+use crate::{activity::ActivityService, state::StateStore};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -33,7 +36,17 @@ const fn default_true() -> bool {
     true
 }
 
-impl ApiService {
+#[derive(Clone)]
+pub(super) struct ActivityApi {
+    state: StateStore,
+    activity: Arc<ActivityService>,
+}
+
+impl ActivityApi {
+    pub(super) fn new(state: StateStore, activity: Arc<ActivityService>) -> Self {
+        Self { state, activity }
+    }
+
     pub(super) async fn activity_query_range(&self, params: Value) -> Value {
         let request = request!(params, RangeRequest, "activity.queryRange");
         match self

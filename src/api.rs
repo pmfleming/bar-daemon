@@ -1,15 +1,12 @@
 use std::sync::Arc;
 
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
-use tokio::sync::Mutex;
-
 use crate::{
     activity::{ActivityService, notifications::service::NotificationService},
-    hyprland::HyprlandClient,
     protocol,
     state::StateStore,
 };
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 
 macro_rules! request {
     ($params:expr, $request:ty, $method:literal) => {
@@ -24,6 +21,11 @@ mod activity;
 mod battery;
 mod effects;
 mod notifications;
+
+use self::{
+    activity::ActivityApi, battery::BatteryApi, effects::DesktopEffects,
+    notifications::NotificationApi,
+};
 
 pub(crate) use protocol::{NAME as PROTOCOL, VERSION};
 pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
@@ -56,11 +58,10 @@ fn result<T: Serialize>(value: anyhow::Result<T>, key: &'static str, code: &str)
 #[derive(Clone)]
 pub(crate) struct ApiService {
     state: StateStore,
-    activity: Arc<ActivityService>,
-    hyprland: Arc<HyprlandClient>,
-    audio_effects: Arc<Mutex<()>>,
-    brightness_effects: Arc<Mutex<()>>,
-    notifications: Arc<NotificationService>,
+    activity: ActivityApi,
+    battery: BatteryApi,
+    effects: DesktopEffects,
+    notifications: NotificationApi,
 }
 
 impl ApiService {
@@ -70,53 +71,60 @@ impl ApiService {
         notifications: Arc<NotificationService>,
     ) -> Self {
         Self {
+            activity: ActivityApi::new(state.clone(), activity),
+            battery: BatteryApi::new(state.clone()),
+            effects: DesktopEffects::new(state.clone()),
+            notifications: NotificationApi::new(state.clone(), notifications),
             state,
-            activity,
-            hyprland: Arc::new(HyprlandClient::default()),
-            audio_effects: Arc::new(Mutex::new(())),
-            brightness_effects: Arc::new(Mutex::new(())),
-            notifications,
         }
     }
 
     pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
         match method {
             "bar.snapshot" => success(json!({ "snapshot": self.state.snapshot().await })),
-            "activity.queryRange" => self.activity_query_range(params).await,
-            "activity.refresh" => self.activity_refresh().await,
-            "todos.create" => self.todo_create(params).await,
-            "todos.complete" => self.todo_complete(params).await,
-            "todos.delete" => self.todo_delete(params).await,
-            "workspace.focus" => self.focus_workspace(params).await,
-            "media.operation" => Self::media_operation(params).await,
-            "audio.adjust" => self.audio_adjust(params).await,
-            "audio.setMuted" => self.audio_set_muted(params).await,
-            "audio.setInputMuted" => self.audio_set_input_muted(params).await,
-            "brightness.adjust" => self.brightness_adjust(params).await,
-            "brightness.set" => self.brightness_set(params).await,
-            "battery.history" => self.battery_history(),
-            "battery.setThresholds" => self.battery_set_thresholds(params).await,
-            "battery.setProtection" => self.battery_set_protection(params).await,
-            "battery.chargeOnce" => self.battery_charge_once(params).await,
-            "battery.setChargingInhibited" => self.battery_set_charging_inhibited(params).await,
-            "battery.startCalibration" => self.battery_start_calibration(params).await,
-            "battery.cancelCalibration" => self.battery_cancel_calibration(params).await,
-            "battery.setAlertPolicy" => self.battery_set_alert_policy(params).await,
-            "powerProfile.set" => Self::power_profile_set(params).await,
-            "powerProfile.setBatteryAware" => Self::power_profile_set_battery_aware(params).await,
-            "powerProfile.setActionEnabled" => Self::power_profile_set_action_enabled(params).await,
-            "powerSleep.lock" => self.power_sleep_action("lock").await,
-            "powerSleep.suspend" => self.power_sleep_action("suspend").await,
-            "powerSleep.hibernate" => self.power_sleep_action("hibernate").await,
-            "notifications.togglePanel" => self.notification_action(false).await,
-            "notifications.toggleDnd" => self.notification_action(true).await,
-            "notifications.setDnd" => self.notification_set_dnd(params).await,
-            "notifications.list" => self.notification_list(params).await,
-            "notifications.dismiss" => self.notification_dismiss(params).await,
-            "notifications.clear" => self.notification_clear().await,
-            "notifications.invokeAction" => self.notification_invoke_action(params).await,
-            "notifications.reply" => self.notification_reply(params).await,
-            "updates.refresh" => self.updates_refresh().await,
+            "activity.queryRange" => self.activity.activity_query_range(params).await,
+            "activity.refresh" => self.activity.activity_refresh().await,
+            "todos.create" => self.activity.todo_create(params).await,
+            "todos.complete" => self.activity.todo_complete(params).await,
+            "todos.delete" => self.activity.todo_delete(params).await,
+            "workspace.focus" => self.effects.focus_workspace(params).await,
+            "media.operation" => self.effects.media_operation(params).await,
+            "audio.adjust" => self.effects.audio_adjust(params).await,
+            "audio.setMuted" => self.effects.audio_set_muted(params).await,
+            "audio.setInputMuted" => self.effects.audio_set_input_muted(params).await,
+            "brightness.adjust" => self.effects.brightness_adjust(params).await,
+            "brightness.set" => self.effects.brightness_set(params).await,
+            "battery.history" => self.battery.battery_history(),
+            "battery.setThresholds" => self.battery.battery_set_thresholds(params).await,
+            "battery.setProtection" => self.battery.battery_set_protection(params).await,
+            "battery.chargeOnce" => self.battery.battery_charge_once(params).await,
+            "battery.setChargingInhibited" => {
+                self.battery.battery_set_charging_inhibited(params).await
+            }
+            "battery.startCalibration" => self.battery.battery_start_calibration(params).await,
+            "battery.cancelCalibration" => self.battery.battery_cancel_calibration(params).await,
+            "battery.setAlertPolicy" => self.battery.battery_set_alert_policy(params).await,
+            "powerProfile.set" => self.effects.power_profile_set(params).await,
+            "powerProfile.setBatteryAware" => {
+                self.effects.power_profile_set_battery_aware(params).await
+            }
+            "powerProfile.setActionEnabled" => {
+                self.effects.power_profile_set_action_enabled(params).await
+            }
+            "powerSleep.lock" => self.effects.power_sleep_action("lock").await,
+            "powerSleep.suspend" => self.effects.power_sleep_action("suspend").await,
+            "powerSleep.hibernate" => self.effects.power_sleep_action("hibernate").await,
+            "notifications.togglePanel" => self.notifications.notification_action(false).await,
+            "notifications.toggleDnd" => self.notifications.notification_action(true).await,
+            "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,
+            "notifications.list" => self.notifications.notification_list(params).await,
+            "notifications.dismiss" => self.notifications.notification_dismiss(params).await,
+            "notifications.clear" => self.notifications.notification_clear().await,
+            "notifications.invokeAction" => {
+                self.notifications.notification_invoke_action(params).await
+            }
+            "notifications.reply" => self.notifications.notification_reply(params).await,
+            "updates.refresh" => self.effects.updates_refresh().await,
             _ => error(
                 "unsupported-method",
                 format!("Unsupported bar-api method: {method}"),

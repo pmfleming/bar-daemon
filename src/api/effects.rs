@@ -1,7 +1,12 @@
-use super::{ApiService, error, result, success};
-use crate::{audio, brightness, media, power, sleep, updates};
+use std::sync::Arc;
+
+use super::{error, result, success};
+use crate::{
+    audio, brightness, hyprland::HyprlandClient, media, power, sleep, state::StateStore, updates,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 #[derive(Deserialize)]
 struct ProfileRequest {
@@ -49,7 +54,24 @@ struct WorkspaceRequest {
     on_current_monitor: bool,
 }
 
-impl ApiService {
+#[derive(Clone)]
+pub(super) struct DesktopEffects {
+    state: StateStore,
+    hyprland: Arc<HyprlandClient>,
+    audio: Arc<Mutex<()>>,
+    brightness: Arc<Mutex<()>>,
+}
+
+impl DesktopEffects {
+    pub(super) fn new(state: StateStore) -> Self {
+        Self {
+            state,
+            hyprland: Arc::new(HyprlandClient::default()),
+            audio: Arc::new(Mutex::new(())),
+            brightness: Arc::new(Mutex::new(())),
+        }
+    }
+
     pub(super) async fn power_sleep_action(&self, action: &str) -> Value {
         match sleep::perform(action).await {
             Ok(state) => {
@@ -66,7 +88,7 @@ impl ApiService {
             Err(value) => error("update-refresh-failed", value.to_string()),
         }
     }
-    pub(super) async fn power_profile_set(params: Value) -> Value {
+    pub(super) async fn power_profile_set(&self, params: Value) -> Value {
         let request = request!(params, ProfileRequest, "powerProfile.set");
         result(
             power::set_profile(&request.profile).await,
@@ -74,7 +96,7 @@ impl ApiService {
             "power-profile-operation-failed",
         )
     }
-    pub(super) async fn power_profile_set_battery_aware(params: Value) -> Value {
+    pub(super) async fn power_profile_set_battery_aware(&self, params: Value) -> Value {
         let request = request!(params, EnabledRequest, "powerProfile.setBatteryAware");
         result(
             power::set_battery_aware(request.enabled).await,
@@ -82,7 +104,7 @@ impl ApiService {
             "power-profile-operation-failed",
         )
     }
-    pub(super) async fn power_profile_set_action_enabled(params: Value) -> Value {
+    pub(super) async fn power_profile_set_action_enabled(&self, params: Value) -> Value {
         let request = request!(
             params,
             ProfileActionRequest,
@@ -96,7 +118,7 @@ impl ApiService {
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "brightness.adjust");
-        let _guard = self.brightness_effects.lock().await;
+        let _guard = self.brightness.lock().await;
         match brightness::adjust(request.delta_percent).await {
             Ok(state) => {
                 let response = success(json!({"brightness": state}));
@@ -108,7 +130,7 @@ impl ApiService {
     }
     pub(super) async fn brightness_set(&self, params: Value) -> Value {
         let request = request!(params, PercentRequest, "brightness.set");
-        let _guard = self.brightness_effects.lock().await;
+        let _guard = self.brightness.lock().await;
         match brightness::set(request.percent).await {
             Ok(state) => {
                 let response = success(json!({"brightness": state}));
@@ -120,7 +142,7 @@ impl ApiService {
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "audio.adjust");
-        let _guard = self.audio_effects.lock().await;
+        let _guard = self.audio.lock().await;
         match audio::adjust(request.delta_percent).await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
@@ -132,7 +154,7 @@ impl ApiService {
     }
     pub(super) async fn audio_set_muted(&self, params: Value) -> Value {
         let request = request!(params, MuteRequest, "audio.setMuted");
-        let _guard = self.audio_effects.lock().await;
+        let _guard = self.audio.lock().await;
         match audio::set_muted(request.muted).await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
@@ -144,7 +166,7 @@ impl ApiService {
     }
     pub(super) async fn audio_set_input_muted(&self, params: Value) -> Value {
         let request = request!(params, MuteRequest, "audio.setInputMuted");
-        let _guard = self.audio_effects.lock().await;
+        let _guard = self.audio.lock().await;
         match audio::set_input_muted(request.muted).await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
@@ -154,7 +176,7 @@ impl ApiService {
             Err(value) => error("audio-operation-failed", value.to_string()),
         }
     }
-    pub(super) async fn media_operation(params: Value) -> Value {
+    pub(super) async fn media_operation(&self, params: Value) -> Value {
         let request = request!(params, MediaRequest, "media.operation");
         match media::operation(request.player_id.as_deref(), &request.operation).await {
             Ok(player_id) => {

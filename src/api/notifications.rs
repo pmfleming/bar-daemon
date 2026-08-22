@@ -1,4 +1,7 @@
-use super::{ApiService, error, success};
+use std::sync::Arc;
+
+use super::{error, success};
+use crate::{activity::notifications::service::NotificationService, state::StateStore};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -36,7 +39,20 @@ const fn default_history_limit() -> usize {
     50
 }
 
-impl ApiService {
+#[derive(Clone)]
+pub(super) struct NotificationApi {
+    state: StateStore,
+    notifications: Arc<NotificationService>,
+}
+
+impl NotificationApi {
+    pub(super) fn new(state: StateStore, notifications: Arc<NotificationService>) -> Self {
+        Self {
+            state,
+            notifications,
+        }
+    }
+
     pub(super) async fn notification_action(&self, dnd: bool) -> Value {
         let result = if dnd {
             self.notifications

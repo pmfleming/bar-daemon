@@ -1,9 +1,12 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::battery::{self, config};
+use crate::{
+    battery::{self, config},
+    state::StateStore,
+};
 
-use super::{ApiService, error, success};
+use super::{error, success};
 
 #[derive(Deserialize)]
 struct BatteryRequest {
@@ -37,7 +40,16 @@ struct AlertPolicyRequest {
     auto_power_saver: Option<bool>,
 }
 
-impl ApiService {
+#[derive(Clone)]
+pub(super) struct BatteryApi {
+    state: StateStore,
+}
+
+impl BatteryApi {
+    pub(super) fn new(state: StateStore) -> Self {
+        Self { state }
+    }
+
     pub(super) fn battery_history(&self) -> Value {
         success(json!({ "history": battery::history_snapshot() }))
     }
