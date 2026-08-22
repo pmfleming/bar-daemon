@@ -200,12 +200,7 @@ fn monitor_pipewire(on_change: ChangeCallback) -> Result<()> {
             }
         })
         .global_remove(move |id| {
-            if let Some(index) = relevant_remove
-                .borrow()
-                .iter()
-                .position(|value| *value == id)
-            {
-                relevant_remove.borrow_mut().remove(index);
+            if remove_relevant_id(&relevant_remove, id) {
                 objects_for_remove.borrow_mut().remove(id);
                 remove_change();
             }
@@ -213,6 +208,16 @@ fn monitor_pipewire(on_change: ChangeCallback) -> Result<()> {
         .register();
     main_loop.run();
     bail!("PipeWire monitor loop ended")
+}
+
+fn remove_relevant_id(relevant: &RefCell<Vec<u32>>, id: u32) -> bool {
+    let index = {
+        let relevant = relevant.borrow();
+        relevant.iter().position(|value| *value == id)
+    };
+    let Some(index) = index else { return false };
+    relevant.borrow_mut().remove(index);
+    true
 }
 
 fn relevant_global(global: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>) -> bool {
@@ -807,7 +812,7 @@ mod tests {
 
     use super::{
         RouteProbe, SinkProbe, adjusted_volume, apply_route, default_node_name, linear_to_raw,
-        preferred_node, raw_to_linear, requested_mute,
+        preferred_node, raw_to_linear, remove_relevant_id, requested_mute,
     };
 
     #[test]
@@ -830,6 +835,15 @@ mod tests {
             Some("alsa_output.test")
         );
         assert!(default_node_name("invalid").is_none());
+    }
+
+    #[test]
+    fn removes_monitor_ids_without_overlapping_refcell_borrows() {
+        let relevant = std::cell::RefCell::new(vec![10, 20]);
+
+        assert!(remove_relevant_id(&relevant, 10));
+        assert_eq!(*relevant.borrow(), vec![20]);
+        assert!(!remove_relevant_id(&relevant, 30));
     }
 
     #[test]
