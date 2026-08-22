@@ -35,6 +35,8 @@ The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NO
 
 `rqlens.toml` enforces Cargo-qualified dependency rules. Protocol metadata cannot depend on API handlers, domain integrations cannot depend on API/daemon/client transport modules, and `StateStore` cannot invoke system-effect modules. Run `rqlens measure architecture-rules --config rqlens.toml` after changing module dependencies.
 
+`api`, `daemon`, and `daemon::tasks` are explicit composition roots. Their fan-out is reviewed against the documented baseline rather than hidden behind metric-only facades. See [`quality-policy.md`](quality-policy.md).
+
 ## Transport
 
 The D-Bus API uses JSON payloads so QML can consume the same versioned envelopes through the `bar-daemon client` JSONL bridge. Subscription signals are directed to their calling D-Bus owner, and owner loss terminates and removes the subscription. The JSONL client reports service-owner replacement as a transport failure so its supervisor reconnects and restores subscriptions. Protocol drift is guarded by `test_support/bar-api-v1.json`, registry tests, unit tests, and the Nix build check.

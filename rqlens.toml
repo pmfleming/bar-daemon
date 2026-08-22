@@ -35,7 +35,8 @@ sanitizers = [] # address, leak, memory, or thread
 miri = false
 
 # Cargo-qualified architecture constraints keep protocol and domain code
-# independent from transport orchestration.
+# independent from transport orchestration. api, daemon, and daemon::tasks are
+# intentional composition roots; docs/quality-policy.md owns their fan-out baseline.
 [[architecture.rules]]
 id = "protocol-does-not-depend-on-api"
 from = ["bar-daemon::shared::protocol"]

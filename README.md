@@ -40,7 +40,7 @@ JSONL example:
 {"op":"shutdown","id":"shutdown"}
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries, [`docs/battery.md`](docs/battery.md) for ThinkPad setup, policy, and migration details, [`docs/power-sleep.md`](docs/power-sleep.md) for logind and Hyprland sleep integration, [`docs/activity-module-plan.md`](docs/activity-module-plan.md) for the Activity roadmap and configuration, and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
+See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery boundaries, [`docs/quality-policy.md`](docs/quality-policy.md) for metric baselines, [`docs/battery.md`](docs/battery.md) for ThinkPad setup, policy, and migration details, [`docs/power-sleep.md`](docs/power-sleep.md) for logind and Hyprland sleep integration, [`docs/activity-module-plan.md`](docs/activity-module-plan.md) for the Activity roadmap and configuration, and [`docs/protocol.md`](docs/protocol.md) for the complete transport contract.
 
 D-Bus endpoint:
 
