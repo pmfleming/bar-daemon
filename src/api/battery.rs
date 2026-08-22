@@ -24,6 +24,8 @@ struct ThresholdRequest {
 struct ProtectionRequest {
     battery_id: Option<String>,
     enabled: bool,
+    start_percent: Option<u8>,
+    end_percent: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +58,7 @@ impl BatteryApi {
 
     pub(super) async fn battery_set_thresholds(&self, params: Value) -> Value {
         let request = request!(params, ThresholdRequest, "battery.setThresholds");
-        if request.start_percent >= request.end_percent || request.end_percent > 100 {
+        if !valid_thresholds(request.start_percent, request.end_percent) {
             return error(
                 "validation-error",
                 "battery start_percent must be lower than end_percent",
@@ -79,25 +81,38 @@ impl BatteryApi {
             );
         }
         let mut next_config = previous_config.clone();
-        let device = next_config.device_mut(&request.battery_id);
-        device.protected_start_percent = request.start_percent;
-        device.protected_end_percent = request.end_percent;
-        device.manage_thresholds = true;
-        device.protection_enabled = true;
-        device.accepted_reported_start_percent = None;
-        device.accepted_reported_end_percent = None;
-        self.apply_policy_change(
-            &request.battery_id,
-            request.start_percent,
-            request.end_percent,
-            previous_config,
-            next_config,
-        )
-        .await
+        let protection_active = {
+            let device = next_config.device_mut(&request.battery_id);
+            device.protected_start_percent = request.start_percent;
+            device.protected_end_percent = request.end_percent;
+            let active = device.manage_thresholds && device.protection_enabled;
+            if active {
+                device.accepted_reported_start_percent = None;
+                device.accepted_reported_end_percent = None;
+            }
+            active
+        };
+        if protection_active {
+            self.apply_policy_change(
+                &request.battery_id,
+                request.start_percent,
+                request.end_percent,
+                previous_config,
+                next_config,
+            )
+            .await
+        } else {
+            self.save_policy_change(next_config).await
+        }
     }
 
     pub(super) async fn battery_set_protection(&self, params: Value) -> Value {
         let request = request!(params, ProtectionRequest, "battery.setProtection");
+        let requested_thresholds =
+            match optional_thresholds(request.start_percent, request.end_percent) {
+                Ok(value) => value,
+                Err(message) => return error("validation-error", message),
+            };
         let _guard = battery::lock_effects().await;
         let battery_id =
             match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
@@ -120,6 +135,10 @@ impl BatteryApi {
         }
         let mut next_config = previous_config.clone();
         let device = next_config.device_mut(&battery_id);
+        if let Some((start, end)) = requested_thresholds {
+            device.protected_start_percent = start;
+            device.protected_end_percent = end;
+        }
         let (start, end) = if request.enabled {
             (device.protected_start_percent, device.protected_end_percent)
         } else {
@@ -432,6 +451,13 @@ impl BatteryApi {
         }
     }
 
+    async fn save_policy_change(&self, next_config: config::BatteryConfig) -> Value {
+        if let Err(error_value) = config::save_config(&next_config).await {
+            return error("battery-config-failed", error_value.to_string());
+        }
+        self.battery_response(None).await
+    }
+
     async fn apply_policy_change(
         &self,
         battery_id: &str,
@@ -486,6 +512,22 @@ impl BatteryApi {
             }
             Err(error_value) => error("battery-refresh-failed", error_value.to_string()),
         }
+    }
+}
+
+fn valid_thresholds(start: u8, end: u8) -> bool {
+    start < end && end <= 100
+}
+
+fn optional_thresholds(
+    start: Option<u8>,
+    end: Option<u8>,
+) -> Result<Option<(u8, u8)>, &'static str> {
+    match (start, end) {
+        (None, None) => Ok(None),
+        (Some(start), Some(end)) if valid_thresholds(start, end) => Ok(Some((start, end))),
+        (Some(_), Some(_)) => Err("battery start_percent must be lower than end_percent"),
+        _ => Err("battery start_percent and end_percent must be supplied together"),
     }
 }
 
@@ -577,7 +619,7 @@ async fn requested_battery_id(
 
 #[cfg(test)]
 mod tests {
-    use super::ThresholdRequest;
+    use super::{ProtectionRequest, ThresholdRequest, optional_thresholds};
 
     #[test]
     fn parses_typed_thresholds() {
@@ -591,5 +633,20 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn protection_accepts_an_atomic_optional_range() {
+        let request: ProtectionRequest = serde_json::from_str(
+            r#"{"battery_id":"BAT0","enabled":true,"start_percent":70,"end_percent":85}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            optional_thresholds(request.start_percent, request.end_percent),
+            Ok(Some((70, 85)))
+        );
+        assert!(optional_thresholds(Some(80), Some(80)).is_err());
+        assert!(optional_thresholds(Some(70), None).is_err());
+        assert_eq!(optional_thresholds(None, None), Ok(None));
     }
 }

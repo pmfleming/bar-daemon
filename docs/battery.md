@@ -15,7 +15,7 @@ The native battery module replaces UPower for bar-daemon's laptop use case. It r
 
 Multiple batteries are aggregated by energy. If every present battery lacks compatible energy values, the daemon falls back to the mean reported capacity. External power is determined from the `online` attribute of non-battery supplies rather than inferred from battery status.
 
-The defaults are warning at 25%, critical at 12%, full notification enabled, automatic power saver enabled, and a suggested protected range of 75–80%. When discharging at or below the warning percentage, bar-daemon asks power-profiles-daemon for a `power-saver` hold. It releases the hold on AC power or recovery above the warning level. A manual profile selection releases the hold and is respected until that low-battery episode ends. A fresh installation does not take ownership of or change existing firmware thresholds. Threshold management starts only after `battery.setThresholds` or `battery.setProtection` succeeds.
+The defaults are warning at 25%, critical at 12%, full notification enabled, automatic power saver enabled, and a suggested protected range of 75–80%. When discharging at or below the warning percentage, bar-daemon asks power-profiles-daemon for a `power-saver` hold. It releases the hold on AC power or recovery above the warning level. A manual profile selection releases the hold and is respected until that low-battery episode ends. A fresh installation does not take ownership of or change existing firmware thresholds. `battery.setThresholds` stores the desired range without enabling protection or taking ownership; when protection is already managed and enabled, it also updates the hardware. Threshold management starts when `battery.setProtection` succeeds.
 
 ## API examples
 
@@ -25,7 +25,7 @@ Send these records to `bar-daemon client`:
 {"op":"call","id":"history","method":"battery.history","params":{}}
 {"op":"call","id":"thresholds","method":"battery.setThresholds","params":{"battery_id":"BAT0","start_percent":75,"end_percent":80}}
 {"op":"call","id":"protect-off","method":"battery.setProtection","params":{"enabled":false}}
-{"op":"call","id":"protect-on","method":"battery.setProtection","params":{"enabled":true}}
+{"op":"call","id":"protect-on","method":"battery.setProtection","params":{"battery_id":"BAT0","enabled":true,"start_percent":75,"end_percent":80}}
 {"op":"call","id":"once","method":"battery.chargeOnce","params":{}}
 {"op":"call","id":"pause","method":"battery.setChargingInhibited","params":{"battery_id":"BAT0","enabled":true}}
 {"op":"call","id":"resume","method":"battery.setChargingInhibited","params":{"battery_id":"BAT0","enabled":false}}
@@ -34,7 +34,7 @@ Send these records to `bar-daemon client`:
 {"op":"call","id":"alerts","method":"battery.setAlertPolicy","params":{"warning_percent":25,"critical_percent":12,"notify_when_full":true,"auto_power_saver":true}}
 ```
 
-`battery.setProtection` and `battery.chargeOnce` use the primary battery exposed in the aggregate state. `battery.setThresholds` accepts an explicit battery ID for machines that expose more than one battery. Threshold changes fail cleanly when the kernel does not expose both `charge_control_start_threshold` and `charge_control_end_threshold`.
+`battery.setProtection` and `battery.chargeOnce` use the primary battery exposed in the aggregate state when `battery_id` is omitted. `battery.setProtection` accepts an optional complete `start_percent`/`end_percent` pair so clients can update the desired range and enabled state atomically. `battery.setThresholds` requires an explicit battery ID and preserves the existing enabled and management state. Threshold changes fail cleanly when the kernel does not expose both `charge_control_start_threshold` and `charge_control_end_threshold`.
 
 Charge-once requires external power. Before selecting `0–100`, the daemon durably records the observed range. The operation survives daemon restarts and restores that exact range when the battery reaches 100%, external power is removed, or 24 hours elapse. The runtime marker is cleared only after verified restoration.
 

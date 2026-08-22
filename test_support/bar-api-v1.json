@@ -114,7 +114,9 @@
         "name": "battery.setProtection",
         "params": {
           "battery_id": "BAT0",
-          "enabled": true
+          "enabled": true,
+          "end_percent": 80,
+          "start_percent": 75
         },
         "result": "battery"
       },

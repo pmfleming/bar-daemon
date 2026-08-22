@@ -114,7 +114,7 @@ pub fn registry() -> Value {
             { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
             { "name": "battery.history", "params": {}, "result": "history" },
             { "name": "battery.setThresholds", "params": { "battery_id": "BAT0", "start_percent": 75, "end_percent": 80 }, "result": "battery" },
-            { "name": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
+            { "name": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true, "start_percent": 75, "end_percent": 80 }, "result": "battery" },
             { "name": "battery.chargeOnce", "params": { "battery_id": "BAT0" }, "result": "battery" },
             { "name": "battery.setChargingInhibited", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
             { "name": "battery.startCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
