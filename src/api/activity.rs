@@ -1,21 +1,46 @@
 use super::{ApiService, error, success};
+use serde::Deserialize;
 use serde_json::{Value, json};
+
+#[derive(Deserialize)]
+struct RangeRequest {
+    from_unix_ms: i64,
+    to_unix_ms: i64,
+}
+
+#[derive(Deserialize)]
+struct CreateTodoRequest {
+    title: String,
+    due_unix_ms: Option<i64>,
+    due_date: Option<String>,
+    #[serde(default)]
+    priority: u8,
+}
+
+#[derive(Deserialize)]
+struct CompleteTodoRequest {
+    id: String,
+    #[serde(default = "default_true")]
+    completed: bool,
+}
+
+#[derive(Deserialize)]
+struct TodoRequest {
+    id: String,
+}
+
+const fn default_true() -> bool {
+    true
+}
 
 impl ApiService {
     pub(super) async fn activity_query_range(&self, params: Value) -> Value {
-        let Some(from) = params.get("from_unix_ms").and_then(Value::as_i64) else {
-            return error(
-                "validation-error",
-                "activity.queryRange requires integer from_unix_ms",
-            );
-        };
-        let Some(to) = params.get("to_unix_ms").and_then(Value::as_i64) else {
-            return error(
-                "validation-error",
-                "activity.queryRange requires integer to_unix_ms",
-            );
-        };
-        match self.activity.query_range(from, to).await {
+        let request = request!(params, RangeRequest, "activity.queryRange");
+        match self
+            .activity
+            .query_range(request.from_unix_ms, request.to_unix_ms)
+            .await
+        {
             Ok(range) => success(json!({"activity_range": range})),
             Err(value) => error("activity-query-failed", value.to_string()),
         }
@@ -25,28 +50,15 @@ impl ApiService {
         success(json!({"activity": self.state.snapshot().await.activity}))
     }
     pub(super) async fn todo_create(&self, params: Value) -> Value {
-        let Some(title) = params.get("title").and_then(Value::as_str) else {
-            return error("validation-error", "todos.create requires title");
-        };
-        let due_unix_ms = match params.get("due_unix_ms") {
-            None | Some(Value::Null) => None,
-            Some(value) => match value.as_i64() {
-                Some(value) => Some(value),
-                None => return error("validation-error", "due_unix_ms must be integer or null"),
-            },
-        };
-        let due_date = match params.get("due_date") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(value)) => Some(value.clone()),
-            _ => return error("validation-error", "due_date must be YYYY-MM-DD or null"),
-        };
-        let priority = params.get("priority").and_then(Value::as_u64).unwrap_or(0);
-        let Ok(priority) = u8::try_from(priority) else {
-            return error("validation-error", "todo priority is out of range");
-        };
+        let request = request!(params, CreateTodoRequest, "todos.create");
         match self
             .activity
-            .create_todo(title.into(), due_unix_ms, due_date, priority)
+            .create_todo(
+                request.title,
+                request.due_unix_ms,
+                request.due_date,
+                request.priority,
+            )
             .await
         {
             Ok(todo) => success(json!({"todo": todo})),
@@ -54,24 +66,20 @@ impl ApiService {
         }
     }
     pub(super) async fn todo_complete(&self, params: Value) -> Value {
-        let Some(id) = params.get("id").and_then(Value::as_str) else {
-            return error("validation-error", "todos.complete requires id");
-        };
-        let completed = params
-            .get("completed")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        match self.activity.complete_todo(id, completed).await {
+        let request = request!(params, CompleteTodoRequest, "todos.complete");
+        match self
+            .activity
+            .complete_todo(&request.id, request.completed)
+            .await
+        {
             Ok(todo) => success(json!({"todo": todo})),
             Err(value) => error("todo-complete-failed", value.to_string()),
         }
     }
     pub(super) async fn todo_delete(&self, params: Value) -> Value {
-        let Some(id) = params.get("id").and_then(Value::as_str) else {
-            return error("validation-error", "todos.delete requires id");
-        };
-        match self.activity.delete_todo(id).await {
-            Ok(()) => success(json!({"deleted": id})),
+        let request = request!(params, TodoRequest, "todos.delete");
+        match self.activity.delete_todo(&request.id).await {
+            Ok(()) => success(json!({"deleted": request.id})),
             Err(value) => error("todo-delete-failed", value.to_string()),
         }
     }

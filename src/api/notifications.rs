@@ -1,5 +1,40 @@
 use super::{ApiService, error, success};
+use serde::Deserialize;
 use serde_json::{Value, json};
+
+#[derive(Deserialize)]
+struct DndRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct HistoryRequest {
+    before_history_id: Option<i64>,
+    #[serde(default = "default_history_limit")]
+    limit: usize,
+}
+
+#[derive(Deserialize)]
+struct NotificationRequest {
+    id: u32,
+}
+
+#[derive(Deserialize)]
+struct ActionRequest {
+    id: u32,
+    action_key: String,
+    activation_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReplyRequest {
+    id: u32,
+    text: String,
+}
+
+const fn default_history_limit() -> usize {
+    50
+}
 
 impl ApiService {
     pub(super) async fn notification_action(&self, dnd: bool) -> Value {
@@ -20,46 +55,36 @@ impl ApiService {
         }
     }
     pub(super) async fn notification_set_dnd(&self, params: Value) -> Value {
-        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
-            return error("validation-error", "notifications.setDnd requires enabled");
-        };
+        let request = request!(params, DndRequest, "notifications.setDnd");
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        engine.set_dnd(enabled).await;
+        engine.set_dnd(request.enabled).await;
         success(json!({"notifications": self.state.snapshot().await.notifications}))
     }
     pub(super) async fn notification_list(&self, params: Value) -> Value {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        let before = match params.get("before_history_id") {
-            None | Some(Value::Null) => None,
-            Some(value) => match value.as_i64() {
-                Some(value) if value > 0 => Some(value),
-                _ => {
-                    return error(
-                        "validation-error",
-                        "before_history_id must be positive or null",
-                    );
-                }
-            },
-        };
-        let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50);
-        let Ok(limit) = usize::try_from(limit.min(200)) else {
-            return error("validation-error", "notification history limit is invalid");
-        };
-        match engine.history(before, limit).await {
+        let request = request!(params, HistoryRequest, "notifications.list");
+        if request.before_history_id.is_some_and(|id| id <= 0) {
+            return error(
+                "validation-error",
+                "before_history_id must be positive or null",
+            );
+        }
+        match engine
+            .history(request.before_history_id, request.limit.min(200))
+            .await
+        {
             Ok(history) => success(json!({"notification_history": history})),
             Err(value) => error("notification-history-failed", value.to_string()),
         }
     }
     pub(super) async fn notification_dismiss(&self, params: Value) -> Value {
-        let Some(id) = notification_id(&params) else {
-            return error(
-                "validation-error",
-                "notifications.dismiss requires a positive id",
-            );
+        let request = request!(params, NotificationRequest, "notifications.dismiss");
+        let Some(id) = positive_id(request.id) else {
+            return error("validation-error", "notification id must be positive");
         };
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
@@ -80,27 +105,18 @@ impl ApiService {
         success(json!({"operation":"clear","closed":engine.clear().await}))
     }
     pub(super) async fn notification_invoke_action(&self, params: Value) -> Value {
-        let Some(id) = notification_id(&params) else {
-            return error(
-                "validation-error",
-                "notifications.invokeAction requires a positive id",
-            );
+        let request = request!(params, ActionRequest, "notifications.invokeAction");
+        let Some(id) = positive_id(request.id) else {
+            return error("validation-error", "notification id must be positive");
         };
-        let Some(key) = params.get("action_key").and_then(Value::as_str) else {
-            return error(
-                "validation-error",
-                "notifications.invokeAction requires action_key",
-            );
-        };
-        let token = params
-            .get("activation_token")
-            .and_then(Value::as_str)
-            .map(str::to_string);
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        if engine.invoke_action(id, key, token).await {
-            success(json!({"operation":"invoke-action","id":id,"action_key":key}))
+        if engine
+            .invoke_action(id, &request.action_key, request.activation_token)
+            .await
+        {
+            success(json!({"operation":"invoke-action","id":id,"action_key":request.action_key}))
         } else {
             error(
                 "notification-action-not-found",
@@ -109,19 +125,14 @@ impl ApiService {
         }
     }
     pub(super) async fn notification_reply(&self, params: Value) -> Value {
-        let Some(id) = notification_id(&params) else {
-            return error(
-                "validation-error",
-                "notifications.reply requires a positive id",
-            );
-        };
-        let Some(text) = params.get("text").and_then(Value::as_str) else {
-            return error("validation-error", "notifications.reply requires text");
+        let request = request!(params, ReplyRequest, "notifications.reply");
+        let Some(id) = positive_id(request.id) else {
+            return error("validation-error", "notification id must be positive");
         };
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        if engine.reply(id, text).await {
+        if engine.reply(id, &request.text).await {
             success(json!({"operation":"reply","id":id}))
         } else {
             error(
@@ -137,10 +148,6 @@ fn native_required() -> Value {
         "native notifications are disabled",
     )
 }
-fn notification_id(params: &Value) -> Option<u32> {
-    params
-        .get("id")
-        .and_then(Value::as_u64)
-        .and_then(|id| u32::try_from(id).ok())
-        .filter(|id| *id > 0)
+fn positive_id(id: u32) -> Option<u32> {
+    (id > 0).then_some(id)
 }

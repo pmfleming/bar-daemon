@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -9,6 +10,15 @@ use crate::{
     protocol,
     state::StateStore,
 };
+
+macro_rules! request {
+    ($params:expr, $request:ty, $method:literal) => {
+        match super::decode_request::<$request>($params, $method) {
+            Ok(request) => request,
+            Err(response) => return response,
+        }
+    };
+}
 
 mod activity;
 mod battery;
@@ -25,6 +35,22 @@ pub fn success(data: Value) -> Value {
 }
 pub fn error(code: &str, message: impl Into<String>) -> Value {
     json!({ "protocol": PROTOCOL, "version": VERSION, "ok": false, "error": { "code": code, "message": message.into() } })
+}
+
+fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {
+    serde_json::from_value(params).map_err(|value| {
+        error(
+            "validation-error",
+            format!("{method} parameters are invalid: {value}"),
+        )
+    })
+}
+
+fn result<T: Serialize>(value: anyhow::Result<T>, key: &'static str, code: &str) -> Value {
+    match value {
+        Ok(value) => success(json!({(key): value})),
+        Err(value) => error(code, value.to_string()),
+    }
 }
 
 #[derive(Clone)]

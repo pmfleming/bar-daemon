@@ -1,8 +1,41 @@
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::battery::{self, config};
 
 use super::{ApiService, error, success};
+
+#[derive(Deserialize)]
+struct BatteryRequest {
+    battery_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ThresholdRequest {
+    battery_id: String,
+    start_percent: u8,
+    end_percent: u8,
+}
+
+#[derive(Deserialize)]
+struct ProtectionRequest {
+    battery_id: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct InhibitionRequest {
+    battery_id: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct AlertPolicyRequest {
+    warning_percent: Option<u8>,
+    critical_percent: Option<u8>,
+    notify_when_full: Option<bool>,
+    auto_power_saver: Option<bool>,
+}
 
 impl ApiService {
     pub(super) fn battery_history(&self) -> Value {
@@ -10,25 +43,8 @@ impl ApiService {
     }
 
     pub(super) async fn battery_set_thresholds(&self, params: Value) -> Value {
-        let Some(battery_id) = params.get("battery_id").and_then(Value::as_str) else {
-            return error(
-                "validation-error",
-                "battery.setThresholds requires battery_id",
-            );
-        };
-        let Some(start) = percent(&params, "start_percent") else {
-            return error(
-                "validation-error",
-                "battery.setThresholds requires start_percent from 0 to 99",
-            );
-        };
-        let Some(end) = percent(&params, "end_percent") else {
-            return error(
-                "validation-error",
-                "battery.setThresholds requires end_percent from 1 to 100",
-            );
-        };
-        if start >= end {
+        let request = request!(params, ThresholdRequest, "battery.setThresholds");
+        if request.start_percent >= request.end_percent || request.end_percent > 100 {
             return error(
                 "validation-error",
                 "battery start_percent must be lower than end_percent",
@@ -51,25 +67,30 @@ impl ApiService {
             );
         }
         let mut next_config = previous_config.clone();
-        let device = next_config.device_mut(battery_id);
-        device.protected_start_percent = start;
-        device.protected_end_percent = end;
+        let device = next_config.device_mut(&request.battery_id);
+        device.protected_start_percent = request.start_percent;
+        device.protected_end_percent = request.end_percent;
         device.manage_thresholds = true;
         device.protection_enabled = true;
         device.accepted_reported_start_percent = None;
         device.accepted_reported_end_percent = None;
-        self.apply_policy_change(battery_id, start, end, previous_config, next_config)
-            .await
+        self.apply_policy_change(
+            &request.battery_id,
+            request.start_percent,
+            request.end_percent,
+            previous_config,
+            next_config,
+        )
+        .await
     }
 
     pub(super) async fn battery_set_protection(&self, params: Value) -> Value {
-        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
-            return error("validation-error", "battery.setProtection requires enabled");
-        };
-        let battery_id = match requested_battery_id(&params, &self.state).await {
-            Ok(id) => id,
-            Err(response) => return response,
-        };
+        let request = request!(params, ProtectionRequest, "battery.setProtection");
+        let battery_id =
+            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
         let _guard = battery::lock_effects().await;
         let previous_config = match config::load_config().await {
             Ok(config) => config,
@@ -87,13 +108,13 @@ impl ApiService {
         }
         let mut next_config = previous_config.clone();
         let device = next_config.device_mut(&battery_id);
-        let (start, end) = if enabled {
+        let (start, end) = if request.enabled {
             (device.protected_start_percent, device.protected_end_percent)
         } else {
             (0, 100)
         };
         device.manage_thresholds = true;
-        device.protection_enabled = enabled;
+        device.protection_enabled = request.enabled;
         device.accepted_reported_start_percent = None;
         device.accepted_reported_end_percent = None;
         self.apply_policy_change(&battery_id, start, end, previous_config, next_config)
@@ -101,6 +122,7 @@ impl ApiService {
     }
 
     pub(super) async fn battery_charge_once(&self, params: Value) -> Value {
+        let request = request!(params, BatteryRequest, "battery.chargeOnce");
         let snapshot = self.state.snapshot().await.battery;
         if !snapshot.plugged {
             return error(
@@ -108,7 +130,7 @@ impl ApiService {
                 "battery.chargeOnce requires external power",
             );
         }
-        let requested_id = params.get("battery_id").and_then(Value::as_str);
+        let requested_id = request.battery_id.as_deref();
         let device = requested_id
             .and_then(|id| snapshot.devices.iter().find(|device| device.id == id))
             .or_else(|| {
@@ -157,7 +179,7 @@ impl ApiService {
             return error("battery-state-failed", error_value.to_string());
         }
         match battery::helper::set_thresholds(&battery_id, 0, 100).await {
-            Ok(result) => self.battery_operation_response(&battery_id, result).await,
+            Ok(result) => self.battery_response(Some((&battery_id, result))).await,
             Err(error_value) => {
                 if let Err(rollback_error) = config::save_runtime(&previous_runtime).await {
                     return error(
@@ -173,16 +195,12 @@ impl ApiService {
     }
 
     pub(super) async fn battery_set_charging_inhibited(&self, params: Value) -> Value {
-        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
-            return error(
-                "validation-error",
-                "battery.setChargingInhibited requires enabled",
-            );
-        };
-        let battery_id = match requested_battery_id(&params, &self.state).await {
-            Ok(id) => id,
-            Err(response) => return response,
-        };
+        let request = request!(params, InhibitionRequest, "battery.setChargingInhibited");
+        let battery_id =
+            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
         let snapshot = self.state.snapshot().await.battery;
         let Some(device) = snapshot
             .devices
@@ -210,22 +228,24 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        let result = if enabled {
+        let result = if request.enabled {
             start_charging_inhibition(&battery_id, &previous).await
         } else {
             stop_charging_inhibition(&battery_id, previous).await
         };
         match result {
-            Ok(()) => self.battery_refresh_response().await,
+            Ok(()) => self.battery_response(None).await,
             Err(response) => response,
         }
     }
 
     pub(super) async fn battery_start_calibration(&self, params: Value) -> Value {
-        let battery_id = match requested_battery_id(&params, &self.state).await {
-            Ok(id) => id,
-            Err(response) => return response,
-        };
+        let request = request!(params, BatteryRequest, "battery.startCalibration");
+        let battery_id =
+            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
         let snapshot = self.state.snapshot().await.battery;
         if !snapshot.plugged {
             return error(
@@ -303,14 +323,16 @@ impl ApiService {
                 },
             );
         }
-        self.battery_refresh_response().await
+        self.battery_response(None).await
     }
 
     pub(super) async fn battery_cancel_calibration(&self, params: Value) -> Value {
-        let battery_id = match requested_battery_id(&params, &self.state).await {
-            Ok(id) => id,
-            Err(response) => return response,
-        };
+        let request = request!(params, BatteryRequest, "battery.cancelCalibration");
+        let battery_id =
+            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
         let _guard = battery::lock_effects().await;
         let mut runtime = match config::load_runtime().await {
             Ok(runtime) => runtime,
@@ -339,56 +361,37 @@ impl ApiService {
         if let Err(error_value) = config::save_runtime(&runtime).await {
             return error("battery-state-failed", error_value.to_string());
         }
-        self.battery_refresh_response().await
-    }
-
-    async fn battery_refresh_response(&self) -> Value {
-        match battery::refresh_state(&self.state).await {
-            Ok(state) => success(json!({ "battery": state })),
-            Err(error_value) => error("battery-refresh-failed", error_value.to_string()),
-        }
+        self.battery_response(None).await
     }
 
     pub(super) async fn battery_set_alert_policy(&self, params: Value) -> Value {
-        let _guard = battery::lock_effects().await;
-        let mut next_config = match config::load_config().await {
-            Ok(config) => config,
-            Err(error_value) => return error("battery-config-failed", error_value.to_string()),
-        };
-        let mut changed = false;
-        if params.get("warning_percent").is_some() {
-            let Some(value) = percent(&params, "warning_percent") else {
-                return error("validation-error", "warning_percent must be from 0 to 100");
-            };
-            next_config.warning_percent = value;
-            changed = true;
-        }
-        if params.get("critical_percent").is_some() {
-            let Some(value) = percent(&params, "critical_percent") else {
-                return error("validation-error", "critical_percent must be from 0 to 100");
-            };
-            next_config.critical_percent = value;
-            changed = true;
-        }
-        if params.get("notify_when_full").is_some() {
-            let Some(value) = params.get("notify_when_full").and_then(Value::as_bool) else {
-                return error("validation-error", "notify_when_full must be boolean");
-            };
-            next_config.notify_when_full = value;
-            changed = true;
-        }
-        if params.get("auto_power_saver").is_some() {
-            let Some(value) = params.get("auto_power_saver").and_then(Value::as_bool) else {
-                return error("validation-error", "auto_power_saver must be boolean");
-            };
-            next_config.auto_power_saver = value;
-            changed = true;
-        }
+        let request = request!(params, AlertPolicyRequest, "battery.setAlertPolicy");
+        let changed = request.warning_percent.is_some()
+            || request.critical_percent.is_some()
+            || request.notify_when_full.is_some()
+            || request.auto_power_saver.is_some();
         if !changed {
             return error(
                 "validation-error",
                 "battery.setAlertPolicy requires at least one policy field",
             );
+        }
+        let _guard = battery::lock_effects().await;
+        let mut next_config = match config::load_config().await {
+            Ok(config) => config,
+            Err(error_value) => return error("battery-config-failed", error_value.to_string()),
+        };
+        if let Some(value) = request.warning_percent {
+            next_config.warning_percent = value;
+        }
+        if let Some(value) = request.critical_percent {
+            next_config.critical_percent = value;
+        }
+        if let Some(value) = request.notify_when_full {
+            next_config.notify_when_full = value;
+        }
+        if let Some(value) = request.auto_power_saver {
+            next_config.auto_power_saver = value;
         }
         if let Err(error_value) = next_config.validate() {
             return error("validation-error", error_value.to_string());
@@ -421,7 +424,7 @@ impl ApiService {
                 if let Err(error_value) = config::save_config(&next_config).await {
                     return error("battery-config-failed", error_value.to_string());
                 }
-                self.battery_operation_response(battery_id, result).await
+                self.battery_response(Some((battery_id, result))).await
             }
             Err(error_value) => {
                 if let Err(rollback_error) = config::save_config(&previous_config).await {
@@ -437,21 +440,23 @@ impl ApiService {
         }
     }
 
-    async fn battery_operation_response(
+    async fn battery_response(
         &self,
-        battery_id: &str,
-        result: battery::helper::ThresholdWriteResult,
+        operation: Option<(&str, battery::helper::ThresholdWriteResult)>,
     ) -> Value {
         match battery::refresh_state(&self.state).await {
-            Ok(state) => success(json!({
-                "battery": state,
-                "operation": {
-                    "battery_id": battery_id,
-                    "start_percent": result.actual_start_percent,
-                    "end_percent": result.actual_end_percent,
-                    "verified": result.verified
+            Ok(state) => {
+                let mut data = json!({ "battery": state });
+                if let Some((battery_id, result)) = operation {
+                    data["operation"] = json!({
+                        "battery_id": battery_id,
+                        "start_percent": result.actual_start_percent,
+                        "end_percent": result.actual_end_percent,
+                        "verified": result.verified
+                    });
                 }
-            })),
+                success(data)
+            }
             Err(error_value) => error("battery-refresh-failed", error_value.to_string()),
         }
     }
@@ -500,11 +505,6 @@ async fn stop_charging_inhibition(
         .map_err(|value| error("battery-state-failed", value.to_string()))
 }
 
-fn percent(params: &Value, name: &str) -> Option<u8> {
-    let value = params.get(name)?.as_u64()?;
-    (value <= 100).then_some(value as u8)
-}
-
 async fn primary_battery_id(state: &crate::state::StateStore) -> Result<String, Value> {
     state
         .snapshot()
@@ -522,40 +522,42 @@ async fn primary_battery_id(state: &crate::state::StateStore) -> Result<String, 
 }
 
 async fn requested_battery_id(
-    params: &Value,
+    requested: Option<&str>,
     state: &crate::state::StateStore,
 ) -> Result<String, Value> {
-    if let Some(value) = params.get("battery_id") {
-        let Some(battery_id) = value.as_str() else {
-            return Err(error("validation-error", "battery_id must be a string"));
-        };
-        let available = state
-            .snapshot()
-            .await
-            .battery
-            .devices
-            .iter()
-            .any(|device| device.id == battery_id);
-        return available.then(|| battery_id.to_string()).ok_or_else(|| {
-            error(
-                "battery-unavailable",
-                format!("battery {battery_id} is unavailable"),
-            )
-        });
-    }
-    primary_battery_id(state).await
+    let Some(battery_id) = requested else {
+        return primary_battery_id(state).await;
+    };
+    let available = state
+        .snapshot()
+        .await
+        .battery
+        .devices
+        .iter()
+        .any(|device| device.id == battery_id);
+    available.then(|| battery_id.to_string()).ok_or_else(|| {
+        error(
+            "battery-unavailable",
+            format!("battery {battery_id} is unavailable"),
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::percent;
+    use super::ThresholdRequest;
 
     #[test]
-    fn parses_bounded_percentages() {
-        assert_eq!(percent(&json!({"value": 80}), "value"), Some(80));
-        assert_eq!(percent(&json!({"value": 101}), "value"), None);
-        assert_eq!(percent(&json!({"value": -1}), "value"), None);
+    fn parses_typed_thresholds() {
+        let request: ThresholdRequest =
+            serde_json::from_str(r#"{"battery_id":"BAT0","start_percent":75,"end_percent":80}"#)
+                .unwrap();
+        assert_eq!(request.start_percent, 75);
+        assert!(
+            serde_json::from_str::<ThresholdRequest>(
+                r#"{"battery_id":"BAT0","start_percent":-1,"end_percent":80}"#
+            )
+            .is_err()
+        );
     }
 }

@@ -1,6 +1,53 @@
-use super::{ApiService, error, success};
+use super::{ApiService, error, result, success};
 use crate::{audio, brightness, media, power, sleep, updates};
+use serde::Deserialize;
 use serde_json::{Value, json};
+
+#[derive(Deserialize)]
+struct ProfileRequest {
+    profile: String,
+}
+
+#[derive(Deserialize)]
+struct EnabledRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct ProfileActionRequest {
+    action: String,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct DeltaRequest {
+    delta_percent: i16,
+}
+
+#[derive(Deserialize)]
+struct PercentRequest {
+    percent: u8,
+}
+
+#[derive(Deserialize)]
+struct MuteRequest {
+    #[serde(default)]
+    muted: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct MediaRequest {
+    operation: String,
+    #[serde(default)]
+    player_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceRequest {
+    workspace_id: i64,
+    #[serde(default)]
+    on_current_monitor: bool,
+}
 
 impl ApiService {
     pub(super) async fn power_sleep_action(&self, action: &str) -> Value {
@@ -20,59 +67,37 @@ impl ApiService {
         }
     }
     pub(super) async fn power_profile_set(params: Value) -> Value {
-        let Some(profile) = params.get("profile").and_then(Value::as_str) else {
-            return error("validation-error", "powerProfile.set requires profile");
-        };
-        match power::set_profile(profile).await {
-            Ok(state) => success(json!({"power_profile": state})),
-            Err(value) => error("power-profile-operation-failed", value.to_string()),
-        }
+        let request = request!(params, ProfileRequest, "powerProfile.set");
+        result(
+            power::set_profile(&request.profile).await,
+            "power_profile",
+            "power-profile-operation-failed",
+        )
     }
     pub(super) async fn power_profile_set_battery_aware(params: Value) -> Value {
-        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
-            return error(
-                "validation-error",
-                "powerProfile.setBatteryAware requires enabled",
-            );
-        };
-        match power::set_battery_aware(enabled).await {
-            Ok(state) => success(json!({"power_profile": state})),
-            Err(value) => error("power-profile-operation-failed", value.to_string()),
-        }
+        let request = request!(params, EnabledRequest, "powerProfile.setBatteryAware");
+        result(
+            power::set_battery_aware(request.enabled).await,
+            "power_profile",
+            "power-profile-operation-failed",
+        )
     }
     pub(super) async fn power_profile_set_action_enabled(params: Value) -> Value {
-        let Some(action) = params.get("action").and_then(Value::as_str) else {
-            return error(
-                "validation-error",
-                "powerProfile.setActionEnabled requires action",
-            );
-        };
-        let Some(enabled) = params.get("enabled").and_then(Value::as_bool) else {
-            return error(
-                "validation-error",
-                "powerProfile.setActionEnabled requires enabled",
-            );
-        };
-        match power::set_action_enabled(action, enabled).await {
-            Ok(state) => success(json!({"power_profile": state})),
-            Err(value) => error("power-profile-operation-failed", value.to_string()),
-        }
+        let request = request!(
+            params,
+            ProfileActionRequest,
+            "powerProfile.setActionEnabled"
+        );
+        result(
+            power::set_action_enabled(&request.action, request.enabled).await,
+            "power_profile",
+            "power-profile-operation-failed",
+        )
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
-        let Some(delta) = params.get("delta_percent").and_then(Value::as_i64) else {
-            return error(
-                "validation-error",
-                "brightness.adjust requires integer delta_percent",
-            );
-        };
-        let Ok(delta) = i16::try_from(delta) else {
-            return error(
-                "validation-error",
-                "brightness delta_percent is out of range",
-            );
-        };
+        let request = request!(params, DeltaRequest, "brightness.adjust");
         let _guard = self.brightness_effects.lock().await;
-        match brightness::adjust(delta).await {
+        match brightness::adjust(request.delta_percent).await {
             Ok(state) => {
                 let response = success(json!({"brightness": state}));
                 self.state.update_brightness(state).await;
@@ -82,17 +107,9 @@ impl ApiService {
         }
     }
     pub(super) async fn brightness_set(&self, params: Value) -> Value {
-        let Some(percent) = params.get("percent").and_then(Value::as_u64) else {
-            return error(
-                "validation-error",
-                "brightness.set requires integer percent",
-            );
-        };
-        let Ok(percent) = u8::try_from(percent) else {
-            return error("validation-error", "brightness percent is out of range");
-        };
+        let request = request!(params, PercentRequest, "brightness.set");
         let _guard = self.brightness_effects.lock().await;
-        match brightness::set(percent).await {
+        match brightness::set(request.percent).await {
             Ok(state) => {
                 let response = success(json!({"brightness": state}));
                 self.state.update_brightness(state).await;
@@ -102,17 +119,9 @@ impl ApiService {
         }
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {
-        let Some(delta) = params.get("delta_percent").and_then(Value::as_i64) else {
-            return error(
-                "validation-error",
-                "audio.adjust requires integer delta_percent",
-            );
-        };
-        let Ok(delta) = i16::try_from(delta) else {
-            return error("validation-error", "audio delta_percent is out of range");
-        };
+        let request = request!(params, DeltaRequest, "audio.adjust");
         let _guard = self.audio_effects.lock().await;
-        match audio::adjust(delta).await {
+        match audio::adjust(request.delta_percent).await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
                 self.state.update_audio(state).await;
@@ -122,18 +131,9 @@ impl ApiService {
         }
     }
     pub(super) async fn audio_set_muted(&self, params: Value) -> Value {
-        let muted = match params.get("muted") {
-            None | Some(Value::Null) => None,
-            Some(Value::Bool(value)) => Some(*value),
-            _ => {
-                return error(
-                    "validation-error",
-                    "audio.setMuted muted must be boolean or null",
-                );
-            }
-        };
+        let request = request!(params, MuteRequest, "audio.setMuted");
         let _guard = self.audio_effects.lock().await;
-        match audio::set_muted(muted).await {
+        match audio::set_muted(request.muted).await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
                 self.state.update_audio(state).await;
@@ -143,18 +143,9 @@ impl ApiService {
         }
     }
     pub(super) async fn audio_set_input_muted(&self, params: Value) -> Value {
-        let muted = match params.get("muted") {
-            None | Some(Value::Null) => None,
-            Some(Value::Bool(value)) => Some(*value),
-            _ => {
-                return error(
-                    "validation-error",
-                    "audio.setInputMuted muted must be boolean or null",
-                );
-            }
-        };
+        let request = request!(params, MuteRequest, "audio.setInputMuted");
         let _guard = self.audio_effects.lock().await;
-        match audio::set_input_muted(muted).await {
+        match audio::set_input_muted(request.muted).await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
                 self.state.update_audio(state).await;
@@ -164,30 +155,26 @@ impl ApiService {
         }
     }
     pub(super) async fn media_operation(params: Value) -> Value {
-        let Some(operation) = params.get("operation").and_then(Value::as_str) else {
-            return error("validation-error", "media.operation requires operation");
-        };
-        let player = params.get("player_id").and_then(Value::as_str);
-        match media::operation(player, operation).await {
-            Ok(player_id) => success(json!({"operation": operation, "player_id": player_id})),
+        let request = request!(params, MediaRequest, "media.operation");
+        match media::operation(request.player_id.as_deref(), &request.operation).await {
+            Ok(player_id) => {
+                success(json!({"operation": request.operation, "player_id": player_id}))
+            }
             Err(value) => error("media-operation-failed", value.to_string()),
         }
     }
     pub(super) async fn focus_workspace(&self, params: Value) -> Value {
-        let Some(id) = params.get("workspace_id").and_then(Value::as_i64) else {
-            return error(
-                "validation-error",
-                "workspace.focus requires integer workspace_id",
-            );
-        };
-        let current = params
-            .get("on_current_monitor")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        match self.hyprland.focus_workspace(id, current).await {
-            Ok(()) => success(
-                json!({"operation": "workspace.focus", "workspace_id": id, "on_current_monitor": current}),
-            ),
+        let request = request!(params, WorkspaceRequest, "workspace.focus");
+        match self
+            .hyprland
+            .focus_workspace(request.workspace_id, request.on_current_monitor)
+            .await
+        {
+            Ok(()) => success(json!({
+                "operation": "workspace.focus",
+                "workspace_id": request.workspace_id,
+                "on_current_monitor": request.on_current_monitor
+            })),
             Err(value) => error("workspace-focus-failed", value.to_string()),
         }
     }
