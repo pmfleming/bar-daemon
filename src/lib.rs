@@ -16,6 +16,7 @@ mod hyprland;
 mod media;
 mod model;
 mod power;
+/// Stable metadata and contract fixtures for the JSON/D-Bus protocol.
 pub mod protocol;
 mod sleep;
 mod state;
