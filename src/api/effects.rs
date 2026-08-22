@@ -6,8 +6,9 @@ impl ApiService {
     pub(super) async fn power_sleep_action(&self, action: &str) -> Value {
         match sleep::perform(action).await {
             Ok(state) => {
-                self.state.update_power_sleep(state.clone()).await;
-                success(json!({"power_sleep": state, "operation": action}))
+                let response = success(json!({"power_sleep": state, "operation": action}));
+                self.state.update_power_sleep(state).await;
+                response
             }
             Err(value) => error("power-sleep-operation-failed", value.to_string()),
         }
@@ -73,8 +74,9 @@ impl ApiService {
         let _guard = self.brightness_effects.lock().await;
         match brightness::adjust(delta).await {
             Ok(state) => {
-                self.state.update_brightness(state.clone()).await;
-                success(json!({"brightness": state}))
+                let response = success(json!({"brightness": state}));
+                self.state.update_brightness(state).await;
+                response
             }
             Err(value) => error("brightness-operation-failed", value.to_string()),
         }
@@ -92,8 +94,9 @@ impl ApiService {
         let _guard = self.brightness_effects.lock().await;
         match brightness::set(percent).await {
             Ok(state) => {
-                self.state.update_brightness(state.clone()).await;
-                success(json!({"brightness": state}))
+                let response = success(json!({"brightness": state}));
+                self.state.update_brightness(state).await;
+                response
             }
             Err(value) => error("brightness-operation-failed", value.to_string()),
         }
@@ -111,8 +114,9 @@ impl ApiService {
         let _guard = self.audio_effects.lock().await;
         match audio::adjust(delta).await {
             Ok(state) => {
-                self.state.update_audio(state.clone()).await;
-                success(json!({"audio": state}))
+                let response = success(json!({"audio": state}));
+                self.state.update_audio(state).await;
+                response
             }
             Err(value) => error("audio-operation-failed", value.to_string()),
         }
@@ -131,8 +135,9 @@ impl ApiService {
         let _guard = self.audio_effects.lock().await;
         match audio::set_muted(muted).await {
             Ok(state) => {
-                self.state.update_audio(state.clone()).await;
-                success(json!({"audio": state}))
+                let response = success(json!({"audio": state}));
+                self.state.update_audio(state).await;
+                response
             }
             Err(value) => error("audio-operation-failed", value.to_string()),
         }
@@ -151,8 +156,9 @@ impl ApiService {
         let _guard = self.audio_effects.lock().await;
         match audio::set_input_muted(muted).await {
             Ok(state) => {
-                self.state.update_audio(state.clone()).await;
-                success(json!({"audio": state}))
+                let response = success(json!({"audio": state}));
+                self.state.update_audio(state).await;
+                response
             }
             Err(value) => error("audio-operation-failed", value.to_string()),
         }

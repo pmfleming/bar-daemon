@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -13,7 +13,10 @@ use chrono::{Local, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::{activity::notifications::service::NotificationSink, state::StateStore};
+use crate::{
+    activity::notifications::service::NotificationSink, state::StateStore,
+    time::unix_ms_i64 as unix_ms,
+};
 
 use super::{
     config::{self, ActivityConfig},
@@ -420,15 +423,6 @@ async fn save_todos(path: &PathBuf, todos: &[TodoItem]) -> Result<()> {
         .await
         .with_context(|| format!("replace {}", path.display()))?;
     Ok(())
-}
-
-fn unix_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

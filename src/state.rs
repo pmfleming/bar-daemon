@@ -32,6 +32,16 @@ impl Default for StateStore {
     }
 }
 
+macro_rules! state_updates {
+    ($($method:ident($state:ty) => $field:ident, $stream:expr;)*) => {
+        $(
+            pub async fn $method(&self, value: $state) {
+                self.update(value, $stream, |snapshot| &mut snapshot.$field).await;
+            }
+        )*
+    };
+}
+
 impl StateStore {
     pub async fn snapshot(&self) -> BarSnapshot {
         self.snapshot.read().await.clone()
@@ -47,130 +57,39 @@ impl StateStore {
         self.events.subscribe()
     }
 
-    pub async fn update_activity(&self, value: ActivityState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.activity == value {
-            return;
-        }
-        snapshot.activity = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::ACTIVITY, value);
+    state_updates! {
+        update_activity(ActivityState) => activity, crate::protocol::stream::ACTIVITY;
+        update_workspaces(WorkspaceState) => workspaces, crate::protocol::stream::WORKSPACES;
+        update_timezone(TimezoneState) => timezone, crate::protocol::stream::TIMEZONE;
+        update_updates(UpdateState) => updates, crate::protocol::stream::UPDATES;
+        update_notification_active(NotificationActiveState) => notification_active, crate::protocol::stream::NOTIFICATION_ACTIVE;
+        update_notifications(NotificationState) => notifications, crate::protocol::stream::NOTIFICATIONS;
+        update_power_profile(PowerProfileState) => power_profile, crate::protocol::stream::POWER_PROFILE;
+        update_power_sleep(PowerSleepState) => power_sleep, crate::protocol::stream::POWER_SLEEP;
+        update_battery(BatteryState) => battery, crate::protocol::stream::BATTERY;
+        update_brightness(BrightnessState) => brightness, crate::protocol::stream::BRIGHTNESS;
+        update_audio(AudioState) => audio, crate::protocol::stream::AUDIO;
+        update_media(MediaState) => media, crate::protocol::stream::MEDIA;
     }
 
-    pub async fn update_workspaces(&self, value: WorkspaceState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.workspaces == value {
-            return;
+    async fn update<T, F>(&self, value: T, stream: &str, field: F)
+    where
+        T: PartialEq + Serialize,
+        F: for<'a> FnOnce(&'a mut BarSnapshot) -> &'a mut T,
+    {
+        let data;
+        {
+            let mut snapshot = self.snapshot.write().await;
+            let current = field(&mut snapshot);
+            if *current == value {
+                return;
+            }
+            data = to_value(&value).unwrap_or(Value::Null);
+            *current = value;
         }
-        snapshot.workspaces = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::WORKSPACES, value);
-    }
-
-    pub async fn update_timezone(&self, value: TimezoneState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.timezone == value {
-            return;
-        }
-        snapshot.timezone = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::TIMEZONE, value);
-    }
-
-    pub async fn update_updates(&self, value: UpdateState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.updates == value {
-            return;
-        }
-        snapshot.updates = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::UPDATES, value);
-    }
-
-    pub async fn update_notification_active(&self, value: NotificationActiveState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.notification_active == value {
-            return;
-        }
-        snapshot.notification_active = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::NOTIFICATION_ACTIVE, value);
-    }
-
-    pub async fn update_notifications(&self, value: NotificationState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.notifications == value {
-            return;
-        }
-        snapshot.notifications = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::NOTIFICATIONS, value);
-    }
-
-    pub async fn update_power_profile(&self, value: PowerProfileState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.power_profile == value {
-            return;
-        }
-        snapshot.power_profile = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::POWER_PROFILE, value);
-    }
-
-    pub async fn update_power_sleep(&self, value: PowerSleepState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.power_sleep == value {
-            return;
-        }
-        snapshot.power_sleep = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::POWER_SLEEP, value);
-    }
-
-    pub async fn update_battery(&self, value: BatteryState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.battery == value {
-            return;
-        }
-        snapshot.battery = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::BATTERY, value);
-    }
-
-    pub async fn update_brightness(&self, value: BrightnessState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.brightness == value {
-            return;
-        }
-        snapshot.brightness = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::BRIGHTNESS, value);
-    }
-
-    pub async fn update_audio(&self, value: AudioState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.audio == value {
-            return;
-        }
-        snapshot.audio = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::AUDIO, value);
-    }
-
-    pub async fn update_media(&self, value: MediaState) {
-        let mut snapshot = self.snapshot.write().await;
-        if snapshot.media == value {
-            return;
-        }
-        snapshot.media = value.clone();
-        drop(snapshot);
-        self.emit(crate::protocol::stream::MEDIA, value);
-    }
-
-    fn emit(&self, stream: &str, value: impl Serialize) {
         let _ = self.events.send(DomainEvent {
             stream: stream.to_string(),
-            data: to_value(value).unwrap_or(Value::Null),
+            data,
         });
     }
 }

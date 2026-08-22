@@ -13,7 +13,6 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
 futures = "0.3"
-libc = "0.2"
 notify = "8"
 pipewire = { version = "0.10", features = ["v1_2_0"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

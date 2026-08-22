@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, Notify, Semaphore, broadcast};
 use crate::{
     model::{NotificationActiveState, NotificationState},
     state::StateStore,
+    time::unix_ms,
 };
 
 use super::{
@@ -388,15 +389,6 @@ impl NotificationEngine {
         self.state.update_notifications(summary).await;
         self.state.update_notification_active(active).await;
     }
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -277,15 +277,6 @@ async fn save_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     tokio::fs::rename(&temporary, path)
         .await
         .with_context(|| format!("replace {}", path.display()))
-}
-
-pub(crate) fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn config_home() -> PathBuf {

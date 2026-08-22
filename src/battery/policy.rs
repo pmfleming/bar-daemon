@@ -28,44 +28,63 @@ impl AlertTracker {
             self.initialized = true;
             return None;
         }
-        let charge_complete_percent = if state.protection.charge_once_active {
-            100
-        } else if state.protection.enabled {
-            state.protection.end_percent.unwrap_or(100)
-        } else {
-            100
-        };
+        let complete_at = charge_complete_percent(state);
         if !self.initialized {
-            self.initialized = true;
-            self.warning_sent = state.warning;
-            self.critical_sent = state.critical;
-            self.full_sent = state.plugged && state.percentage >= charge_complete_percent;
+            self.initialize(state, complete_at);
             return None;
         }
         if state.plugged {
-            self.warning_sent = false;
-            self.critical_sent = false;
-            if state.percentage < charge_complete_percent {
-                self.full_sent = false;
-            }
-            if state.percentage >= charge_complete_percent && !self.full_sent {
-                self.full_sent = true;
-                return notify_when_full
-                    .then_some(BatteryAlert::ChargeComplete(charge_complete_percent));
-            }
+            self.observe_charging(state.percentage, complete_at, notify_when_full)
+        } else {
+            self.observe_discharging(state)
+        }
+    }
+
+    fn initialize(&mut self, state: &BatteryState, complete_at: u8) {
+        self.initialized = true;
+        self.warning_sent = state.warning;
+        self.critical_sent = state.critical;
+        self.full_sent = state.plugged && state.percentage >= complete_at;
+    }
+
+    fn observe_charging(
+        &mut self,
+        percentage: u8,
+        complete_at: u8,
+        notify_when_full: bool,
+    ) -> Option<BatteryAlert> {
+        self.warning_sent = false;
+        self.critical_sent = false;
+        if percentage < complete_at {
+            self.full_sent = false;
             return None;
         }
+        if std::mem::replace(&mut self.full_sent, true) {
+            return None;
+        }
+        notify_when_full.then_some(BatteryAlert::ChargeComplete(complete_at))
+    }
+
+    fn observe_discharging(&mut self, state: &BatteryState) -> Option<BatteryAlert> {
         self.full_sent = false;
-        if state.critical && !self.critical_sent {
-            self.critical_sent = true;
+        if state.critical && !std::mem::replace(&mut self.critical_sent, true) {
             self.warning_sent = true;
             return Some(BatteryAlert::Critical);
         }
-        if state.warning && !self.warning_sent {
-            self.warning_sent = true;
+        if state.warning && !std::mem::replace(&mut self.warning_sent, true) {
             return Some(BatteryAlert::Warning);
         }
         None
+    }
+}
+
+fn charge_complete_percent(state: &BatteryState) -> u8 {
+    if state.protection.charge_once_active {
+        100
+    } else if state.protection.enabled {
+        state.protection.end_percent.unwrap_or(100)
+    } else {
+        100
     }
 }
 

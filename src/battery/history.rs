@@ -3,12 +3,14 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{BatteryHistoryPoint, BatteryHistoryState, BatteryState};
+use crate::{
+    model::{BatteryHistoryPoint, BatteryHistoryState, BatteryState},
+    time::unix_ms as now_milliseconds,
+};
 
 const FILE_VERSION: u8 = 1;
 const RETENTION_DAYS: u8 = 7;
@@ -88,9 +90,11 @@ impl HistoryStore {
             retention_days: RETENTION_DAYS,
             last_charge_timestamp_ms: self.last_charge_timestamp_ms,
             latest_timestamp_ms: self.points.back().map_or(0, |point| point.timestamp_ms),
-            points: include_points
-                .then(|| self.points.iter().cloned().collect())
-                .unwrap_or_default(),
+            points: if include_points {
+                self.points.iter().cloned().collect()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -158,15 +162,6 @@ fn finite_nonnegative(value: f64) -> f64 {
     } else {
         0.0
     }
-}
-
-fn now_milliseconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn history_path() -> Option<PathBuf> {

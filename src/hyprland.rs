@@ -1,5 +1,6 @@
 use std::{
     env,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -85,7 +86,10 @@ impl HyprlandClient {
     pub fn from_environment() -> Self {
         let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+            .unwrap_or_else(|| {
+                let uid = std::fs::metadata("/proc/self").map_or(0, |process| process.uid());
+                PathBuf::from(format!("/run/user/{uid}"))
+            });
         Self {
             runtime_dir,
             signature: env::var("HYPRLAND_INSTANCE_SIGNATURE")
@@ -248,31 +252,30 @@ pub async fn monitor(store: StateStore) {
     let client = HyprlandClient::default();
     loop {
         match client.event_socket().await {
-            Ok(stream) => {
-                // Attach first so compositor changes made during the snapshot are queued.
-                let mut lines = BufReader::new(stream).lines();
-                refresh(&client, &store).await;
-                loop {
-                    match lines.next_line().await {
-                        Ok(Some(event)) => {
-                            if refresh_event(&event) {
-                                refresh(&client, &store).await;
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(error) => {
-                            tracing::warn!(%error, "Hyprland event stream failed");
-                            break;
-                        }
-                    }
-                }
-            }
+            Ok(stream) => monitor_events(&client, &store, stream).await,
             Err(error) => {
                 tracing::debug!(%error, "Hyprland event socket unavailable");
                 refresh(&client, &store).await;
             }
         }
         sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn monitor_events(client: &HyprlandClient, store: &StateStore, stream: UnixStream) {
+    // Attach first so compositor changes made during the snapshot are queued.
+    let mut lines = BufReader::new(stream).lines();
+    refresh(client, store).await;
+    loop {
+        match lines.next_line().await {
+            Ok(Some(event)) if refresh_event(&event) => refresh(client, store).await,
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "Hyprland event stream failed");
+                return;
+            }
+        }
     }
 }
 

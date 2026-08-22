@@ -14,5 +14,6 @@ pub mod power;
 pub mod protocol;
 pub mod sleep;
 pub mod state;
+pub(crate) mod time;
 pub mod timezone;
 pub mod updates;

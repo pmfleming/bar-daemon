@@ -38,14 +38,16 @@ impl NativeMonitor {
 
 fn spawn_udev_monitor() -> mpsc::Receiver<()> {
     let (sender, receiver) = mpsc::channel(8);
-    std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("bar-battery-udev".into())
         .spawn(move || {
             if let Err(error) = run_udev_monitor(sender) {
                 tracing::warn!(%error, "power-supply udev monitor stopped; polling remains active");
             }
         })
-        .expect("spawn power-supply udev monitor");
+    {
+        tracing::warn!(%error, "power-supply udev thread unavailable; polling remains active");
+    }
     receiver
 }
 

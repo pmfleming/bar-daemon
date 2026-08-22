@@ -39,7 +39,21 @@ pub async fn monitor(store: StateStore) {
     );
     refresh(&store, &root).await;
     let (tx, mut rx) = mpsc::channel(8);
-    let mut watcher = PollWatcher::new(
+    let mut watcher = backlight_watcher(tx);
+    if let Some(watcher) = watcher.as_mut() {
+        watch_device_files(watcher, &root);
+    }
+    loop {
+        refresh(&store, &root).await;
+        tokio::select! {
+            value = rx.recv() => if value.is_none() { sleep(Duration::from_secs(2)).await; },
+            _ = sleep(Duration::from_secs(30)) => {}
+        }
+    }
+}
+
+fn backlight_watcher(tx: mpsc::Sender<()>) -> Option<PollWatcher> {
+    PollWatcher::new(
         move |result: notify::Result<notify::Event>| {
             if result.is_ok() {
                 let _ = tx.try_send(());
@@ -49,22 +63,17 @@ pub async fn monitor(store: StateStore) {
             .with_poll_interval(Duration::from_secs(2))
             .with_compare_contents(true),
     )
-    .ok();
-    if let (Some(watcher), Ok(device)) = (watcher.as_mut(), discover(&root)) {
-        for file in ["actual_brightness", "brightness", "max_brightness"] {
-            let path = device.path.join(file);
-            if path.exists() {
-                if let Err(error) = watcher.watch(&path, RecursiveMode::NonRecursive) {
-                    tracing::debug!(%error, path = %path.display(), "backlight file watcher unavailable");
-                }
-            }
-        }
-    }
-    loop {
-        refresh(&store, &root).await;
-        tokio::select! {
-            value = rx.recv() => if value.is_none() { sleep(Duration::from_secs(2)).await; },
-            _ = sleep(Duration::from_secs(30)) => {}
+    .ok()
+}
+
+fn watch_device_files(watcher: &mut PollWatcher, root: &Path) {
+    let Ok(device) = discover(root) else { return };
+    for file in ["actual_brightness", "brightness", "max_brightness"] {
+        let path = device.path.join(file);
+        if path.exists()
+            && let Err(error) = watcher.watch(&path, RecursiveMode::NonRecursive)
+        {
+            tracing::debug!(%error, path = %path.display(), "backlight file watcher unavailable");
         }
     }
 }

@@ -250,7 +250,6 @@ dependencies = [
  "chrono-tz",
  "clap",
  "futures",
- "libc",
  "notify",
  "pipewire",
  "rusqlite",

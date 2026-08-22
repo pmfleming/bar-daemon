@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
@@ -11,6 +8,7 @@ use zvariant::OwnedValue;
 use crate::{
     model::{MediaPlayer, MediaState},
     state::StateStore,
+    time::unix_ms as unix_time_ms,
 };
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -238,15 +236,6 @@ fn property_i64(values: &HashMap<String, OwnedValue>, key: &str) -> Option<i64> 
                 .and_then(|value| u64::try_from(value).ok())
                 .and_then(|value| i64::try_from(value).ok())
         })
-}
-
-fn unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn property_strings(values: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {

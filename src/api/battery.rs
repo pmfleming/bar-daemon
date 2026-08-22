@@ -148,7 +148,7 @@ impl ApiService {
             );
         }
         let runtime = config::BatteryRuntimeState::start_charge_once(
-            config::unix_ms(),
+            crate::time::unix_ms(),
             battery_id.clone(),
             restore_start,
             restore_end,
@@ -210,43 +210,15 @@ impl ApiService {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if enabled {
-            if previous.charge_once_active || !previous.operation.is_empty() {
-                return error(
-                    "battery-operation-active",
-                    "another durable battery operation is already active",
-                );
-            }
-            let next =
-                config::BatteryRuntimeState::start_inhibit(config::unix_ms(), battery_id.clone());
-            if let Err(error_value) = config::save_runtime(&next).await {
-                return error("battery-state-failed", error_value.to_string());
-            }
-            if let Err(error_value) =
-                battery::helper::set_charge_behaviour(&battery_id, "inhibit-charge").await
-            {
-                let _ = config::save_runtime(&previous).await;
-                return error("battery-operation-failed", error_value.to_string());
-            }
+        let result = if enabled {
+            start_charging_inhibition(&battery_id, &previous).await
         } else {
-            if previous.operation != "inhibit" || previous.operation_battery_id != battery_id {
-                return error(
-                    "battery-operation-inactive",
-                    format!("charging is not durably inhibited for {battery_id}"),
-                );
-            }
-            if let Err(error_value) =
-                battery::helper::set_charge_behaviour(&battery_id, "auto").await
-            {
-                return error("battery-operation-failed", error_value.to_string());
-            }
-            let mut next = previous;
-            next.clear_operation();
-            if let Err(error_value) = config::save_runtime(&next).await {
-                return error("battery-state-failed", error_value.to_string());
-            }
+            stop_charging_inhibition(&battery_id, previous).await
+        };
+        match result {
+            Ok(()) => self.battery_refresh_response().await,
+            Err(response) => response,
         }
-        self.battery_refresh_response().await
     }
 
     pub(super) async fn battery_start_calibration(&self, params: Value) -> Value {
@@ -303,7 +275,7 @@ impl ApiService {
             );
         }
         let next = config::BatteryRuntimeState::start_calibration(
-            config::unix_ms(),
+            crate::time::unix_ms(),
             battery_id.clone(),
             restore_start,
             restore_end,
@@ -481,6 +453,47 @@ impl ApiService {
             Err(error_value) => error("battery-refresh-failed", error_value.to_string()),
         }
     }
+}
+
+async fn start_charging_inhibition(
+    battery_id: &str,
+    previous: &config::BatteryRuntimeState,
+) -> Result<(), Value> {
+    if previous.charge_once_active || !previous.operation.is_empty() {
+        return Err(error(
+            "battery-operation-active",
+            "another durable battery operation is already active",
+        ));
+    }
+    let next =
+        config::BatteryRuntimeState::start_inhibit(crate::time::unix_ms(), battery_id.to_string());
+    config::save_runtime(&next)
+        .await
+        .map_err(|value| error("battery-state-failed", value.to_string()))?;
+    if let Err(value) = battery::helper::set_charge_behaviour(battery_id, "inhibit-charge").await {
+        let _ = config::save_runtime(previous).await;
+        return Err(error("battery-operation-failed", value.to_string()));
+    }
+    Ok(())
+}
+
+async fn stop_charging_inhibition(
+    battery_id: &str,
+    mut runtime: config::BatteryRuntimeState,
+) -> Result<(), Value> {
+    if runtime.operation != "inhibit" || runtime.operation_battery_id != battery_id {
+        return Err(error(
+            "battery-operation-inactive",
+            format!("charging is not durably inhibited for {battery_id}"),
+        ));
+    }
+    battery::helper::set_charge_behaviour(battery_id, "auto")
+        .await
+        .map_err(|value| error("battery-operation-failed", value.to_string()))?;
+    runtime.clear_operation();
+    config::save_runtime(&runtime)
+        .await
+        .map_err(|value| error("battery-state-failed", value.to_string()))
 }
 
 fn percent(params: &Value, name: &str) -> Option<u8> {
