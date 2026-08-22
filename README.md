@@ -55,5 +55,6 @@ nix develop
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml
 nix flake check
 ```

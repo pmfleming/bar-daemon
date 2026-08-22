@@ -77,8 +77,25 @@
 
       devShells = forAllSystems (system: pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ brightnessctl cargo clippy jq llvmPackages.libclang pkg-config pipewire rust-analyzer rustc rustfmt systemd ];
+          packages = with pkgs; [
+            brightnessctl
+            cargo
+            cargo-llvm-cov
+            clippy
+            jq
+            llvmPackages.libclang
+            llvmPackages.llvm
+            pkg-config
+            pipewire
+            python3Packages.diff-cover
+            rust-analyzer
+            rustc
+            rustfmt
+            systemd
+          ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
+          LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
           BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
           RUST_BACKTRACE = "1";
           RUST_LOG = "bar_daemon=debug";
