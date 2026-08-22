@@ -84,9 +84,7 @@ impl NotificationEngine {
             policy: NotificationPolicy::default(),
             persistence,
         });
-        if dnd_expired
-            && let Some(persistence) = &engine.persistence
-        {
+        if dnd_expired && let Some(persistence) = &engine.persistence {
             persistence.set_dnd(false, None);
         }
         engine.publish_summary().await;

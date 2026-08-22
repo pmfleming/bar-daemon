@@ -14,6 +14,7 @@ pub(crate) struct BarSnapshot {
     pub battery: BatteryState,
     pub power_profile: PowerProfileState,
     pub power_sleep: PowerSleepState,
+    pub osd_hardware: OsdHardwareState,
     pub notifications: NotificationState,
     pub notification_active: NotificationActiveState,
     pub updates: UpdateState,
@@ -28,6 +29,17 @@ pub(crate) struct PowerSleepState {
     pub preparing_for_sleep: bool,
     pub lock_before_sleep: bool,
     pub inhibitors: Vec<SleepInhibitor>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct OsdHardwareState {
+    pub available: bool,
+    pub caps_lock: bool,
+    pub num_lock: bool,
+    pub keyboard_backlight_percent: Option<u8>,
+    pub microphone_privacy: bool,
+    pub camera_privacy: bool,
     pub error: Option<String>,
 }
 

@@ -23,6 +23,8 @@ pub mod stream {
     pub const POWER_PROFILE: &str = "power-profile.changed";
     /// Sleep capability or inhibitor state changed.
     pub const POWER_SLEEP: &str = "power-sleep.changed";
+    /// Keyboard LED, keyboard backlight, or privacy hardware state changed.
+    pub const OSD_HARDWARE: &str = "osd-hardware.changed";
     /// Notification summary changed.
     pub const NOTIFICATIONS: &str = "notifications.changed";
     /// Active notification collection changed.
@@ -84,6 +86,7 @@ pub const STREAMS: &[&str] = &[
     stream::BATTERY,
     stream::POWER_PROFILE,
     stream::POWER_SLEEP,
+    stream::OSD_HARDWARE,
     stream::NOTIFICATIONS,
     stream::NOTIFICATION_ACTIVE,
     stream::UPDATES,
@@ -144,6 +147,7 @@ pub fn registry() -> Value {
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_SLEEP, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::OSD_HARDWARE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATION_ACTIVE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] },
@@ -262,6 +266,11 @@ fn generated_contract_fixture() -> Value {
                 "preparing_for_sleep": false, "lock_before_sleep": true,
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null
+            },
+            "osd_hardware": {
+                "available": true, "caps_lock": false, "num_lock": true,
+                "keyboard_backlight_percent": 50, "microphone_privacy": false,
+                "camera_privacy": true, "error": null
             },
             "notifications": {
                 "available": true, "count": 1, "dnd": true, "inhibited": false, "text": "1",

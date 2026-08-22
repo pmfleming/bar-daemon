@@ -74,12 +74,16 @@ Run `bar-daemon debug protocol-registry` for canonical parameter examples. `medi
 - `brightness.changed`
 - `battery.changed`
 - `power-profile.changed`
+- `power-sleep.changed`
+- `osd-hardware.changed`
 - `notifications.changed`
 - `notifications.active.changed`
 - `updates.changed`
 - `timezone.changed`
 
 `activity.changed` is a compact summary containing source health, counts, next event, and world-clock metadata. Clients query event/todo collections with `activity.queryRange`; large collections are intentionally excluded from `BarSnapshot`.
+
+`power-sleep.changed` includes systemd-logind capabilities and current inhibitors. `osd-hardware.changed` publishes native LED-class state for Caps Lock, Num Lock, keyboard backlight, and microphone/camera privacy indicators; presentation and timeout policy remain owned by Shelllist.
 
 In native mode, `notifications.changed` carries compact count, DND (including an optional expiry), backend, and history-revision state. `notifications.active.changed` carries the complete bounded unsnoozed notification collection so clients can recover after lag. Active records include a stable group key and the focused source monitor captured at ingress. History is paginated with `notifications.list` using an optional `before_history_id` cursor and a maximum limit of 200. `notifications.clearGroup` dismisses one application/group stack, while `notifications.snooze` suppresses a record until its requested wake time.
 

@@ -342,6 +342,14 @@
           "changed",
           "lagged"
         ],
+        "name": "osd-hardware.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
         "name": "notifications.changed"
       },
       {
@@ -609,6 +617,15 @@
       "inhibited": false,
       "text": "1",
       "tooltip": "1 Notification"
+    },
+    "osd_hardware": {
+      "available": true,
+      "camera_privacy": true,
+      "caps_lock": false,
+      "error": null,
+      "keyboard_backlight_percent": 50,
+      "microphone_privacy": false,
+      "num_lock": true
     },
     "power_profile": {
       "actions": [
