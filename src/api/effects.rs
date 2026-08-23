@@ -123,20 +123,20 @@ impl DesktopEffects {
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "brightness.adjust");
-        let _guard = self.brightness.lock().await;
-        match brightness::adjust(request.delta_percent).await {
-            Ok(state) => {
-                let response = success(json!({"brightness": state}));
-                self.state.update_brightness(state).await;
-                response
-            }
-            Err(value) => error("brightness-operation-failed", value.to_string()),
-        }
+        self.apply_brightness(brightness::adjust(request.delta_percent))
+            .await
     }
     pub(super) async fn brightness_set(&self, params: Value) -> Value {
         let request = request!(params, PercentRequest, "brightness.set");
+        self.apply_brightness(brightness::set(request.percent))
+            .await
+    }
+    async fn apply_brightness(
+        &self,
+        operation: impl std::future::Future<Output = anyhow::Result<crate::model::BrightnessState>>,
+    ) -> Value {
         let _guard = self.brightness.lock().await;
-        match brightness::set(request.percent).await {
+        match operation.await {
             Ok(state) => {
                 let response = success(json!({"brightness": state}));
                 self.state.update_brightness(state).await;
@@ -147,32 +147,23 @@ impl DesktopEffects {
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "audio.adjust");
-        let _guard = self.audio.lock().await;
-        match audio::adjust(request.delta_percent).await {
-            Ok(state) => {
-                let response = success(json!({"audio": state}));
-                self.state.update_audio(state).await;
-                response
-            }
-            Err(value) => error("audio-operation-failed", value.to_string()),
-        }
+        self.apply_audio(audio::adjust(request.delta_percent)).await
     }
     pub(super) async fn audio_set_muted(&self, params: Value) -> Value {
         let request = request!(params, MuteRequest, "audio.setMuted");
-        let _guard = self.audio.lock().await;
-        match audio::set_muted(request.muted).await {
-            Ok(state) => {
-                let response = success(json!({"audio": state}));
-                self.state.update_audio(state).await;
-                response
-            }
-            Err(value) => error("audio-operation-failed", value.to_string()),
-        }
+        self.apply_audio(audio::set_muted(request.muted)).await
     }
     pub(super) async fn audio_set_input_muted(&self, params: Value) -> Value {
         let request = request!(params, MuteRequest, "audio.setInputMuted");
+        self.apply_audio(audio::set_input_muted(request.muted))
+            .await
+    }
+    async fn apply_audio(
+        &self,
+        operation: impl std::future::Future<Output = anyhow::Result<crate::model::AudioState>>,
+    ) -> Value {
         let _guard = self.audio.lock().await;
-        match audio::set_input_muted(request.muted).await {
+        match operation.await {
             Ok(state) => {
                 let response = success(json!({"audio": state}));
                 self.state.update_audio(state).await;

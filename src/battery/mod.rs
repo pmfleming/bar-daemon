@@ -250,79 +250,117 @@ async fn reconcile_thresholds(
         .map(|device| device.id.clone())
         .collect::<Vec<_>>();
     for battery_id in battery_ids {
-        let device_policy = config.device(&battery_id);
-        let target =
-            reconciliation_target(&device_policy, runtime, finish_charge_once, &battery_id);
-        let Some(device) = state.devices.iter().find(|device| device.id == battery_id) else {
+        let Some(intent) =
+            threshold_intent(state, config, runtime, finish_charge_once, &battery_id)
+        else {
             continue;
         };
-        let observed = (
-            device.protection.start_percent,
-            device.protection.end_percent,
-        );
-        let accepted = device_policy
-            .accepted_reported_start_percent
-            .zip(device_policy.accepted_reported_end_percent);
-        let charge_once_target = runtime.charge_once_active
-            && (runtime.charge_once_battery_id.is_empty()
-                || runtime.charge_once_battery_id == battery_id);
-        let temporary_target = (runtime.operation == config::OperationKind::Calibration
-            && runtime.operation_battery_id == battery_id)
-            || (charge_once_target && !finish_charge_once);
-        let restoration_target = charge_once_target && finish_charge_once;
-        let policy_target = !temporary_target && !restoration_target;
-        let already_applied = target.is_some_and(|target| {
-            target_is_applied(observed, target, accepted, temporary_target, policy_target)
-        });
-        let can_control = device.protection.supports_start && device.protection.supports_end;
-        let applied = match target {
-            Some(target) if can_control && !already_applied => {
-                match helper::set_thresholds(&battery_id, target.0, target.1).await {
-                    Ok(result) => {
-                        update_observed_thresholds(
-                            state,
-                            &battery_id,
-                            result.actual_start_percent,
-                            result.actual_end_percent,
-                        );
-                        if restoration_target && !result.verified {
-                            append_error(
-                                policy_error,
-                                format!(
-                                    "battery {battery_id} reported thresholds {}–{} after restoring {}–{}",
-                                    result.actual_start_percent,
-                                    result.actual_end_percent,
-                                    target.0,
-                                    target.1
-                                ),
-                            );
-                            false
-                        } else {
-                            if policy_target {
-                                let policy = config.device_mut(&battery_id);
-                                policy.accepted_reported_start_percent =
-                                    Some(result.actual_start_percent);
-                                policy.accepted_reported_end_percent =
-                                    Some(result.actual_end_percent);
-                                config_changed = true;
-                            }
-                            true
-                        }
-                    }
-                    Err(error) => {
-                        append_error(policy_error, error.to_string());
-                        false
-                    }
-                }
-            }
-            Some(_) => already_applied,
-            None => false,
-        };
-        if runtime.charge_once_active && battery_id == runtime.charge_once_battery_id {
+        let charge_once_battery =
+            runtime.charge_once_active && battery_id == runtime.charge_once_battery_id;
+        let (applied, changed) =
+            apply_threshold(state, config, &battery_id, intent, policy_error).await;
+        config_changed |= changed;
+        if charge_once_battery {
             restored = applied;
         }
     }
     (restored, config_changed)
+}
+
+struct ThresholdIntent {
+    target: Option<(u8, u8)>,
+    observed: (Option<u8>, Option<u8>),
+    accepted: Option<(u8, u8)>,
+    temporary: bool,
+    restoration: bool,
+    policy: bool,
+    can_control: bool,
+}
+
+fn threshold_intent(
+    state: &BatteryState,
+    config: &config::BatteryConfig,
+    runtime: &config::BatteryRuntimeState,
+    finish_charge_once: bool,
+    battery_id: &str,
+) -> Option<ThresholdIntent> {
+    let device = state
+        .devices
+        .iter()
+        .find(|device| device.id == battery_id)?;
+    let device_policy = config.device(battery_id);
+    let charge_once = runtime.charge_once_active
+        && (runtime.charge_once_battery_id.is_empty()
+            || runtime.charge_once_battery_id == battery_id);
+    let temporary = (runtime.operation == config::OperationKind::Calibration
+        && runtime.operation_battery_id == battery_id)
+        || (charge_once && !finish_charge_once);
+    let restoration = charge_once && finish_charge_once;
+    Some(ThresholdIntent {
+        target: reconciliation_target(&device_policy, runtime, finish_charge_once, battery_id),
+        observed: (
+            device.protection.start_percent,
+            device.protection.end_percent,
+        ),
+        accepted: device_policy
+            .accepted_reported_start_percent
+            .zip(device_policy.accepted_reported_end_percent),
+        temporary,
+        restoration,
+        policy: !temporary && !restoration,
+        can_control: device.protection.supports_start && device.protection.supports_end,
+    })
+}
+
+async fn apply_threshold(
+    state: &mut BatteryState,
+    config: &mut config::BatteryConfig,
+    battery_id: &str,
+    intent: ThresholdIntent,
+    policy_error: &mut Option<String>,
+) -> (bool, bool) {
+    let Some(target) = intent.target else {
+        return (false, false);
+    };
+    let already_applied = target_is_applied(
+        intent.observed,
+        target,
+        intent.accepted,
+        intent.temporary,
+        intent.policy,
+    );
+    if already_applied || !intent.can_control {
+        return (already_applied, false);
+    }
+    let result = match helper::set_thresholds(battery_id, target.0, target.1).await {
+        Ok(result) => result,
+        Err(error) => {
+            append_error(policy_error, error.to_string());
+            return (false, false);
+        }
+    };
+    update_observed_thresholds(
+        state,
+        battery_id,
+        result.actual_start_percent,
+        result.actual_end_percent,
+    );
+    if intent.restoration && !result.verified {
+        append_error(
+            policy_error,
+            format!(
+                "battery {battery_id} reported thresholds {}–{} after restoring {}–{}",
+                result.actual_start_percent, result.actual_end_percent, target.0, target.1
+            ),
+        );
+        return (false, false);
+    }
+    if intent.policy {
+        let policy = config.device_mut(battery_id);
+        policy.accepted_reported_start_percent = Some(result.actual_start_percent);
+        policy.accepted_reported_end_percent = Some(result.actual_end_percent);
+    }
+    (true, intent.policy)
 }
 
 fn target_is_applied(
