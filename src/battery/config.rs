@@ -385,6 +385,23 @@ mod tests {
         );
         assert!(
             BatteryConfig {
+                warning_percent: 100,
+                critical_percent: 100,
+                ..BatteryConfig::default()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            BatteryConfig {
+                warning_percent: 101,
+                ..BatteryConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            BatteryConfig {
                 protected_start_percent: 80,
                 protected_end_percent: 80,
                 ..BatteryConfig::default()
@@ -395,9 +412,16 @@ mod tests {
     }
 
     #[test]
+    fn operation_lifetimes_match_policy() {
+        assert_eq!(CHARGE_ONCE_MAX_AGE.as_secs(), 86_400);
+        assert_eq!(CALIBRATION_MAX_AGE.as_secs(), 172_800);
+    }
+
+    #[test]
     fn charge_once_has_a_bounded_lifetime() {
         let runtime = BatteryRuntimeState::start_charge_once(1_000, "BAT0".into(), 75, 80);
         let expires = 1_000 + CHARGE_ONCE_MAX_AGE.as_millis() as u64;
+        assert_eq!(runtime.charge_once_started_unix_ms, 1_000);
         assert_eq!(runtime.charge_once_expires_unix_ms, expires);
         assert!(!runtime.is_expired(expires - 1));
         assert!(runtime.is_expired(expires));
@@ -407,11 +431,21 @@ mod tests {
     }
 
     #[test]
+    fn inhibit_preserves_its_operation_context() {
+        let state = BatteryRuntimeState::start_inhibit(1_000, "BAT1".into());
+        assert_eq!(state.operation, OperationKind::Inhibit);
+        assert_eq!(state.operation_phase, OperationPhase::Paused);
+        assert_eq!(state.operation_battery_id, "BAT1");
+        assert_eq!(state.operation_started_unix_ms, 1_000);
+    }
+
+    #[test]
     fn calibration_has_a_bounded_lifetime_and_restore_range() {
         let state = BatteryRuntimeState::start_calibration(1_000, "BAT1".into(), 70, 85);
         assert_eq!(state.operation, OperationKind::Calibration);
         assert_eq!(state.operation_phase, OperationPhase::Discharging);
         assert_eq!(state.operation_battery_id, "BAT1");
+        assert_eq!(state.operation_started_unix_ms, 1_000);
         assert_eq!(state.operation_restore_start_percent, Some(70));
         assert_eq!(state.operation_restore_end_percent, Some(85));
         assert_eq!(
@@ -460,7 +494,10 @@ mod tests {
             protected_end_percent: 85,
             ..BatteryConfig::default()
         };
-        assert_eq!(config.device("BAT0").protected_start_percent, 70);
+        let inherited = config.device("BAT0");
+        assert!(inherited.manage_thresholds);
+        assert!(inherited.protection_enabled);
+        assert_eq!(inherited.protected_start_percent, 70);
         config.device_mut("BAT1").protected_end_percent = 90;
         assert_eq!(config.device("BAT1").protected_end_percent, 90);
         assert_eq!(config.device("BAT0").protected_end_percent, 85);

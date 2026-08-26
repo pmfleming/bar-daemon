@@ -12,8 +12,8 @@ jobs:
   battery-policy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v17
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
       - name: Test battery policy mutations
         run: |
           nix develop --command cargo mutants \
@@ -21,7 +21,7 @@ jobs:
             --file src/battery/history.rs \
             --file src/battery/policy.rs \
             --timeout 120 --jobs 2 --cargo-arg=--locked
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mutation-report
