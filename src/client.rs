@@ -1,196 +1,26 @@
-use std::sync::Arc;
-
-use anyhow::{Context, Result};
-use futures::StreamExt;
-use serde_json::{Value, json};
-use shelllist_daemon_core::ClientRequest as Request;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::Mutex,
-};
+use anyhow::Result;
+use serde_json::Value;
+use shelllist_daemon_core::DaemonEndpoint;
+use shelllist_daemon_tokio::{BasicCorrelation, CancelMode, JsonlClientConfig, run_jsonl_client};
 
 use crate::api::{self, BUS_NAME, INTERFACE, OBJECT_PATH};
 
-type Output = Arc<Mutex<tokio::io::Stdout>>;
+const ENDPOINT: DaemonEndpoint =
+    DaemonEndpoint::new("bar-daemon", BUS_NAME, OBJECT_PATH, INTERFACE);
+
+fn call_failure(_method: &str, _error: &anyhow::Error) -> Value {
+    api::error(
+        "daemon-unavailable",
+        "bar-daemon session service is unavailable",
+    )
+}
 
 pub(crate) async fn run() -> Result<()> {
-    let connection = zbus::Connection::session().await.ok();
-    let output = Arc::new(Mutex::new(tokio::io::stdout()));
-    if let Some(connection) = connection.as_ref().cloned() {
-        spawn_events(connection.clone(), Arc::clone(&output));
-        spawn_owner_watcher(connection, Arc::clone(&output));
-    }
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await.context("read client request")? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => request,
-            Err(error) => {
-                emit(
-                    &output,
-                    &json!({"kind":"protocol-error","error":error.to_string()}),
-                )
-                .await?;
-                continue;
-            }
-        };
-        if handle(request, &connection, &output).await? {
-            break;
-        }
-    }
-    Ok(())
-}
-
-async fn handle(
-    request: Request,
-    connection: &Option<zbus::Connection>,
-    output: &Output,
-) -> Result<bool> {
-    match request {
-        Request::Call { id, method, params } => {
-            spawn_call(connection.clone(), Arc::clone(output), id, method, params)
-        }
-        Request::Subscribe { id, streams } => {
-            let result = transport_call(connection, "Subscribe", &(streams,)).await;
-            emit_transport(output, &id, result).await?;
-        }
-        Request::Cancel { id, request_id } => {
-            let result = transport_call(connection, "Cancel", &(request_id.as_str(),)).await;
-            emit_transport(output, &id, result).await?;
-        }
-        Request::Shutdown { id } => {
-            emit(
-                output,
-                &json!({"kind":"response","id":id,"ok":true,"response":{"shutdown":true}}),
-            )
-            .await?;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn spawn_call(
-    connection: Option<zbus::Connection>,
-    output: Output,
-    id: String,
-    method: String,
-    params: Value,
-) {
-    tokio::spawn(async move {
-        let response = call(&connection, &method, params)
-            .await
-            .unwrap_or_else(|_| {
-                api::error(
-                    "daemon-unavailable",
-                    "bar-daemon session service is unavailable",
-                )
-            });
-        let _ = emit(
-            &output,
-            &json!({"kind":"response","id":id,"ok":true,"response":response}),
-        )
-        .await;
-    });
-}
-
-async fn proxy(connection: &Option<zbus::Connection>) -> Result<zbus::Proxy<'_>> {
-    let connection = connection.as_ref().context("session D-Bus unavailable")?;
-    zbus::Proxy::new(connection, BUS_NAME, OBJECT_PATH, INTERFACE)
-        .await
-        .context("create bar-daemon proxy")
-}
-
-async fn call(connection: &Option<zbus::Connection>, method: &str, params: Value) -> Result<Value> {
-    let proxy = proxy(connection).await?;
-    let response: String = proxy
-        .call("Call", &(method, params.to_string().as_str()))
-        .await?;
-    serde_json::from_str(&response).context("decode daemon response")
-}
-
-async fn transport_call<B>(
-    connection: &Option<zbus::Connection>,
-    method: &str,
-    body: &B,
-) -> Result<Value>
-where
-    B: serde::ser::Serialize + zvariant::DynamicType + Sync,
-{
-    let proxy = proxy(connection).await?;
-    let response: String = proxy.call(method, body).await?;
-    serde_json::from_str(&response).context("decode transport response")
-}
-
-fn spawn_events(connection: zbus::Connection, output: Output) {
-    let task_output = Arc::clone(&output);
-    spawn_transport_task(output, async move {
-        let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE).await?;
-        let mut signals = proxy.receive_signal("Event").await?;
-        while let Some(message) = signals.next().await {
-            let (stream, event_json) = message.body().deserialize::<(String, String)>()?;
-            let event = serde_json::from_str::<Value>(&event_json)
-                .unwrap_or_else(|_| json!({"raw":event_json}));
-            emit(
-                &task_output,
-                &json!({"kind":"event","stream":stream,"event":event}),
-            )
-            .await?;
-        }
-        anyhow::bail!("bar-daemon event stream ended")
-    });
-}
-
-fn spawn_owner_watcher(connection: zbus::Connection, output: Output) {
-    spawn_transport_task(output, async move {
-        let proxy = zbus::Proxy::new(
-            &connection,
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-        )
-        .await?;
-        let mut changes = proxy.receive_signal("NameOwnerChanged").await?;
-        while let Some(message) = changes.next().await {
-            let (name, old_owner, new_owner): (String, String, String) =
-                message.body().deserialize()?;
-            if name == BUS_NAME && !old_owner.is_empty() && old_owner != new_owner {
-                anyhow::bail!("bar-daemon restarted; reconnecting");
-            }
-        }
-        anyhow::bail!("D-Bus owner-change stream ended")
-    });
-}
-
-fn spawn_transport_task(
-    output: Output,
-    task: impl std::future::Future<Output = Result<()>> + Send + 'static,
-) {
-    tokio::spawn(async move {
-        if let Err(error) = task.await {
-            let _ = emit(
-                &output,
-                &json!({"kind":"transport-error","error":error.to_string()}),
-            )
-            .await;
-        }
-    });
-}
-
-async fn emit_transport(output: &Output, id: &str, result: Result<Value>) -> Result<()> {
-    let value = match result {
-        Ok(response) => json!({"kind":"response","id":id,"ok":true,"response":response}),
-        Err(error) => json!({"kind":"response","id":id,"ok":false,"error":error.to_string()}),
-    };
-    emit(output, &value).await
-}
-
-async fn emit(output: &Output, value: &Value) -> Result<()> {
-    let mut output = output.lock().await;
-    let mut bytes = serde_json::to_vec(value)?;
-    bytes.push(b'\n');
-    output.write_all(&bytes).await?;
-    output.flush().await.context("flush client output")
+    run_jsonl_client(JsonlClientConfig {
+        endpoint: ENDPOINT,
+        correlation: BasicCorrelation,
+        cancel_mode: CancelMode::Json,
+        call_failure,
+    })
+    .await
 }
