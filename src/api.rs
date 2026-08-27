@@ -7,6 +7,7 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use shelllist_daemon_core::{ApiError as EnvelopeError, ApiIdentity};
 
 macro_rules! request {
     ($params:expr, $request:ty, $method:literal) => {
@@ -31,12 +32,13 @@ pub(crate) use protocol::{NAME as PROTOCOL, VERSION};
 pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
 pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon1";
+const API: ApiIdentity = ApiIdentity::new(PROTOCOL, VERSION as u32);
 
 pub(crate) fn success(data: Value) -> Value {
-    json!({ "protocol": PROTOCOL, "version": VERSION, "ok": true, "data": data })
+    shelllist_daemon_core::success(API, data)
 }
 pub(crate) fn error(code: &str, message: impl Into<String>) -> Value {
-    json!({ "protocol": PROTOCOL, "version": VERSION, "ok": false, "error": { "code": code, "message": message.into() } })
+    shelllist_daemon_core::error(API, EnvelopeError::new(code, message))
 }
 
 fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {

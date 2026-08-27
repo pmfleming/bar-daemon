@@ -323,7 +323,7 @@ fn generated_contract_fixture() -> Value {
 
 /// Loads the checked protocol contract fixture shipped with the crate.
 pub fn contract_fixture() -> serde_json::Result<Value> {
-    serde_json::from_str(include_str!("../test_support/bar-api-v1.json"))
+    shelllist_daemon_core::load_fixture(include_str!("../test_support/bar-api-v1.json"))
 }
 
 #[cfg(test)]
@@ -339,19 +339,25 @@ mod tests {
     #[test]
     fn registry_matches_constants() {
         let value = registry();
-        let methods = value["methods"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v["name"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        let streams = value["streams"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v["name"].as_str().unwrap())
-            .collect::<Vec<_>>();
+        let methods = shelllist_daemon_core::fixture_names(
+            &serde_json::json!({ "registry": { "methods": value["methods"] } }),
+            "methods",
+        )
+        .unwrap()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let streams = shelllist_daemon_core::fixture_names(
+            &serde_json::json!({ "registry": { "streams": value["streams"] } }),
+            "streams",
+        )
+        .unwrap()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
         assert_eq!(methods, METHODS);
         assert_eq!(streams, STREAMS);
+        shelllist_daemon_core::validate_unique_names(METHODS).unwrap();
+        shelllist_daemon_core::validate_unique_names(STREAMS).unwrap();
     }
 }

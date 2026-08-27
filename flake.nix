@@ -14,7 +14,10 @@
             pname = "bar-daemon";
             version = "0.1.0";
             src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes."shelllist-daemon-core-0.1.0" = "sha256-V2ytfB6faOsv4zf8jDyJs1jKRLmCWbyb/EHUT/0OfGs=";
+            };
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config pkgs.llvmPackages.libclang ];
             buildInputs = [ pkgs.pipewire pkgs.systemd ];
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
