@@ -222,14 +222,13 @@ async fn emit_event(
     subscription_id: &str,
     data: Value,
 ) {
-    let value = json!({
-        "protocol": protocol::NAME,
-        "version": protocol::VERSION,
-        "stream": stream,
-        "event": event,
-        "subscription_id": subscription_id,
-        "data": data
-    });
+    let value = shelllist_daemon_core::event_envelope(
+        shelllist_daemon_core::ApiIdentity::new(protocol::NAME, protocol::VERSION as u32),
+        stream,
+        event,
+        shelllist_daemon_core::Correlation::Subscription(subscription_id),
+        json!({ "data": data }),
+    );
     if let Err(error) = BarDaemon::event(emitter, stream, &value.to_string()).await {
         tracing::warn!(%stream, %error, "bar-api event could not be emitted");
     }
