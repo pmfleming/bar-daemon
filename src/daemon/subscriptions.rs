@@ -6,9 +6,8 @@ use std::{
     },
 };
 
-use anyhow::Result;
-use futures::StreamExt;
 use serde_json::{Value, json};
+use shelllist_daemon_tokio::{directed_emitter, wait_for_owner_name_loss};
 use tokio::{
     sync::{Mutex, oneshot},
     task::JoinHandle,
@@ -96,7 +95,7 @@ impl BarDaemon {
             if let Some(owner) = task_owner {
                 tokio::select! {
                     _ = events => {}
-                    _ = wait_for_owner_loss(connection, owner) => {}
+                    _ = wait_for_owner_name_loss(&connection, &owner) => {}
                 }
             } else {
                 events.await;
@@ -132,13 +131,6 @@ impl BarDaemon {
     #[zbus(signal)]
     async fn event(emitter: &SignalEmitter<'_>, stream: &str, event_json: &str)
     -> zbus::Result<()>;
-}
-
-fn directed_emitter(emitter: &SignalEmitter<'_>, header: &Header<'_>) -> SignalEmitter<'static> {
-    match header.sender() {
-        Some(sender) => emitter.to_owned().set_destination(sender.to_owned().into()),
-        None => emitter.to_owned(),
-    }
 }
 
 async fn forward_events(
@@ -240,36 +232,6 @@ async fn emit_event(
     });
     if let Err(error) = BarDaemon::event(emitter, stream, &value.to_string()).await {
         tracing::warn!(%stream, %error, "bar-api event could not be emitted");
-    }
-}
-
-async fn wait_for_owner_loss(connection: zbus::Connection, owner: String) {
-    let result: Result<()> = async {
-        let proxy = zbus::Proxy::new(
-            &connection,
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-        )
-        .await?;
-        let mut changes = proxy.receive_signal("NameOwnerChanged").await?;
-        let has_owner: bool = proxy.call("NameHasOwner", &(owner.as_str(),)).await?;
-        tracing::debug!(%owner, has_owner, "subscription owner watch established");
-        if !has_owner {
-            return Ok(());
-        }
-        while let Some(message) = changes.next().await {
-            let (name, old_owner, new_owner): (String, String, String) =
-                message.body().deserialize()?;
-            if name == owner && !old_owner.is_empty() && new_owner.is_empty() {
-                return Ok(());
-            }
-        }
-        anyhow::bail!("D-Bus owner-change stream ended")
-    }
-    .await;
-    if let Err(error) = result {
-        tracing::warn!(%owner, %error, "subscription owner watcher stopped");
     }
 }
 

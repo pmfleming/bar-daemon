@@ -1,10 +1,6 @@
 use std::{env, sync::Arc};
 
 use anyhow::{Context, Result};
-use tokio::signal::{
-    ctrl_c,
-    unix::{SignalKind, signal},
-};
 use zbus::connection;
 
 use crate::{
@@ -80,9 +76,5 @@ pub(crate) async fn run() -> Result<()> {
         object_path = OBJECT_PATH,
         "bar-daemon started"
     );
-    let mut terminate = signal(SignalKind::terminate()).context("listen for SIGTERM")?;
-    tokio::select! {
-        result = ctrl_c() => result.context("wait for Ctrl-C"),
-        _ = terminate.recv() => Ok(()),
-    }
+    shelllist_daemon_tokio::wait_for_shutdown().await
 }
