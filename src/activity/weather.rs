@@ -22,8 +22,12 @@ struct CurrentWeather {
     temperature_2m: f64,
     apparent_temperature: f64,
     relative_humidity_2m: u8,
+    precipitation: f64,
     weather_code: u16,
+    is_day: u8,
     wind_speed_10m: f64,
+    wind_direction_10m: u16,
+    wind_gusts_10m: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,8 +35,11 @@ struct HourlyWeather {
     time: Vec<i64>,
     temperature_2m: Vec<f64>,
     precipitation_probability: Vec<u8>,
+    precipitation: Vec<f64>,
     wind_speed_10m: Vec<f64>,
+    wind_direction_10m: Vec<u16>,
     weather_code: Vec<u16>,
+    is_day: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,11 +64,11 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
             ("forecast_days", "7".into()),
             (
                 "current",
-                "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m".into(),
+                "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,is_day,wind_speed_10m,wind_direction_10m,wind_gusts_10m".into(),
             ),
             (
                 "hourly",
-                "temperature_2m,precipitation_probability,wind_speed_10m,weather_code".into(),
+                "temperature_2m,precipitation_probability,precipitation,wind_speed_10m,wind_direction_10m,weather_code,is_day".into(),
             ),
             (
                 "daily",
@@ -86,12 +93,19 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
         .enumerate()
         .filter(|(_, time)| **time * 1_000 >= now_ms - 30 * 60 * 1_000)
         .take(12)
-        .map(|(index, time)| WeatherHour {
-            time_unix_ms: *time * 1_000,
-            temperature_c: value(&response.hourly.temperature_2m, index),
-            precipitation_probability: value(&response.hourly.precipitation_probability, index),
-            wind_speed_kmh: value(&response.hourly.wind_speed_10m, index),
-            condition: condition(value(&response.hourly.weather_code, index)).into(),
+        .map(|(index, time)| {
+            let condition_code = value(&response.hourly.weather_code, index);
+            WeatherHour {
+                time_unix_ms: *time * 1_000,
+                temperature_c: value(&response.hourly.temperature_2m, index),
+                precipitation_probability: value(&response.hourly.precipitation_probability, index),
+                precipitation_mm: value(&response.hourly.precipitation, index),
+                wind_speed_kmh: value(&response.hourly.wind_speed_10m, index),
+                wind_direction_degrees: value(&response.hourly.wind_direction_10m, index),
+                condition: condition(condition_code).into(),
+                condition_code,
+                is_day: value(&response.hourly.is_day, index) != 0,
+            }
         })
         .collect();
     let daily = response
@@ -100,14 +114,21 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
         .iter()
         .enumerate()
         .take(7)
-        .map(|(index, time)| WeatherDay {
-            date_unix_ms: *time * 1_000,
-            high_c: value(&response.daily.temperature_2m_max, index),
-            low_c: value(&response.daily.temperature_2m_min, index),
-            precipitation_probability: value(&response.daily.precipitation_probability_max, index),
-            condition: condition(value(&response.daily.weather_code, index)).into(),
-            sunrise_unix_ms: value(&response.daily.sunrise, index) * 1_000,
-            sunset_unix_ms: value(&response.daily.sunset, index) * 1_000,
+        .map(|(index, time)| {
+            let condition_code = value(&response.daily.weather_code, index);
+            WeatherDay {
+                date_unix_ms: *time * 1_000,
+                high_c: value(&response.daily.temperature_2m_max, index),
+                low_c: value(&response.daily.temperature_2m_min, index),
+                precipitation_probability: value(
+                    &response.daily.precipitation_probability_max,
+                    index,
+                ),
+                condition: condition(condition_code).into(),
+                condition_code,
+                sunrise_unix_ms: value(&response.daily.sunrise, index) * 1_000,
+                sunset_unix_ms: value(&response.daily.sunset, index) * 1_000,
+            }
         })
         .collect::<Vec<_>>();
     let today = daily.first().cloned().unwrap_or_default();
@@ -120,12 +141,17 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
         timezone: response.timezone,
         utc_offset_seconds: response.utc_offset_seconds,
         condition: condition(response.current.weather_code).into(),
+        condition_code: response.current.weather_code,
+        is_day: response.current.is_day != 0,
         temperature_c: response.current.temperature_2m,
         apparent_temperature_c: response.current.apparent_temperature,
         high_c: today.high_c,
         low_c: today.low_c,
         precipitation_probability: today.precipitation_probability,
+        precipitation_mm: response.current.precipitation,
         wind_speed_kmh: response.current.wind_speed_10m,
+        wind_direction_degrees: response.current.wind_direction_10m,
+        wind_gust_kmh: response.current.wind_gusts_10m,
         humidity_percent: response.current.relative_humidity_2m,
         sunrise_unix_ms: today.sunrise_unix_ms,
         sunset_unix_ms: today.sunset_unix_ms,

@@ -443,7 +443,11 @@
             "temperature_c": 17.0,
             "precipitation_probability": 5,
             "condition": "Clear",
-            "wind_speed_kmh": 12.0
+            "wind_speed_kmh": 12.0,
+            "condition_code": 0,
+            "is_day": true,
+            "precipitation_mm": 0.0,
+            "wind_direction_degrees": 315
           }
         ],
         "daily": [
@@ -454,13 +458,19 @@
             "precipitation_probability": 5,
             "condition": "Clear",
             "sunrise_unix_ms": 1766385120000,
-            "sunset_unix_ms": 1766436420000
+            "sunset_unix_ms": 1766436420000,
+            "condition_code": 0
           }
         ],
         "error": null,
         "id": "home",
         "home": true,
-        "utc_offset_seconds": 7200
+        "utc_offset_seconds": 7200,
+        "condition_code": 0,
+        "is_day": true,
+        "precipitation_mm": 0.0,
+        "wind_direction_degrees": 315,
+        "wind_gust_kmh": 18.0
       },
       "weather_locations": [
         {
@@ -484,7 +494,11 @@
               "temperature_c": 17.0,
               "precipitation_probability": 5,
               "condition": "Clear",
-              "wind_speed_kmh": 12.0
+              "wind_speed_kmh": 12.0,
+              "condition_code": 0,
+              "is_day": true,
+              "precipitation_mm": 0.0,
+              "wind_direction_degrees": 315
             }
           ],
           "daily": [
@@ -495,13 +509,19 @@
               "precipitation_probability": 5,
               "condition": "Clear",
               "sunrise_unix_ms": 1766385120000,
-              "sunset_unix_ms": 1766436420000
+              "sunset_unix_ms": 1766436420000,
+              "condition_code": 0
             }
           ],
           "error": null,
           "id": "home",
           "home": true,
-          "utc_offset_seconds": 7200
+          "utc_offset_seconds": 7200,
+          "condition_code": 0,
+          "is_day": true,
+          "precipitation_mm": 0.0,
+          "wind_direction_degrees": 315,
+          "wind_gust_kmh": 18.0
         }
       ]
     },

@@ -72,12 +72,17 @@ pub(crate) struct WeatherState {
     pub timezone: String,
     pub utc_offset_seconds: i32,
     pub condition: String,
+    pub condition_code: u16,
+    pub is_day: bool,
     pub temperature_c: f64,
     pub apparent_temperature_c: f64,
     pub high_c: f64,
     pub low_c: f64,
     pub precipitation_probability: u8,
+    pub precipitation_mm: f64,
     pub wind_speed_kmh: f64,
+    pub wind_direction_degrees: u16,
+    pub wind_gust_kmh: f64,
     pub humidity_percent: u8,
     pub sunrise_unix_ms: i64,
     pub sunset_unix_ms: i64,
@@ -92,8 +97,12 @@ pub(crate) struct WeatherHour {
     pub time_unix_ms: i64,
     pub temperature_c: f64,
     pub precipitation_probability: u8,
+    pub precipitation_mm: f64,
     pub wind_speed_kmh: f64,
+    pub wind_direction_degrees: u16,
     pub condition: String,
+    pub condition_code: u16,
+    pub is_day: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -103,6 +112,7 @@ pub(crate) struct WeatherDay {
     pub low_c: f64,
     pub precipitation_probability: u8,
     pub condition: String,
+    pub condition_code: u16,
     pub sunrise_unix_ms: i64,
     pub sunset_unix_ms: i64,
 }
