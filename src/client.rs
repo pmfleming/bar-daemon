@@ -22,6 +22,9 @@ pub(crate) async fn run() -> Result<()> {
         correlation: BasicCorrelation,
         cancel_mode: CancelMode::Json,
         call_failure,
+        pending_event_limit: 32,
+        max_in_flight_requests: 64,
+        shutdown_timeout: Some(std::time::Duration::from_secs(5)),
     })
     .await
 }
