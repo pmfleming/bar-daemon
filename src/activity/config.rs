@@ -2,6 +2,9 @@ use std::{collections::HashSet, env, path::PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use shelllist_daemon_core::XdgRoot;
+
+use crate::paths::data_file;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -68,19 +71,19 @@ impl Default for WeatherConfig {
 pub(crate) fn config_path() -> PathBuf {
     env::var_os("BAR_DAEMON_ACTIVITY_CONFIG")
         .map(PathBuf::from)
-        .unwrap_or_else(|| config_home().join("bar-daemon/activity.json"))
+        .unwrap_or_else(|| data_file(XdgRoot::Config, "activity.json"))
 }
 
 pub(crate) fn todo_path() -> PathBuf {
     env::var_os("BAR_DAEMON_TODO_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_home().join("bar-daemon/todos.json"))
+        .unwrap_or_else(|| data_file(XdgRoot::State, "todos.json"))
 }
 
 pub(crate) fn notification_database_path() -> PathBuf {
     env::var_os("BAR_DAEMON_NOTIFICATION_DATABASE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_home().join("bar-daemon/notifications.sqlite3"))
+        .unwrap_or_else(|| data_file(XdgRoot::State, "notifications.sqlite3"))
 }
 
 impl ActivityConfig {
@@ -162,20 +165,6 @@ pub(crate) async fn load(path: &PathBuf) -> Result<ActivityConfig> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ActivityConfig::default()),
         Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
     }
-}
-
-fn config_home() -> PathBuf {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn state_home() -> PathBuf {
-    env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]

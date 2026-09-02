@@ -7,6 +7,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use shelllist_daemon_core::XdgRoot;
+
+use crate::paths::data_file;
 
 pub(crate) const CHARGE_ONCE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const CALIBRATION_MAX_AGE: Duration = Duration::from_secs(48 * 60 * 60);
@@ -283,13 +286,13 @@ fn validate_battery_id(battery_id: &str) -> Result<()> {
 pub(crate) fn config_path() -> PathBuf {
     env::var_os("BAR_DAEMON_BATTERY_CONFIG")
         .map(PathBuf::from)
-        .unwrap_or_else(|| config_home().join("bar-daemon/battery.json"))
+        .unwrap_or_else(|| data_file(XdgRoot::Config, "battery.json"))
 }
 
 pub(crate) fn state_path() -> PathBuf {
     env::var_os("BAR_DAEMON_BATTERY_STATE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_home().join("bar-daemon/battery-state.json"))
+        .unwrap_or_else(|| data_file(XdgRoot::State, "battery-state.json"))
 }
 
 pub(crate) async fn load_config() -> Result<BatteryConfig> {
@@ -338,20 +341,6 @@ async fn save_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     tokio::fs::rename(&temporary, path)
         .await
         .with_context(|| format!("replace {}", path.display()))
-}
-
-fn config_home() -> PathBuf {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn state_home() -> PathBuf {
-    env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]
