@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     activity::{ActivityService, notifications::service::NotificationService},
+    media::MediaService,
     protocol,
     state::StateStore,
 };
@@ -64,11 +65,12 @@ impl ApiService {
         state: StateStore,
         activity: Arc<ActivityService>,
         notifications: Arc<NotificationService>,
+        media: MediaService,
     ) -> Self {
         Self {
             activity: ActivityApi::new(state.clone(), activity),
             battery: BatteryApi::new(state.clone()),
-            effects: DesktopEffects::new(state.clone()),
+            effects: DesktopEffects::new(state.clone(), media),
             notifications: NotificationApi::new(state.clone(), notifications),
             state,
         }
@@ -142,6 +144,7 @@ mod tests {
                 service::NotificationService,
             },
         },
+        media::MediaService,
         state::StateStore,
     };
     use serde_json::json;
@@ -151,14 +154,17 @@ mod tests {
         let state = StateStore::default();
         let notifications = NotificationService::swaync();
         let activity = ActivityService::new(state.clone(), notifications.sink()).await;
-        ApiService::new(state, activity, notifications)
+        ApiService::new(state, activity, notifications, MediaService::default())
     }
     async fn native_api() -> (ApiService, Arc<NotificationEngine>) {
         let state = StateStore::default();
         let notifications = NotificationEngine::new(state.clone()).await;
         let service = NotificationService::native(Arc::clone(&notifications));
         let activity = ActivityService::new(state.clone(), service.sink()).await;
-        (ApiService::new(state, activity, service), notifications)
+        (
+            ApiService::new(state, activity, service, MediaService::default()),
+            notifications,
+        )
     }
 
     #[tokio::test]

@@ -9,7 +9,9 @@ use crate::{
             engine::NotificationEngine, server::forward_signals, service::NotificationService,
         },
     },
-    audio, battery, brightness, hyprland, media, osd_hardware, power, sleep,
+    audio, battery, brightness, hyprland,
+    media::{self, MediaService},
+    osd_hardware, power, sleep,
     state::StateStore,
     timezone, updates,
 };
@@ -24,12 +26,13 @@ impl MonitorTasks {
         activity: Arc<ActivityService>,
         notifications: Arc<NotificationService>,
         notification_engine: Option<Arc<NotificationEngine>>,
+        media: MediaService,
         connection: zbus::Connection,
     ) -> Self {
         let mut tasks = vec![
             tokio::spawn(activity.monitor()),
             tokio::spawn(hyprland::monitor(state.clone())),
-            tokio::spawn(media::monitor(state.clone())),
+            tokio::spawn(media::monitor(state.clone(), media)),
             tokio::spawn(audio::monitor(state.clone())),
             tokio::spawn(brightness::monitor(state.clone())),
             tokio::spawn(osd_hardware::monitor(state.clone())),

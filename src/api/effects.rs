@@ -2,7 +2,12 @@ use std::sync::Arc;
 
 use super::{error, success};
 use crate::{
-    audio, brightness, hyprland::HyprlandClient, media, power, sleep, state::StateStore, updates,
+    audio, brightness,
+    hyprland::HyprlandClient,
+    media::{self, MediaService},
+    power, sleep,
+    state::StateStore,
+    updates,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -45,6 +50,8 @@ struct MediaRequest {
     operation: String,
     #[serde(default)]
     player_id: Option<String>,
+    #[serde(default)]
+    offset_seconds: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -60,15 +67,17 @@ pub(super) struct DesktopEffects {
     hyprland: Arc<HyprlandClient>,
     audio: Arc<Mutex<()>>,
     brightness: Arc<Mutex<()>>,
+    media: MediaService,
 }
 
 impl DesktopEffects {
-    pub(super) fn new(state: StateStore) -> Self {
+    pub(super) fn new(state: StateStore, media: MediaService) -> Self {
         Self {
             state,
             hyprland: Arc::new(HyprlandClient::default()),
             audio: Arc::new(Mutex::new(())),
             brightness: Arc::new(Mutex::new(())),
+            media,
         }
     }
 
@@ -174,7 +183,34 @@ impl DesktopEffects {
     }
     pub(super) async fn media_operation(&self, params: Value) -> Value {
         let request = request!(params, MediaRequest, "media.operation");
-        match media::operation(request.player_id.as_deref(), &request.operation).await {
+        if request.operation == "cycle" {
+            return match self.media.cycle(&self.state).await {
+                Ok(state) => success(json!({
+                    "operation": request.operation,
+                    "player_id": state.active_player,
+                    "media": state,
+                })),
+                Err(value) => error("media-operation-failed", value.to_string()),
+            };
+        }
+        let player_id = match request.player_id {
+            Some(player_id) => Some(player_id),
+            None => self.state.snapshot().await.media.active_player,
+        };
+        if request.operation == "seek" {
+            let Some(offset_seconds) = request.offset_seconds else {
+                return error("validation-error", "media.seek requires offset_seconds");
+            };
+            return match media::seek(player_id.as_deref(), offset_seconds).await {
+                Ok(player_id) => success(json!({
+                    "operation": request.operation,
+                    "player_id": player_id,
+                    "offset_seconds": offset_seconds,
+                })),
+                Err(value) => error("media-operation-failed", value.to_string()),
+            };
+        }
+        match media::operation(player_id.as_deref(), &request.operation).await {
             Ok(player_id) => {
                 success(json!({"operation": request.operation, "player_id": player_id}))
             }
@@ -200,14 +236,68 @@ impl DesktopEffects {
 
 #[cfg(test)]
 mod tests {
-    use crate::{model::PowerProfileState, state::StateStore};
+    use crate::{
+        media::MediaService,
+        model::{MediaPlayer, MediaState, PowerProfileState},
+        state::StateStore,
+    };
+    use serde_json::json;
 
     use super::DesktopEffects;
 
     #[tokio::test]
+    async fn cycles_media_players_without_calling_mpris() {
+        let store = StateStore::default();
+        store
+            .update_media(MediaState {
+                available: true,
+                active_player: Some("first".into()),
+                players: vec![
+                    MediaPlayer {
+                        id: "first".into(),
+                        ..MediaPlayer::default()
+                    },
+                    MediaPlayer {
+                        id: "second".into(),
+                        ..MediaPlayer::default()
+                    },
+                ],
+                error: None,
+            })
+            .await;
+        let effects = DesktopEffects::new(store.clone(), MediaService::default());
+
+        let response = effects
+            .media_operation(json!({ "operation": "cycle" }))
+            .await;
+
+        assert_eq!(response["data"]["player_id"], "second");
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("second")
+        );
+    }
+
+    #[tokio::test]
+    async fn validates_media_seek_before_calling_mpris() {
+        let store = StateStore::default();
+        let effects = DesktopEffects::new(store, MediaService::default());
+
+        let missing = effects
+            .media_operation(json!({ "operation": "seek" }))
+            .await;
+        let out_of_range = effects
+            .media_operation(json!({ "operation": "seek", "offset_seconds": 86401 }))
+            .await;
+
+        assert_eq!(missing["error"]["code"], "validation-error");
+        assert_eq!(out_of_range["error"]["code"], "media-operation-failed");
+    }
+
+    #[tokio::test]
     async fn successful_power_profile_effect_updates_the_snapshot() {
         let store = StateStore::default();
-        let effects = DesktopEffects::new(store.clone());
+        let effects = DesktopEffects::new(store.clone(), MediaService::default());
         let state = PowerProfileState {
             available: true,
             profile: "balanced".into(),

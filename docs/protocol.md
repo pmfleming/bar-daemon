@@ -63,7 +63,7 @@ Battery methods operate on the native ThinkPad threshold interface. `battery.set
 
 The `power-sleep.changed` domain exposes systemd-logind suspend/hibernate capability strings, `PrepareForSleep` state, and current inhibitors. `powerSleep.lock`, `powerSleep.suspend`, and `powerSleep.hibernate` target the current logind session; both sleep actions request a session lock first. See [`power-sleep.md`](power-sleep.md).
 
-Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, and `previous`; an omitted `player_id` uses the daemon's current active-player policy.
+Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, `previous`, `cycle`, and `seek`. `cycle` selects the next discovered MPRIS player without invoking playback. `seek` requires a nonzero `offset_seconds` between -86400 and 86400 and calls the MPRIS relative `Seek` method. Playback and seek operations target `player_id` when supplied and otherwise use the daemon's current active-player policy.
 
 ## Streams
 

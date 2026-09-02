@@ -1,8 +1,12 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use tokio::{sync::mpsc, task::JoinSet, time::sleep};
+use tokio::{
+    sync::{RwLock, mpsc},
+    task::JoinSet,
+    time::sleep,
+};
 use zvariant::OwnedValue;
 
 use crate::{
@@ -16,11 +20,48 @@ const PATH: &str = "/org/mpris/MediaPlayer2";
 const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
-pub(crate) async fn monitor(store: StateStore) {
+#[derive(Clone, Default)]
+pub(crate) struct MediaService {
+    selected_player: Arc<RwLock<Option<String>>>,
+}
+
+impl MediaService {
+    pub(crate) async fn cycle(&self, store: &StateStore) -> Result<MediaState> {
+        let mut selected = self.selected_player.write().await;
+        let mut state = store.snapshot().await.media;
+        let next = next_player_id(&state.players, state.active_player.as_deref())
+            .context("no alternate MPRIS player is available")?;
+        *selected = Some(next.clone());
+        state.active_player = Some(next);
+        store.update_media(state.clone()).await;
+        Ok(state)
+    }
+
+    async fn publish(&self, store: &StateStore, players: Vec<MediaPlayer>) {
+        let mut selected = self.selected_player.write().await;
+        let active_player = match selected.as_ref() {
+            Some(id) if players.iter().any(|player| &player.id == id) => Some(id.clone()),
+            _ => {
+                *selected = None;
+                select_active_player(&players).map(|player| player.id.clone())
+            }
+        };
+        store
+            .update_media(MediaState {
+                available: !players.is_empty(),
+                active_player,
+                players,
+                error: None,
+            })
+            .await;
+    }
+}
+
+pub(crate) async fn monitor(store: StateStore, service: MediaService) {
     loop {
         match zbus::Connection::session().await {
             Ok(connection) => {
-                if let Err(error) = monitor_connection(&connection, &store).await {
+                if let Err(error) = monitor_connection(&connection, &store, &service).await {
                     tracing::warn!(%error, "MPRIS monitor disconnected");
                 }
             }
@@ -37,26 +78,38 @@ pub(crate) async fn monitor(store: StateStore) {
     }
 }
 
-async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -> Result<()> {
+async fn monitor_connection(
+    connection: &zbus::Connection,
+    store: &StateStore,
+    service: &MediaService,
+) -> Result<()> {
     let dbus = zbus::fdo::DBusProxy::new(connection).await?;
     let mut owner_changes = dbus.receive_name_owner_changed().await?;
     let (changes_tx, mut changes_rx) = mpsc::channel::<()>(32);
     let mut watchers = JoinSet::new();
     let mut names = Vec::new();
 
-    refresh(connection, store, &mut names, &mut watchers, &changes_tx).await;
+    refresh(
+        connection,
+        store,
+        service,
+        &mut names,
+        &mut watchers,
+        &changes_tx,
+    )
+    .await;
     loop {
         tokio::select! {
             signal = owner_changes.next() => {
                 let Some(signal) = signal else { bail!("D-Bus owner-change stream ended"); };
                 let args = signal.args()?;
                 if args.name().as_str().starts_with(PREFIX) {
-                    refresh(connection, store, &mut names, &mut watchers, &changes_tx).await;
+                    refresh(connection, store, service, &mut names, &mut watchers, &changes_tx).await;
                 }
             }
             changed = changes_rx.recv() => {
                 if changed.is_none() { bail!("MPRIS property watcher ended"); }
-                refresh_players(connection, store, &names).await;
+                refresh_players(connection, store, service, &names).await;
             }
         }
     }
@@ -65,6 +118,7 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
 async fn refresh(
     connection: &zbus::Connection,
     store: &StateStore,
+    service: &MediaService,
     watched_names: &mut Vec<String>,
     watchers: &mut JoinSet<()>,
     changes_tx: &mpsc::Sender<()>,
@@ -83,7 +137,7 @@ async fn refresh(
                 }
                 *watched_names = next_names;
             }
-            refresh_players(connection, store, watched_names).await;
+            refresh_players(connection, store, service, watched_names).await;
         }
         Err(error) => {
             store
@@ -96,7 +150,12 @@ async fn refresh(
     }
 }
 
-async fn refresh_players(connection: &zbus::Connection, store: &StateStore, names: &[String]) {
+async fn refresh_players(
+    connection: &zbus::Connection,
+    store: &StateStore,
+    service: &MediaService,
+    names: &[String],
+) {
     let mut players = Vec::new();
     for name in names {
         match read_player(connection, name).await {
@@ -112,15 +171,7 @@ async fn refresh_players(connection: &zbus::Connection, store: &StateStore, name
             .cmp(&b.identity.to_lowercase())
             .then(a.id.cmp(&b.id))
     });
-    let active_player = select_active_player(&players).map(|player| player.id.clone());
-    store
-        .update_media(MediaState {
-            available: !players.is_empty(),
-            active_player,
-            players,
-            error: None,
-        })
-        .await;
+    service.publish(store, players).await;
 }
 
 async fn player_names(connection: &zbus::Connection) -> Result<Vec<String>> {
@@ -246,6 +297,17 @@ fn property_strings(values: &HashMap<String, OwnedValue>, key: &str) -> Vec<Stri
         .unwrap_or_default()
 }
 
+fn next_player_id(players: &[MediaPlayer], current: Option<&str>) -> Option<String> {
+    if players.len() < 2 {
+        return None;
+    }
+    let next = players
+        .iter()
+        .position(|player| Some(player.id.as_str()) == current)
+        .map_or(0, |index| (index + 1) % players.len());
+    Some(players[next].id.clone())
+}
+
 pub(crate) fn select_active_player(players: &[MediaPlayer]) -> Option<&MediaPlayer> {
     players
         .iter()
@@ -272,28 +334,54 @@ fn operation_method(operation: &str) -> Result<&'static str> {
     }
 }
 
+async fn resolve_player(connection: &zbus::Connection, player_id: Option<&str>) -> Result<String> {
+    let names = player_names(connection).await?;
+    if let Some(id) = player_id {
+        if !names.iter().any(|name| name == id) {
+            bail!("requested MPRIS player is unavailable");
+        }
+        return Ok(id.to_string());
+    }
+    let mut players = Vec::new();
+    for name in &names {
+        if let Ok(player) = read_player(connection, name).await {
+            players.push(player);
+        }
+    }
+    select_active_player(&players)
+        .map(|player| player.id.clone())
+        .context("no MPRIS player is available")
+}
+
+fn seek_offset_microseconds(offset_seconds: i64) -> Result<i64> {
+    if offset_seconds == 0 || offset_seconds.unsigned_abs() > 86_400 {
+        bail!("MPRIS seek offset must be between -86400 and 86400 seconds and nonzero");
+    }
+    offset_seconds
+        .checked_mul(1_000_000)
+        .context("MPRIS seek offset overflow")
+}
+
+pub(crate) async fn seek(player_id: Option<&str>, offset_seconds: i64) -> Result<String> {
+    let offset_microseconds = seek_offset_microseconds(offset_seconds)?;
+    let connection = zbus::Connection::session()
+        .await
+        .context("connect to session D-Bus")?;
+    let selected = resolve_player(&connection, player_id).await?;
+    let proxy = zbus::Proxy::new(&connection, selected.as_str(), PATH, PLAYER_INTERFACE).await?;
+    proxy
+        .call_method("Seek", &(offset_microseconds,))
+        .await
+        .context("call MPRIS player seek")?;
+    Ok(selected)
+}
+
 pub(crate) async fn operation(player_id: Option<&str>, operation: &str) -> Result<String> {
     let method = operation_method(operation)?;
     let connection = zbus::Connection::session()
         .await
         .context("connect to session D-Bus")?;
-    let names = player_names(&connection).await?;
-    let selected = if let Some(id) = player_id {
-        if !names.iter().any(|name| name == id) {
-            bail!("requested MPRIS player is unavailable");
-        }
-        id.to_string()
-    } else {
-        let mut players = Vec::new();
-        for name in &names {
-            if let Ok(player) = read_player(&connection, name).await {
-                players.push(player);
-            }
-        }
-        select_active_player(&players)
-            .map(|player| player.id.clone())
-            .context("no MPRIS player is available")?
-    };
+    let selected = resolve_player(&connection, player_id).await?;
     let proxy = zbus::Proxy::new(&connection, selected.as_str(), PATH, PLAYER_INTERFACE).await?;
     proxy
         .call_method(method, &())
@@ -304,8 +392,11 @@ pub(crate) async fn operation(player_id: Option<&str>, operation: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{operation_method, select_active_player};
-    use crate::model::MediaPlayer;
+    use super::{
+        MediaService, next_player_id, operation_method, seek_offset_microseconds,
+        select_active_player,
+    };
+    use crate::{model::MediaPlayer, state::StateStore};
 
     fn player(id: &str, status: &str, spotify: bool, controllable: bool) -> MediaPlayer {
         MediaPlayer {
@@ -316,6 +407,62 @@ mod tests {
             can_control: controllable,
             ..MediaPlayer::default()
         }
+    }
+
+    #[test]
+    fn cycles_players_and_requires_an_alternative() {
+        let players = vec![
+            player("browser", "paused", false, true),
+            player("spotify", "paused", true, true),
+        ];
+        assert_eq!(
+            next_player_id(&players, Some("browser")).as_deref(),
+            Some("spotify")
+        );
+        assert_eq!(
+            next_player_id(&players, Some("spotify")).as_deref(),
+            Some("browser")
+        );
+        assert_eq!(
+            next_player_id(&players, Some("missing")).as_deref(),
+            Some("browser")
+        );
+        assert!(next_player_id(&players[..1], Some("browser")).is_none());
+    }
+
+    #[tokio::test]
+    async fn manual_cycle_is_retained_by_monitor_selection() {
+        let store = StateStore::default();
+        let service = MediaService::default();
+        let players = vec![
+            player("browser", "paused", false, true),
+            player("spotify", "paused", true, true),
+        ];
+        store
+            .update_media(crate::model::MediaState {
+                available: true,
+                active_player: Some("spotify".into()),
+                players: players.clone(),
+                error: None,
+            })
+            .await;
+
+        let state = service.cycle(&store).await.unwrap();
+
+        assert_eq!(state.active_player.as_deref(), Some("browser"));
+        service.publish(&store, players).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("browser")
+        );
+    }
+
+    #[test]
+    fn validates_and_converts_seek_offsets() {
+        assert_eq!(seek_offset_microseconds(-15).unwrap(), -15_000_000);
+        assert_eq!(seek_offset_microseconds(30).unwrap(), 30_000_000);
+        assert!(seek_offset_microseconds(0).is_err());
+        assert!(seek_offset_microseconds(86_401).is_err());
     }
 
     #[test]

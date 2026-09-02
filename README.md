@@ -35,6 +35,8 @@ JSONL example:
 {"op":"call","id":"agenda","method":"activity.queryRange","params":{"from_unix_ms":1767225600000,"to_unix_ms":1769904000000}}
 {"op":"subscribe","id":"subscribe","streams":["workspaces.changed","media.changed"]}
 {"op":"call","id":"media","method":"media.operation","params":{"operation":"play-pause"}}
+{"op":"call","id":"media-cycle","method":"media.operation","params":{"operation":"cycle"}}
+{"op":"call","id":"media-rewind","method":"media.operation","params":{"operation":"seek","offset_seconds":-15}}
 {"op":"call","id":"focus","method":"workspace.focus","params":{"workspace_id":2,"on_current_monitor":true}}
 {"op":"call","id":"protect","method":"battery.setProtection","params":{"enabled":true}}
 {"op":"shutdown","id":"shutdown"}

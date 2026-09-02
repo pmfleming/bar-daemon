@@ -6,6 +6,7 @@ use zbus::connection;
 use crate::{
     activity::{ActivityService, notifications},
     api::{ApiService, BUS_NAME, OBJECT_PATH},
+    media::MediaService,
     state::StateStore,
 };
 
@@ -35,10 +36,12 @@ pub(crate) async fn run() -> Result<()> {
         None => notifications::service::NotificationService::swaync(),
     };
     let activity = ActivityService::new(state.clone(), notification_service.sink()).await;
+    let media = MediaService::default();
     let api = ApiService::new(
         state.clone(),
         Arc::clone(&activity),
         Arc::clone(&notification_service),
+        media.clone(),
     );
     let daemon = BarDaemon::new(api, state.clone());
     let builder = connection::Builder::session()
@@ -68,6 +71,7 @@ pub(crate) async fn run() -> Result<()> {
         activity,
         notification_service,
         notification_engine,
+        media,
         connection,
     );
 
