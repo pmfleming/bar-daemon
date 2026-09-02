@@ -170,12 +170,24 @@ pub(crate) struct BatteryHistoryState {
     pub retention_days: u8,
     pub last_charge_timestamp_ms: u64,
     pub latest_timestamp_ms: u64,
+    /// Time represented by the graph after periods when the daemon was not
+    /// observing the laptop have been removed.
+    pub active_duration_ms: u64,
     pub points: Vec<BatteryHistoryPoint>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct BatteryHistoryPoint {
+    /// Wall-clock time, retained for labels and tooltips.
     pub timestamp_ms: u64,
+    /// X coordinate on the compact, active-only graph timescale.
+    pub active_time_ms: u64,
+    /// Whether a line may be drawn from the preceding point. False marks a
+    /// daemon restart, suspend, shutdown, or other observation gap.
+    pub continuous: bool,
+    /// One of `charging`, `discharging`, or `holding`.
+    pub mode: String,
     pub percentage: u8,
     pub power_watts: f64,
     pub time_to_full_seconds: Option<u64>,

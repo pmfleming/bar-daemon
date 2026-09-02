@@ -265,7 +265,8 @@ fn generated_contract_fixture() -> Value {
                 }],
                 "history": {
                     "retention_days": 7, "last_charge_timestamp_ms": 1768464000000_u64,
-                    "latest_timestamp_ms": 1768464900000_u64, "points": []
+                    "latest_timestamp_ms": 1768464900000_u64, "active_duration_ms": 900000_u64,
+                    "points": []
                 },
                 "error": null
             },

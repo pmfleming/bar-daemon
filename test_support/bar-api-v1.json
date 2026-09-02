@@ -587,6 +587,7 @@
       "error": null,
       "health_percent": 85,
       "history": {
+        "active_duration_ms": 900000,
         "last_charge_timestamp_ms": 1768464000000,
         "latest_timestamp_ms": 1768464900000,
         "points": [],

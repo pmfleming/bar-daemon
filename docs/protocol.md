@@ -36,6 +36,7 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `audio.setInputMuted`
 - `brightness.adjust`
 - `brightness.set`
+- `battery.history`
 - `battery.setThresholds`
 - `battery.setProtection`
 - `battery.chargeOnce`
@@ -56,6 +57,8 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `updates.refresh`
 
 `activity.queryRange` requires integer `from_unix_ms` and `to_unix_ms` values and is bounded to 370 days. Todo creation accepts `title`, optional `due_unix_ms`, optional local `due_date` (`YYYY-MM-DD`), and priority 0–9.
+
+`battery.history` returns seven-day samples with both wall-clock `timestamp_ms` and compact `active_time_ms`. Graphs should use `active_time_ms` on the x axis and begin a new path whenever `continuous` is false; this removes suspend, shutdown, and daemon downtime from the displayed timescale. Point `mode` is `charging`, `discharging`, or `holding`, and `active_duration_ms` reports the complete compact range.
 
 Battery methods operate on the native ThinkPad threshold interface. `battery.setThresholds` requires `battery_id`, `start_percent`, and `end_percent` satisfying `0 <= start < end <= 100`; it preserves the current enabled and management state. `battery.setProtection` and `battery.chargeOnce` accept an optional `battery_id`, defaulting to the primary battery. Protection updates may include a complete `start_percent`/`end_percent` pair to change the range and enabled state atomically. Charge-once temporarily selects `0–100`, survives daemon restarts, and restores the exact previous range on full charge, unplug, or after 24 hours. `battery.setAlertPolicy` accepts any non-empty subset of `warning_percent`, `critical_percent`, `notify_when_full`, and `auto_power_saver`, with `critical_percent <= warning_percent`. See [`battery.md`](battery.md).
 
