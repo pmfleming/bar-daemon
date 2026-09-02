@@ -1,15 +1,9 @@
-use std::{
-    env,
-    os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tokio::{
-    fs,
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, BufReader},
     net::UnixStream,
     time::sleep,
 };
@@ -72,8 +66,7 @@ struct HyprActiveWindow {
 
 #[derive(Debug, Clone)]
 pub(crate) struct HyprlandClient {
-    runtime_dir: PathBuf,
-    signature: Option<String>,
+    ipc: shelllist_hyprland::Client,
 }
 
 impl Default for HyprlandClient {
@@ -84,60 +77,20 @@ impl Default for HyprlandClient {
 
 impl HyprlandClient {
     pub(crate) fn from_environment() -> Self {
-        let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let uid = std::fs::metadata("/proc/self").map_or(0, |process| process.uid());
-                PathBuf::from(format!("/run/user/{uid}"))
-            });
         Self {
-            runtime_dir,
-            signature: env::var("HYPRLAND_INSTANCE_SIGNATURE")
-                .ok()
-                .filter(|v| !v.is_empty()),
+            ipc: shelllist_hyprland::Client::from_environment(),
         }
     }
 
     #[cfg(test)]
-    fn with_runtime(runtime_dir: PathBuf, signature: Option<String>) -> Self {
+    fn with_runtime(runtime_dir: std::path::PathBuf, signature: Option<String>) -> Self {
         Self {
-            runtime_dir,
-            signature,
+            ipc: shelllist_hyprland::Client::new(runtime_dir, signature),
         }
-    }
-
-    async fn instance_dir(&self) -> Result<PathBuf> {
-        let root = self.runtime_dir.join("hypr");
-        if let Some(signature) = &self.signature {
-            let path = root.join(signature);
-            if fs::try_exists(path.join(".socket.sock"))
-                .await
-                .unwrap_or(false)
-            {
-                return Ok(path);
-            }
-        }
-        let mut entries = fs::read_dir(&root)
-            .await
-            .with_context(|| format!("read Hyprland runtime directory {}", root.display()))?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if fs::try_exists(path.join(".socket.sock"))
-                .await
-                .unwrap_or(false)
-            {
-                return Ok(path);
-            }
-        }
-        bail!(
-            "no active Hyprland IPC instance found under {}",
-            root.display()
-        )
     }
 
     async fn request(&self, command: &str) -> Result<String> {
-        let socket = self.instance_dir().await?.join(".socket.sock");
-        request_socket(&socket, command).await
+        self.ipc.request(command).await
     }
 
     pub(crate) async fn snapshot(&self) -> Result<WorkspaceState> {
@@ -172,22 +125,8 @@ impl HyprlandClient {
     }
 
     async fn event_socket(&self) -> Result<UnixStream> {
-        let socket = self.instance_dir().await?.join(".socket2.sock");
-        UnixStream::connect(&socket)
-            .await
-            .with_context(|| format!("connect to Hyprland event socket {}", socket.display()))
+        self.ipc.event_socket().await
     }
-}
-
-async fn request_socket(path: &Path, command: &str) -> Result<String> {
-    let mut stream = UnixStream::connect(path)
-        .await
-        .with_context(|| format!("connect to Hyprland command socket {}", path.display()))?;
-    stream.write_all(command.as_bytes()).await?;
-    stream.shutdown().await?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await?;
-    Ok(response)
 }
 
 fn parse_snapshot(
@@ -358,6 +297,6 @@ mod tests {
             .await
             .unwrap();
         let client = HyprlandClient::with_runtime(dir.path().to_path_buf(), None);
-        assert!(client.instance_dir().await.is_err());
+        assert!(client.event_socket().await.is_err());
     }
 }
