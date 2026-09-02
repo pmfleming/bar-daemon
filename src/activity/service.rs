@@ -83,6 +83,19 @@ impl ActivityService {
         }
     }
 
+    pub(crate) async fn request_refresh(self: &Arc<Self>) {
+        let current = self.state.snapshot().await.activity;
+        self.state
+            .update_activity(ActivityState {
+                available: true,
+                syncing: true,
+                ..current
+            })
+            .await;
+        let service = Arc::clone(self);
+        tokio::spawn(async move { service.refresh().await });
+    }
+
     pub(crate) async fn refresh(&self) {
         let Ok(_guard) = self.refresh_guard.try_lock() else {
             return;
@@ -127,8 +140,14 @@ impl ActivityService {
         }
 
         let mut first_error = None;
-        for source in &config.calendar_sources {
-            let result = self.providers.load(source).await;
+        let calendar_results = futures::future::join_all(
+            config
+                .calendar_sources
+                .iter()
+                .map(|source| async move { (source, self.providers.load(source).await) }),
+        )
+        .await;
+        for (source, result) in calendar_results {
             let mut data = self.data.write().await;
             match result {
                 Ok(events) => {

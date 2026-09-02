@@ -2,16 +2,13 @@ use std::sync::Arc;
 
 use super::{error, success};
 use crate::{
-    audio, brightness,
-    hyprland::HyprlandClient,
-    media::{self, MediaService},
-    power, sleep,
-    state::StateStore,
-    updates,
+    audio, brightness, hyprland::HyprlandClient, media::MediaService, power, sleep,
+    state::StateStore, updates,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::time::{Duration, sleep};
 
 #[derive(Deserialize)]
 struct ProfileRequest {
@@ -61,11 +58,44 @@ struct WorkspaceRequest {
     on_current_monitor: bool,
 }
 
+#[derive(Clone, Copy)]
+enum AudioCommand {
+    Adjust(i16),
+    SetMuted(Option<bool>),
+    SetInputMuted(Option<bool>),
+}
+
+type AudioReply = Option<oneshot::Sender<Result<crate::model::AudioState, String>>>;
+
+#[derive(Clone)]
+struct AudioController {
+    sender: mpsc::Sender<(AudioCommand, AudioReply)>,
+}
+
+impl AudioController {
+    fn new(state: StateStore) -> Self {
+        let (sender, receiver) = mpsc::channel(64);
+        tokio::spawn(run_audio_controller(receiver, state));
+        Self { sender }
+    }
+
+    async fn execute(&self, command: AudioCommand) -> Result<crate::model::AudioState, String> {
+        let (reply, response) = oneshot::channel();
+        self.sender
+            .send((command, Some(reply)))
+            .await
+            .map_err(|_| "audio controller stopped".to_string())?;
+        response
+            .await
+            .map_err(|_| "audio controller stopped before replying".to_string())?
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct DesktopEffects {
     state: StateStore,
     hyprland: Arc<HyprlandClient>,
-    audio: Arc<Mutex<()>>,
+    audio: AudioController,
     brightness: Arc<Mutex<()>>,
     media: MediaService,
 }
@@ -73,9 +103,9 @@ pub(super) struct DesktopEffects {
 impl DesktopEffects {
     pub(super) fn new(state: StateStore, media: MediaService) -> Self {
         Self {
-            state,
+            state: state.clone(),
             hyprland: Arc::new(HyprlandClient::default()),
-            audio: Arc::new(Mutex::new(())),
+            audio: AudioController::new(state),
             brightness: Arc::new(Mutex::new(())),
             media,
         }
@@ -156,29 +186,23 @@ impl DesktopEffects {
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "audio.adjust");
-        self.apply_audio(audio::adjust(request.delta_percent)).await
+        self.apply_audio(AudioCommand::Adjust(request.delta_percent))
+            .await
     }
     pub(super) async fn audio_set_muted(&self, params: Value) -> Value {
         let request = request!(params, MuteRequest, "audio.setMuted");
-        self.apply_audio(audio::set_muted(request.muted)).await
+        self.apply_audio(AudioCommand::SetMuted(request.muted))
+            .await
     }
     pub(super) async fn audio_set_input_muted(&self, params: Value) -> Value {
         let request = request!(params, MuteRequest, "audio.setInputMuted");
-        self.apply_audio(audio::set_input_muted(request.muted))
+        self.apply_audio(AudioCommand::SetInputMuted(request.muted))
             .await
     }
-    async fn apply_audio(
-        &self,
-        operation: impl std::future::Future<Output = anyhow::Result<crate::model::AudioState>>,
-    ) -> Value {
-        let _guard = self.audio.lock().await;
-        match operation.await {
-            Ok(state) => {
-                let response = success(json!({"audio": state}));
-                self.state.update_audio(state).await;
-                response
-            }
-            Err(value) => error("audio-operation-failed", value.to_string()),
+    async fn apply_audio(&self, command: AudioCommand) -> Value {
+        match self.audio.execute(command).await {
+            Ok(state) => success(json!({"audio": state})),
+            Err(value) => error("audio-operation-failed", value),
         }
     }
     pub(super) async fn media_operation(&self, params: Value) -> Value {
@@ -201,7 +225,7 @@ impl DesktopEffects {
             let Some(offset_seconds) = request.offset_seconds else {
                 return error("validation-error", "media.seek requires offset_seconds");
             };
-            return match media::seek(player_id.as_deref(), offset_seconds).await {
+            return match self.media.seek(player_id.as_deref(), offset_seconds).await {
                 Ok(player_id) => success(json!({
                     "operation": request.operation,
                     "player_id": player_id,
@@ -210,7 +234,11 @@ impl DesktopEffects {
                 Err(value) => error("media-operation-failed", value.to_string()),
             };
         }
-        match media::operation(player_id.as_deref(), &request.operation).await {
+        match self
+            .media
+            .operation(player_id.as_deref(), &request.operation)
+            .await
+        {
             Ok(player_id) => {
                 success(json!({"operation": request.operation, "player_id": player_id}))
             }
@@ -234,6 +262,78 @@ impl DesktopEffects {
     }
 }
 
+async fn run_audio_controller(
+    mut receiver: mpsc::Receiver<(AudioCommand, AudioReply)>,
+    state: StateStore,
+) {
+    while let Some(first) = receiver.recv().await {
+        // Key-repeat requests normally arrive within one scheduler turn. A
+        // tiny collection window lets one PipeWire transaction apply the
+        // accumulated delta instead of queueing obsolete probes.
+        sleep(Duration::from_millis(8)).await;
+        let mut pending = vec![first];
+        while let Ok(command) = receiver.try_recv() {
+            pending.push(command);
+        }
+        let mut index = 0;
+        while index < pending.len() {
+            if matches!(pending[index].0, AudioCommand::Adjust(_)) {
+                let start = index;
+                let (end, delta) = accumulated_adjustment(&pending, start);
+                index = end;
+                let result = audio::adjust(delta)
+                    .await
+                    .map_err(|error| error.to_string());
+                publish_audio_result(&state, &mut pending[start..index], result).await;
+                continue;
+            }
+            let result = match pending[index].0 {
+                AudioCommand::SetMuted(value) => audio::set_muted(value).await,
+                AudioCommand::SetInputMuted(value) => audio::set_input_muted(value).await,
+                AudioCommand::Adjust(_) => unreachable!(),
+            }
+            .map_err(|error| error.to_string());
+            publish_audio_result(&state, &mut pending[index..=index], result).await;
+            index += 1;
+        }
+    }
+}
+
+fn accumulated_adjustment(commands: &[(AudioCommand, AudioReply)], start: usize) -> (usize, i16) {
+    let mut end = start;
+    let mut delta = 0_i32;
+    while end < commands.len() {
+        let AudioCommand::Adjust(value) = commands[end].0 else {
+            break;
+        };
+        delta = delta.saturating_add(i32::from(value));
+        end += 1;
+    }
+    (
+        end,
+        delta.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+    )
+}
+
+async fn publish_audio_result(
+    state: &StateStore,
+    commands: &mut [(AudioCommand, AudioReply)],
+    result: Result<crate::model::AudioState, String>,
+) {
+    if let Ok(audio) = &result {
+        state.update_audio(audio.clone()).await;
+    }
+    for (_, reply) in commands {
+        let value = match &result {
+            Ok(audio) => Ok(audio.clone()),
+            Err(error) => Err(error.clone()),
+        };
+        if let Some(reply) = reply.take() {
+            let _ = reply.send(value);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -243,7 +343,19 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::DesktopEffects;
+    use super::{AudioCommand, DesktopEffects, accumulated_adjustment};
+
+    #[test]
+    fn adjacent_volume_key_requests_are_coalesced() {
+        let commands = vec![
+            (AudioCommand::Adjust(2), None),
+            (AudioCommand::Adjust(3), None),
+            (AudioCommand::SetMuted(Some(true)), None),
+            (AudioCommand::Adjust(-1), None),
+        ];
+        assert_eq!(accumulated_adjustment(&commands, 0), (2, 5));
+        assert_eq!(accumulated_adjustment(&commands, 3), (4, -1));
+    }
 
     #[tokio::test]
     async fn cycles_media_players_without_calling_mpris() {

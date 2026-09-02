@@ -19,13 +19,48 @@ const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
+const MPRIS_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Default)]
 pub(crate) struct MediaService {
     selected_player: Arc<RwLock<Option<String>>>,
+    connection: Arc<RwLock<Option<zbus::Connection>>>,
 }
 
 impl MediaService {
+    async fn connection(&self) -> Result<zbus::Connection> {
+        if let Some(connection) = self.connection.read().await.clone() {
+            return Ok(connection);
+        }
+        zbus::Connection::session()
+            .await
+            .context("connect to session D-Bus")
+    }
+
+    pub(crate) async fn seek(
+        &self,
+        player_id: Option<&str>,
+        offset_seconds: i64,
+    ) -> Result<String> {
+        let offset_microseconds = seek_offset_microseconds(offset_seconds)?;
+        let connection = self.connection().await?;
+        let selected = resolve_player(&connection, player_id).await?;
+        call_player(&connection, &selected, "Seek", &(offset_microseconds,)).await?;
+        Ok(selected)
+    }
+
+    pub(crate) async fn operation(
+        &self,
+        player_id: Option<&str>,
+        operation: &str,
+    ) -> Result<String> {
+        let method = operation_method(operation)?;
+        let connection = self.connection().await?;
+        let selected = resolve_player(&connection, player_id).await?;
+        call_player(&connection, &selected, method, &()).await?;
+        Ok(selected)
+    }
+
     pub(crate) async fn cycle(&self, store: &StateStore) -> Result<MediaState> {
         let mut selected = self.selected_player.write().await;
         let mut state = store.snapshot().await.media;
@@ -61,9 +96,11 @@ pub(crate) async fn monitor(store: StateStore, service: MediaService) {
     loop {
         match zbus::Connection::session().await {
             Ok(connection) => {
+                *service.connection.write().await = Some(connection.clone());
                 if let Err(error) = monitor_connection(&connection, &store, &service).await {
                     tracing::warn!(%error, "MPRIS monitor disconnected");
                 }
+                *service.connection.write().await = None;
             }
             Err(error) => {
                 store
@@ -335,13 +372,13 @@ fn operation_method(operation: &str) -> Result<&'static str> {
 }
 
 async fn resolve_player(connection: &zbus::Connection, player_id: Option<&str>) -> Result<String> {
-    let names = player_names(connection).await?;
     if let Some(id) = player_id {
-        if !names.iter().any(|name| name == id) {
-            bail!("requested MPRIS player is unavailable");
+        if !id.starts_with(PREFIX) {
+            bail!("requested MPRIS player ID is invalid");
         }
         return Ok(id.to_string());
     }
+    let names = player_names(connection).await?;
     let mut players = Vec::new();
     for name in &names {
         if let Ok(player) = read_player(connection, name).await {
@@ -362,32 +399,23 @@ fn seek_offset_microseconds(offset_seconds: i64) -> Result<i64> {
         .context("MPRIS seek offset overflow")
 }
 
-pub(crate) async fn seek(player_id: Option<&str>, offset_seconds: i64) -> Result<String> {
-    let offset_microseconds = seek_offset_microseconds(offset_seconds)?;
-    let connection = zbus::Connection::session()
-        .await
-        .context("connect to session D-Bus")?;
-    let selected = resolve_player(&connection, player_id).await?;
-    let proxy = zbus::Proxy::new(&connection, selected.as_str(), PATH, PLAYER_INTERFACE).await?;
-    proxy
-        .call_method("Seek", &(offset_microseconds,))
-        .await
-        .context("call MPRIS player seek")?;
-    Ok(selected)
-}
-
-pub(crate) async fn operation(player_id: Option<&str>, operation: &str) -> Result<String> {
-    let method = operation_method(operation)?;
-    let connection = zbus::Connection::session()
-        .await
-        .context("connect to session D-Bus")?;
-    let selected = resolve_player(&connection, player_id).await?;
-    let proxy = zbus::Proxy::new(&connection, selected.as_str(), PATH, PLAYER_INTERFACE).await?;
-    proxy
-        .call_method(method, &())
-        .await
-        .context("call MPRIS player operation")?;
-    Ok(selected)
+async fn call_player<B>(
+    connection: &zbus::Connection,
+    player_id: &str,
+    method: &str,
+    body: &B,
+) -> Result<()>
+where
+    B: serde::ser::Serialize + zvariant::DynamicType,
+{
+    tokio::time::timeout(MPRIS_OPERATION_TIMEOUT, async {
+        let proxy = zbus::Proxy::new(connection, player_id, PATH, PLAYER_INTERFACE).await?;
+        proxy.call_method(method, body).await?;
+        Ok::<_, zbus::Error>(())
+    })
+    .await
+    .context("MPRIS operation timed out")??;
+    Ok(())
 }
 
 #[cfg(test)]

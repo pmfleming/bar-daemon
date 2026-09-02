@@ -59,8 +59,11 @@ impl ActivityApi {
         }
     }
     pub(super) async fn activity_refresh(&self) -> Value {
-        self.activity.refresh().await;
-        success(json!({"activity": self.state.snapshot().await.activity}))
+        self.activity.request_refresh().await;
+        success(json!({
+            "activity": self.state.snapshot().await.activity,
+            "operation": { "state": "accepted" }
+        }))
     }
     pub(super) async fn todo_create(&self, params: Value) -> Value {
         let request = request!(params, CreateTodoRequest, "todos.create");
