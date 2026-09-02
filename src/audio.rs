@@ -75,7 +75,9 @@ pub(crate) async fn monitor(store: StateStore) {
         .name("bar-pipewire-monitor".into())
         .spawn(move || {
             let callback: ChangeCallback = Arc::new(move || {
-                let _ = changes_tx.blocking_send(());
+                // A PipeWire transition emits several registry notifications.
+                // One queued wake-up is enough to rebuild the complete snapshot.
+                let _ = changes_tx.try_send(());
             });
             if let Err(error) = monitor_pipewire(callback) {
                 tracing::warn!(%error, "PipeWire monitor ended");
@@ -83,12 +85,20 @@ pub(crate) async fn monitor(store: StateStore) {
         })
         .ok();
 
+    refresh(&store).await;
     loop {
-        refresh(&store).await;
         tokio::select! {
-            value = changes_rx.recv() => if value.is_none() { sleep(Duration::from_secs(2)).await; },
+            value = changes_rx.recv() => {
+                if value.is_some() {
+                    sleep(Duration::from_millis(75)).await;
+                    while changes_rx.try_recv().is_ok() {}
+                } else {
+                    sleep(Duration::from_secs(2)).await;
+                }
+            },
             _ = sleep(Duration::from_secs(30)) => {}
         }
+        refresh(&store).await;
     }
 }
 

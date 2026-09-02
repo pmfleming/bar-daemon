@@ -44,11 +44,18 @@ pub(crate) async fn monitor(store: StateStore) {
         watch_device_files(watcher, &root);
     }
     loop {
-        refresh(&store, &root).await;
         tokio::select! {
-            value = rx.recv() => if value.is_none() { sleep(Duration::from_secs(2)).await; },
+            value = rx.recv() => {
+                if value.is_some() {
+                    sleep(Duration::from_millis(50)).await;
+                    while rx.try_recv().is_ok() {}
+                } else {
+                    sleep(Duration::from_secs(2)).await;
+                }
+            },
             _ = sleep(Duration::from_secs(30)) => {}
         }
+        refresh(&store, &root).await;
     }
 }
 

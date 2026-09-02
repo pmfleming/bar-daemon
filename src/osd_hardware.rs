@@ -5,12 +5,17 @@ use crate::{model::OsdHardwareState, state::StateStore};
 const LED_ROOT: &str = "/sys/class/leds";
 
 pub(crate) async fn monitor(state: StateStore) {
-    let mut interval = tokio::time::interval(Duration::from_millis(200));
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
-        state
-            .update_osd_hardware(read_state(Path::new(LED_ROOT)))
-            .await;
+        let value = tokio::task::spawn_blocking(|| read_state(Path::new(LED_ROOT)))
+            .await
+            .unwrap_or_else(|error| OsdHardwareState {
+                error: Some(format!("LED reader failed: {error}")),
+                ..OsdHardwareState::default()
+            });
+        state.update_osd_hardware(value).await;
     }
 }
 
