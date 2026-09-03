@@ -61,6 +61,7 @@ pub(crate) struct WorldClockState {
     pub city: String,
     pub abbreviation: String,
     pub utc_offset_seconds: i32,
+    pub timezone_region_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -71,6 +72,7 @@ pub(crate) struct WeatherState {
     pub home: bool,
     pub timezone: String,
     pub utc_offset_seconds: i32,
+    pub timezone_region_ids: Vec<String>,
     pub latitude: f64,
     pub longitude: f64,
     pub condition: String,

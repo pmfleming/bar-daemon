@@ -420,7 +420,10 @@
           "city": "Tokyo",
           "label": "Tokyo",
           "timezone": "Asia/Tokyo",
-          "utc_offset_seconds": 32400
+          "utc_offset_seconds": 32400,
+          "timezone_region_ids": [
+            "Asia-Tokyo"
+          ]
         }
       ],
       "weather": {
@@ -469,6 +472,10 @@
         "id": "home",
         "home": true,
         "utc_offset_seconds": 7200,
+        "timezone_region_ids": [
+          "Africa-Johannesburg",
+          "Europe-Paris"
+        ],
         "condition_code": 0,
         "is_day": true,
         "precipitation_mm": 0.0,
@@ -522,6 +529,10 @@
           "id": "home",
           "home": true,
           "utc_offset_seconds": 7200,
+          "timezone_region_ids": [
+            "Africa-Johannesburg",
+            "Europe-Paris"
+          ],
           "condition_code": 0,
           "is_day": true,
           "precipitation_mm": 0.0,
@@ -791,7 +802,11 @@
       "city": "Amsterdam",
       "error": null,
       "timezone": "Europe/Amsterdam",
-      "utc_offset_seconds": 7200
+      "utc_offset_seconds": 7200,
+      "timezone_region_ids": [
+        "Africa-Johannesburg",
+        "Europe-Paris"
+      ]
     },
     "updates": {
       "available": true,

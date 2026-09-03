@@ -24,6 +24,7 @@ mod sleep;
 mod state;
 mod time;
 mod timezone;
+mod timezone_regions;
 mod updates;
 
 /// Runs the session D-Bus daemon until it receives a termination signal.

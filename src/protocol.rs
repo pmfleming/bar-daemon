@@ -161,6 +161,7 @@ fn generated_contract_fixture() -> Value {
     let weather = json!({
         "available": true, "id": "home", "location": "Amsterdam", "home": true,
         "timezone": "Europe/Amsterdam", "utc_offset_seconds": 7200,
+        "timezone_region_ids": ["Africa-Johannesburg", "Europe-Paris"],
         "latitude": 52.3676, "longitude": 4.9041,
         "condition": "Clear", "condition_code": 0, "is_day": true,
         "temperature_c": 17.0, "apparent_temperature_c": 16.0,
@@ -190,7 +191,7 @@ fn generated_contract_fixture() -> Value {
                     "end_date": null, "timezone": "Europe/Amsterdam", "location": "Room 1", "url": ""
                 },
                 "sources": [{ "id": "work", "name": "Work", "kind": "ics-directory", "available": true, "item_count": 1, "error": null }],
-                "world_clocks": [{ "timezone": "Asia/Tokyo", "label": "Tokyo", "city": "Tokyo", "abbreviation": "JST", "utc_offset_seconds": 32400 }],
+                "world_clocks": [{ "timezone": "Asia/Tokyo", "label": "Tokyo", "city": "Tokyo", "abbreviation": "JST", "utc_offset_seconds": 32400, "timezone_region_ids": ["Asia-Tokyo"] }],
                 "weather": weather.clone(),
                 "weather_locations": [weather],
                 "error": null
@@ -319,7 +320,8 @@ fn generated_contract_fixture() -> Value {
             },
             "timezone": {
                 "available": true, "timezone": "Europe/Amsterdam", "city": "Amsterdam",
-                "abbreviation": "CEST", "utc_offset_seconds": 7200, "error": null
+                "abbreviation": "CEST", "utc_offset_seconds": 7200,
+                "timezone_region_ids": ["Africa-Johannesburg", "Europe-Paris"], "error": null
             }
         }
     })

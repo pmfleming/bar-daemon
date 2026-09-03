@@ -456,7 +456,8 @@ fn world_clock(timezone: &str, label: &str) -> Result<WorldClockState> {
     let zone: Tz = timezone
         .parse()
         .with_context(|| format!("parse world-clock timezone {timezone}"))?;
-    let now = Utc::now().with_timezone(&zone);
+    let instant = Utc::now();
+    let now = instant.with_timezone(&zone);
     let city = timezone
         .rsplit('/')
         .next()
@@ -472,6 +473,10 @@ fn world_clock(timezone: &str, label: &str) -> Result<WorldClockState> {
         city,
         abbreviation: now.format("%Z").to_string(),
         utc_offset_seconds: now.offset().fix().local_minus_utc(),
+        timezone_region_ids: crate::timezone_regions::ids_for_offset(
+            now.offset().fix().local_minus_utc(),
+            instant,
+        ),
     })
 }
 

@@ -140,6 +140,9 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
         home: config.home,
         timezone: response.timezone,
         utc_offset_seconds: response.utc_offset_seconds,
+        timezone_region_ids: crate::timezone_regions::current_ids_for_offset(
+            response.utc_offset_seconds,
+        ),
         latitude: config.latitude,
         longitude: config.longitude,
         condition: condition(response.current.weather_code).into(),

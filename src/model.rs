@@ -60,6 +60,7 @@ pub(crate) struct TimezoneState {
     pub city: String,
     pub abbreviation: String,
     pub utc_offset_seconds: i32,
+    pub timezone_region_ids: Vec<String>,
     pub error: Option<String>,
 }
 
