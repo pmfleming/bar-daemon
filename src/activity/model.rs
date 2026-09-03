@@ -71,6 +71,8 @@ pub(crate) struct WeatherState {
     pub home: bool,
     pub timezone: String,
     pub utc_offset_seconds: i32,
+    pub latitude: f64,
+    pub longitude: f64,
     pub condition: String,
     pub condition_code: u16,
     pub is_day: bool,

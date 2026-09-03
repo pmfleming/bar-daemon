@@ -161,6 +161,7 @@ fn generated_contract_fixture() -> Value {
     let weather = json!({
         "available": true, "id": "home", "location": "Amsterdam", "home": true,
         "timezone": "Europe/Amsterdam", "utc_offset_seconds": 7200,
+        "latitude": 52.3676, "longitude": 4.9041,
         "condition": "Clear", "condition_code": 0, "is_day": true,
         "temperature_c": 17.0, "apparent_temperature_c": 16.0,
         "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5,
