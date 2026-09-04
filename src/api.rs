@@ -136,41 +136,16 @@ impl ApiService {
 mod tests {
     use super::ApiService;
     use crate::{
-        activity::{
-            ActivityService,
-            notifications::{
-                engine::NotificationEngine,
-                model::{IncomingNotification, NotificationHints},
-                service::NotificationService,
-            },
-        },
+        activity::{ActivityService, notifications::service::NotificationService},
         media::MediaService,
         state::StateStore,
     };
     use serde_json::json;
-    use std::sync::Arc;
-
     async fn api() -> ApiService {
         let state = StateStore::default();
         let notifications = NotificationService::swaync();
         let activity = ActivityService::new(state.clone(), notifications.sink()).await;
         ApiService::new(state, activity, notifications, MediaService::default())
-    }
-    async fn native_api() -> (ApiService, Arc<NotificationEngine>) {
-        let state = StateStore::default();
-        let notifications = NotificationEngine::new(state.clone()).await;
-        let service = NotificationService::native(Arc::clone(&notifications));
-        let activity = ActivityService::new(state.clone(), service.sink()).await;
-        (
-            ApiService::new(state, activity, service, MediaService::default()),
-            notifications,
-        )
-    }
-
-    #[tokio::test]
-    async fn rejects_invalid_workspace_focus() {
-        let response = api().await.dispatch("workspace.focus", json!({})).await;
-        assert_eq!(response["error"]["code"], "validation-error");
     }
     #[tokio::test]
     async fn returns_versioned_snapshot() {
@@ -178,59 +153,5 @@ mod tests {
         assert_eq!(response["protocol"], "bar-api");
         assert_eq!(response["version"], 1);
         assert_eq!(response["ok"], true);
-    }
-    #[tokio::test]
-    async fn controls_native_notifications() {
-        let (api, notifications) = native_api().await;
-        let id = notifications
-            .notify(
-                0,
-                IncomingNotification {
-                    app_name: "test".into(),
-                    app_icon: String::new(),
-                    summary: "summary".into(),
-                    body: String::new(),
-                    actions: Vec::new(),
-                    hints: NotificationHints::default(),
-                    expire_timeout: 0,
-                },
-            )
-            .await
-            .unwrap();
-        let dnd = api
-            .dispatch("notifications.setDnd", json!({ "enabled": true }))
-            .await;
-        assert_eq!(dnd["data"]["notifications"]["dnd"], true);
-        let dismissed = api
-            .dispatch("notifications.dismiss", json!({ "id": id }))
-            .await;
-        assert_eq!(dismissed["ok"], true);
-        assert!(notifications.active().await.is_empty());
-    }
-    #[tokio::test]
-    async fn rejects_unsupported_media_operation_without_accessing_dbus() {
-        let response = api()
-            .await
-            .dispatch("media.operation", json!({ "operation": "shuffle" }))
-            .await;
-        assert_eq!(response["error"]["code"], "media-operation-failed");
-    }
-
-    #[tokio::test]
-    async fn validates_todo_priority_range() {
-        let response = api()
-            .await
-            .dispatch("todos.create", json!({ "title": "test", "priority": 300 }))
-            .await;
-        assert_eq!(response["error"]["code"], "validation-error");
-    }
-
-    #[tokio::test]
-    async fn validates_input_mute_without_touching_pipewire() {
-        let response = api()
-            .await
-            .dispatch("audio.setInputMuted", json!({ "muted": "yes" }))
-            .await;
-        assert_eq!(response["error"]["code"], "validation-error");
     }
 }

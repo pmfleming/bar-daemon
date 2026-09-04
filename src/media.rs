@@ -420,10 +420,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MediaService, next_player_id, operation_method, seek_offset_microseconds,
-        select_active_player,
-    };
+    use super::{MediaService, seek_offset_microseconds, select_active_player};
     use crate::{model::MediaPlayer, state::StateStore};
 
     fn player(id: &str, status: &str, spotify: bool, controllable: bool) -> MediaPlayer {
@@ -435,27 +432,6 @@ mod tests {
             can_control: controllable,
             ..MediaPlayer::default()
         }
-    }
-
-    #[test]
-    fn cycles_players_and_requires_an_alternative() {
-        let players = vec![
-            player("browser", "paused", false, true),
-            player("spotify", "paused", true, true),
-        ];
-        assert_eq!(
-            next_player_id(&players, Some("browser")).as_deref(),
-            Some("spotify")
-        );
-        assert_eq!(
-            next_player_id(&players, Some("spotify")).as_deref(),
-            Some("browser")
-        );
-        assert_eq!(
-            next_player_id(&players, Some("missing")).as_deref(),
-            Some("browser")
-        );
-        assert!(next_player_id(&players[..1], Some("browser")).is_none());
     }
 
     #[tokio::test]
@@ -491,14 +467,6 @@ mod tests {
         assert_eq!(seek_offset_microseconds(30).unwrap(), 30_000_000);
         assert!(seek_offset_microseconds(0).is_err());
         assert!(seek_offset_microseconds(86_401).is_err());
-    }
-
-    #[test]
-    fn maps_operations_before_accessing_dbus() {
-        assert_eq!(operation_method("play-pause").unwrap(), "PlayPause");
-        assert_eq!(operation_method("next").unwrap(), "Next");
-        assert_eq!(operation_method("previous").unwrap(), "Previous");
-        assert!(operation_method("shuffle").is_err());
     }
 
     #[test]

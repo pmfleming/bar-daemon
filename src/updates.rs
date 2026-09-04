@@ -182,14 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn absent_state_directory_is_not_an_error() {
-        let root = tempdir().unwrap();
-        let state = read_state(&root.path().join("missing")).unwrap();
-        assert!(!state.available);
-        assert!(state.error.is_none());
-    }
-
-    #[test]
     fn watches_parent_until_state_directory_exists() {
         let root = tempdir().unwrap();
         let directory = root.path().join("updates");

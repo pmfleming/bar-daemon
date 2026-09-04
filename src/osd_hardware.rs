@@ -36,24 +36,54 @@ fn read_state(root: &Path) -> OsdHardwareState {
         let maximum = read_number(&entry.path().join("max_brightness"))
             .unwrap_or(1)
             .max(1);
-        if name.contains("capslock") {
-            state.caps_lock |= brightness > 0;
-        } else if name.contains("numlock") {
-            state.num_lock |= brightness > 0;
-        } else if name.contains("kbd_backlight") || name.contains("keyboard-backlight") {
+        update_led(&mut state, &name, brightness, maximum);
+    }
+    state
+}
+
+#[derive(Clone, Copy)]
+enum LedKind {
+    CapsLock,
+    NumLock,
+    Keyboard,
+    Microphone,
+    Camera,
+}
+
+fn update_led(state: &mut OsdHardwareState, name: &str, brightness: u64, maximum: u64) {
+    let Some(kind) = led_kind(name) else {
+        return;
+    };
+    let active = brightness > 0;
+    match kind {
+        LedKind::CapsLock => state.caps_lock |= active,
+        LedKind::NumLock => state.num_lock |= active,
+        LedKind::Keyboard => {
             let percent = ((brightness.saturating_mul(100) / maximum).min(100)) as u8;
             state.keyboard_backlight_percent = Some(
                 state
                     .keyboard_backlight_percent
                     .map_or(percent, |current| current.max(percent)),
             );
-        } else if name.contains("micmute") || name.contains("microphone-mute") {
-            state.microphone_privacy |= brightness > 0;
-        } else if name.contains("cameramute") || name.contains("camera-mute") {
-            state.camera_privacy |= brightness > 0;
         }
+        LedKind::Microphone => state.microphone_privacy |= active,
+        LedKind::Camera => state.camera_privacy |= active,
     }
-    state
+}
+
+fn led_kind(name: &str) -> Option<LedKind> {
+    [
+        ("capslock", LedKind::CapsLock),
+        ("numlock", LedKind::NumLock),
+        ("kbd_backlight", LedKind::Keyboard),
+        ("keyboard-backlight", LedKind::Keyboard),
+        ("micmute", LedKind::Microphone),
+        ("microphone-mute", LedKind::Microphone),
+        ("cameramute", LedKind::Camera),
+        ("camera-mute", LedKind::Camera),
+    ]
+    .into_iter()
+    .find_map(|(pattern, kind)| name.contains(pattern).then_some(kind))
 }
 
 fn read_number(path: &Path) -> Option<u64> {

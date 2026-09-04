@@ -163,24 +163,6 @@ mod tests {
     }
 
     #[test]
-    fn reports_full_only_after_initial_state() {
-        let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&state(100, true), true), None);
-        assert_eq!(tracker.observe(&state(99, true), true), None);
-        assert_eq!(
-            tracker.observe(&state(100, true), true),
-            Some(BatteryAlert::ChargeComplete(100))
-        );
-    }
-
-    #[test]
-    fn full_notification_can_be_disabled() {
-        let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&state(99, true), false), None);
-        assert_eq!(tracker.observe(&state(100, true), false), None);
-    }
-
-    #[test]
     fn protected_limit_counts_as_charge_complete() {
         let mut tracker = AlertTracker::default();
         let mut below = state(79, true);

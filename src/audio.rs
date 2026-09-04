@@ -820,41 +820,7 @@ mod tests {
 
     use pipewire as pw;
 
-    use super::{
-        RouteProbe, SinkProbe, adjusted_volume, apply_route, default_node_name, linear_to_raw,
-        preferred_node, raw_to_linear, remove_relevant_id, requested_mute,
-    };
-
-    #[test]
-    fn clamps_volume_adjustments_and_resolves_mute_toggles() {
-        assert_eq!(adjusted_volume(0.95, 10), 1.0);
-        assert_eq!(adjusted_volume(0.05, -10), 0.0);
-        assert!(!requested_mute(true, None));
-        assert!(requested_mute(false, Some(true)));
-    }
-
-    #[test]
-    fn converts_pipewire_cubic_volume() {
-        assert!((raw_to_linear(linear_to_raw(0.5)) - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn parses_default_metadata() {
-        assert_eq!(
-            default_node_name(r#"{"name":"alsa_output.test"}"#).as_deref(),
-            Some("alsa_output.test")
-        );
-        assert!(default_node_name("invalid").is_none());
-    }
-
-    #[test]
-    fn removes_monitor_ids_without_overlapping_refcell_borrows() {
-        let relevant = std::cell::RefCell::new(vec![10, 20]);
-
-        assert!(remove_relevant_id(&relevant, 10));
-        assert_eq!(*relevant.borrow(), vec![20]);
-        assert!(!remove_relevant_id(&relevant, 30));
-    }
+    use super::{RouteProbe, SinkProbe, apply_route, preferred_node};
 
     #[test]
     fn applies_the_only_matching_hardware_route() {

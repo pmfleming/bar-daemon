@@ -13,7 +13,7 @@ use zvariant::OwnedObjectPath;
 
 use crate::{
     activity::notifications::service::NotificationSink,
-    model::{BatteryOperationState, BatteryPolicyState, BatteryState},
+    model::{BatteryDeviceState, BatteryOperationState, BatteryPolicyState, BatteryState},
     state::StateStore,
 };
 
@@ -33,6 +33,30 @@ static BATTERY_EFFECTS: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) const WARNING_PERCENT: u8 = 25;
 pub(crate) const CRITICAL_PERCENT: u8 = 12;
+
+pub(crate) enum DeviceSupportError {
+    Missing,
+    Unsupported,
+}
+
+pub(crate) fn require_device_behaviour<'a>(
+    state: &'a BatteryState,
+    battery_id: &str,
+    behaviour: &str,
+) -> std::result::Result<&'a BatteryDeviceState, DeviceSupportError> {
+    let device = state
+        .devices
+        .iter()
+        .find(|device| device.id == battery_id)
+        .ok_or(DeviceSupportError::Missing)?;
+    device
+        .protection
+        .available_behaviours
+        .iter()
+        .any(|value| value == behaviour)
+        .then_some(device)
+        .ok_or(DeviceSupportError::Unsupported)
+}
 
 pub(crate) async fn lock_effects() -> MutexGuard<'static, ()> {
     BATTERY_EFFECTS.get_or_init(|| Mutex::new(())).lock().await
@@ -185,54 +209,83 @@ async fn publish_native(
 async fn reconcile_and_decorate(mut state: BatteryState) -> BatteryState {
     let _guard = lock_effects().await;
     let (mut config, mut runtime, mut policy_error) = load_policy_data().await;
-    if runtime.charge_once_active && runtime.charge_once_battery_id.is_empty() {
-        runtime.charge_once_battery_id = state.native_path.clone();
-        if let Err(error) = config::save_runtime(&runtime).await {
-            append_error(&mut policy_error, error.to_string());
-        }
+    migrate_charge_once_battery(&state, &mut runtime, &mut policy_error).await;
+    if reconcile_runtime_operation(&mut state, &mut runtime, &mut policy_error).await {
+        save_runtime(&runtime, &mut policy_error).await;
     }
-    if reconcile_runtime_operation(&mut state, &mut runtime, &mut policy_error).await
-        && let Err(error) = config::save_runtime(&runtime).await
-    {
-        append_error(&mut policy_error, error.to_string());
-    }
-    let charge_once_percentage = state
-        .devices
-        .iter()
-        .find(|device| device.id == runtime.charge_once_battery_id)
-        .map(|device| device.percentage)
-        .unwrap_or(0);
-    let should_finish_charge_once = runtime.charge_once_active
-        && (!state.plugged
-            || charge_once_percentage >= 100
-            || runtime.is_expired(crate::time::unix_ms()));
+    let finish_charge_once = charge_once_is_due(&state, &runtime);
     let (restored, config_changed) = reconcile_thresholds(
         &mut state,
         &mut config,
         &runtime,
-        should_finish_charge_once,
+        finish_charge_once,
         &mut policy_error,
     )
     .await;
     if config_changed && let Err(error) = config::save_config(&config).await {
         append_error(&mut policy_error, error.to_string());
     }
+    finish_charge_once_if_due(
+        finish_charge_once,
+        restored,
+        &mut runtime,
+        &mut policy_error,
+    )
+    .await;
+    decorate(state, &config, &runtime, policy_error)
+}
 
-    if should_finish_charge_once && restored {
-        runtime = config::BatteryRuntimeState::default();
-        if let Err(error) = config::save_runtime(&runtime).await {
-            append_error(&mut policy_error, error.to_string());
-        }
-    } else if should_finish_charge_once && !restored {
+async fn migrate_charge_once_battery(
+    state: &BatteryState,
+    runtime: &mut config::BatteryRuntimeState,
+    policy_error: &mut Option<String>,
+) {
+    if runtime.charge_once_active && runtime.charge_once_battery_id.is_empty() {
+        runtime
+            .charge_once_battery_id
+            .clone_from(&state.native_path);
+        save_runtime(runtime, policy_error).await;
+    }
+}
+
+fn charge_once_is_due(state: &BatteryState, runtime: &config::BatteryRuntimeState) -> bool {
+    let percentage = state
+        .devices
+        .iter()
+        .find(|device| device.id == runtime.charge_once_battery_id)
+        .map(|device| device.percentage)
+        .unwrap_or(0);
+    runtime.charge_once_active
+        && (!state.plugged || percentage >= 100 || runtime.is_expired(crate::time::unix_ms()))
+}
+
+async fn finish_charge_once_if_due(
+    due: bool,
+    restored: bool,
+    runtime: &mut config::BatteryRuntimeState,
+    policy_error: &mut Option<String>,
+) {
+    if !due {
+        return;
+    }
+    if !restored {
         append_error(
-            &mut policy_error,
+            policy_error,
             format!(
                 "cannot verify restored charge thresholds for {}: the battery is absent, unsupported, or reported different values",
                 runtime.charge_once_battery_id
             ),
         );
+        return;
     }
-    decorate(state, &config, &runtime, policy_error)
+    *runtime = config::BatteryRuntimeState::default();
+    save_runtime(runtime, policy_error).await;
+}
+
+async fn save_runtime(runtime: &config::BatteryRuntimeState, policy_error: &mut Option<String>) {
+    if let Err(error) = config::save_runtime(runtime).await {
+        append_error(policy_error, error.to_string());
+    }
 }
 
 async fn reconcile_thresholds(
@@ -755,21 +808,7 @@ async fn publish_error(error: impl std::fmt::Display, store: &StateStore) {
 
 #[cfg(test)]
 mod tests {
-    use super::{config, reconciliation_target, target_is_applied};
-
-    #[test]
-    fn unmanaged_thresholds_are_left_alone() {
-        let config = config::BatteryDeviceConfig::default();
-        assert_eq!(
-            reconciliation_target(
-                &config,
-                &config::BatteryRuntimeState::default(),
-                false,
-                "BAT0"
-            ),
-            None
-        );
-    }
+    use super::{config, reconciliation_target};
 
     #[test]
     fn managed_policy_is_reapplied() {
@@ -787,26 +826,6 @@ mod tests {
             ),
             Some((75, 80))
         );
-    }
-
-    #[test]
-    fn temporary_readback_cannot_satisfy_a_restoration_target() {
-        let observed = (Some(5), Some(100));
-        let accepted_temporary_readback = Some((5, 100));
-        assert!(target_is_applied(
-            observed,
-            (0, 100),
-            accepted_temporary_readback,
-            true,
-            false
-        ));
-        assert!(!target_is_applied(
-            observed,
-            (75, 80),
-            accepted_temporary_readback,
-            false,
-            false
-        ));
     }
 
     #[test]

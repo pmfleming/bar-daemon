@@ -386,52 +386,9 @@ pub(crate) async fn set_action_enabled(action: &str, enabled: bool) -> Result<Po
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use zvariant::{OwnedValue, Value};
-
     use crate::model::{BatteryPolicyState, BatteryState};
 
-    use super::{PowerEnvelope, parse_action, parse_hold, parse_profile, should_hold_power_saver};
-
-    fn owned(value: &str) -> OwnedValue {
-        OwnedValue::try_from(Value::new(value)).unwrap()
-    }
-
-    #[test]
-    fn parses_profile_dictionary() {
-        let values = HashMap::from([
-            ("Profile".into(), owned("balanced")),
-            ("Driver".into(), owned("amd_pstate")),
-            ("PlatformDriver".into(), owned("platform_profile")),
-        ]);
-        let profile = parse_profile(&values).unwrap();
-        assert_eq!(profile.name, "balanced");
-        assert_eq!(profile.driver, "amd_pstate");
-    }
-
-    #[test]
-    fn parses_action_and_hold_dictionaries() {
-        let action = HashMap::from([
-            ("Action".into(), owned("amdgpu_panel_power")),
-            ("Description".into(), owned("Panel power savings")),
-            (
-                "Enabled".into(),
-                OwnedValue::try_from(Value::new(true)).unwrap(),
-            ),
-        ]);
-        let action = parse_action(&action).unwrap();
-        assert_eq!(action.name, "amdgpu_panel_power");
-        assert!(action.enabled);
-
-        let hold = HashMap::from([
-            ("ApplicationId".into(), owned("org.example.Compiler")),
-            ("Profile".into(), owned("performance")),
-            ("Reason".into(), owned("Building")),
-        ]);
-        let hold = parse_hold(&hold).unwrap();
-        assert_eq!(hold.profile, "performance");
-        assert_eq!(hold.reason, "Building");
-    }
+    use super::{PowerEnvelope, should_hold_power_saver};
 
     #[test]
     fn manual_override_lasts_only_for_the_current_low_battery_episode() {

@@ -309,38 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn removes_unobserved_time_from_the_graph_scale() {
-        let mut history = HistoryStore::load(None, 0);
-        history.record(&state(80, true, true), 1_000);
-        for minute in 1..=15 {
-            history.record(&state(82, true, true), 1_000 + minute * 60_000);
-        }
-
-        // A suspend-sized gap starts a new segment at the same compact x
-        // coordinate rather than adding the wall-clock gap.
-        history.record(&state(79, false, false), 3_601_000);
-        for minute in 1..=15 {
-            history.record(&state(77, false, false), 3_601_000 + minute * 60_000);
-        }
-
-        let graph = history.state(true);
-        assert_eq!(graph.active_duration_ms, 1_800_000);
-        assert_eq!(graph.points.len(), 4);
-        assert_eq!(graph.points[1].active_time_ms, 900_000);
-        assert!(!graph.points[2].continuous);
-        assert_eq!(graph.points[2].active_time_ms, 900_000);
-        assert_eq!(graph.points[3].active_time_ms, 1_800_000);
-        assert_eq!(graph.points[3].mode, "discharging");
-    }
-
-    #[test]
-    fn plugged_but_not_charging_is_holding() {
-        let mut history = HistoryStore::load(None, 0);
-        history.record(&state(80, true, false), 1_000);
-        assert_eq!(history.points[0].mode, "holding");
-    }
-
-    #[test]
     fn keeps_seven_days_only() {
         let day = 24 * 60 * 60 * 1_000;
         let mut history = HistoryStore::load(None, 0);

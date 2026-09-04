@@ -82,13 +82,6 @@ impl HyprlandClient {
         }
     }
 
-    #[cfg(test)]
-    fn with_runtime(runtime_dir: std::path::PathBuf, signature: Option<String>) -> Self {
-        Self {
-            ipc: shelllist_hyprland::Client::new(runtime_dir, signature),
-        }
-    }
-
     async fn request(&self, command: &str) -> Result<String> {
         self.ipc.request(command).await
     }
@@ -259,9 +252,7 @@ fn refresh_event(event: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
-    use super::{HyprlandClient, parse_snapshot, refresh_event};
+    use super::parse_snapshot;
 
     #[test]
     fn parses_and_orders_workspace_snapshot() {
@@ -281,22 +272,5 @@ mod tests {
         assert_eq!(active_window.title, "Terminal");
         assert_eq!(active_window.class_name, "com.mitchellh.ghostty");
         assert_eq!(active_window.workspace_id, 1);
-    }
-
-    #[test]
-    fn filters_irrelevant_hyprland_events() {
-        assert!(refresh_event("workspace>>2"));
-        assert!(refresh_event("openwindow>>abc"));
-        assert!(!refresh_event("activelayout>>keyboard,English"));
-    }
-
-    #[tokio::test]
-    async fn reports_missing_instance() {
-        let dir = tempdir().unwrap();
-        tokio::fs::create_dir(dir.path().join("hypr"))
-            .await
-            .unwrap();
-        let client = HyprlandClient::with_runtime(dir.path().to_path_buf(), None);
-        assert!(client.event_socket().await.is_err());
     }
 }

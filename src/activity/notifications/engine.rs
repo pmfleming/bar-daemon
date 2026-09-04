@@ -33,6 +33,82 @@ struct EngineData {
     history_revision: u64,
 }
 
+struct ExpiryBatch {
+    expired_ids: Vec<u32>,
+    awakened: Vec<ActiveNotification>,
+    dnd_expired: bool,
+}
+
+impl EngineData {
+    fn upsert(
+        &mut self,
+        id: u32,
+        incoming: IncomingNotification,
+        source_monitor: String,
+        now: u64,
+        maximum_active: usize,
+    ) -> (ActiveNotification, Option<u32>) {
+        let mut evicted = None;
+        let stored = if let Some(existing) = self.active.get_mut(&id) {
+            existing.replace_from(incoming, now);
+            existing.source_monitor = source_monitor;
+            existing.clone()
+        } else {
+            if self.active.len() >= maximum_active
+                && let Some(oldest) = self
+                    .active
+                    .values()
+                    .min_by_key(|item| (item.created_unix_ms, item.id))
+                    .map(|item| item.id)
+            {
+                self.active.remove(&oldest);
+                evicted = Some(oldest);
+            }
+            let mut stored = ActiveNotification::from_incoming(id, incoming, now);
+            stored.source_monitor = source_monitor;
+            self.active.insert(id, stored.clone());
+            stored
+        };
+        self.history_revision = self.history_revision.wrapping_add(1);
+        (stored, evicted)
+    }
+
+    fn expire(&mut self, now: u64) -> ExpiryBatch {
+        let mut awakened = Vec::new();
+        for notification in self.active.values_mut() {
+            if notification
+                .snoozed_until_unix_ms
+                .is_some_and(|until| until <= now)
+            {
+                notification.snoozed_until_unix_ms = None;
+                awakened.push(notification.clone());
+            }
+        }
+        let expired_ids = self
+            .active
+            .values()
+            .filter(|item| {
+                item.snoozed_until_unix_ms.is_none()
+                    && item.expires_unix_ms.is_some_and(|expiry| expiry <= now)
+            })
+            .map(|item| item.id)
+            .collect();
+        let dnd_expired = self.dnd && self.dnd_until_unix_ms.is_some_and(|until| until <= now);
+        if dnd_expired {
+            self.dnd = false;
+            self.dnd_until_unix_ms = None;
+        }
+        if !awakened.is_empty() || dnd_expired {
+            self.history_revision = self.history_revision.wrapping_add(1);
+        }
+        ExpiryBatch {
+            expired_ids,
+            awakened,
+            dnd_expired,
+        }
+    }
+}
+
 pub(crate) struct NotificationEngine {
     data: Mutex<EngineData>,
     next_id: AtomicU32,
@@ -112,36 +188,21 @@ impl NotificationEngine {
             .workspaces
             .focused_monitor
             .unwrap_or_default();
-        let mut evicted = None;
-        let (id, stored) = {
+        let (id, stored, evicted) = {
             let mut data = self.data.lock().await;
             let id = if replaces_id != 0 && data.active.contains_key(&replaces_id) {
                 replaces_id
             } else {
                 self.allocate_id(&data.active)?
             };
-            let stored = if let Some(existing) = data.active.get_mut(&id) {
-                existing.replace_from(notification, now);
-                existing.source_monitor.clone_from(&source_monitor);
-                existing.clone()
-            } else {
-                if data.active.len() >= self.policy.maximum_active
-                    && let Some(oldest) = data
-                        .active
-                        .values()
-                        .min_by_key(|item| (item.created_unix_ms, item.id))
-                        .map(|item| item.id)
-                {
-                    data.active.remove(&oldest);
-                    evicted = Some(oldest);
-                }
-                let mut stored = ActiveNotification::from_incoming(id, notification, now);
-                stored.source_monitor.clone_from(&source_monitor);
-                data.active.insert(id, stored.clone());
-                stored
-            };
-            data.history_revision = data.history_revision.wrapping_add(1);
-            (id, stored)
+            let (stored, evicted) = data.upsert(
+                id,
+                notification,
+                source_monitor,
+                now,
+                self.policy.maximum_active,
+            );
+            (id, stored, evicted)
         };
         if let Some(persistence) = &self.persistence {
             persistence.save(stored);
@@ -364,47 +425,16 @@ impl NotificationEngine {
     }
 
     async fn expire_due(&self) {
-        let now = unix_ms();
-        let (ids, awakened, dnd_expired) = {
-            let mut data = self.data.lock().await;
-            let mut awakened = Vec::new();
-            for notification in data.active.values_mut() {
-                if notification
-                    .snoozed_until_unix_ms
-                    .is_some_and(|until| until <= now)
-                {
-                    notification.snoozed_until_unix_ms = None;
-                    awakened.push(notification.clone());
-                }
-            }
-            let ids = data
-                .active
-                .values()
-                .filter(|item| {
-                    item.snoozed_until_unix_ms.is_none()
-                        && item.expires_unix_ms.is_some_and(|expiry| expiry <= now)
-                })
-                .map(|item| item.id)
-                .collect::<Vec<_>>();
-            let dnd_expired = data.dnd && data.dnd_until_unix_ms.is_some_and(|until| until <= now);
-            if dnd_expired {
-                data.dnd = false;
-                data.dnd_until_unix_ms = None;
-            }
-            if !awakened.is_empty() || dnd_expired {
-                data.history_revision = data.history_revision.wrapping_add(1);
-            }
-            (ids, awakened, dnd_expired)
-        };
+        let batch = self.data.lock().await.expire(unix_ms());
         if let Some(persistence) = &self.persistence {
-            for notification in awakened {
+            for notification in batch.awakened {
                 persistence.save(notification);
             }
-            if dnd_expired {
+            if batch.dnd_expired {
                 persistence.set_dnd(false, None);
             }
         }
-        for id in ids {
+        for id in batch.expired_ids {
             self.close(id, close_reason::EXPIRED).await;
         }
         self.publish_summary().await;

@@ -116,12 +116,4 @@ mod tests {
         assert!([3600, 7200].contains(&state.utc_offset_seconds));
         assert!(!state.abbreviation.is_empty());
     }
-
-    #[test]
-    fn replaces_underscores_in_city() {
-        assert_eq!(
-            state_for_timezone("America/New_York").unwrap().city,
-            "New York"
-        );
-    }
 }

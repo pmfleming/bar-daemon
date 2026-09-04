@@ -42,6 +42,31 @@ struct AlertPolicyRequest {
     auto_power_saver: Option<bool>,
 }
 
+impl AlertPolicyRequest {
+    fn apply_to(self, config: &mut config::BatteryConfig) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.warning_percent.is_some()
+                || self.critical_percent.is_some()
+                || self.notify_when_full.is_some()
+                || self.auto_power_saver.is_some(),
+            "battery.setAlertPolicy requires at least one policy field"
+        );
+        if let Some(value) = self.warning_percent {
+            config.warning_percent = value;
+        }
+        if let Some(value) = self.critical_percent {
+            config.critical_percent = value;
+        }
+        if let Some(value) = self.notify_when_full {
+            config.notify_when_full = value;
+        }
+        if let Some(value) = self.auto_power_saver {
+            config.auto_power_saver = value;
+        }
+        config.validate()
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct BatteryApi {
     state: StateStore,
@@ -234,26 +259,10 @@ impl BatteryApi {
                 Err(response) => return response,
             };
         let snapshot = self.state.snapshot().await.battery;
-        let Some(device) = snapshot
-            .devices
-            .iter()
-            .find(|device| device.id == battery_id)
-        else {
-            return error(
-                "battery-unavailable",
-                format!("battery {battery_id} is unavailable"),
-            );
-        };
-        if !device
-            .protection
-            .available_behaviours
-            .iter()
-            .any(|value| value == "inhibit-charge")
+        if let Err(kind) =
+            battery::require_device_behaviour(&snapshot, &battery_id, "inhibit-charge")
         {
-            return error(
-                "battery-operation-unsupported",
-                format!("battery {battery_id} cannot inhibit charging"),
-            );
+            return capability_error(kind, &battery_id, "inhibit charging");
         }
         let previous = match config::load_runtime().await {
             Ok(runtime) => runtime,
@@ -285,27 +294,11 @@ impl BatteryApi {
                 "battery calibration requires external power",
             );
         }
-        let Some(device) = snapshot
-            .devices
-            .iter()
-            .find(|device| device.id == battery_id)
-        else {
-            return error(
-                "battery-unavailable",
-                format!("battery {battery_id} is unavailable"),
-            );
-        };
-        if !device
-            .protection
-            .available_behaviours
-            .iter()
-            .any(|value| value == "force-discharge")
-        {
-            return error(
-                "battery-operation-unsupported",
-                format!("battery {battery_id} cannot force discharge"),
-            );
-        }
+        let device =
+            match battery::require_device_behaviour(&snapshot, &battery_id, "force-discharge") {
+                Ok(device) => device,
+                Err(kind) => return capability_error(kind, &battery_id, "force discharge"),
+            };
         let (Some(restore_start), Some(restore_end)) = (
             device.protection.start_percent,
             device.protection.end_percent,
@@ -319,55 +312,10 @@ impl BatteryApi {
             Ok(runtime) => runtime,
             Err(error_value) => return error("battery-state-failed", error_value.to_string()),
         };
-        if previous.has_durable_operation() {
-            return error(
-                "battery-operation-active",
-                "another durable battery operation is already active",
-            );
-        }
-        let next = config::BatteryRuntimeState::start_calibration(
-            crate::time::unix_ms(),
-            battery_id.clone(),
-            restore_start,
-            restore_end,
-        );
-        if let Err(error_value) = config::save_runtime(&next).await {
-            return error("battery-state-failed", error_value.to_string());
-        }
-        if let Err(error_value) = battery::helper::set_thresholds(&battery_id, 0, 100).await {
-            return match config::save_runtime(&previous).await {
-                Ok(()) => error("battery-operation-failed", error_value.to_string()),
-                Err(rollback_error) => error(
-                    "battery-operation-failed",
-                    format!(
-                        "{error_value}; calibration state rollback also failed: {rollback_error}"
-                    ),
-                ),
-            };
-        }
-        if let Err(error_value) =
-            battery::helper::set_charge_behaviour(&battery_id, "force-discharge").await
+        if let Err(response) =
+            begin_calibration(&battery_id, restore_start, restore_end, &previous).await
         {
-            let restore_result =
-                battery::helper::set_thresholds(&battery_id, restore_start, restore_end).await;
-            let state_rollback = config::save_runtime(&previous).await;
-            let mut message = error_value.to_string();
-            match restore_result {
-                Ok(result) if !result.verified => message.push_str(&format!(
-                    "; threshold rollback reported {}–{} instead of {restore_start}–{restore_end}",
-                    result.actual_start_percent, result.actual_end_percent
-                )),
-                Ok(_) => {}
-                Err(restore_error) => message.push_str(&format!(
-                    "; threshold rollback also failed: {restore_error}"
-                )),
-            }
-            if let Err(rollback_error) = state_rollback {
-                message.push_str(&format!(
-                    "; calibration state rollback also failed: {rollback_error}"
-                ));
-            }
-            return error("battery-operation-failed", message);
+            return response;
         }
         self.battery_response(None).await
     }
@@ -412,34 +360,12 @@ impl BatteryApi {
 
     pub(super) async fn battery_set_alert_policy(&self, params: Value) -> Value {
         let request = request!(params, AlertPolicyRequest, "battery.setAlertPolicy");
-        let changed = request.warning_percent.is_some()
-            || request.critical_percent.is_some()
-            || request.notify_when_full.is_some()
-            || request.auto_power_saver.is_some();
-        if !changed {
-            return error(
-                "validation-error",
-                "battery.setAlertPolicy requires at least one policy field",
-            );
-        }
         let _guard = battery::lock_effects().await;
         let mut next_config = match config::load_config().await {
             Ok(config) => config,
             Err(error_value) => return error("battery-config-failed", error_value.to_string()),
         };
-        if let Some(value) = request.warning_percent {
-            next_config.warning_percent = value;
-        }
-        if let Some(value) = request.critical_percent {
-            next_config.critical_percent = value;
-        }
-        if let Some(value) = request.notify_when_full {
-            next_config.notify_when_full = value;
-        }
-        if let Some(value) = request.auto_power_saver {
-            next_config.auto_power_saver = value;
-        }
-        if let Err(error_value) = next_config.validate() {
+        if let Err(error_value) = request.apply_to(&mut next_config) {
             return error("validation-error", error_value.to_string());
         }
         if let Err(error_value) = config::save_config(&next_config).await {
@@ -515,6 +441,19 @@ impl BatteryApi {
     }
 }
 
+fn capability_error(kind: battery::DeviceSupportError, battery_id: &str, action: &str) -> Value {
+    match kind {
+        battery::DeviceSupportError::Missing => error(
+            "battery-unavailable",
+            format!("battery {battery_id} is unavailable"),
+        ),
+        battery::DeviceSupportError::Unsupported => error(
+            "battery-operation-unsupported",
+            format!("battery {battery_id} cannot {action}"),
+        ),
+    }
+}
+
 fn valid_thresholds(start: u8, end: u8) -> bool {
     start < end && end <= 100
 }
@@ -529,6 +468,80 @@ fn optional_thresholds(
         (Some(_), Some(_)) => Err("battery start_percent must be lower than end_percent"),
         _ => Err("battery start_percent and end_percent must be supplied together"),
     }
+}
+
+async fn begin_calibration(
+    battery_id: &str,
+    restore_start: u8,
+    restore_end: u8,
+    previous: &config::BatteryRuntimeState,
+) -> Result<(), Value> {
+    if previous.has_durable_operation() {
+        return Err(error(
+            "battery-operation-active",
+            "another durable battery operation is already active",
+        ));
+    }
+    let next = config::BatteryRuntimeState::start_calibration(
+        crate::time::unix_ms(),
+        battery_id.to_string(),
+        restore_start,
+        restore_end,
+    );
+    config::save_runtime(&next)
+        .await
+        .map_err(|value| error("battery-state-failed", value.to_string()))?;
+    if let Err(value) = battery::helper::set_thresholds(battery_id, 0, 100).await {
+        return Err(rollback_calibration_state(previous, value).await);
+    }
+    if let Err(value) = battery::helper::set_charge_behaviour(battery_id, "force-discharge").await {
+        return Err(rollback_calibration_hardware(
+            battery_id,
+            restore_start,
+            restore_end,
+            previous,
+            value,
+        )
+        .await);
+    }
+    Ok(())
+}
+
+async fn rollback_calibration_state(
+    previous: &config::BatteryRuntimeState,
+    failure: impl std::fmt::Display,
+) -> Value {
+    match config::save_runtime(previous).await {
+        Ok(()) => error("battery-operation-failed", failure.to_string()),
+        Err(rollback_error) => error(
+            "battery-operation-failed",
+            format!("{failure}; calibration state rollback also failed: {rollback_error}"),
+        ),
+    }
+}
+
+async fn rollback_calibration_hardware(
+    battery_id: &str,
+    restore_start: u8,
+    restore_end: u8,
+    previous: &config::BatteryRuntimeState,
+    failure: impl std::fmt::Display,
+) -> Value {
+    let mut message = failure.to_string();
+    match battery::helper::set_thresholds(battery_id, restore_start, restore_end).await {
+        Ok(result) if !result.verified => message.push_str(&format!(
+            "; threshold rollback reported {}–{} instead of {restore_start}–{restore_end}",
+            result.actual_start_percent, result.actual_end_percent
+        )),
+        Ok(_) => {}
+        Err(error) => message.push_str(&format!("; threshold rollback also failed: {error}")),
+    }
+    if let Err(error) = config::save_runtime(previous).await {
+        message.push_str(&format!(
+            "; calibration state rollback also failed: {error}"
+        ));
+    }
+    error("battery-operation-failed", message)
 }
 
 async fn start_charging_inhibition(

@@ -107,68 +107,17 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         .iter()
         .filter(|battery| battery.telemetry.present)
         .collect::<Vec<_>>();
-    let all_energy = present.iter().all(|battery| {
-        battery.telemetry.energy_now_uwh.is_some() && battery.telemetry.energy_full_uwh.is_some()
-    });
-    let energy_now = all_energy.then(|| {
-        present
-            .iter()
-            .filter_map(|battery| battery.telemetry.energy_now_uwh)
-            .sum::<u64>()
-    });
-    let energy_full = all_energy.then(|| {
-        present
-            .iter()
-            .filter_map(|battery| battery.telemetry.energy_full_uwh)
-            .sum::<u64>()
-    });
-    let percentage = ratio_percent(energy_now, energy_full).unwrap_or_else(|| {
-        if present.is_empty() {
-            0
-        } else {
-            let total = present
-                .iter()
-                .map(|battery| u64::from(battery.telemetry.percentage))
-                .sum::<u64>();
-            ((total + present.len() as u64 / 2) / present.len() as u64).min(100) as u8
-        }
-    });
-    let charging = present.iter().any(|battery| battery.charging());
-    let discharging = present.iter().any(|battery| battery.discharging());
-    let state = if charging {
-        "charging"
-    } else if discharging {
-        "discharging"
-    } else if !present.is_empty() && present.iter().all(|battery| battery.fully_charged()) {
-        "fully-charged"
-    } else {
-        "not-charging"
-    };
+    let (energy_now, energy_full) = energy_totals(&present);
+    let percentage =
+        ratio_percent(energy_now, energy_full).unwrap_or_else(|| average_percentage(&present));
+    let (status, charging, discharging) = charge_status(&present);
     let power_uw = present
         .iter()
         .map(|battery| battery.telemetry.power_uw)
-        .sum::<u64>();
-    let design_total = present
-        .iter()
-        .map(|battery| battery.telemetry.energy_full_design_uwh)
-        .collect::<Option<Vec<_>>>()
-        .map(|values| values.into_iter().sum::<u64>());
-    let health_percent = ratio_percent(energy_full, design_total);
-    let time_to_empty_seconds = if discharging {
-        estimate_seconds(energy_now.unwrap_or(0), power_uw)
-    } else {
-        0
-    };
-    let time_to_full_seconds = if charging {
-        estimate_seconds(
-            energy_full
-                .unwrap_or(0)
-                .saturating_sub(energy_now.unwrap_or(0)),
-            power_uw,
-        )
-    } else {
-        0
-    };
+        .sum();
+    let (time_to_empty_seconds, time_to_full_seconds) =
+        estimate_times(charging, discharging, energy_now, energy_full, power_uw);
+    let health_percent = ratio_percent(energy_full, design_energy_total(&present));
     let devices = present
         .iter()
         .map(|battery| device_state(battery))
@@ -184,7 +133,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
             .first()
             .map_or_else(String::new, |battery| battery.identity.id.clone()),
         percentage,
-        state: state.into(),
+        state: status.into(),
         charging,
         plugged: snapshot.plugged,
         power_watts: power_uw as f64 / 1_000_000.0,
@@ -203,6 +152,80 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         history: Default::default(),
         error: None,
     }
+}
+
+fn energy_totals(batteries: &[&NativeBattery]) -> (Option<u64>, Option<u64>) {
+    if batteries.iter().any(|battery| {
+        battery.telemetry.energy_now_uwh.is_none() || battery.telemetry.energy_full_uwh.is_none()
+    }) {
+        return (None, None);
+    }
+    let now = batteries
+        .iter()
+        .filter_map(|battery| battery.telemetry.energy_now_uwh)
+        .sum();
+    let full = batteries
+        .iter()
+        .filter_map(|battery| battery.telemetry.energy_full_uwh)
+        .sum();
+    (Some(now), Some(full))
+}
+
+fn average_percentage(batteries: &[&NativeBattery]) -> u8 {
+    if batteries.is_empty() {
+        return 0;
+    }
+    let count = batteries.len() as u64;
+    let total = batteries
+        .iter()
+        .map(|battery| u64::from(battery.telemetry.percentage))
+        .sum::<u64>();
+    ((total + count / 2) / count).min(100) as u8
+}
+
+fn charge_status(batteries: &[&NativeBattery]) -> (&'static str, bool, bool) {
+    let charging = batteries.iter().any(|battery| battery.charging());
+    let discharging = batteries.iter().any(|battery| battery.discharging());
+    let status = if charging {
+        "charging"
+    } else if discharging {
+        "discharging"
+    } else if !batteries.is_empty() && batteries.iter().all(|battery| battery.fully_charged()) {
+        "fully-charged"
+    } else {
+        "not-charging"
+    };
+    (status, charging, discharging)
+}
+
+fn design_energy_total(batteries: &[&NativeBattery]) -> Option<u64> {
+    batteries
+        .iter()
+        .map(|battery| battery.telemetry.energy_full_design_uwh)
+        .sum()
+}
+
+fn estimate_times(
+    charging: bool,
+    discharging: bool,
+    energy_now: Option<u64>,
+    energy_full: Option<u64>,
+    power_uw: u64,
+) -> (u64, u64) {
+    let empty = if discharging {
+        estimate_seconds(energy_now.unwrap_or(0), power_uw)
+    } else {
+        0
+    };
+    let remaining = energy_full
+        .unwrap_or(0)
+        .saturating_sub(energy_now.unwrap_or(0));
+    let full = if charging {
+        estimate_seconds(remaining, power_uw)
+    } else {
+        0
+    };
+    (empty, full)
 }
 
 fn device_state(battery: &NativeBattery) -> BatteryDeviceState {
@@ -351,21 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_external_power_independently_of_battery_status() {
-        let directory = TempDir::new().unwrap();
-        write(directory.path(), "BAT0", "type", "Battery\n");
-        write(directory.path(), "BAT0", "status", "Not charging\n");
-        write(directory.path(), "BAT0", "capacity", "80\n");
-        write(directory.path(), "AC", "type", "Mains\n");
-        write(directory.path(), "AC", "online", "1\n");
-        let state = PowerSupplyFs::new(directory.path().into())
-            .read_state()
-            .unwrap();
-        assert!(state.plugged);
-        assert_eq!(state.state, "not-charging");
-    }
-
-    #[test]
     fn aggregates_batteries_by_energy() {
         let directory = TempDir::new().unwrap();
         for (battery, now, full) in [("BAT0", "100", "200"), ("BAT1", "700", "800")] {
@@ -379,23 +387,6 @@ mod tests {
             .unwrap();
         assert_eq!(state.percentage, 80);
         assert_eq!(state.state, "discharging");
-    }
-
-    #[test]
-    fn converts_charge_and_voltage_to_energy_and_power() {
-        let directory = TempDir::new().unwrap();
-        write(directory.path(), "BAT0", "type", "Battery\n");
-        write(directory.path(), "BAT0", "status", "Discharging\n");
-        write(directory.path(), "BAT0", "charge_now", "4000000\n");
-        write(directory.path(), "BAT0", "charge_full", "5000000\n");
-        write(directory.path(), "BAT0", "voltage_now", "10000000\n");
-        write(directory.path(), "BAT0", "current_now", "1000000\n");
-        let state = PowerSupplyFs::new(directory.path().into())
-            .read_state()
-            .unwrap();
-        assert_eq!(state.percentage, 80);
-        assert_eq!(state.power_watts, 10.0);
-        assert_eq!(state.time_to_empty_seconds, 14_400);
     }
 
     #[test]

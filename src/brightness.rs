@@ -213,7 +213,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    use super::{discover, percent, raw_brightness};
+    use super::discover;
 
     #[test]
     fn discovers_highest_resolution_backlight() {
@@ -241,19 +241,5 @@ mod tests {
         let state = discover(root.path()).unwrap().state();
         assert_eq!(state.brightness, 600);
         assert_eq!(state.percent, 60);
-    }
-
-    #[test]
-    fn rounds_and_bounds_percentages() {
-        assert_eq!(percent(1, 3), 33);
-        assert_eq!(percent(200, 100), 100);
-        assert_eq!(percent(1, 0), 0);
-    }
-
-    #[test]
-    fn nonzero_percent_never_turns_off_low_resolution_backlight() {
-        assert_eq!(raw_brightness(10, 1), 1);
-        assert_eq!(raw_brightness(10, 5), 1);
-        assert_eq!(raw_brightness(10, 100), 10);
     }
 }

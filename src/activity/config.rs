@@ -1,10 +1,16 @@
-use std::{collections::HashSet, env, path::PathBuf};
+use std::{
+    collections::HashSet,
+    env,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use shelllist_daemon_core::XdgRoot;
 
-use crate::paths::data_file;
+use crate::paths::{data_file, load_json_or_default, save_json_atomic};
+
+use super::model::TodoItem;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -107,64 +113,88 @@ impl ActivityConfig {
 }
 
 pub(crate) fn validate(config: &ActivityConfig) -> Result<()> {
+    validate_calendar_sources(&config.calendar_sources)?;
+    validate_world_clocks(&config.world_clocks)?;
+    validate_weather(&config.configured_weather_locations())
+}
+
+fn validate_calendar_sources(sources: &[CalendarSourceConfig]) -> Result<()> {
     let mut ids = HashSet::new();
-    for source in &config.calendar_sources {
-        if source.id.trim().is_empty() {
-            anyhow::bail!("calendar source id cannot be empty");
-        }
-        if !ids.insert(source.id.as_str()) {
-            anyhow::bail!("duplicate calendar source id {}", source.id);
-        }
-        if source.path.as_os_str().is_empty() {
-            anyhow::bail!("calendar source {} path cannot be empty", source.id);
-        }
-        if source.kind.trim().is_empty() {
-            anyhow::bail!("calendar source {} kind cannot be empty", source.id);
-        }
+    for source in sources {
+        non_empty(&source.id, "calendar source id")?;
+        anyhow::ensure!(
+            ids.insert(source.id.as_str()),
+            "duplicate calendar source id {}",
+            source.id
+        );
+        anyhow::ensure!(
+            !source.path.as_os_str().is_empty(),
+            "calendar source {} path cannot be empty",
+            source.id
+        );
+        non_empty(&source.kind, &format!("calendar source {} kind", source.id))?;
     }
-    for clock in &config.world_clocks {
+    Ok(())
+}
+
+fn validate_world_clocks(clocks: &[WorldClockConfig]) -> Result<()> {
+    for clock in clocks {
         clock
             .timezone
             .parse::<chrono_tz::Tz>()
             .with_context(|| format!("parse world-clock timezone {}", clock.timezone))?;
     }
-    let weather_locations = config.configured_weather_locations();
-    let mut weather_ids = HashSet::new();
-    let mut home_count = 0;
-    for weather in &weather_locations {
-        if !(-90.0..=90.0).contains(&weather.latitude) {
-            anyhow::bail!("weather latitude must be between -90 and 90");
-        }
-        if !(-180.0..=180.0).contains(&weather.longitude) {
-            anyhow::bail!("weather longitude must be between -180 and 180");
-        }
-        if weather.id.trim().is_empty() {
-            anyhow::bail!("weather location id cannot be empty");
-        }
-        if !weather_ids.insert(weather.id.as_str()) {
-            anyhow::bail!("duplicate weather location id {}", weather.id);
-        }
-        if weather.location.trim().is_empty() {
-            anyhow::bail!("weather location cannot be empty");
-        }
-        if weather.timezone.trim().is_empty() {
-            anyhow::bail!("weather timezone cannot be empty");
-        }
-        home_count += usize::from(weather.home);
-    }
-    if home_count > 1 {
-        anyhow::bail!("only one weather location can be marked as home");
-    }
     Ok(())
 }
 
-pub(crate) async fn load(path: &PathBuf) -> Result<ActivityConfig> {
-    match tokio::fs::read(path).await {
-        Ok(contents) => serde_json::from_slice(&contents)
-            .with_context(|| format!("parse activity configuration {}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ActivityConfig::default()),
-        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+fn validate_weather(locations: &[WeatherConfig]) -> Result<()> {
+    let mut ids = HashSet::new();
+    let mut home_count = 0;
+    for weather in locations {
+        coordinate(weather.latitude, -90.0..=90.0, "latitude")?;
+        coordinate(weather.longitude, -180.0..=180.0, "longitude")?;
+        non_empty(&weather.id, "weather location id")?;
+        anyhow::ensure!(
+            ids.insert(weather.id.as_str()),
+            "duplicate weather location id {}",
+            weather.id
+        );
+        non_empty(&weather.location, "weather location")?;
+        non_empty(&weather.timezone, "weather timezone")?;
+        home_count += usize::from(weather.home);
     }
+    anyhow::ensure!(
+        home_count <= 1,
+        "only one weather location can be marked as home"
+    );
+    Ok(())
+}
+
+fn non_empty(value: &str, label: &str) -> Result<()> {
+    anyhow::ensure!(!value.trim().is_empty(), "{label} cannot be empty");
+    Ok(())
+}
+
+fn coordinate(value: f64, range: std::ops::RangeInclusive<f64>, label: &str) -> Result<()> {
+    anyhow::ensure!(
+        range.contains(&value),
+        "weather {label} must be between {} and {}",
+        range.start(),
+        range.end()
+    );
+    Ok(())
+}
+
+pub(crate) async fn load(path: &Path) -> Result<ActivityConfig> {
+    load_json_or_default(path, "activity configuration").await
+}
+
+pub(crate) async fn load_todos(path: &Path) -> Result<Vec<TodoItem>> {
+    load_json_or_default(path, "todo store").await
+}
+
+pub(crate) async fn save_todos(path: &Path, todos: &[TodoItem]) -> Result<()> {
+    save_json_atomic(path, todos).await
 }
 
 #[cfg(test)]

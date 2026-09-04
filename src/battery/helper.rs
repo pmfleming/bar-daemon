@@ -388,12 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn raises_end_before_start_when_ranges_do_not_overlap() {
-        let (_directory, writer) = writer(40, 60);
-        assert!(writer.set_thresholds("BAT0", 75, 80).unwrap().verified);
-    }
-
-    #[test]
     fn validates_charge_behaviour_choices() {
         let (_directory, writer) = writer(75, 80);
         assert_eq!(

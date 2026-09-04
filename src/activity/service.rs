@@ -53,10 +53,12 @@ pub(crate) struct ActivityService {
 impl ActivityService {
     pub(crate) async fn new(state: StateStore, notifications: NotificationSink) -> Arc<Self> {
         let todo_path = config::todo_path();
-        let todos = load_todos(&todo_path).await.unwrap_or_else(|error| {
-            tracing::warn!(%error, "local todo store could not be loaded");
-            Vec::new()
-        });
+        let todos = config::load_todos(&todo_path)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "local todo store could not be loaded");
+                Vec::new()
+            });
         Arc::new(Self {
             data: RwLock::new(ActivityData {
                 todos,
@@ -344,7 +346,7 @@ impl ActivityService {
         };
         let mut todos = self.data.read().await.todos.clone();
         todos.push(todo.clone());
-        save_todos(&self.todo_path, &todos).await?;
+        config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
         self.publish_state(None, false).await;
         Ok(todo)
@@ -360,7 +362,7 @@ impl ActivityService {
         todo.completed = completed;
         todo.completed_unix_ms = completed.then(unix_ms);
         let result = todo.clone();
-        save_todos(&self.todo_path, &todos).await?;
+        config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
         self.publish_state(None, false).await;
         Ok(result)
@@ -374,7 +376,7 @@ impl ActivityService {
         if todos.len() == previous {
             bail!("todo {id} was not found");
         }
-        save_todos(&self.todo_path, &todos).await?;
+        config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
         self.publish_state(None, false).await;
         Ok(())
@@ -487,31 +489,6 @@ fn event_date(event: &ActivityEvent) -> Option<String> {
             .single()
             .map(|date| date.format("%Y-%m-%d").to_string())
     })
-}
-
-async fn load_todos(path: &PathBuf) -> Result<Vec<TodoItem>> {
-    match tokio::fs::read(path).await {
-        Ok(contents) => serde_json::from_slice(&contents)
-            .with_context(|| format!("parse todo store {}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
-    }
-}
-
-async fn save_todos(path: &PathBuf, todos: &[TodoItem]) -> Result<()> {
-    let parent = path.parent().context("todo store path has no parent")?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .with_context(|| format!("create {}", parent.display()))?;
-    let temporary = path.with_extension("json.tmp");
-    let contents = serde_json::to_vec_pretty(todos)?;
-    tokio::fs::write(&temporary, contents)
-        .await
-        .with_context(|| format!("write {}", temporary.display()))?;
-    tokio::fs::rename(&temporary, path)
-        .await
-        .with_context(|| format!("replace {}", path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]
