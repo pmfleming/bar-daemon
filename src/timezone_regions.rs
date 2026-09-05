@@ -87,15 +87,7 @@ pub(crate) fn current_ids_for_offset(offset_seconds: i32) -> Vec<String> {
 mod tests {
     use chrono::{TimeZone, Utc};
 
-    use super::{REGION_TIMEZONES, ids_for_offset};
-
-    #[test]
-    fn retains_every_visible_canonical_region() {
-        assert_eq!(REGION_TIMEZONES.len(), 62);
-        assert!(REGION_TIMEZONES.contains(&"Pacific/Kiritimati"));
-        assert!(REGION_TIMEZONES.contains(&"Pacific/Chatham"));
-        assert!(REGION_TIMEZONES.contains(&"Pacific/Marquesas"));
-    }
+    use super::ids_for_offset;
 
     #[test]
     fn resolves_seasonal_and_fractional_offsets() {

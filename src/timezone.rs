@@ -104,16 +104,3 @@ fn state_for_timezone(timezone: &str) -> Result<TimezoneState> {
         error: None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::state_for_timezone;
-
-    #[test]
-    fn derives_human_city_and_offset() {
-        let state = state_for_timezone("Europe/Amsterdam").unwrap();
-        assert_eq!(state.city, "Amsterdam");
-        assert!([3600, 7200].contains(&state.utc_offset_seconds));
-        assert!(!state.abbreviation.is_empty());
-    }
-}

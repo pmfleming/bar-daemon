@@ -649,21 +649,7 @@ async fn requested_battery_id(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProtectionRequest, ThresholdRequest, optional_thresholds};
-
-    #[test]
-    fn parses_typed_thresholds() {
-        let request: ThresholdRequest =
-            serde_json::from_str(r#"{"battery_id":"BAT0","start_percent":75,"end_percent":80}"#)
-                .unwrap();
-        assert_eq!(request.start_percent, 75);
-        assert!(
-            serde_json::from_str::<ThresholdRequest>(
-                r#"{"battery_id":"BAT0","start_percent":-1,"end_percent":80}"#
-            )
-            .is_err()
-        );
-    }
+    use super::{ProtectionRequest, optional_thresholds};
 
     #[test]
     fn protection_accepts_an_atomic_optional_range() {

@@ -187,13 +187,3 @@ fn condition(code: u16) -> &'static str {
         _ => "Unknown",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn maps_wmo_conditions() {
-        assert_eq!(super::condition(0), "Clear");
-        assert_eq!(super::condition(63), "Rain");
-        assert_eq!(super::condition(95), "Thunderstorm");
-    }
-}

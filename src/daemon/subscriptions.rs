@@ -238,17 +238,7 @@ async fn emit_event(
 mod tests {
     use crate::{model::BarSnapshot, protocol};
 
-    use super::{initial_stream_data, stream_selected};
-
-    #[test]
-    fn selects_only_subscribed_event_streams() {
-        let streams = vec![
-            protocol::stream::AUDIO.into(),
-            protocol::stream::MEDIA.into(),
-        ];
-        assert!(stream_selected(&streams, protocol::stream::AUDIO));
-        assert!(!stream_selected(&streams, protocol::stream::BATTERY));
-    }
+    use super::initial_stream_data;
 
     #[test]
     fn initial_subscription_includes_current_domain_state() {

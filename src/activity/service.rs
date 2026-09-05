@@ -518,6 +518,7 @@ mod tests {
             todo_sequence: AtomicU64::new(1),
             _notifications: NotificationSink::unavailable(),
         };
+        assert!(service.query_range(10, 10).await.is_err());
         assert!(service.query_range(i64::MIN, i64::MAX).await.is_err());
         assert!(service.query_range(i64::MIN, 0).await.is_err());
         const MAX_RANGE_MS: i64 = 370 * 24 * 60 * 60 * 1_000;
@@ -623,22 +624,5 @@ mod tests {
         assert_eq!(recovered.event_count, 1);
         assert!(recovered.sources[0].available);
         assert!(recovered.error.is_none());
-    }
-
-    #[tokio::test]
-    async fn rejects_inverted_ranges() {
-        let directory = tempdir().unwrap();
-        let service = ActivityService {
-            data: Default::default(),
-            state: StateStore::default(),
-            config_path: directory.path().join("activity.json"),
-            todo_path: directory.path().join("todos.json"),
-            providers: ProviderRegistry::builtins(),
-            refresh_guard: Default::default(),
-            todo_guard: Default::default(),
-            todo_sequence: AtomicU64::new(1),
-            _notifications: NotificationSink::unavailable(),
-        };
-        assert!(service.query_range(10, 10).await.is_err());
     }
 }

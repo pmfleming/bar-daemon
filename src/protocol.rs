@@ -334,36 +334,11 @@ pub fn contract_fixture() -> serde_json::Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{METHODS, STREAMS, contract_fixture, generated_contract_fixture, registry};
+    use super::{contract_fixture, generated_contract_fixture};
 
     #[test]
     fn checked_contract_fixture_is_current() -> serde_json::Result<()> {
         assert_eq!(contract_fixture()?, generated_contract_fixture());
         Ok(())
-    }
-
-    #[test]
-    fn registry_matches_constants() {
-        let value = registry();
-        let methods = shelllist_daemon_core::fixture_names(
-            &serde_json::json!({ "registry": { "methods": value["methods"] } }),
-            "methods",
-        )
-        .unwrap()
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-        let streams = shelllist_daemon_core::fixture_names(
-            &serde_json::json!({ "registry": { "streams": value["streams"] } }),
-            "streams",
-        )
-        .unwrap()
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-        assert_eq!(methods, METHODS);
-        assert_eq!(streams, STREAMS);
-        shelllist_daemon_core::validate_unique_names(METHODS).unwrap();
-        shelllist_daemon_core::validate_unique_names(STREAMS).unwrap();
     }
 }

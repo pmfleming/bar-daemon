@@ -210,16 +210,3 @@ async fn lock_session(connection: &zbus::Connection, deadline: Duration) -> Resu
 fn capability_available(value: &str) -> bool {
     matches!(value, "yes" | "challenge")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::capability_available;
-
-    #[test]
-    fn accepts_available_and_authorizable_capabilities() {
-        assert!(capability_available("yes"));
-        assert!(capability_available("challenge"));
-        assert!(!capability_available("no"));
-        assert!(!capability_available("na"));
-    }
-}

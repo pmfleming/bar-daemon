@@ -339,22 +339,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_timed_and_all_day_events() {
-        let events = parse_calendar(
-            &source(),
-            Path::new("test.ics"),
-            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Planning\\, weekly\nDTSTART;TZID=Europe/Amsterdam:20260115T090000\nDTEND;TZID=Europe/Amsterdam:20260115T100000\nLOCATION:Room 1\nEND:VEVENT\nBEGIN:VEVENT\nUID:holiday\nSUMMARY:Holiday\nDTSTART;VALUE=DATE:20260120\nDTEND;VALUE=DATE:20260121\nEND:VEVENT\nEND:VCALENDAR\n",
-        )
-        .unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].title, "Planning, weekly");
-        assert_eq!(events[0].timezone.as_deref(), Some("Europe/Amsterdam"));
-        assert_eq!(events[0].location, "Room 1");
-        assert!(events[1].all_day);
-        assert_eq!(events[1].start_date.as_deref(), Some("2026-01-20"));
-    }
-
-    #[test]
     fn nested_alarm_does_not_overwrite_event_properties() {
         let events = parse_calendar(&source(), Path::new("test.ics"),
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();

@@ -363,24 +363,16 @@ mod tests {
     }
 
     #[test]
-    fn persists_active_and_closed_history() {
+    fn persists_closed_history_without_retaining_transient_notifications() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("notifications.sqlite3");
         let store = NotificationStore::open(&path).unwrap();
         store.save(&notification(7, false)).unwrap();
+        store.save(&notification(8, true)).unwrap();
         store.close(7, 200, 2).unwrap();
         let history = store.list(None, 10).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].notification.id, 7);
         assert_eq!(history[0].close_reason, Some(2));
-    }
-
-    #[test]
-    fn does_not_retain_transient_notifications() {
-        let directory = tempdir().unwrap();
-        let store =
-            NotificationStore::open(&directory.path().join("notifications.sqlite3")).unwrap();
-        store.save(&notification(8, true)).unwrap();
-        assert!(store.list(None, 10).unwrap().is_empty());
     }
 }

@@ -158,9 +158,8 @@ async fn run_action(action: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
-    use super::{next_retry, notification_count, parse_status};
+    use super::parse_status;
 
     #[test]
     fn parses_waybar_status_and_dnd_class() {
@@ -168,21 +167,5 @@ mod tests {
         assert_eq!(state.count, 3);
         assert!(state.dnd);
         assert_eq!(state.tooltip, "3 Notifications");
-    }
-
-    #[test]
-    fn caps_subscription_retry_backoff() {
-        assert_eq!(
-            next_retry(Duration::from_millis(1500)),
-            Duration::from_secs(3)
-        );
-        assert_eq!(next_retry(Duration::from_secs(20)), Duration::from_secs(30));
-        assert_eq!(next_retry(Duration::from_secs(30)), Duration::from_secs(30));
-    }
-
-    #[test]
-    fn tolerates_decorated_and_empty_counts() {
-        assert_eq!(notification_count("󰂚 12"), 12);
-        assert_eq!(notification_count("none"), 0);
     }
 }

@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn records_buckets_and_power_transitions() {
+    fn records_power_transitions_and_prunes_expired_buckets() {
         let mut history = HistoryStore::load(None, 1_000);
         assert!(history.record(&state(80, true, true), 1_000));
         assert!(!history.record(&state(81, true, true), 2_000));
@@ -306,13 +306,8 @@ mod tests {
         assert_eq!(graph.points[1].active_time_ms, 2_000);
         assert!(!graph.points[0].continuous);
         assert!(graph.points[1].continuous);
-    }
 
-    #[test]
-    fn keeps_seven_days_only() {
         let day = 24 * 60 * 60 * 1_000;
-        let mut history = HistoryStore::load(None, 0);
-        history.record(&state(90, true, true), 1);
         history.record(&state(80, false, false), 8 * day);
         assert_eq!(history.points.len(), 1);
     }

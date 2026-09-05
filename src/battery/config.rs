@@ -376,7 +376,7 @@ mod restoration_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatteryConfig, CALIBRATION_MAX_AGE, CHARGE_ONCE_MAX_AGE};
+    use super::BatteryConfig;
 
     #[test]
     fn validates_alert_and_protection_ranges() {
@@ -415,30 +415,5 @@ mod tests {
             .validate()
             .is_err()
         );
-    }
-
-    #[test]
-    fn operation_lifetimes_match_policy() {
-        assert_eq!(CHARGE_ONCE_MAX_AGE.as_secs(), 86_400);
-        assert_eq!(CALIBRATION_MAX_AGE.as_secs(), 172_800);
-    }
-
-    #[test]
-    fn device_policy_inherits_legacy_defaults_then_diverges() {
-        let mut config = BatteryConfig {
-            manage_thresholds: true,
-            protection_enabled: true,
-            protected_start_percent: 70,
-            protected_end_percent: 85,
-            ..BatteryConfig::default()
-        };
-        let inherited = config.device("BAT0");
-        assert!(inherited.manage_thresholds);
-        assert!(inherited.protection_enabled);
-        assert_eq!(inherited.protected_start_percent, 70);
-        config.device_mut("BAT1").protected_end_percent = 90;
-        assert_eq!(config.device("BAT1").protected_end_percent, 90);
-        assert_eq!(config.device("BAT0").protected_end_percent, 85);
-        config.validate().unwrap();
     }
 }

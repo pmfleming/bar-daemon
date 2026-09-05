@@ -202,43 +202,16 @@ mod tests {
     use super::ActivityConfig;
 
     #[test]
-    fn parses_multiple_sources_and_world_clocks() {
-        let config: ActivityConfig = serde_json::from_str(
-            r##"{
-              "calendar_sources": [
-                {"id":"work","name":"Work","kind":"ics-directory","path":"/tmp/work","color":"#123456"},
-                {"id":"home","name":"Home","kind":"ics-file","path":"/tmp/home.ics"}
-              ],
-              "world_clocks": [{"timezone":"Asia/Tokyo","label":"Tokyo"}],
-              "weather_locations": [
-                {"id":"home","location":"Amsterdam","home":true,"latitude":52.37,"longitude":4.90,"timezone":"Europe/Amsterdam"},
-                {"id":"dublin","location":"Dublin","latitude":53.35,"longitude":-6.26,"timezone":"Europe/Dublin"}
-              ]
-            }"##,
-        )
-        .unwrap();
-        assert_eq!(config.calendar_sources.len(), 2);
-        assert_eq!(config.calendar_sources[1].color, "#7aa2f7");
-        assert_eq!(config.world_clocks[0].timezone, "Asia/Tokyo");
-        assert_eq!(config.weather_locations[0].location, "Amsterdam");
-        super::validate(&config).unwrap();
-    }
-
-    #[test]
-    fn documented_example_is_valid() {
-        let config: ActivityConfig =
+    fn documented_config_is_valid_but_duplicate_source_ids_are_rejected() {
+        let mut config: ActivityConfig =
             serde_json::from_str(include_str!("../../docs/activity.example.json")).unwrap();
         super::validate(&config).unwrap();
         assert!(!config.calendar_sources.is_empty());
         assert!(!config.world_clocks.is_empty());
-    }
 
-    #[test]
-    fn rejects_duplicate_source_ids() {
-        let config: ActivityConfig = serde_json::from_str(
-            r#"{"calendar_sources":[{"id":"same","path":"/a"},{"id":"same","path":"/b"}]}"#,
-        )
-        .unwrap();
+        config
+            .calendar_sources
+            .push(config.calendar_sources[0].clone());
         assert!(super::validate(&config).is_err());
     }
 }

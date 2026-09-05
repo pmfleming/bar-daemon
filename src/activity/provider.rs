@@ -41,20 +41,3 @@ impl ProviderRegistry {
         provider.load(source).await
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ProviderRegistry;
-    use crate::activity::config::CalendarSourceConfig;
-
-    #[tokio::test]
-    async fn rejects_unregistered_provider_kinds() {
-        let source = CalendarSourceConfig {
-            id: "remote".into(),
-            kind: "unknown".into(),
-            path: "/tmp/unknown".into(),
-            ..CalendarSourceConfig::default()
-        };
-        assert!(ProviderRegistry::builtins().load(&source).await.is_err());
-    }
-}

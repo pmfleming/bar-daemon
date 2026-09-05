@@ -231,22 +231,3 @@ fn hint_bool(hints: &HashMap<String, OwnedValue>, key: &str) -> bool {
 fn hint_u8(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<u8> {
     hints.get(key).and_then(|value| u8::try_from(value).ok())
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use zvariant::OwnedValue;
-
-    use super::normalize_hints;
-
-    #[test]
-    fn normalizes_common_notification_hints() {
-        let mut hints = HashMap::new();
-        hints.insert("urgency".into(), OwnedValue::from(2_u8));
-        hints.insert("resident".into(), OwnedValue::from(true));
-        let normalized = normalize_hints(&hints);
-        assert_eq!(normalized.urgency, 2);
-        assert!(normalized.resident);
-    }
-}

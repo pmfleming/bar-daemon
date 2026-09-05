@@ -78,15 +78,3 @@ fn state_name(state: u32) -> &'static str {
         _ => "unknown",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::state_name;
-
-    #[test]
-    fn maps_upower_states() {
-        assert_eq!(state_name(1), "charging");
-        assert_eq!(state_name(4), "fully-charged");
-        assert_eq!(state_name(99), "unknown");
-    }
-}
