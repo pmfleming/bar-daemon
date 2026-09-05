@@ -3,6 +3,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,9 @@ const BUCKET_MILLISECONDS: u64 = 15 * 60 * 1_000;
 // and must not consume space on the graph's active-only timescale.
 const MAX_OBSERVATION_GAP_MILLISECONDS: u64 = 2 * 60 * 1_000;
 const LEGACY_POINT_GAP_MILLISECONDS: u64 = BUCKET_MILLISECONDS + MAX_OBSERVATION_GAP_MILLISECONDS;
+// Allow minor wall-clock adjustments, but never interpolate across a sleep or
+// clock jump. Linux Instant uses CLOCK_MONOTONIC, which excludes suspend time.
+const CLOCK_TOLERANCE_MILLISECONDS: u64 = 1_000;
 
 static HISTORY: OnceLock<Mutex<HistoryStore>> = OnceLock::new();
 
@@ -38,7 +42,7 @@ struct HistoryStore {
     last_charge_timestamp_ms: u64,
     points: VecDeque<BatteryHistoryPoint>,
     active_time_ms: u64,
-    last_observation_timestamp_ms: Option<u64>,
+    last_observation: Option<(u64, Instant)>,
 }
 
 impl HistoryStore {
@@ -61,23 +65,30 @@ impl HistoryStore {
             active_time_ms,
             // A process start always begins a new graph segment. This also
             // prevents downtime before startup from entering the timescale.
-            last_observation_timestamp_ms: None,
+            last_observation: None,
         };
         store.prune(now_ms);
         store
     }
 
-    fn record(&mut self, state: &BatteryState, now_ms: u64) -> bool {
+    fn record(&mut self, state: &BatteryState, now_ms: u64, awake_now: Instant) -> bool {
         if !state.available {
-            self.last_observation_timestamp_ms = None;
+            self.last_observation = None;
             return false;
         }
         self.prune(now_ms);
 
-        let active_delta_ms = self
-            .last_observation_timestamp_ms
-            .and_then(|timestamp| now_ms.checked_sub(timestamp))
-            .filter(|delta| *delta <= MAX_OBSERVATION_GAP_MILLISECONDS);
+        let active_delta_ms = self.last_observation.and_then(|(wall, awake)| {
+            let wall_delta = now_ms.checked_sub(wall)?;
+            let awake_delta: u64 = awake_now
+                .checked_duration_since(awake)?
+                .as_millis()
+                .try_into()
+                .ok()?;
+            (awake_delta <= MAX_OBSERVATION_GAP_MILLISECONDS
+                && wall_delta.abs_diff(awake_delta) <= CLOCK_TOLERANCE_MILLISECONDS)
+                .then_some(awake_delta)
+        });
         let observation_continuous = active_delta_ms.is_some();
         self.active_time_ms = self
             .active_time_ms
@@ -96,7 +107,7 @@ impl HistoryStore {
         let bucket_changed = previous.is_none_or(|point| {
             point.timestamp_ms - point.timestamp_ms % BUCKET_MILLISECONDS != current_bucket
         });
-        self.last_observation_timestamp_ms = Some(now_ms);
+        self.last_observation = Some((now_ms, awake_now));
         if observation_continuous && !bucket_changed && !power_transition {
             return false;
         }
@@ -185,7 +196,7 @@ pub(super) fn attach_summary(mut state: BatteryState) -> BatteryState {
     let mut history = history
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if history.record(&state, now_ms)
+    if history.record(&state, now_ms, Instant::now())
         && let Err(error) = history.persist()
     {
         tracing::warn!(%error, "battery history could not be saved");
@@ -271,6 +282,17 @@ fn temporary_path(path: &Path) -> PathBuf {
 mod tests {
     use super::HistoryStore;
     use crate::model::BatteryState;
+    use std::time::{Duration, Instant};
+
+    fn record(
+        history: &mut HistoryStore,
+        state: &BatteryState,
+        wall_ms: u64,
+        awake_ms: u64,
+        start: Instant,
+    ) -> bool {
+        history.record(state, wall_ms, start + Duration::from_millis(awake_ms))
+    }
 
     fn state(percentage: u8, plugged: bool, charging: bool) -> BatteryState {
         BatteryState {
@@ -285,11 +307,107 @@ mod tests {
     }
 
     #[test]
-    fn records_power_transitions_and_prunes_expired_buckets() {
+    fn excludes_short_sleeps_long_sleeps_and_unobserved_time() {
+        let start = Instant::now();
+        for (wall_gap, awake_gap) in [(60_000, 30_000), (600_000, 30_000), (300_000, 300_000)] {
+            let mut history = HistoryStore::load(None, 1_000);
+            record(&mut history, &state(80, false, false), 1_000, 1_000, start);
+            record(&mut history, &state(80, true, false), 31_000, 31_000, start);
+            assert_eq!(history.state(true).active_duration_ms, 30_000);
+            assert!(record(
+                &mut history,
+                &state(90, true, false),
+                31_000 + wall_gap,
+                31_000 + awake_gap,
+                start,
+            ));
+            let snapshot = history.state(true);
+            assert_eq!(snapshot.active_duration_ms, 30_000);
+            assert!(!snapshot.points.last().unwrap().continuous);
+            record(
+                &mut history,
+                &state(89, false, false),
+                61_000 + wall_gap,
+                61_000 + awake_gap,
+                start,
+            );
+            let snapshot = history.state(true);
+            assert_eq!(snapshot.active_duration_ms, 60_000);
+            assert!(snapshot.points.last().unwrap().continuous);
+        }
+    }
+
+    #[test]
+    fn accumulates_awake_polling_between_history_buckets() {
+        let start = Instant::now();
         let mut history = HistoryStore::load(None, 1_000);
-        assert!(history.record(&state(80, true, true), 1_000));
-        assert!(!history.record(&state(81, true, true), 2_000));
-        assert!(history.record(&state(81, false, false), 3_000));
+        for index in 0..=30 {
+            let time = 1_000 + index * 30_000;
+            record(&mut history, &state(80, false, false), time, time, start);
+        }
+        let snapshot = history.state(true);
+        assert_eq!(snapshot.points.len(), 2);
+        assert_eq!(snapshot.active_duration_ms, 900_000);
+        assert!(snapshot.points[1].continuous);
+    }
+
+    #[test]
+    fn restart_preserves_samples_without_counting_downtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let start = Instant::now();
+        let mut history = HistoryStore::load(Some(path.clone()), 1_000);
+        record(&mut history, &state(80, false, false), 1_000, 1_000, start);
+        record(&mut history, &state(79, true, false), 31_000, 31_000, start);
+        history.persist().unwrap();
+        let later = 2 * 24 * 60 * 60 * 1_000;
+        let mut restarted = HistoryStore::load(Some(path), later);
+        record(&mut restarted, &state(100, true, false), later, 0, start);
+        let snapshot = restarted.state(true);
+        assert_eq!(snapshot.points.len(), 3);
+        assert_eq!(snapshot.active_duration_ms, 30_000);
+        assert_eq!(snapshot.points[0].percentage, 80);
+        assert!(!snapshot.points[2].continuous);
+    }
+
+    #[test]
+    fn wall_clock_adjustments_never_add_active_time() {
+        let start = Instant::now();
+        let mut history = HistoryStore::load(None, 1_000);
+        record(&mut history, &state(80, false, false), 1_000, 1_000, start);
+        record(&mut history, &state(79, true, false), 31_500, 31_000, start);
+        assert_eq!(history.state(true).active_duration_ms, 30_000);
+        record(&mut history, &state(78, false, false), 500, 61_000, start);
+        let snapshot = history.state(true);
+        assert_eq!(snapshot.active_duration_ms, 30_000);
+        assert!(!snapshot.points.last().unwrap().continuous);
+    }
+
+    #[test]
+    fn records_power_transitions_and_prunes_expired_buckets() {
+        let start = Instant::now();
+        let mut history = HistoryStore::load(None, 1_000);
+        assert!(record(
+            &mut history,
+            &state(80, true, true),
+            1_000,
+            1_000,
+            start
+        ));
+        assert!(!record(
+            &mut history,
+            &state(81, true, true),
+            2_000,
+            2_000,
+            start
+        ));
+        assert!(record(
+            &mut history,
+            &state(81, false, false),
+            3_000,
+            3_000,
+            start
+        ));
         assert_eq!(history.last_charge_timestamp_ms, 3_000);
         assert_eq!(history.points.len(), 2);
         assert_eq!(history.points[0].time_to_full_seconds, Some(3_600));
@@ -308,7 +426,13 @@ mod tests {
         assert!(graph.points[1].continuous);
 
         let day = 24 * 60 * 60 * 1_000;
-        history.record(&state(80, false, false), 8 * day);
+        record(
+            &mut history,
+            &state(80, false, false),
+            8 * day,
+            8 * day,
+            start,
+        );
         assert_eq!(history.points.len(), 1);
     }
 }
