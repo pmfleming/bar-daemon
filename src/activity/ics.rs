@@ -97,54 +97,99 @@ fn parse_calendar(
 ) -> Result<Vec<ActivityEvent>> {
     let mut events = Vec::new();
     let mut current: Option<EventBuilder> = None;
+    let mut components = Vec::<String>::new();
+    let mut saw_calendar = false;
     for line in unfold_lines(contents) {
-        let upper = line.to_ascii_uppercase();
-        if upper == "BEGIN:VEVENT" {
-            current = Some(EventBuilder::default());
+        if line.trim().is_empty() {
             continue;
         }
-        if upper == "END:VEVENT" {
-            if let Some(builder) = current.take()
-                && let Some(event) = finish_event(source, path, builder)
-            {
-                events.push(event);
+        let (key_and_params, raw_value) = line
+            .split_once(':')
+            .with_context(|| format!("invalid iCalendar content line in {}", path.display()))?;
+        let key = key_and_params.to_ascii_uppercase();
+        if key == "BEGIN" {
+            let component = raw_value.to_ascii_uppercase();
+            if components.is_empty() {
+                anyhow::ensure!(component == "VCALENDAR", "expected BEGIN:VCALENDAR");
+                saw_calendar = true;
+            } else {
+                anyhow::ensure!(component != "VCALENDAR", "nested VCALENDAR is invalid");
+            }
+            if component == "VEVENT" {
+                anyhow::ensure!(
+                    components.last().map(String::as_str) == Some("VCALENDAR"),
+                    "VEVENT must belong directly to VCALENDAR"
+                );
+                current = Some(EventBuilder::default());
+            }
+            anyhow::ensure!(!component.is_empty(), "empty iCalendar component");
+            components.push(component);
+            continue;
+        }
+        if key == "END" {
+            let component = raw_value.to_ascii_uppercase();
+            anyhow::ensure!(
+                components.pop().as_deref() == Some(component.as_str()),
+                "mismatched END:{component} in {}",
+                path.display()
+            );
+            if component == "VEVENT" {
+                let builder = current.take().context("VEVENT has no matching start")?;
+                if let Some(event) = finish_event(source, path, builder)? {
+                    events.push(event);
+                }
             }
             continue;
         }
-        let Some(builder) = current.as_mut() else {
-            continue;
-        };
-        let Some((key_and_params, raw_value)) = line.split_once(':') else {
-            continue;
-        };
-        let key = key_and_params
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        match key.as_str() {
-            "UID" => builder.uid = decode_text(raw_value),
-            "SUMMARY" => builder.title = decode_text(raw_value),
-            "DTSTART" => builder.start = parse_time(key_and_params, raw_value).ok(),
-            "DTEND" => builder.end = parse_time(key_and_params, raw_value).ok(),
-            "LOCATION" => builder.location = decode_text(raw_value),
-            "URL" => builder.url = decode_text(raw_value),
-            "STATUS" => builder.cancelled = raw_value.eq_ignore_ascii_case("CANCELLED"),
-            _ => {}
+        anyhow::ensure!(!components.is_empty(), "property outside VCALENDAR");
+        // Nested components (notably VALARM) own their own properties.
+        if components.last().map(String::as_str) == Some("VEVENT") {
+            let builder = current.as_mut().context("property outside VEVENT")?;
+            parse_event_property(builder, key_and_params, raw_value)
+                .with_context(|| format!("parse event in {}", path.display()))?;
         }
     }
+    anyhow::ensure!(saw_calendar, "missing VCALENDAR in {}", path.display());
+    anyhow::ensure!(
+        components.is_empty(),
+        "truncated iCalendar file {}",
+        path.display()
+    );
     Ok(events)
+}
+
+fn parse_event_property(
+    builder: &mut EventBuilder,
+    key_and_params: &str,
+    value: &str,
+) -> Result<()> {
+    let key = key_and_params
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    match key.as_str() {
+        "UID" => builder.uid = decode_text(value),
+        "SUMMARY" => builder.title = decode_text(value),
+        "DTSTART" => builder.start = Some(parse_time(key_and_params, value)?),
+        "DTEND" => builder.end = Some(parse_time(key_and_params, value)?),
+        "LOCATION" => builder.location = decode_text(value),
+        "URL" => builder.url = decode_text(value),
+        "STATUS" => builder.cancelled = value.eq_ignore_ascii_case("CANCELLED"),
+        _ => {}
+    }
+    Ok(())
 }
 
 fn finish_event(
     source: &CalendarSourceConfig,
     path: &Path,
     builder: EventBuilder,
-) -> Option<ActivityEvent> {
+) -> Result<Option<ActivityEvent>> {
     if builder.cancelled {
-        return None;
+        return Ok(None);
     }
-    let start = builder.start?;
+    let start = builder.start.context("VEVENT is missing DTSTART")?;
     let default_duration = if start.all_day { 86_400_000 } else { 3_600_000 };
     let end = builder.end.unwrap_or_else(|| ParsedTime {
         unix_ms: start.unix_ms + default_duration,
@@ -167,7 +212,8 @@ fn finish_event(
     } else {
         builder.title
     };
-    Some(ActivityEvent {
+    anyhow::ensure!(end.unix_ms >= start.unix_ms, "DTEND precedes DTSTART");
+    Ok(Some(ActivityEvent {
         id: format!("{}:{uid}:{}", source.id, start.unix_ms),
         source_id: source.id.clone(),
         calendar_name: if source.name.is_empty() {
@@ -185,7 +231,7 @@ fn finish_event(
         timezone: start.timezone,
         location: builder.location,
         url: builder.url,
-    })
+    }))
 }
 
 fn parse_time(key_and_params: &str, value: &str) -> Result<ParsedTime> {
@@ -280,9 +326,8 @@ fn decode_text(value: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use crate::activity::config::CalendarSourceConfig;
-
     use super::{parse_calendar, unfold_lines};
+    use crate::activity::config::CalendarSourceConfig;
 
     fn source() -> CalendarSourceConfig {
         CalendarSourceConfig {
@@ -307,6 +352,43 @@ mod tests {
         assert_eq!(events[0].location, "Room 1");
         assert!(events[1].all_day);
         assert_eq!(events[1].start_date.as_deref(), Some("2026-01-20"));
+    }
+
+    #[test]
+    fn nested_alarm_does_not_overwrite_event_properties() {
+        let events = parse_calendar(&source(), Path::new("test.ics"),
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].title, "Team meeting");
+        assert!(events[0].id.contains(":meeting:"));
+    }
+
+    #[test]
+    fn rejects_malformed_calendars_but_accepts_an_empty_calendar() {
+        for contents in [
+            "",
+            "not a calendar",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\n",
+            "BEGIN:VCALENDAR\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Missing start\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:invalid\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nDTEND:invalid\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nEND:VEVENT\nEND:VCALENDAR\n",
+        ] {
+            assert!(
+                parse_calendar(&source(), Path::new("test.ics"), contents).is_err(),
+                "{contents}"
+            );
+        }
+        assert!(
+            parse_calendar(
+                &source(),
+                Path::new("test.ics"),
+                "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n"
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]

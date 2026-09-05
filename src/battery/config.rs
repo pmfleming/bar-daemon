@@ -156,6 +156,8 @@ pub(crate) enum OperationPhase {
     Discharging,
     #[serde(rename = "charging")]
     Charging,
+    #[serde(rename = "restoring")]
+    Restoring,
 }
 
 impl OperationPhase {
@@ -165,6 +167,7 @@ impl OperationPhase {
             Self::Paused => "paused",
             Self::Discharging => "discharging",
             Self::Charging => "charging",
+            Self::Restoring => "restoring",
         }
     }
 }
@@ -257,6 +260,30 @@ impl BatteryRuntimeState {
             && now_unix_ms >= self.operation_expires_unix_ms
     }
 
+    pub(crate) fn complete_calibration_restoration(
+        &mut self,
+        start: u8,
+        end: u8,
+        verified: bool,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.operation == OperationKind::Calibration,
+            "no calibration to restore"
+        );
+        anyhow::ensure!(
+            verified
+                && (Some(start), Some(end))
+                    == (
+                        self.operation_restore_start_percent,
+                        self.operation_restore_end_percent
+                    ),
+            "battery {} reported thresholds {start}–{end} after calibration restoration; recovery remains pending",
+            self.operation_battery_id
+        );
+        self.clear_operation();
+        Ok(())
+    }
+
     pub(crate) fn clear_operation(&mut self) {
         self.operation = OperationKind::None;
         self.operation_battery_id.clear();
@@ -307,6 +334,44 @@ pub(crate) async fn load_runtime() -> Result<BatteryRuntimeState> {
 
 pub(crate) async fn save_runtime(state: &BatteryRuntimeState) -> Result<()> {
     save_json_atomic(&state_path(), state).await
+}
+
+#[cfg(test)]
+mod restoration_tests {
+    use super::*;
+
+    #[test]
+    fn restoration_marker_is_cleared_only_after_exact_verified_readback() {
+        let mut runtime = BatteryRuntimeState::start_calibration(1, "BAT0".into(), 75, 80);
+        runtime.operation_phase = OperationPhase::Restoring;
+        let pending = runtime.clone();
+        assert!(
+            runtime
+                .complete_calibration_restoration(0, 100, false)
+                .is_err()
+        );
+        assert_eq!(runtime, pending);
+        assert!(
+            runtime
+                .complete_calibration_restoration(75, 80, false)
+                .is_err()
+        );
+        assert_eq!(runtime, pending);
+        assert!(
+            runtime
+                .complete_calibration_restoration(0, 100, true)
+                .is_err()
+        );
+        assert_eq!(runtime, pending);
+        let serialized = serde_json::to_vec(&runtime).unwrap();
+        runtime = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(runtime.operation_phase, OperationPhase::Restoring);
+        runtime
+            .complete_calibration_restoration(75, 80, true)
+            .unwrap();
+        assert!(!runtime.has_durable_operation());
+        assert_eq!(runtime.operation_restore_start_percent, None);
+    }
 }
 
 #[cfg(test)]

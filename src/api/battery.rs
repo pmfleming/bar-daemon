@@ -340,18 +340,35 @@ impl BatteryApi {
                 format!("battery {battery_id} is not being calibrated"),
             );
         }
+        // Persist cancellation before touching hardware. A failed restoration
+        // must retry restoration on restart, never resume force-discharge.
+        runtime.operation_phase = config::OperationPhase::Restoring;
+        if let Err(error_value) = config::save_runtime(&runtime).await {
+            return error("battery-state-failed", error_value.to_string());
+        }
         if let Err(error_value) = battery::helper::set_charge_behaviour(&battery_id, "auto").await {
             return error("battery-operation-failed", error_value.to_string());
         }
-        if let (Some(start), Some(end)) = (
+        let (Some(start), Some(end)) = (
             runtime.operation_restore_start_percent,
             runtime.operation_restore_end_percent,
-        ) && let Err(error_value) =
-            battery::helper::set_thresholds(&battery_id, start, end).await
-        {
+        ) else {
+            return error(
+                "battery-state-failed",
+                "calibration restoration thresholds are missing",
+            );
+        };
+        let result = match battery::helper::set_thresholds(&battery_id, start, end).await {
+            Ok(result) => result,
+            Err(error_value) => return error("battery-operation-failed", error_value.to_string()),
+        };
+        if let Err(error_value) = runtime.complete_calibration_restoration(
+            result.actual_start_percent,
+            result.actual_end_percent,
+            result.verified,
+        ) {
             return error("battery-operation-failed", error_value.to_string());
         }
-        runtime.clear_operation();
         if let Err(error_value) = config::save_runtime(&runtime).await {
             return error("battery-state-failed", error_value.to_string());
         }

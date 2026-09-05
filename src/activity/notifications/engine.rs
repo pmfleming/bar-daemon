@@ -110,6 +110,9 @@ impl EngineData {
 }
 
 pub(crate) struct NotificationEngine {
+    // Covers each mutation, persistence enqueue, signal, and state publication.
+    // Keep this separate from data so internal reads never recursively lock it.
+    mutations: Mutex<()>,
     data: Mutex<EngineData>,
     next_id: AtomicU32,
     ingress: Arc<Semaphore>,
@@ -146,6 +149,7 @@ impl NotificationEngine {
         let dnd_expired = dnd_until_unix_ms.is_some_and(|until| until <= unix_ms());
         let (signals, _) = broadcast::channel(256);
         let engine = Arc::new(Self {
+            mutations: Mutex::new(()),
             data: Mutex::new(EngineData {
                 active,
                 dnd: dnd && !dnd_expired,
@@ -180,6 +184,7 @@ impl NotificationEngine {
             .try_acquire_owned()
             .context("notification ingress is full")?;
         self.policy.validate(&notification)?;
+        let _mutation = self.mutations.lock().await;
         let now = unix_ms();
         let source_monitor = self
             .state
@@ -222,6 +227,12 @@ impl NotificationEngine {
     }
 
     pub(crate) async fn close(&self, id: u32, reason: u32) -> bool {
+        let _mutation = self.mutations.lock().await;
+        self.close_locked(id, reason).await
+    }
+
+    // Caller holds mutations, including when closing as part of expiry/actions.
+    async fn close_locked(&self, id: u32, reason: u32) -> bool {
         let removed = {
             let mut data = self.data.lock().await;
             let removed = data.active.remove(&id).is_some();
@@ -246,6 +257,7 @@ impl NotificationEngine {
     }
 
     pub(crate) async fn clear(&self) -> usize {
+        let _mutation = self.mutations.lock().await;
         let ids = {
             let mut data = self.data.lock().await;
             let ids = data.active.keys().copied().collect::<Vec<_>>();
@@ -274,6 +286,11 @@ impl NotificationEngine {
     }
 
     pub(crate) async fn set_dnd(&self, enabled: bool, until_unix_ms: Option<u64>) {
+        let _mutation = self.mutations.lock().await;
+        self.set_dnd_locked(enabled, until_unix_ms).await;
+    }
+
+    async fn set_dnd_locked(&self, enabled: bool, until_unix_ms: Option<u64>) {
         let until = enabled.then_some(until_unix_ms).flatten();
         let changed = {
             let mut data = self.data.lock().await;
@@ -292,12 +309,14 @@ impl NotificationEngine {
     }
 
     pub(crate) async fn toggle_dnd(&self) -> bool {
+        let _mutation = self.mutations.lock().await;
         let enabled = !self.data.lock().await.dnd;
-        self.set_dnd(enabled, None).await;
+        self.set_dnd_locked(enabled, None).await;
         enabled
     }
 
     pub(crate) async fn snooze(&self, id: u32, until_unix_ms: u64) -> bool {
+        let _mutation = self.mutations.lock().await;
         let now = unix_ms();
         if until_unix_ms <= now {
             return false;
@@ -325,6 +344,7 @@ impl NotificationEngine {
     }
 
     pub(crate) async fn clear_group(&self, group_key: &str) -> usize {
+        let _mutation = self.mutations.lock().await;
         let ids = {
             let data = self.data.lock().await;
             data.active
@@ -334,7 +354,7 @@ impl NotificationEngine {
                 .collect::<Vec<_>>()
         };
         for id in &ids {
-            self.close(*id, close_reason::DISMISSED).await;
+            self.close_locked(*id, close_reason::DISMISSED).await;
         }
         ids.len()
     }
@@ -372,6 +392,7 @@ impl NotificationEngine {
         action_key: &str,
         token: Option<String>,
     ) -> bool {
+        let _mutation = self.mutations.lock().await;
         let resident = {
             let data = self.data.lock().await;
             let Some(notification) = data.active.get(&id) else {
@@ -394,7 +415,7 @@ impl NotificationEngine {
             action_key: action_key.into(),
         });
         if !resident {
-            self.dismiss(id).await;
+            self.close_locked(id, close_reason::DISMISSED).await;
         }
         true
     }
@@ -425,6 +446,7 @@ impl NotificationEngine {
     }
 
     async fn expire_due(&self) {
+        let _mutation = self.mutations.lock().await;
         let batch = self.data.lock().await.expire(unix_ms());
         if let Some(persistence) = &self.persistence {
             for notification in batch.awakened {
@@ -435,7 +457,7 @@ impl NotificationEngine {
             }
         }
         for id in batch.expired_ids {
-            self.close(id, close_reason::EXPIRED).await;
+            self.close_locked(id, close_reason::EXPIRED).await;
         }
         self.publish_summary().await;
     }
@@ -529,6 +551,56 @@ mod tests {
             hints: NotificationHints::default(),
             expire_timeout: timeout_ms,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_mutations_keep_persistence_and_snapshot_consistent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notifications.sqlite3");
+        let state = StateStore::default();
+        let engine = NotificationEngine::persistent(state.clone(), path.clone())
+            .await
+            .unwrap();
+        for round in 0..1_000 {
+            let mut tasks = tokio::task::JoinSet::new();
+            for worker in 0..4 {
+                let engine = Arc::clone(&engine);
+                tasks.spawn(async move {
+                    if worker == 0 {
+                        engine.clear().await;
+                    } else {
+                        engine
+                            .notify(1, notification(&format!("{round}-{worker}"), 0))
+                            .await
+                            .unwrap();
+                    }
+                });
+            }
+            while let Some(task) = tasks.join_next().await {
+                task.unwrap();
+            }
+            // Listing is also a barrier for the persistence worker.
+            let mut stored = engine
+                .history(None, 100)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|item| item.closed_unix_ms.is_none())
+                .map(|item| item.notification)
+                .collect::<Vec<_>>();
+            stored.sort_by_key(|item| item.id);
+            let active = engine.active().await;
+            assert_eq!(stored, active, "persistence diverged at round {round}");
+            let snapshot = state.snapshot().await;
+            assert_eq!(snapshot.notifications.count as usize, active.len());
+            assert_eq!(snapshot.notification_active.notifications, active);
+        }
+        let expected = engine.active().await;
+        drop(engine);
+        let restarted = NotificationEngine::persistent(StateStore::default(), path)
+            .await
+            .unwrap();
+        assert_eq!(restarted.active().await, expected);
     }
 
     #[tokio::test]

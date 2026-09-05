@@ -80,16 +80,15 @@ impl StateStore {
         T: PartialEq + Serialize,
         F: for<'a> FnOnce(&'a mut BarSnapshot) -> &'a mut T,
     {
-        let data;
-        {
-            let mut snapshot = self.snapshot.write().await;
-            let current = field(&mut snapshot);
-            if *current == value {
-                return;
-            }
-            data = to_value(&value).unwrap_or(Value::Null);
-            *current = value;
+        let mut snapshot = self.snapshot.write().await;
+        let current = field(&mut snapshot);
+        if *current == value {
+            return;
         }
+        let data = to_value(&value).unwrap_or(Value::Null);
+        *current = value;
+        // Commit and broadcast share the snapshot/subscription boundary. Sending
+        // is synchronous, so retaining the lock also preserves commit order.
         let _ = self.events.send(DomainEvent {
             stream: stream.to_string(),
             data,
@@ -104,6 +103,46 @@ mod tests {
     use crate::model::WorkspaceState;
 
     use super::StateStore;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_events_follow_commit_order() {
+        use std::sync::{Arc, Mutex};
+
+        let store = StateStore::default();
+        let mut events = store.subscribe();
+        for round in 0..1_000 {
+            let committed = Arc::new(Mutex::new(Vec::new()));
+            let mut tasks = tokio::task::JoinSet::new();
+            for worker in 0..16 {
+                let store = store.clone();
+                let committed = Arc::clone(&committed);
+                tasks.spawn(async move {
+                    let value = round * 16 + worker + 1;
+                    store
+                        .update(value, "test", |snapshot| {
+                            committed.lock().unwrap().push(value);
+                            &mut snapshot.notifications.count
+                        })
+                        .await;
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
+            }
+            let mut emitted = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                emitted.push(event.data.as_u64().unwrap() as u32);
+            }
+            assert_eq!(emitted, *committed.lock().unwrap());
+            assert_eq!(
+                emitted.last(),
+                Some(&store.snapshot().await.notifications.count)
+            );
+            let (snapshot, mut new_events) = store.snapshot_and_subscribe().await;
+            assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
+            assert!(new_events.try_recv().is_err());
+        }
+    }
 
     #[tokio::test]
     async fn only_emits_changed_domain_values() {

@@ -14,6 +14,12 @@ const MANAGER_PATH: &str = "/org/freedesktop/login1";
 const MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
 const SESSION_PATH: &str = "/org/freedesktop/login1/session/auto";
 const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
+const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+#[cfg(test)]
+#[path = "sleep_tests.rs"]
+mod lock_tests;
 
 type RawInhibitor = (String, String, String, String, u32, u32);
 
@@ -136,16 +142,24 @@ pub(crate) async fn perform(action: &str) -> Result<PowerSleepState> {
     let connection = zbus::Connection::system()
         .await
         .context("connect to system D-Bus")?;
-    let current = read_state(&connection, false).await?;
+    perform_connected(&connection, action, LOCK_TIMEOUT).await
+}
+
+async fn perform_connected(
+    connection: &zbus::Connection,
+    action: &str,
+    lock_timeout: Duration,
+) -> Result<PowerSleepState> {
+    let current = read_state(connection, false).await?;
     if action == "suspend" && !capability_available(&current.can_suspend) {
         bail!("suspend is unavailable: {}", current.can_suspend);
     }
     if action == "hibernate" && !capability_available(&current.can_hibernate) {
         bail!("hibernate is unavailable: {}", current.can_hibernate);
     }
-    lock_session(&connection).await?;
+    lock_session(connection, lock_timeout).await?;
     if action != "lock" {
-        manager(&connection)
+        manager(connection)
             .await?
             .call_method(
                 if action == "suspend" {
@@ -158,17 +172,39 @@ pub(crate) async fn perform(action: &str) -> Result<PowerSleepState> {
             .await
             .with_context(|| format!("request {action} through systemd-logind"))?;
     }
-    read_state(&connection, false).await
+    read_state(connection, false).await
 }
 
-async fn lock_session(connection: &zbus::Connection) -> Result<()> {
-    zbus::Proxy::new(connection, BUS, SESSION_PATH, SESSION_INTERFACE)
-        .await
-        .context("connect to the active logind session")?
-        .call_method("Lock", &())
-        .await
-        .context("request session lock before sleep")?;
-    Ok(())
+async fn lock_session(connection: &zbus::Connection, deadline: Duration) -> Result<()> {
+    tokio::time::timeout(deadline, async {
+        // Lock only emits a request to the session's locker. LockedHint must be
+        // set by that integration *after* the compositor confirms the lock.
+        // Read directly: a cached hint is not a lock-completion acknowledgement.
+        let session: zbus::Proxy<'_> = zbus::proxy::Builder::new(connection)
+            .destination(BUS)?
+            .path(SESSION_PATH)?
+            .interface(SESSION_INTERFACE)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .context("connect to the active logind session")?;
+        session
+            .call_method("Lock", &())
+            .await
+            .context("request session lock")?;
+        loop {
+            if session
+                .get_property::<bool>("LockedHint")
+                .await
+                .context("read session lock confirmation")?
+            {
+                return Ok(());
+            }
+            sleep(LOCK_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .context("session lock was not confirmed before the deadline; refusing to sleep")?
 }
 
 fn capability_available(value: &str) -> bool {

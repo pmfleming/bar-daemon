@@ -438,7 +438,9 @@ fn reconciliation_target(
     if runtime.operation == config::OperationKind::Calibration
         && runtime.operation_battery_id == battery_id
     {
-        return Some((0, 100));
+        // Restoration is retried by reconcile_calibration, including readback
+        // verification. Do not reopen 0–100 after an unsuccessful restoration.
+        return (runtime.operation_phase != config::OperationPhase::Restoring).then_some((0, 100));
     }
     let charge_once_target = runtime.charge_once_active
         && (runtime.charge_once_battery_id.is_empty()
@@ -506,7 +508,10 @@ async fn reconcile_calibration(
     policy_error: &mut Option<String>,
     device: &OperationDevice,
 ) -> bool {
-    if runtime.operation_expired(crate::time::unix_ms()) || !state.plugged {
+    if runtime.operation_phase == config::OperationPhase::Restoring
+        || runtime.operation_expired(crate::time::unix_ms())
+        || !state.plugged
+    {
         return finish_runtime_operation(state, runtime, policy_error).await;
     }
     match runtime.operation_phase {
@@ -570,40 +575,44 @@ async fn finish_runtime_operation(
     runtime: &mut config::BatteryRuntimeState,
     policy_error: &mut Option<String>,
 ) -> bool {
+    if runtime.operation_phase != config::OperationPhase::Restoring {
+        runtime.operation_phase = config::OperationPhase::Restoring;
+        if let Err(error) = config::save_runtime(runtime).await {
+            append_error(policy_error, error.to_string());
+            return false;
+        }
+    }
     let battery_id = runtime.operation_battery_id.clone();
     let behaviour_result = helper::set_charge_behaviour(&battery_id, "auto").await;
     let threshold_result = match (
         runtime.operation_restore_start_percent,
         runtime.operation_restore_end_percent,
     ) {
-        (Some(start), Some(end)) => helper::set_thresholds(&battery_id, start, end)
-            .await
-            .map(Some),
-        _ => Ok(None),
+        (Some(start), Some(end)) => helper::set_thresholds(&battery_id, start, end).await,
+        _ => Err(anyhow::anyhow!(
+            "calibration restoration thresholds are missing"
+        )),
     };
     match (behaviour_result, threshold_result) {
         (Ok(actual), Ok(thresholds)) => {
             update_observed_behaviour(state, &battery_id, actual);
-            if let Some(thresholds) = thresholds {
-                update_observed_thresholds(
-                    state,
-                    &battery_id,
-                    thresholds.actual_start_percent,
-                    thresholds.actual_end_percent,
-                );
-                if !thresholds.verified {
-                    append_error(
-                        policy_error,
-                        format!(
-                            "battery {battery_id} reported thresholds {}–{} after calibration restoration",
-                            thresholds.actual_start_percent, thresholds.actual_end_percent
-                        ),
-                    );
-                    return false;
+            update_observed_thresholds(
+                state,
+                &battery_id,
+                thresholds.actual_start_percent,
+                thresholds.actual_end_percent,
+            );
+            match runtime.complete_calibration_restoration(
+                thresholds.actual_start_percent,
+                thresholds.actual_end_percent,
+                thresholds.verified,
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    append_error(policy_error, error.to_string());
+                    false
                 }
             }
-            runtime.clear_operation();
-            true
         }
         (behaviour, thresholds) => {
             if let Err(error) = behaviour {
@@ -825,6 +834,21 @@ mod tests {
                 "BAT0"
             ),
             Some((75, 80))
+        );
+    }
+
+    #[test]
+    fn pending_calibration_restoration_does_not_reopen_thresholds() {
+        let device = config::BatteryDeviceConfig::default();
+        let mut runtime = config::BatteryRuntimeState::start_calibration(1, "BAT0".into(), 75, 80);
+        assert_eq!(
+            reconciliation_target(&device, &runtime, false, "BAT0"),
+            Some((0, 100))
+        );
+        runtime.operation_phase = config::OperationPhase::Restoring;
+        assert_eq!(
+            reconciliation_target(&device, &runtime, false, "BAT0"),
+            None
         );
     }
 

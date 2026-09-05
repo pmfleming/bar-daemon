@@ -253,7 +253,10 @@ impl ActivityService {
             bail!("to_unix_ms must be greater than from_unix_ms");
         }
         const MAX_RANGE_MS: i64 = 370 * 24 * 60 * 60 * 1_000;
-        if to_unix_ms - from_unix_ms > MAX_RANGE_MS {
+        let duration = to_unix_ms
+            .checked_sub(from_unix_ms)
+            .context("activity range duration overflows")?;
+        if duration > MAX_RANGE_MS {
             bail!("activity range cannot exceed 370 days");
         }
         let data = self.data.read().await;
@@ -515,6 +518,11 @@ mod tests {
             todo_sequence: AtomicU64::new(1),
             _notifications: NotificationSink::unavailable(),
         };
+        assert!(service.query_range(i64::MIN, i64::MAX).await.is_err());
+        assert!(service.query_range(i64::MIN, 0).await.is_err());
+        const MAX_RANGE_MS: i64 = 370 * 24 * 60 * 60 * 1_000;
+        assert!(service.query_range(0, MAX_RANGE_MS).await.is_ok());
+        assert!(service.query_range(0, MAX_RANGE_MS + 1).await.is_err());
         let todo = service
             .create_todo("Write tests".into(), None, Some("2026-01-20".into()), 3)
             .await
@@ -586,6 +594,35 @@ mod tests {
             .unwrap();
         assert_eq!(range.events.len(), 2);
         assert_eq!(range.busy_dates, vec!["2026-01-15", "2026-01-20"]);
+
+        // A partial write must retain the source's last good data, report its
+        // failure independently, and recover when the file is valid again.
+        tokio::fs::write(&first, "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:first\n")
+            .await
+            .unwrap();
+        service.refresh().await;
+        let failed = state.snapshot().await.activity;
+        assert_eq!(failed.event_count, 2);
+        assert!(!failed.sources[0].available);
+        assert!(failed.sources[0].error.is_some());
+        assert!(failed.sources[1].available);
+        assert_eq!(
+            service
+                .query_range(range.from_unix_ms, range.to_unix_ms)
+                .await
+                .unwrap()
+                .events,
+            range.events
+        );
+
+        tokio::fs::write(&first, "BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+            .await
+            .unwrap();
+        service.refresh().await;
+        let recovered = state.snapshot().await.activity;
+        assert_eq!(recovered.event_count, 1);
+        assert!(recovered.sources[0].available);
+        assert!(recovered.error.is_none());
     }
 
     #[tokio::test]
