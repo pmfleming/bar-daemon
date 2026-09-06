@@ -8,7 +8,6 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio::time::{Duration, sleep};
 
 #[derive(Deserialize)]
 struct ProfileRequest {
@@ -75,7 +74,13 @@ struct AudioController {
 impl AudioController {
     fn new(state: StateStore) -> Self {
         let (sender, receiver) = mpsc::channel(64);
-        tokio::spawn(run_audio_controller(receiver, state));
+        let runtime = tokio::runtime::Handle::current();
+        if let Err(error) = std::thread::Builder::new()
+            .name("bar-pipewire-control".into())
+            .spawn(move || run_audio_controller(receiver, state, runtime))
+        {
+            tracing::error!(%error, "could not start PipeWire controller");
+        }
         Self { sender }
     }
 
@@ -262,15 +267,16 @@ impl DesktopEffects {
     }
 }
 
-async fn run_audio_controller(
+fn run_audio_controller(
     mut receiver: mpsc::Receiver<(AudioCommand, AudioReply)>,
     state: StateStore,
+    runtime: tokio::runtime::Handle,
 ) {
-    while let Some(first) = receiver.recv().await {
-        // Key-repeat requests normally arrive within one scheduler turn. A
-        // tiny collection window lets one PipeWire transaction apply the
-        // accumulated delta instead of queueing obsolete probes.
-        sleep(Duration::from_millis(8)).await;
+    let mut connection = audio::AudioConnection::new().ok();
+    while let Some(first) = receiver.blocking_recv() {
+        // Start the first key immediately. Coalesce only requests already
+        // queued (including repeats received during the previous transaction).
+        // All PipeWire objects stay on this thread and reuse one connection.
         let mut pending = vec![first];
         while let Ok(command) = receiver.try_recv() {
             pending.push(command);
@@ -281,31 +287,62 @@ async fn run_audio_controller(
                 let start = index;
                 let (end, delta) = accumulated_adjustment(&pending, start);
                 index = end;
-                let result = audio::adjust(delta)
-                    .await
-                    .map_err(|error| error.to_string());
-                publish_audio_result(&state, &mut pending[start..index], result).await;
+                let result = execute_audio(&mut connection, AudioCommand::Adjust(delta));
+                runtime.block_on(publish_audio_result(
+                    &state,
+                    &mut pending[start..index],
+                    result,
+                ));
                 continue;
             }
-            let result = match pending[index].0 {
-                AudioCommand::SetMuted(value) => audio::set_muted(value).await,
-                AudioCommand::SetInputMuted(value) => audio::set_input_muted(value).await,
-                AudioCommand::Adjust(_) => unreachable!(),
-            }
-            .map_err(|error| error.to_string());
-            publish_audio_result(&state, &mut pending[index..=index], result).await;
+            let result = execute_audio(&mut connection, pending[index].0);
+            runtime.block_on(publish_audio_result(
+                &state,
+                &mut pending[index..=index],
+                result,
+            ));
             index += 1;
         }
     }
 }
 
+fn execute_audio(
+    connection: &mut Option<audio::AudioConnection>,
+    command: AudioCommand,
+) -> Result<crate::model::AudioState, String> {
+    let result = (|| {
+        if connection.is_none() {
+            *connection = Some(audio::AudioConnection::new()?);
+        }
+        let connection = connection.as_ref().expect("connection initialized");
+        match command {
+            AudioCommand::Adjust(delta) => connection.adjust(delta),
+            AudioCommand::SetMuted(muted) => connection.set_muted(muted),
+            AudioCommand::SetInputMuted(muted) => connection.set_input_muted(muted),
+        }
+    })();
+    if result.is_err() {
+        // Reconnect for the NEXT request, never replay a possibly applied
+        // adjustment/toggle after a disconnect or verification failure.
+        *connection = None;
+    }
+    result.map_err(|error: anyhow::Error| error.to_string())
+}
+
 fn accumulated_adjustment(commands: &[(AudioCommand, AudioReply)], start: usize) -> (usize, i16) {
+    let AudioCommand::Adjust(first) = commands[start].0 else {
+        return (start, 0);
+    };
     let mut end = start;
     let mut delta = 0_i32;
     while end < commands.len() {
         let AudioCommand::Adjust(value) = commands[end].0 else {
             break;
         };
+        // Opposite directions must retain their clamp ordering (e.g. at 100%).
+        if value.signum() != first.signum() {
+            break;
+        }
         delta = delta.saturating_add(i32::from(value));
         end += 1;
     }
@@ -331,5 +368,52 @@ async fn publish_audio_result(
         if let Some(reply) = reply.take() {
             let _ = reply.send(value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AudioCommand, accumulated_adjustment, publish_audio_result};
+    use crate::{model::AudioState, state::StateStore};
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn coalesces_queued_repeats_without_reordering_mutes_or_direction_changes() {
+        let commands = [
+            (AudioCommand::Adjust(5), None),
+            (AudioCommand::Adjust(5), None),
+            (AudioCommand::Adjust(-5), None),
+            (AudioCommand::SetMuted(None), None),
+            (AudioCommand::Adjust(-5), None),
+            (AudioCommand::Adjust(-5), None),
+        ];
+        assert_eq!(accumulated_adjustment(&commands, 0), (2, 10));
+        assert_eq!(accumulated_adjustment(&commands, 2), (3, -5));
+        assert_eq!(accumulated_adjustment(&commands, 4), (6, -10));
+        let commands = [
+            (AudioCommand::Adjust(i16::MAX), None),
+            (AudioCommand::Adjust(i16::MAX), None),
+        ];
+        assert_eq!(accumulated_adjustment(&commands, 0), (2, i16::MAX));
+    }
+
+    #[tokio::test]
+    async fn coalesced_requests_all_receive_the_confirmed_state() {
+        let state = StateStore::default();
+        let (first, first_reply) = oneshot::channel();
+        let (second, second_reply) = oneshot::channel();
+        let mut commands = [
+            (AudioCommand::Adjust(5), Some(first)),
+            (AudioCommand::Adjust(5), Some(second)),
+        ];
+        let audio = AudioState {
+            available: true,
+            volume_percent: 60,
+            ..AudioState::default()
+        };
+        publish_audio_result(&state, &mut commands, Ok(audio.clone())).await;
+        assert_eq!(first_reply.await.unwrap().unwrap(), audio);
+        assert_eq!(second_reply.await.unwrap().unwrap(), audio);
+        assert_eq!(state.snapshot().await.audio, audio);
     }
 }

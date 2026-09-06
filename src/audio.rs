@@ -124,41 +124,63 @@ async fn refresh(store: &StateStore) {
     }
 }
 
-pub(crate) async fn adjust(delta_percent: i16) -> Result<AudioState> {
-    tokio::task::spawn_blocking(move || {
-        let (sink, _) = probe_default()?;
+/// Owned by the dedicated control thread: PipeWire objects are not Send.
+/// Reuse the connection across keys, but query current defaults/routes for each
+/// operation so device switches and changes by other clients remain authoritative.
+pub(crate) struct AudioConnection {
+    core: pw::core::CoreRc,
+    main_loop: pw::main_loop::MainLoopRc,
+}
+
+impl AudioConnection {
+    pub(crate) fn new() -> Result<Self> {
+        initialize();
+        let main_loop =
+            pw::main_loop::MainLoopRc::new(None).context("create PipeWire control loop")?;
+        let context = pw::context::ContextRc::new(&main_loop, None)
+            .context("create PipeWire control context")?;
+        let core = context.connect_rc(None).context("connect to PipeWire")?;
+        // Warm the connection before the first key press.
+        pipewire_roundtrip(&main_loop, &core)?;
+        Ok(Self { core, main_loop })
+    }
+
+    pub(crate) fn adjust(&self, delta_percent: i16) -> Result<AudioState> {
+        let (sink, _) = probe_default(self)?;
         let volume = adjusted_volume(sink.volume, delta_percent);
-        set_node(&sink, Some(volume), Some(false), "sink")?;
-        probe()
-    })
-    .await
-    .context("join PipeWire volume operation")?
-}
+        set_node(self, &sink, Some(volume), Some(false), "sink")?;
+        self.snapshot()
+    }
 
-pub(crate) async fn set_muted(muted: Option<bool>) -> Result<AudioState> {
-    tokio::task::spawn_blocking(move || {
-        let (sink, _) = probe_default()?;
-        set_node(&sink, None, Some(requested_mute(sink.muted, muted)), "sink")?;
-        probe()
-    })
-    .await
-    .context("join PipeWire mute operation")?
-}
+    pub(crate) fn set_muted(&self, muted: Option<bool>) -> Result<AudioState> {
+        let (sink, _) = probe_default(self)?;
+        set_node(
+            self,
+            &sink,
+            None,
+            Some(requested_mute(sink.muted, muted)),
+            "sink",
+        )?;
+        self.snapshot()
+    }
 
-pub(crate) async fn set_input_muted(muted: Option<bool>) -> Result<AudioState> {
-    tokio::task::spawn_blocking(move || {
-        let (_, source) = probe_default()?;
+    pub(crate) fn set_input_muted(&self, muted: Option<bool>) -> Result<AudioState> {
+        let (_, source) = probe_default(self)?;
         let source = source.context("no PipeWire audio source is available")?;
         set_node(
+            self,
             &source,
             None,
             Some(requested_mute(source.muted, muted)),
             "source",
         )?;
-        probe()
-    })
-    .await
-    .context("join PipeWire input mute operation")?
+        self.snapshot()
+    }
+
+    fn snapshot(&self) -> Result<AudioState> {
+        let (sink, source) = probe_default(self)?;
+        Ok(audio_state(sink, source))
+    }
 }
 
 fn adjusted_volume(current: f32, delta_percent: i16) -> f32 {
@@ -297,8 +319,11 @@ fn bind_monitor_object(
 }
 
 fn probe() -> Result<AudioState> {
-    let (sink, source) = probe_default()?;
-    Ok(AudioState {
+    AudioConnection::new()?.snapshot()
+}
+
+fn audio_state(sink: SinkProbe, source: Option<SinkProbe>) -> AudioState {
+    AudioState {
         available: true,
         sink_name: sink.name,
         sink_description: sink.description,
@@ -315,15 +340,12 @@ fn probe() -> Result<AudioState> {
             .unwrap_or_default(),
         input_muted: source.as_ref().is_some_and(|source| source.muted),
         error: None,
-    })
+    }
 }
 
-fn probe_default() -> Result<(SinkProbe, Option<SinkProbe>)> {
-    initialize();
-    let main_loop = pw::main_loop::MainLoopRc::new(None).context("create PipeWire main loop")?;
-    let context =
-        pw::context::ContextRc::new(&main_loop, None).context("create PipeWire context")?;
-    let core = context.connect_rc(None).context("connect to PipeWire")?;
+fn probe_default(connection: &AudioConnection) -> Result<(SinkProbe, Option<SinkProbe>)> {
+    let main_loop = &connection.main_loop;
+    let core = &connection.core;
     let registry = core.get_registry_rc().context("open PipeWire registry")?;
     let registry_weak = registry.downgrade();
     let state = Rc::new(ProbeState::default());
@@ -337,8 +359,8 @@ fn probe_default() -> Result<(SinkProbe, Option<SinkProbe>)> {
             bind_probe_global(&state_for_registry, &registry, global);
         })
         .register();
-    pipewire_roundtrip(&main_loop, &core)?;
-    pipewire_roundtrip(&main_loop, &core)?;
+    pipewire_roundtrip(main_loop, core)?;
+    pipewire_roundtrip(main_loop, core)?;
     let sinks = state.sinks.borrow();
     let sources = state.sources.borrow();
     let default_sink_name = state.default_sink_name.borrow();
@@ -622,6 +644,7 @@ fn parse_route(pod: &pw::spa::pod::Pod) -> Option<RouteProbe> {
 }
 
 fn set_node(
+    connection: &AudioConnection,
     node_probe: &SinkProbe,
     volume: Option<f32>,
     muted: Option<bool>,
@@ -629,9 +652,8 @@ fn set_node(
 ) -> Result<()> {
     use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
     if let Some(route) = &node_probe.route {
-        return set_route(route, volume, muted, node_kind);
+        return set_route(connection, route, volume, muted, node_kind);
     }
-    initialize();
     let mut properties = Vec::new();
     if let Some(volume) = volume {
         properties.push(Property::new(
@@ -656,9 +678,8 @@ fn set_node(
     let bytes = PodSerializer::serialize(Cursor::new(Vec::new()), &value)?
         .0
         .into_inner();
-    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
-    let context = pw::context::ContextRc::new(&main_loop, None)?;
-    let core = context.connect_rc(None)?;
+    let main_loop = &connection.main_loop;
+    let core = &connection.core;
     let registry = core.get_registry_rc()?;
     let applied = Rc::new(Cell::new(false));
     let applied_for_listener = Rc::clone(&applied);
@@ -685,21 +706,23 @@ fn set_node(
             }
         })
         .register();
-    pipewire_roundtrip(&main_loop, &core)?;
+    pipewire_roundtrip(main_loop, core)?;
     if !applied.get() {
         bail!("default PipeWire {node_kind} disappeared");
     }
-    Ok(())
+    // set_param is issued inside the registry callback, after the first sync.
+    // Flush/acknowledge it before dropping the proxy and verifying the result.
+    pipewire_roundtrip(main_loop, core)
 }
 
 fn set_route(
+    connection: &AudioConnection,
     route: &RouteProbe,
     volume: Option<f32>,
     muted: Option<bool>,
     node_kind: &str,
 ) -> Result<()> {
     use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
-    initialize();
     let volume = linear_to_raw(volume.unwrap_or(route.volume));
     let muted = muted.unwrap_or(route.muted);
     let props = Value::Object(Object {
@@ -729,9 +752,8 @@ fn set_route(
     let bytes = PodSerializer::serialize(Cursor::new(Vec::new()), &value)?
         .0
         .into_inner();
-    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
-    let context = pw::context::ContextRc::new(&main_loop, None)?;
-    let core = context.connect_rc(None)?;
+    let main_loop = &connection.main_loop;
+    let core = &connection.core;
     let registry = core.get_registry_rc()?;
     let applied = Rc::new(Cell::new(false));
     let applied_for_listener = Rc::clone(&applied);
@@ -758,11 +780,11 @@ fn set_route(
             }
         })
         .register();
-    pipewire_roundtrip(&main_loop, &core)?;
+    pipewire_roundtrip(main_loop, core)?;
     if !applied.get() {
         bail!("default PipeWire {node_kind} route disappeared");
     }
-    Ok(())
+    pipewire_roundtrip(main_loop, core)
 }
 
 fn default_node_name(value: &str) -> Option<String> {
@@ -786,6 +808,9 @@ fn pipewire_roundtrip(
     let done = Rc::new(Cell::new(false));
     let done_listener = Rc::clone(&done);
     let loop_listener = main_loop.clone();
+    let failure = Rc::new(RefCell::new(None));
+    let failure_listener = Rc::clone(&failure);
+    let failure_loop = main_loop.clone();
     let _listener = core
         .add_listener_local()
         .done(move |id, sequence| {
@@ -793,6 +818,11 @@ fn pipewire_roundtrip(
                 done_listener.set(true);
                 loop_listener.quit();
             }
+        })
+        .error(move |id, _, result, message| {
+            *failure_listener.borrow_mut() =
+                Some(format!("PipeWire object {id} failed ({result}): {message}"));
+            failure_loop.quit();
         })
         .register();
     let timed_out = Rc::new(Cell::new(false));
@@ -805,8 +835,11 @@ fn pipewire_roundtrip(
     timer
         .update_timer(Some(Duration::from_secs(3)), None)
         .into_result()?;
-    while !done.get() && !timed_out.get() {
+    while !done.get() && !timed_out.get() && failure.borrow().is_none() {
         main_loop.run();
+    }
+    if let Some(error) = failure.borrow_mut().take() {
+        bail!(error);
     }
     if timed_out.get() {
         bail!("PipeWire synchronization timed out");
@@ -845,6 +878,97 @@ mod tests {
         assert_eq!(node.channels, 2);
         assert!(node.muted);
         assert_eq!(node.route.as_ref().map(|route| route.index), Some(1));
+    }
+
+    /// Never connects to the user's server or changes physical audio devices.
+    #[test]
+    #[ignore = "requires pipewire executable; uses an isolated null-audio server"]
+    fn private_pipewire_control_reuses_connection_and_reads_external_changes() {
+        use super::{AudioConnection, initialize, pipewire_roundtrip};
+        use std::{
+            os::unix::net::UnixStream,
+            process::{Child, Command, Stdio},
+            time::{Duration, Instant},
+        };
+
+        struct Server(Child);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut server = Server(
+            Command::new("pipewire")
+                .args([
+                    "-c",
+                    concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/test_support/pipewire-osd.conf"
+                    ),
+                ])
+                .env("PIPEWIRE_RUNTIME_DIR", root.path())
+                .env("XDG_RUNTIME_DIR", root.path())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let socket = root.path().join("pipewire-osd-test");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(
+                server.0.try_wait().unwrap().is_none(),
+                "private server exited"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "private server did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let connect = || {
+            initialize();
+            let main_loop = pw::main_loop::MainLoopRc::new(None).unwrap();
+            let context = pw::context::ContextRc::new(&main_loop, None).unwrap();
+            // An explicit fd prevents environment configuration from selecting
+            // the user's live PipeWire socket, even when tests run in parallel.
+            let socket = UnixStream::connect(&socket).unwrap();
+            let core = context.connect_fd_rc(socket.into(), None).unwrap();
+            pipewire_roundtrip(&main_loop, &core).unwrap();
+            AudioConnection { core, main_loop }
+        };
+        let connection = connect();
+        let external = connect();
+        assert_eq!(connection.snapshot().unwrap().sink_name, "osd-test-output");
+        assert!(connection.set_muted(Some(true)).unwrap().muted);
+        assert!(!connection.set_muted(None).unwrap().muted);
+        assert!(connection.set_input_muted(Some(true)).unwrap().input_muted);
+        assert!(!connection.set_input_muted(None).unwrap().input_muted);
+        assert_eq!(connection.adjust(-100).unwrap().volume_percent, 0);
+        assert_eq!(connection.adjust(30).unwrap().volume_percent, 30);
+        assert_eq!(external.adjust(10).unwrap().volume_percent, 40);
+        assert_eq!(connection.adjust(5).unwrap().volume_percent, 45);
+        let mut timings = Vec::new();
+        for _ in 0..20 {
+            let started = Instant::now();
+            assert_eq!(
+                connection.adjust(1).unwrap().volume_percent,
+                external.snapshot().unwrap().volume_percent
+            );
+            timings.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        timings.sort_by(f64::total_cmp);
+        eprintln!(
+            "persistent control + independent verification: median={:.2} ms p95={:.2} ms",
+            timings[10], timings[18]
+        );
+        server.0.kill().unwrap();
+        server.0.wait().unwrap();
+        assert!(
+            connection.adjust(5).is_err(),
+            "disconnect must fail, not report success"
+        );
     }
 
     #[test]

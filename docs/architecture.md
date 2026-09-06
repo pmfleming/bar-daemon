@@ -27,10 +27,28 @@ The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NO
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
 | Battery | Native power-supply sysfs plus udev events; temporary opt-in UPower adapter | Energy-weighted multi-battery telemetry, persistent alert policy, ThinkPad thresholds, crash-safe charge-once recovery |
 | Power profile | Standard Power Profiles system D-Bus (`power-profiles-daemon`, `tuned-ppd`, or `tlp-pd`) | Available-profile validation, optional battery-aware/actions capability discovery, active holds and degradation state |
-| OSD hardware | Linux LED class for keyboard indicators, keyboard backlight, and privacy LEDs | Normalized state only; Shelllist owns icon, label, progress, and timeout presentation |
+| OSD hardware | Linux LED class: hardware-change priority notifications plus a 50 ms cached-file fallback; hotplug rediscovery every 5 s | Normalized state only; no raw input access; Shelllist owns presentation |
 | Notifications | Native `org.freedesktop.Notifications` server with SQLite WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
 | Timezone | systemd-timedated system D-Bus | IANA city, abbreviation, and current offset |
+
+### Interactive audio
+
+A dedicated `bar-pipewire-control` thread owns a persistent PipeWire connection.
+Requests are serialized; the first key runs without a collection timer, while
+already-queued same-direction repeats may be combined. Direction changes and
+mute operations retain their ordering. Defaults and hardware routes are queried
+for every operation, and replies contain verified readback, so external mixer
+changes and device switches are not overwritten from a stale UI cache.
+
+A failed operation drops the connection. The next request reconnects, but the
+failed adjustment/toggle is never replayed because it may already have applied.
+The independent monitor remains responsible for changes originating elsewhere.
+
+`cargo test --lib private_pipewire_control -- --ignored --nocapture` launches an
+isolated PipeWire server with virtual sink/source devices to check repeated
+adjustments, mute, external changes, and disconnection without touching live
+audio. It requires the `pipewire` executable (included in the dev shell).
 
 ## Enforced boundaries
 
