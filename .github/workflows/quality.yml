@@ -11,10 +11,33 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bar-daemon
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          path: bar-daemon
+      - name: Read dependency revisions
+        id: dependencies
+        run: |
+          framework=$(jq -er '.nodes.daemonFramework.locked.rev' flake.lock)
+          hyprland=$(jq -er '.nodes.hyprlandIpc.locked.rev' flake.lock)
+          printf 'framework=%s\nhyprland=%s\n' "$framework" "$hyprland" >> "$GITHUB_OUTPUT"
+      # Cargo path dependencies and local Nix inputs require sibling checkouts.
+      - name: Check out daemon framework
+        uses: actions/checkout@v7
+        with:
+          repository: pmfleming/daemon-framework
+          ref: ${{ steps.dependencies.outputs.framework }}
+          path: daemon-framework
+      - name: Check out Hyprland IPC
+        uses: actions/checkout@v7
+        with:
+          repository: pmfleming/shelllist-hyprland
+          ref: ${{ steps.dependencies.outputs.hyprland }}
+          path: shelllist-hyprland
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: Format
         run: nix develop --command cargo fmt --all -- --check
@@ -33,4 +56,4 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: coverage
-          path: cobertura.xml
+          path: bar-daemon/cobertura.xml
