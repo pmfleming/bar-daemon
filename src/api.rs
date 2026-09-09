@@ -102,6 +102,7 @@ impl ApiService {
             "battery.cancelCalibration" => self.battery.battery_cancel_calibration(params).await,
             "battery.setAlertPolicy" => self.battery.battery_set_alert_policy(params).await,
             "powerProfile.set" => self.effects.power_profile_set(params).await,
+            "powerProfile.resumeAutomatic" => self.effects.power_profile_resume_automatic().await,
             "powerProfile.setBatteryAware" => {
                 self.effects.power_profile_set_battery_aware(params).await
             }

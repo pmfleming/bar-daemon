@@ -15,7 +15,27 @@ The native battery module replaces UPower for bar-daemon's laptop use case. It r
 
 Multiple batteries are aggregated by energy. If every present battery lacks compatible energy values, the daemon falls back to the mean reported capacity. External power is determined from the `online` attribute of non-battery supplies rather than inferred from battery status.
 
-The defaults are warning at 25%, critical at 12%, full notification enabled, automatic power saver enabled, and a suggested protected range of 75–80%. When discharging at or below the warning percentage, bar-daemon asks power-profiles-daemon for a `power-saver` hold. It releases the hold on AC power or recovery above the warning level. A manual profile selection releases the hold and is respected until that low-battery episode ends. A fresh installation does not take ownership of or change existing firmware thresholds. `battery.setThresholds` stores the desired range without enabling protection or taking ownership; when protection is already managed and enabled, it also updates the hardware. Threshold management starts when `battery.setProtection` succeeds.
+The defaults are low at 25%, critical at 12%, notifications and Power saver at both levels, full notification enabled, and a suggested protected range of 75–80%. A fresh installation does not take ownership of or change existing firmware thresholds. `battery.setThresholds` stores the desired range without enabling protection or taking ownership; when protection is already managed and enabled, it also updates the hardware. Threshold management starts when `battery.setProtection` succeeds.
+
+## Battery levels & actions
+
+Shelllist places the shared policy under **Power & sleep → Battery levels & actions**. Each level has an editable percentage, an independent notification switch, and a profile action: `keep-current`, `power-saver`, `balanced`, or `performance`. Only profiles advertised by the system service can be newly selected. Battery care retains charging protection, health, and the full/charge-limit notification.
+
+- Rules apply only while unplugged. Critical settings take priority, including `keep-current` (no override at that level, rather than inheriting the low-level action).
+- Levels activate at or below their percentage. Recovery requires exceeding that percentage **plus 3 percentage points**; for example, low at 25% clears above 28%. Plugging in clears the episode immediately.
+- Notifications fire once per crossing, rearming after recovery or AC power. A jump past both thresholds emits only the critical notification. Disabling a notification does not disable its profile action; enabling it again within the same episode does not issue a delayed duplicate.
+- On startup, the appropriate profile action is applied without repeating existing low/critical alerts. The level and manual pause survive daemon restarts.
+- Saver and Performance use cooperative Power Profiles holds. At recovery or on AC, only our hold is released, returning control to the previous manual selection and other applications' holds. Identical actions at both levels do not create duplicate holds.
+- Power Profiles does not support a Balanced hold. For Balanced, bar-daemon durably remembers the preceding profile before selecting it. Selection/restoration waits while any other application has a hold; it never clears another application's holds to enforce Balanced. Restoration survives daemon restarts. A subsequent manual selection supersedes the remembered profile.
+- Manual profile selection in the panel pauses automation until AC power or recovery above the low threshold plus its margin. **Resume automatic switching** (`powerProfile.resumeAutomatic`) clears the pause immediately. External selections that release our hold or replace a Balanced override are also respected.
+
+`power_profile.battery_automation` exposes `level` (`normal`, `low`, `critical`), requested `profile`, `status` (`waiting`, `active`, `paused`, `keep-current`, `blocked`, `unavailable`, `error`), and an optional `error`. `active` means our request is effective; `blocked` means another application's request is taking precedence or preventing Balanced restoration. No automatic suspend or hibernate action is added.
+
+**Adaptive hardware tuning** is separate: it controls Power Profiles' optional `BatteryAware` capability, allowing supported drivers/actions to respond to battery/AC state. It has no user-defined percentage thresholds. Hardware actions such as trickle charging are not battery charge limits.
+
+### Migration
+
+Legacy `warning_percent`, `critical_percent`, and `notify_when_full` are preserved. Missing per-level notification switches default to enabled. Missing profile actions inherit the old `auto_power_saver`: enabled becomes Power saver at both levels; disabled becomes Keep current. Explicit per-level actions take precedence. The deprecated `auto_power_saver` API input remains supported and sets both actions together, without changing notifications. Its output is a compatibility summary indicating that at least one level has a profile action; new clients should use the explicit actions.
 
 ## API examples
 
@@ -31,7 +51,9 @@ Send these records to `bar-daemon client`:
 {"op":"call","id":"resume","method":"battery.setChargingInhibited","params":{"battery_id":"BAT0","enabled":false}}
 {"op":"call","id":"calibrate","method":"battery.startCalibration","params":{"battery_id":"BAT0"}}
 {"op":"call","id":"cancel-calibration","method":"battery.cancelCalibration","params":{"battery_id":"BAT0"}}
-{"op":"call","id":"alerts","method":"battery.setAlertPolicy","params":{"warning_percent":25,"critical_percent":12,"notify_when_full":true,"auto_power_saver":true}}
+{"op":"call","id":"levels","method":"battery.setAlertPolicy","params":{"warning_percent":25,"critical_percent":12,"notify_warning":true,"notify_critical":true,"warning_profile":"power-saver","critical_profile":"power-saver"}}
+{"op":"call","id":"charge-notification","method":"battery.setAlertPolicy","params":{"notify_when_full":true}}
+{"op":"call","id":"resume-profiles","method":"powerProfile.resumeAutomatic","params":{}}
 ```
 
 `battery.setProtection` and `battery.chargeOnce` use the primary battery exposed in the aggregate state when `battery_id` is omitted. `battery.setProtection` accepts an optional complete `start_percent`/`end_percent` pair so clients can update the desired range and enabled state atomically. `battery.setThresholds` requires an explicit battery ID and preserves the existing enabled and management state. Threshold changes fail cleanly when the kernel does not expose both `charge_control_start_threshold` and `charge_control_end_threshold`.
@@ -44,7 +66,9 @@ Charging inhibition uses the kernel's advertised `inhibit-charge` behavior and r
 
 Policy is stored in `$XDG_CONFIG_HOME/bar-daemon/battery.json`, falling back to `~/.config/bar-daemon/battery.json`. Runtime recovery state is stored in `$XDG_STATE_HOME/bar-daemon/battery-state.json`, falling back to `~/.local/state/bar-daemon/battery-state.json`. Graph history is stored in `$XDG_STATE_HOME/bar-daemon/battery-history-v1.json`, sampled every 15 minutes plus plug/charge transitions and pruned after seven days. The history response supplies an active-only `active_time_ms` x coordinate and marks discontinuities, so suspend, shutdown, and daemon downtime do not consume graph width. New observations use Linux's suspend-excluding monotonic clock and compare it with wall time to detect short sleeps and clock jumps as well as long observation gaps. Each point is classified as `charging`, `discharging`, or `holding`; clients should split paths where `continuous` is false. Wall-clock `timestamp_ms` remains available for labels and tooltips. Policy and runtime recovery writes use a unique temporary file, sync its contents before atomic rename, and sync the parent directory afterward. Newly created state directories are also synced. Successful persistence of these records is therefore a durability barrier before hardware changes, not just an atomic replacement. Per-device entries under `devices` override the legacy top-level protection defaults, so dual-battery ThinkPads retain independent BAT0 and BAT1 ranges. Charge-once recovery records the target battery ID and never restores a range to a different battery.
 
-The paths can be overridden for testing or unusual deployments:
+Automatic profile recovery is separately stored in `$XDG_STATE_HOME/bar-daemon/battery-profile-state.json`: the current level, manual pause, and any pre-Balanced profile to restore. It uses the same atomic/durable write mechanism and does not contain charge-control operations.
+
+The battery provider paths can be overridden for testing or unusual deployments:
 
 - `BAR_DAEMON_BATTERY_CONFIG`
 - `BAR_DAEMON_BATTERY_STATE`
@@ -57,7 +81,10 @@ The API is the preferred way to update the files because it validates ranges and
   "warning_percent": 25,
   "critical_percent": 12,
   "notify_when_full": true,
-  "auto_power_saver": true,
+  "notify_warning": true,
+  "notify_critical": true,
+  "warning_profile": "power-saver",
+  "critical_profile": "power-saver",
   "manage_thresholds": true,
   "protection_enabled": true,
   "protected_start_percent": 75,

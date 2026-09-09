@@ -1,3 +1,4 @@
+use super::levels::recovered;
 use crate::{
     activity::notifications::service::{NotificationSink, internal_notification},
     model::BatteryState,
@@ -25,7 +26,7 @@ impl AlertTracker {
         notify_when_full: bool,
     ) -> Option<BatteryAlert> {
         if !state.available {
-            self.initialized = true;
+            // Wait for the first real reading before suppressing startup alerts.
             return None;
         }
         let complete_at = charge_complete_percent(state);
@@ -42,8 +43,8 @@ impl AlertTracker {
 
     fn initialize(&mut self, state: &BatteryState, complete_at: u8) {
         self.initialized = true;
-        self.warning_sent = state.warning;
-        self.critical_sent = state.critical;
+        self.warning_sent = !state.plugged && state.percentage <= state.policy.warning_percent;
+        self.critical_sent = !state.plugged && state.percentage <= state.policy.critical_percent;
         self.full_sent = state.plugged && state.percentage >= complete_at;
     }
 
@@ -67,12 +68,25 @@ impl AlertTracker {
 
     fn observe_discharging(&mut self, state: &BatteryState) -> Option<BatteryAlert> {
         self.full_sent = false;
-        if state.critical && !std::mem::replace(&mut self.critical_sent, true) {
-            self.warning_sent = true;
-            return Some(BatteryAlert::Critical);
+        if recovered(state.percentage, state.policy.warning_percent) {
+            self.warning_sent = false;
         }
-        if state.warning && !std::mem::replace(&mut self.warning_sent, true) {
-            return Some(BatteryAlert::Warning);
+        if recovered(state.percentage, state.policy.critical_percent) {
+            self.critical_sent = false;
+        }
+        if state.percentage <= state.policy.critical_percent {
+            // Crossing both levels in one reading emits only the critical alert.
+            self.warning_sent = true;
+            if !std::mem::replace(&mut self.critical_sent, true) {
+                return state
+                    .policy
+                    .notify_critical
+                    .then_some(BatteryAlert::Critical);
+            }
+        } else if state.percentage <= state.policy.warning_percent
+            && !std::mem::replace(&mut self.warning_sent, true)
+        {
+            return state.policy.notify_warning.then_some(BatteryAlert::Warning);
         }
         None
     }
@@ -160,6 +174,49 @@ mod tests {
             tracker.observe(&state(25, false), true),
             Some(BatteryAlert::Warning)
         );
+    }
+
+    #[test]
+    fn alerts_rearm_only_above_recovery_margin_and_disabled_alerts_stay_consumed() {
+        let mut tracker = AlertTracker::default();
+        assert_eq!(tracker.observe(&state(50, false), true), None);
+        let mut disabled = state(25, false);
+        disabled.policy.notify_warning = false;
+        assert_eq!(tracker.observe(&disabled, true), None);
+        assert_eq!(tracker.observe(&state(25, false), true), None);
+        for percent in [26, 28, 25] {
+            assert_eq!(tracker.observe(&state(percent, false), true), None);
+        }
+        assert_eq!(tracker.observe(&state(29, false), true), None);
+        assert_eq!(
+            tracker.observe(&state(25, false), true),
+            Some(BatteryAlert::Warning)
+        );
+        assert_eq!(
+            tracker.observe(&state(12, false), true),
+            Some(BatteryAlert::Critical)
+        );
+        assert_eq!(tracker.observe(&state(15, false), true), None);
+        assert_eq!(tracker.observe(&state(12, false), true), None);
+        assert_eq!(tracker.observe(&state(16, false), true), None);
+        assert_eq!(
+            tracker.observe(&state(12, false), true),
+            Some(BatteryAlert::Critical)
+        );
+    }
+
+    #[test]
+    fn startup_waits_for_real_telemetry_and_skips_duplicate_alerts() {
+        let mut tracker = AlertTracker::default();
+        assert_eq!(tracker.observe(&BatteryState::default(), true), None);
+        assert_eq!(tracker.observe(&state(10, false), true), None);
+        assert_eq!(tracker.observe(&state(9, false), true), None);
+        assert_eq!(tracker.observe(&state(50, true), true), None);
+        let mut critical = state(10, false);
+        critical.policy.notify_critical = false;
+        assert_eq!(tracker.observe(&critical, true), None);
+        assert_eq!(tracker.observe(&state(9, false), true), None);
+        assert_eq!(tracker.observe(&state(20, false), true), None);
     }
 
     #[test]

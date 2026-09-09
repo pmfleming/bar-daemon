@@ -19,7 +19,10 @@ const PATH: &str = "/org/freedesktop/UPower/PowerProfiles";
 const INTERFACE: &str = "org.freedesktop.UPower.PowerProfiles";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const HOLD_APPLICATION_ID: &str = "org.laufan.BarDaemon";
-const HOLD_REASON: &str = "Battery level is low";
+mod automation;
+#[cfg(test)]
+mod automation_tests;
+use automation::PowerEnvelope;
 
 static POWER_ENVELOPE: OnceLock<Mutex<PowerEnvelope>> = OnceLock::new();
 
@@ -54,7 +57,11 @@ pub(crate) async fn monitor(store: StateStore) {
 }
 
 async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -> Result<()> {
-    power_envelope().lock().await.attach(connection.clone());
+    power_envelope()
+        .lock()
+        .await
+        .attach(connection.clone())
+        .await?;
     let result = monitor_attached_connection(connection, store).await;
     power_envelope().lock().await.detach();
     result
@@ -64,28 +71,38 @@ async fn monitor_attached_connection(
     connection: &zbus::Connection,
     store: &StateStore,
 ) -> Result<()> {
+    let dbus = zbus::fdo::DBusProxy::new(connection).await?;
+    let mut owner_changes = dbus.receive_name_owner_changed().await?;
     let properties = zbus::Proxy::new(connection, BUS, PATH, PROPERTIES_INTERFACE).await?;
     let mut changes = properties.receive_signal("PropertiesChanged").await?;
     let mut events = store.subscribe();
     let mut fallback = interval(Duration::from_secs(60));
     fallback.tick().await;
+    reconcile_battery_profile(&store.snapshot().await.battery).await;
     refresh(connection, store).await;
-    reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
     loop {
         tokio::select! {
+            signal = owner_changes.next() => {
+                let Some(signal) = signal else { bail!("D-Bus owner-change stream ended"); };
+                if signal.args()?.name().as_str() == BUS {
+                    bail!("Power Profiles service owner changed");
+                }
+            }
             signal = changes.next() => {
                 if signal.is_none() { bail!("power-profiles-daemon property stream ended"); }
+                reconcile_battery_profile(&store.snapshot().await.battery).await;
                 refresh(connection, store).await;
             }
             event = events.recv() => {
                 match event {
                     Ok(event) if event.stream == protocol::stream::BATTERY => {
-                        reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
+                        reconcile_battery_profile(&store.snapshot().await.battery).await;
                         refresh(connection, store).await;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
+                        reconcile_battery_profile(&store.snapshot().await.battery).await;
+                        refresh(connection, store).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         bail!("state event stream ended");
@@ -93,118 +110,20 @@ async fn monitor_attached_connection(
                 }
             }
             _ = fallback.tick() => {
-                reconcile_low_battery_hold(connection, &store.snapshot().await.battery).await?;
+                reconcile_battery_profile(&store.snapshot().await.battery).await;
                 refresh(connection, store).await;
             },
         }
     }
 }
 
-#[derive(Default)]
-struct PowerEnvelope {
-    cookie: Option<u32>,
-    connection: Option<zbus::Connection>,
-    low_battery_episode: bool,
-    manual_override: bool,
-}
-
-impl PowerEnvelope {
-    fn attach(&mut self, connection: zbus::Connection) {
-        self.connection = Some(connection);
-        self.cookie = None;
-    }
-
-    fn detach(&mut self) {
-        self.connection = None;
-        self.cookie = None;
-    }
-
-    fn should_hold(&mut self, desired: bool) -> bool {
-        if !desired {
-            self.low_battery_episode = false;
-            self.manual_override = false;
-            return false;
-        }
-        if !self.low_battery_episode {
-            self.low_battery_episode = true;
-            self.manual_override = false;
-        }
-        !self.manual_override
-    }
-
-    async fn acquire(&mut self, connection: &zbus::Connection) -> Result<()> {
-        if self.cookie.is_some() {
-            return Ok(());
-        }
-        let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE)
-            .await
-            .context("connect to power-profiles-daemon for low-battery hold")?;
-        let cookie: u32 = proxy
-            .call(
-                "HoldProfile",
-                &("power-saver", HOLD_REASON, HOLD_APPLICATION_ID),
-            )
-            .await
-            .context("hold power-saver for low battery")?;
-        self.cookie = Some(cookie);
-        Ok(())
-    }
-
-    async fn release(&mut self, connection: &zbus::Connection) -> Result<()> {
-        let Some(cookie) = self.cookie else {
-            return Ok(());
-        };
-        let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE)
-            .await
-            .context("connect to power-profiles-daemon to release low-battery hold")?;
-        let _: () = proxy
-            .call("ReleaseProfile", &(cookie,))
-            .await
-            .context("release low-battery power-saver hold")?;
-        self.cookie = None;
-        Ok(())
-    }
-}
-
-async fn reconcile_low_battery_hold(
-    connection: &zbus::Connection,
-    battery: &BatteryState,
-) -> Result<()> {
+async fn reconcile_battery_profile(battery: &BatteryState) {
     let mut envelope = power_envelope().lock().await;
-    if envelope.should_hold(should_hold_power_saver(battery)) {
-        envelope.acquire(connection).await
-    } else {
-        envelope.release(connection).await
+    if let Err(error) = envelope.reconcile(battery).await {
+        tracing::warn!(%error, "battery profile automation failed");
+        envelope.status.status = "error".into();
+        envelope.status.error = Some(error.to_string());
     }
-}
-
-async fn suppress_low_battery_hold(battery: &BatteryState) -> Result<bool> {
-    let mut envelope = power_envelope().lock().await;
-    if !should_hold_power_saver(battery) {
-        return Ok(false);
-    }
-    envelope.low_battery_episode = true;
-    if let Some(connection) = envelope.connection.clone() {
-        envelope.release(&connection).await?;
-    }
-    envelope.manual_override = true;
-    Ok(true)
-}
-
-async fn restore_low_battery_hold(battery: &BatteryState) -> Result<()> {
-    let mut envelope = power_envelope().lock().await;
-    envelope.manual_override = false;
-    if !should_hold_power_saver(battery) {
-        return Ok(());
-    }
-    if let Some(connection) = envelope.connection.clone() {
-        envelope.acquire(&connection).await?;
-    }
-    Ok(())
-}
-
-fn should_hold_power_saver(battery: &BatteryState) -> bool {
-    battery.available && battery.policy.auto_power_saver && battery.warning && !battery.plugged
 }
 
 async fn refresh(connection: &zbus::Connection, store: &StateStore) {
@@ -222,6 +141,12 @@ async fn refresh(connection: &zbus::Connection, store: &StateStore) {
 }
 
 async fn read_state(connection: &zbus::Connection) -> Result<PowerProfileState> {
+    let mut state = read_raw_state(connection).await?;
+    state.battery_automation = power_envelope().lock().await.status.clone();
+    Ok(state)
+}
+
+async fn read_raw_state(connection: &zbus::Connection) -> Result<PowerProfileState> {
     let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE)
         .await
         .context("connect to power-profiles-daemon")?;
@@ -279,6 +204,7 @@ async fn read_state(connection: &zbus::Connection) -> Result<PowerProfileState> 
         battery_aware: proxy.get_property("BatteryAware").await.ok(),
         actions,
         active_holds,
+        battery_automation: Default::default(),
         error: None,
     })
 }
@@ -296,7 +222,7 @@ fn parse_profile(values: &HashMap<String, OwnedValue>) -> Option<PowerProfile> {
 
 fn parse_action(values: &HashMap<String, OwnedValue>) -> Option<PowerProfileAction> {
     Some(PowerProfileAction {
-        name: property_string(values, "Action")?,
+        name: property_string(values, "Name").or_else(|| property_string(values, "Action"))?,
         description: property_string(values, "Description").unwrap_or_default(),
         enabled: property_bool(values, "Enabled").unwrap_or(true),
     })
@@ -331,20 +257,21 @@ pub(crate) async fn set_profile(
     let connection = zbus::Connection::system()
         .await
         .context("connect to system D-Bus")?;
-    let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE)
-        .await
-        .context("connect to power-profiles-daemon")?;
     let current = read_state(&connection).await?;
     if !current.profiles.iter().any(|item| item.name == profile) {
         bail!("power profile is unavailable: {profile}");
     }
-    let hold_suppressed = suppress_low_battery_hold(battery).await?;
-    if let Err(error) = proxy.set_property("ActiveProfile", &profile).await {
-        if hold_suppressed && let Err(restore_error) = restore_low_battery_hold(battery).await {
-            bail!("set active power profile: {error}; restore low-battery hold: {restore_error}");
-        }
-        return Err(error).context("set active power profile");
-    }
+    power_envelope()
+        .lock()
+        .await
+        .select_manual(profile, battery, &connection)
+        .await?;
+    read_state(&connection).await
+}
+
+pub(crate) async fn resume_automatic(battery: &BatteryState) -> Result<PowerProfileState> {
+    power_envelope().lock().await.resume(battery).await?;
+    let connection = zbus::Connection::system().await?;
     read_state(&connection).await
 }
 
@@ -382,43 +309,4 @@ pub(crate) async fn set_action_enabled(action: &str, enabled: bool) -> Result<Po
         .await
         .context("configure power profile action")?;
     read_state(&connection).await
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::model::{BatteryPolicyState, BatteryState};
-
-    use super::{PowerEnvelope, should_hold_power_saver};
-
-    #[test]
-    fn manual_override_lasts_only_for_the_current_low_battery_episode() {
-        let mut envelope = PowerEnvelope::default();
-        assert!(envelope.should_hold(true));
-        envelope.manual_override = true;
-        assert!(!envelope.should_hold(true));
-        assert!(!envelope.should_hold(false));
-        assert!(envelope.should_hold(true));
-    }
-
-    #[test]
-    fn low_battery_hold_requires_enabled_discharging_warning() {
-        let state = BatteryState {
-            available: true,
-            warning: true,
-            policy: BatteryPolicyState {
-                auto_power_saver: true,
-                ..BatteryPolicyState::default()
-            },
-            ..BatteryState::default()
-        };
-        assert!(should_hold_power_saver(&state));
-        assert!(!should_hold_power_saver(&BatteryState {
-            plugged: true,
-            ..state.clone()
-        }));
-        assert!(!should_hold_power_saver(&BatteryState {
-            warning: false,
-            ..state
-        }));
-    }
 }

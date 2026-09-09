@@ -138,6 +138,12 @@ impl DesktopEffects {
         self.power_profile_result(power::set_profile(&request.profile, &battery).await)
             .await
     }
+    pub(super) async fn power_profile_resume_automatic(&self) -> Value {
+        let battery = self.state.snapshot().await.battery;
+        self.power_profile_result(power::resume_automatic(&battery).await)
+            .await
+    }
+
     pub(super) async fn power_profile_set_battery_aware(&self, params: Value) -> Value {
         let request = request!(params, EnabledRequest, "powerProfile.setBatteryAware");
         self.power_profile_result(power::set_battery_aware(request.enabled).await)

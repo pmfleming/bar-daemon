@@ -153,10 +153,13 @@
       {
         "name": "battery.setAlertPolicy",
         "params": {
-          "auto_power_saver": true,
           "critical_percent": 12,
+          "critical_profile": "power-saver",
+          "notify_critical": true,
+          "notify_warning": true,
           "notify_when_full": true,
-          "warning_percent": 25
+          "warning_percent": 25,
+          "warning_profile": "power-saver"
         },
         "result": "battery"
       },
@@ -165,6 +168,11 @@
         "params": {
           "profile": "balanced"
         },
+        "result": "power_profile"
+      },
+      {
+        "name": "powerProfile.resumeAutomatic",
+        "params": {},
         "result": "power_profile"
       },
       {
@@ -621,8 +629,13 @@
       "policy": {
         "auto_power_saver": true,
         "critical_percent": 12,
+        "critical_profile": "power-saver",
+        "notify_critical": true,
+        "notify_warning": true,
         "notify_when_full": true,
-        "warning_percent": 25
+        "recovery_margin_percent": 3,
+        "warning_percent": 25,
+        "warning_profile": "power-saver"
       },
       "power_watts": 8.2,
       "protection": {
@@ -764,6 +777,12 @@
         }
       ],
       "available": true,
+      "battery_automation": {
+        "error": null,
+        "level": "normal",
+        "profile": "",
+        "status": "waiting"
+      },
       "battery_aware": true,
       "driver": "amd_pstate",
       "error": null,
@@ -802,11 +821,11 @@
       "city": "Amsterdam",
       "error": null,
       "timezone": "Europe/Amsterdam",
-      "utc_offset_seconds": 7200,
       "timezone_region_ids": [
         "Africa-Johannesburg",
         "Europe-Paris"
-      ]
+      ],
+      "utc_offset_seconds": 7200
     },
     "updates": {
       "available": true,

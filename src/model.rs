@@ -119,6 +119,8 @@ pub(crate) struct PowerProfileState {
     pub battery_aware: Option<bool>,
     pub actions: Vec<PowerProfileAction>,
     pub active_holds: Vec<PowerProfileHold>,
+    #[serde(default)]
+    pub battery_automation: BatteryAutomationState,
     pub error: Option<String>,
 }
 
@@ -205,12 +207,65 @@ pub(crate) struct BatteryOperationState {
     pub expires_unix_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BatteryProfileAction {
+    KeepCurrent,
+    #[default]
+    PowerSaver,
+    Balanced,
+    Performance,
+}
+
+impl BatteryProfileAction {
+    pub(crate) const fn profile(self) -> Option<&'static str> {
+        match self {
+            Self::KeepCurrent => None,
+            Self::PowerSaver => Some("power-saver"),
+            Self::Balanced => Some("balanced"),
+            Self::Performance => Some("performance"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct BatteryAutomationState {
+    pub level: String,
+    pub status: String,
+    pub profile: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct BatteryPolicyState {
     pub warning_percent: u8,
     pub critical_percent: u8,
+    pub notify_warning: bool,
+    pub notify_critical: bool,
+    pub warning_profile: BatteryProfileAction,
+    pub critical_profile: BatteryProfileAction,
+    pub recovery_margin_percent: u8,
     pub notify_when_full: bool,
+    /// Legacy compatibility summary; new clients use the per-level actions.
     pub auto_power_saver: bool,
+}
+
+impl Default for BatteryPolicyState {
+    fn default() -> Self {
+        Self {
+            warning_percent: 25,
+            critical_percent: 12,
+            notify_warning: true,
+            notify_critical: true,
+            warning_profile: BatteryProfileAction::PowerSaver,
+            critical_profile: BatteryProfileAction::PowerSaver,
+            recovery_margin_percent: 3,
+            notify_when_full: true,
+            auto_power_saver: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

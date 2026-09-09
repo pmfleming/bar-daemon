@@ -4,7 +4,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::XdgRoot;
 
-use crate::paths::{data_file, load_json_or_default, save_json_atomic};
+use crate::{
+    model::BatteryProfileAction,
+    paths::{data_file, load_json_or_default, save_json_atomic},
+};
 
 pub(crate) const CHARGE_ONCE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const CALIBRATION_MAX_AGE: Duration = Duration::from_secs(48 * 60 * 60);
@@ -16,6 +19,11 @@ pub(crate) struct BatteryConfig {
     pub critical_percent: u8,
     pub notify_when_full: bool,
     pub auto_power_saver: bool,
+    pub notify_warning: bool,
+    pub notify_critical: bool,
+    // Absent in legacy files: inherit auto_power_saver without losing preferences.
+    pub warning_profile: Option<BatteryProfileAction>,
+    pub critical_profile: Option<BatteryProfileAction>,
     pub manage_thresholds: bool,
     pub protection_enabled: bool,
     pub protected_start_percent: u8,
@@ -54,6 +62,10 @@ impl Default for BatteryConfig {
             critical_percent: 12,
             notify_when_full: true,
             auto_power_saver: true,
+            notify_warning: true,
+            notify_critical: true,
+            warning_profile: None,
+            critical_profile: None,
             manage_thresholds: false,
             protection_enabled: false,
             protected_start_percent: 75,
@@ -64,6 +76,24 @@ impl Default for BatteryConfig {
 }
 
 impl BatteryConfig {
+    pub(crate) fn warning_profile(&self) -> BatteryProfileAction {
+        self.warning_profile
+            .unwrap_or_else(|| self.legacy_profile())
+    }
+
+    pub(crate) fn critical_profile(&self) -> BatteryProfileAction {
+        self.critical_profile
+            .unwrap_or_else(|| self.legacy_profile())
+    }
+
+    fn legacy_profile(&self) -> BatteryProfileAction {
+        if self.auto_power_saver {
+            BatteryProfileAction::PowerSaver
+        } else {
+            BatteryProfileAction::KeepCurrent
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.critical_percent > self.warning_percent || self.warning_percent > 100 {
             bail!("alert percentages must satisfy 0 <= critical <= warning <= 100");
@@ -377,6 +407,37 @@ mod restoration_tests {
 #[cfg(test)]
 mod tests {
     use super::BatteryConfig;
+
+    #[test]
+    fn legacy_settings_preserve_thresholds_and_migrate_both_actions() {
+        use crate::model::BatteryProfileAction;
+        for enabled in [false, true] {
+            let config: BatteryConfig = serde_json::from_value(serde_json::json!({
+                "warning_percent": 35, "critical_percent": 8,
+                "notify_when_full": false, "auto_power_saver": enabled
+            }))
+            .unwrap();
+            let expected = if enabled {
+                BatteryProfileAction::PowerSaver
+            } else {
+                BatteryProfileAction::KeepCurrent
+            };
+            assert_eq!(config.warning_profile(), expected);
+            assert_eq!(config.critical_profile(), expected);
+            assert!(config.notify_warning && config.notify_critical);
+            assert!(!config.notify_when_full);
+            assert_eq!((config.warning_percent, config.critical_percent), (35, 8));
+            let roundtrip: BatteryConfig =
+                serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+            assert_eq!(roundtrip, config);
+        }
+        assert!(
+            serde_json::from_value::<BatteryConfig>(
+                serde_json::json!({"warning_profile": "invalid"})
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn validates_alert_and_protection_ranges() {

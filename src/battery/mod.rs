@@ -19,6 +19,7 @@ use crate::{
 
 pub(crate) mod config;
 mod history;
+pub(crate) mod levels;
 mod model;
 mod monitor;
 mod policy;
@@ -677,7 +678,13 @@ fn decorate(
         warning_percent: config.warning_percent,
         critical_percent: config.critical_percent,
         notify_when_full: config.notify_when_full,
-        auto_power_saver: config.auto_power_saver,
+        notify_warning: config.notify_warning,
+        notify_critical: config.notify_critical,
+        warning_profile: config.warning_profile(),
+        critical_profile: config.critical_profile(),
+        recovery_margin_percent: levels::RECOVERY_MARGIN,
+        auto_power_saver: config.warning_profile().profile().is_some()
+            || config.critical_profile().profile().is_some(),
     };
     state.operation = BatteryOperationState {
         kind: runtime.operation.as_str().into(),

@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use crate::{
     battery::{self, config},
+    model::BatteryProfileAction,
     state::StateStore,
 };
 
@@ -40,6 +41,10 @@ struct AlertPolicyRequest {
     critical_percent: Option<u8>,
     notify_when_full: Option<bool>,
     auto_power_saver: Option<bool>,
+    notify_warning: Option<bool>,
+    notify_critical: Option<bool>,
+    warning_profile: Option<BatteryProfileAction>,
+    critical_profile: Option<BatteryProfileAction>,
 }
 
 impl AlertPolicyRequest {
@@ -48,7 +53,11 @@ impl AlertPolicyRequest {
             self.warning_percent.is_some()
                 || self.critical_percent.is_some()
                 || self.notify_when_full.is_some()
-                || self.auto_power_saver.is_some(),
+                || self.auto_power_saver.is_some()
+                || self.notify_warning.is_some()
+                || self.notify_critical.is_some()
+                || self.warning_profile.is_some()
+                || self.critical_profile.is_some(),
             "battery.setAlertPolicy requires at least one policy field"
         );
         if let Some(value) = self.warning_percent {
@@ -60,8 +69,27 @@ impl AlertPolicyRequest {
         if let Some(value) = self.notify_when_full {
             config.notify_when_full = value;
         }
+        // Resolve legacy defaults before applying partial updates.
+        let mut warning = config.warning_profile();
+        let mut critical = config.critical_profile();
         if let Some(value) = self.auto_power_saver {
-            config.auto_power_saver = value;
+            let action = if value {
+                BatteryProfileAction::PowerSaver
+            } else {
+                BatteryProfileAction::KeepCurrent
+            };
+            warning = action;
+            critical = action;
+        }
+        config.warning_profile = Some(self.warning_profile.unwrap_or(warning));
+        config.critical_profile = Some(self.critical_profile.unwrap_or(critical));
+        config.auto_power_saver = config.warning_profile().profile().is_some()
+            || config.critical_profile().profile().is_some();
+        if let Some(value) = self.notify_warning {
+            config.notify_warning = value;
+        }
+        if let Some(value) = self.notify_critical {
+            config.notify_critical = value;
         }
         config.validate()
     }
@@ -382,8 +410,29 @@ impl BatteryApi {
             Ok(config) => config,
             Err(error_value) => return error("battery-config-failed", error_value.to_string()),
         };
+        let requested_actions = [
+            request
+                .warning_profile
+                .filter(|action| *action != next_config.warning_profile()),
+            request
+                .critical_profile
+                .filter(|action| *action != next_config.critical_profile()),
+        ];
         if let Err(error_value) = request.apply_to(&mut next_config) {
             return error("validation-error", error_value.to_string());
+        }
+        // Keep-current is always valid, even if the profile service is offline.
+        let profiles = self.state.snapshot().await.power_profile;
+        for action in requested_actions.into_iter().flatten() {
+            if let Some(profile) = action.profile()
+                && profiles.available
+                && !profiles.profiles.iter().any(|item| item.name == profile)
+            {
+                return error(
+                    "validation-error",
+                    format!("power profile is unavailable: {profile}"),
+                );
+            }
         }
         if let Err(error_value) = config::save_config(&next_config).await {
             return error("battery-config-failed", error_value.to_string());
@@ -649,7 +698,52 @@ async fn requested_battery_id(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProtectionRequest, optional_thresholds};
+    use super::{AlertPolicyRequest, ProtectionRequest, optional_thresholds};
+    use crate::{battery::config::BatteryConfig, model::BatteryProfileAction};
+
+    #[test]
+    fn level_policy_partial_updates_preserve_independent_actions() {
+        let mut config = BatteryConfig {
+            auto_power_saver: false,
+            ..Default::default()
+        };
+        let request: AlertPolicyRequest = serde_json::from_value(serde_json::json!({
+            "warning_profile": "balanced", "notify_warning": false, "notify_when_full": false
+        }))
+        .unwrap();
+        request.apply_to(&mut config).unwrap();
+        assert_eq!(config.warning_profile(), BatteryProfileAction::Balanced);
+        assert_eq!(config.critical_profile(), BatteryProfileAction::KeepCurrent);
+        assert!(!config.notify_warning && config.notify_critical && !config.notify_when_full);
+        let request: AlertPolicyRequest =
+            serde_json::from_value(serde_json::json!({"notify_critical": false})).unwrap();
+        request.apply_to(&mut config).unwrap();
+        assert_eq!(config.warning_profile(), BatteryProfileAction::Balanced);
+        assert_eq!(config.critical_profile(), BatteryProfileAction::KeepCurrent);
+        let legacy: AlertPolicyRequest =
+            serde_json::from_value(serde_json::json!({"auto_power_saver": true})).unwrap();
+        legacy.apply_to(&mut config).unwrap();
+        assert_eq!(config.warning_profile(), BatteryProfileAction::PowerSaver);
+        assert_eq!(config.critical_profile(), BatteryProfileAction::PowerSaver);
+        assert!(!config.notify_warning && !config.notify_critical);
+    }
+
+    #[test]
+    fn invalid_level_policies_are_rejected() {
+        assert!(
+            serde_json::from_value::<AlertPolicyRequest>(
+                serde_json::json!({"warning_profile": "turbo"})
+            )
+            .is_err()
+        );
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"warning_percent": 5, "critical_percent": 10}),
+        ] {
+            let request: AlertPolicyRequest = serde_json::from_value(value).unwrap();
+            assert!(request.apply_to(&mut BatteryConfig::default()).is_err());
+        }
+    }
 
     #[test]
     fn protection_accepts_an_atomic_optional_range() {

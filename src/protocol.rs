@@ -59,6 +59,7 @@ pub const METHODS: &[&str] = &[
     "battery.cancelCalibration",
     "battery.setAlertPolicy",
     "powerProfile.set",
+    "powerProfile.resumeAutomatic",
     "powerProfile.setBatteryAware",
     "powerProfile.setActionEnabled",
     "powerSleep.lock",
@@ -119,8 +120,9 @@ pub fn registry() -> Value {
             { "name": "battery.setChargingInhibited", "params": { "battery_id": "BAT0", "enabled": true }, "result": "battery" },
             { "name": "battery.startCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
             { "name": "battery.cancelCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
-            { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true }, "result": "battery" },
+            { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "notify_warning": true, "notify_critical": true, "warning_profile": "power-saver", "critical_profile": "power-saver" }, "result": "battery" },
             { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
+            { "name": "powerProfile.resumeAutomatic", "params": {}, "result": "power_profile" },
             { "name": "powerProfile.setBatteryAware", "params": { "enabled": true }, "result": "power_profile" },
             { "name": "powerProfile.setActionEnabled", "params": { "action": "amdgpu_panel_power", "enabled": true }, "result": "power_profile" },
             { "name": "powerSleep.lock", "params": {}, "result": "power_sleep" },
@@ -234,7 +236,7 @@ fn generated_contract_fixture() -> Value {
                 "charging": false, "plugged": false, "power_watts": 8.2, "time_to_empty_seconds": 14400,
                 "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
                 "critical": false,
-                "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true },
+                "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true, "notify_warning": true, "notify_critical": true, "warning_profile": "power-saver", "critical_profile": "power-saver", "recovery_margin_percent": 3 },
                 "operation": {
                     "kind": "", "battery_id": "", "phase": "",
                     "started_unix_ms": 0, "expires_unix_ms": 0
@@ -276,6 +278,7 @@ fn generated_contract_fixture() -> Value {
                 "available": true, "profile": "balanced", "driver": "amd_pstate",
                 "profiles": [{ "name": "balanced", "driver": "amd_pstate", "platform_driver": "platform_profile" }],
                 "performance_degraded": "", "version": "0.30", "battery_aware": true,
+                "battery_automation": { "level": "normal", "status": "waiting", "profile": "", "error": null },
                 "actions": [{ "name": "amdgpu_panel_power", "description": "Panel power savings", "enabled": true }],
                 "active_holds": [{ "application_id": "org.example.Compiler", "profile": "performance", "reason": "Building" }],
                 "error": null
