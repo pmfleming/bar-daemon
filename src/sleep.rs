@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use tokio::time::{interval, sleep};
+use tokio::{
+    sync::Mutex,
+    time::{interval, sleep},
+};
 
 use crate::{
     model::{PowerSleepState, SleepInhibitor},
@@ -16,6 +19,7 @@ const SESSION_PATH: &str = "/org/freedesktop/login1/session/auto";
 const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+static SLEEP_ACTION: Mutex<()> = Mutex::const_new(());
 
 #[cfg(test)]
 #[path = "sleep_tests.rs"]
@@ -54,6 +58,14 @@ pub(crate) async fn monitor(store: StateStore) {
 async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -> Result<()> {
     let proxy = manager(connection).await?;
     let mut prepare = proxy.receive_signal("PrepareForSleep").await?;
+    let properties = zbus::Proxy::new(
+        connection,
+        BUS,
+        MANAGER_PATH,
+        "org.freedesktop.DBus.Properties",
+    )
+    .await?;
+    let mut changes = properties.receive_signal("PropertiesChanged").await?;
     let mut fallback = interval(Duration::from_secs(60));
     fallback.tick().await;
     refresh(connection, store, false).await;
@@ -65,6 +77,11 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
                     .body()
                     .deserialize()
                     .context("decode logind PrepareForSleep signal")?;
+                refresh(connection, store, preparing).await;
+            }
+            signal = changes.next() => {
+                if signal.is_none() { bail!("logind property stream ended"); }
+                let preparing = store.snapshot().await.power_sleep.preparing_for_sleep;
                 refresh(connection, store, preparing).await;
             }
             _ = fallback.tick() => {
@@ -108,6 +125,11 @@ async fn read_state(
         .call("ListInhibitors", &())
         .await
         .context("list logind inhibitors")?;
+    // Do not overwrite an in-progress sleep with a stale caller-supplied false.
+    let preparing_for_sleep = proxy
+        .get_property("PreparingForSleep")
+        .await
+        .unwrap_or(preparing_for_sleep);
     Ok(PowerSleepState {
         available: true,
         can_suspend,
@@ -139,6 +161,9 @@ pub(crate) async fn perform(action: &str) -> Result<PowerSleepState> {
     if !matches!(action, "lock" | "suspend" | "hibernate") {
         bail!("unsupported power and sleep action: {action}");
     }
+    let _guard = SLEEP_ACTION
+        .try_lock()
+        .context("a lock or sleep request is already in progress")?;
     let connection = zbus::Connection::system()
         .await
         .context("connect to system D-Bus")?;
@@ -151,6 +176,9 @@ async fn perform_connected(
     lock_timeout: Duration,
 ) -> Result<PowerSleepState> {
     let current = read_state(connection, false).await?;
+    if action != "lock" && current.preparing_for_sleep {
+        bail!("the system is already preparing for sleep");
+    }
     if action == "suspend" && !capability_available(&current.can_suspend) {
         bail!("suspend is unavailable: {}", current.can_suspend);
     }

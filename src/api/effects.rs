@@ -123,7 +123,7 @@ impl DesktopEffects {
                 self.state.update_power_sleep(state).await;
                 response
             }
-            Err(value) => error("power-sleep-operation-failed", value.to_string()),
+            Err(value) => error("power-sleep-operation-failed", format!("{value:#}")),
         }
     }
     pub(super) async fn updates_refresh(&self) -> Value {
