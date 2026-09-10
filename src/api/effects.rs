@@ -126,6 +126,41 @@ impl DesktopEffects {
             Err(value) => error("power-sleep-operation-failed", format!("{value:#}")),
         }
     }
+    pub(super) async fn sleep_policy_set(&self, params: Value) -> Value {
+        let policy = request!(
+            params,
+            crate::sleep_policy::SleepPolicy,
+            "powerSleep.setPolicy"
+        );
+        match crate::sleep_policy::set(policy, &self.state).await {
+            Ok(state) => success(json!({"sleep_policy": state})),
+            Err(value) => error("sleep-policy-failed", format!("{value:#}")),
+        }
+    }
+
+    pub(super) async fn idle_sleep(&self, params: Value) -> Value {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct IdleRequest {
+            sleep_minutes: u32,
+            generation: String,
+        }
+        let request = request!(params, IdleRequest, "powerSleep.idle");
+        match crate::sleep_policy::idle_sleep(
+            request.sleep_minutes,
+            &request.generation,
+            &self.state,
+        )
+        .await
+        {
+            Ok(state) => {
+                self.state.update_power_sleep(state.clone()).await;
+                success(json!({"power_sleep": state}))
+            }
+            Err(value) => error("automatic-sleep-failed", format!("{value:#}")),
+        }
+    }
+
     pub(super) async fn updates_refresh(&self) -> Value {
         match updates::refresh_default(&self.state).await {
             Ok(state) => success(json!({"updates": state})),

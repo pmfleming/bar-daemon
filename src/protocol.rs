@@ -23,6 +23,8 @@ pub mod stream {
     pub const POWER_PROFILE: &str = "power-profile.changed";
     /// Sleep capability or inhibitor state changed.
     pub const POWER_SLEEP: &str = "power-sleep.changed";
+    /// Automatic sleep profiles or their runtime status changed.
+    pub const SLEEP_POLICY: &str = "sleep-policy.changed";
     /// Keyboard LED, keyboard backlight, or privacy hardware state changed.
     pub const OSD_HARDWARE: &str = "osd-hardware.changed";
     /// Notification summary changed.
@@ -65,6 +67,8 @@ pub const METHODS: &[&str] = &[
     "powerSleep.lock",
     "powerSleep.suspend",
     "powerSleep.hibernate",
+    "powerSleep.setPolicy",
+    "powerSleep.idle",
     "notifications.togglePanel",
     "notifications.toggleDnd",
     "notifications.setDnd",
@@ -87,6 +91,7 @@ pub const STREAMS: &[&str] = &[
     stream::BATTERY,
     stream::POWER_PROFILE,
     stream::POWER_SLEEP,
+    stream::SLEEP_POLICY,
     stream::OSD_HARDWARE,
     stream::NOTIFICATIONS,
     stream::NOTIFICATION_ACTIVE,
@@ -128,6 +133,8 @@ pub fn registry() -> Value {
             { "name": "powerSleep.lock", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.suspend", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
+            { "name": "powerSleep.setPolicy", "params": { "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
+            { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678" }, "result": "power_sleep" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true, "until_unix_ms": 1768467500000_u64 }, "result": "notifications" },
@@ -149,6 +156,7 @@ pub fn registry() -> Value {
             { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_SLEEP, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::SLEEP_POLICY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::OSD_HARDWARE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATION_ACTIVE, "events": ["subscribed", "changed", "lagged"] },
@@ -287,6 +295,12 @@ fn generated_contract_fixture() -> Value {
                 "available": true, "can_suspend": "yes", "can_hibernate": "challenge",
                 "preparing_for_sleep": false, "lock_before_sleep": true,
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
+                "error": null
+            },
+            "sleep_policy": {
+                "available": true, "active_profile": "shared",
+                "hibernate_available": true, "hibernate_error": null, "last_error": null,
+                "policy": { "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } },
                 "error": null
             },
             "osd_hardware": {

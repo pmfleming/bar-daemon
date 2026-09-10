@@ -52,6 +52,13 @@ impl FakeManager {
     fn can_hibernate(&self) -> &str {
         "yes"
     }
+    fn can_suspend_then_hibernate(&self) -> &str {
+        "yes"
+    }
+    fn suspend_then_hibernate(&self, _interactive: bool) {
+        self.0.sleep_calls.fetch_add(1, Ordering::SeqCst);
+        self.0.preparing.store(true, Ordering::SeqCst);
+    }
     fn list_inhibitors(&self) -> Vec<RawInhibitor> {
         Vec::new()
     }
@@ -87,7 +94,7 @@ async fn fake_logind(state: Arc<SessionState>) -> (Connection, Connection) {
 
 #[tokio::test]
 async fn sleep_waits_for_lock_confirmation_not_just_the_method_reply() {
-    for action in ["suspend", "hibernate"] {
+    for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
         let state = Arc::new(SessionState::default());
         let (_server, client) = fake_logind(Arc::clone(&state)).await;
         let mut operation = tokio::spawn(async move {
@@ -114,7 +121,7 @@ async fn sleep_waits_for_lock_confirmation_not_just_the_method_reply() {
 
 #[tokio::test]
 async fn missing_or_failed_lock_confirmation_never_sleeps() {
-    for action in ["suspend", "hibernate"] {
+    for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
         for (lock_fails, hint_fails) in [(false, false), (true, false), (false, true)] {
             let state = Arc::new(SessionState {
                 lock_fails,
@@ -136,7 +143,7 @@ async fn missing_or_failed_lock_confirmation_never_sleeps() {
 
 #[tokio::test]
 async fn already_preparing_sleep_rejects_duplicate_requests_before_locking() {
-    for action in ["suspend", "hibernate"] {
+    for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
         let state = Arc::new(SessionState::default());
         state.preparing.store(true, Ordering::SeqCst);
         let (_server, client) = fake_logind(Arc::clone(&state)).await;
@@ -169,7 +176,7 @@ async fn operation_result_preserves_loginds_actual_preparation_state() {
 #[tokio::test]
 async fn simultaneous_public_requests_fail_without_contacting_the_system_bus() {
     let _pending = SLEEP_ACTION.lock().await;
-    for action in ["lock", "suspend", "hibernate"] {
+    for action in ["lock", "suspend", "hibernate", "suspend-then-hibernate"] {
         let error = perform(action).await.unwrap_err();
         assert!(error.to_string().contains("already in progress"));
     }

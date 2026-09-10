@@ -102,7 +102,7 @@ fn temporary_file(path: &Path) -> Result<(File, TemporaryFile)> {
     }
 }
 
-fn save_bytes_durable(path: &Path, contents: &[u8]) -> Result<()> {
+pub(crate) fn save_bytes_durable(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = parent_directory(path)?;
     create_directory_durable(parent)?;
     let (mut file, temporary) = temporary_file(path)?;

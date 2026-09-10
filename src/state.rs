@@ -68,6 +68,7 @@ impl StateStore {
         update_notifications(NotificationState) => notifications, crate::protocol::stream::NOTIFICATIONS;
         update_power_profile(PowerProfileState) => power_profile, crate::protocol::stream::POWER_PROFILE;
         update_power_sleep(PowerSleepState) => power_sleep, crate::protocol::stream::POWER_SLEEP;
+        update_sleep_policy(crate::sleep_policy::SleepPolicyState) => sleep_policy, crate::protocol::stream::SLEEP_POLICY;
         update_osd_hardware(OsdHardwareState) => osd_hardware, crate::protocol::stream::OSD_HARDWARE;
         update_battery(BatteryState) => battery, crate::protocol::stream::BATTERY;
         update_brightness(BrightnessState) => brightness, crate::protocol::stream::BRIGHTNESS;

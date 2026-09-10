@@ -1,5 +1,5 @@
 [Unit]
-Description=Privileged ThinkPad battery charging helper
+Description=Privileged battery charging and hibernate delay helper
 Documentation=https://github.com/pmfleming/bar-daemon
 
 [Service]
@@ -12,7 +12,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/sys/class/power_supply
+# Keep this shared systemd directory when the helper stops.
+RuntimeDirectory=systemd/sleep.conf.d
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/sys/class/power_supply /run/systemd/sleep.conf.d
 RestrictAddressFamilies=AF_UNIX
 RestrictRealtime=true
 LockPersonality=true

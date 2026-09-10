@@ -1,0 +1,510 @@
+//! Persisted idle profiles. Hypridle owns inactivity; systemd owns time asleep.
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use shelllist_daemon_core::XdgRoot;
+use tokio::sync::Mutex;
+
+use crate::{
+    paths::{data_file, load_json_or_default, save_json_atomic},
+    state::StateStore,
+};
+
+mod hypridle;
+pub(crate) use hypridle::run;
+
+// Serializes saves, power-source changes and idle callbacks.
+static POLICY_WRITE: Mutex<()> = Mutex::const_new(());
+const MAX_MINUTES: u32 = 7 * 24 * 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SleepProfile {
+    /// Zero disables automatic sleep.
+    pub sleep_minutes: u32,
+    /// Additional time asleep, not another inactivity deadline. Zero means suspend only.
+    pub hibernate_minutes: u32,
+}
+
+impl Default for SleepProfile {
+    fn default() -> Self {
+        Self {
+            sleep_minutes: 30,
+            hibernate_minutes: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SleepPolicy {
+    pub same_profile: bool,
+    pub battery: SleepProfile,
+    pub plugged: SleepProfile,
+}
+
+impl Default for SleepPolicy {
+    fn default() -> Self {
+        Self {
+            same_profile: true,
+            battery: SleepProfile::default(),
+            plugged: SleepProfile::default(),
+        }
+    }
+}
+
+impl SleepPolicy {
+    pub(crate) fn validate(&self) -> Result<()> {
+        for profile in [&self.battery, &self.plugged] {
+            if profile.sleep_minutes > MAX_MINUTES || profile.hibernate_minutes > MAX_MINUTES {
+                bail!("sleep and hibernate delays must be 0 (Never) or 1–10080 minutes");
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn profile(&self, plugged: bool) -> &SleepProfile {
+        if self.same_profile || !plugged {
+            &self.battery
+        } else {
+            &self.plugged
+        }
+    }
+
+    fn idle_profile(&self, plugged: bool, expected_minutes: u32) -> Result<&SleepProfile> {
+        let profile = self.profile(plugged);
+        if profile.sleep_minutes == 0 || profile.sleep_minutes != expected_minutes {
+            bail!("idle sleep profile changed; waiting for the new inactivity deadline");
+        }
+        Ok(profile)
+    }
+
+    fn profile_name(&self, plugged: bool) -> &'static str {
+        if self.same_profile {
+            "shared"
+        } else if plugged {
+            "plugged"
+        } else {
+            "battery"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SleepPolicyState {
+    pub available: bool,
+    pub policy: SleepPolicy,
+    pub active_profile: String,
+    pub hibernate_available: bool,
+    pub hibernate_error: Option<String>,
+    pub last_error: Option<String>,
+    pub error: Option<String>,
+}
+
+fn policy_path() -> PathBuf {
+    data_file(XdgRoot::Config, "sleep.json")
+}
+
+async fn load() -> Result<SleepPolicy> {
+    let policy: SleepPolicy = load_json_or_default(&policy_path(), "sleep policy").await?;
+    policy.validate()?;
+    Ok(policy)
+}
+
+fn base_config() -> Result<PathBuf> {
+    std::env::var_os("BAR_DAEMON_IDLE_CONFIG")
+        .map(PathBuf::from)
+        .context("Enable programs.shelllist.sleep.enable in Home Manager to manage automatic sleep")
+}
+
+pub(crate) async fn plugged() -> Result<bool> {
+    let connection = zbus::Connection::system().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.UPower",
+        "/org/freedesktop/UPower",
+        "org.freedesktop.UPower",
+    )
+    .await?;
+    let on_battery: bool = proxy
+        .get_property("OnBattery")
+        .await
+        .context("read AC power state")?;
+    Ok(!on_battery)
+}
+
+async fn validate_config(policy: &SleepPolicy) -> Result<()> {
+    let path = base_config()?;
+    let base = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("read {}", path.display()))?;
+    // Check both profiles before persisting, including the inactive one.
+    let executable = std::env::current_exe()?;
+    for profile in [&policy.battery, &policy.plugged] {
+        hypridle::render(&base, profile, &executable, "validate")?;
+    }
+    Ok(())
+}
+
+async fn user_systemd() -> Result<zbus::Connection> {
+    zbus::Connection::session()
+        .await
+        .context("connect to user systemd")
+}
+
+async fn restart_idle() -> Result<()> {
+    let connection = user_systemd().await?;
+    let manager = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+    )
+    .await?;
+    use futures::StreamExt;
+    let mut jobs = manager.receive_signal("JobRemoved").await?;
+    let previous_generation = hypridle::active_generation().await.ok();
+    let job: zvariant::OwnedObjectPath = manager
+        .call("RestartUnit", &("hypridle.service", "replace"))
+        .await
+        .context("restart hypridle with the selected sleep profile")?;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while let Some(signal) = jobs.next().await {
+            let (_, path, _, result): (u32, zvariant::OwnedObjectPath, String, String) =
+                signal.body().deserialize()?;
+            if path == job {
+                if result != "done" {
+                    bail!("hypridle restart failed: {result}");
+                }
+                loop {
+                    let generation = hypridle::active_generation().await.ok();
+                    if generation.is_some() && generation != previous_generation {
+                        return idle_running().await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+        bail!("systemd job stream ended while restarting hypridle")
+    })
+    .await
+    .context("timed out restarting hypridle")?
+}
+
+async fn idle_running() -> Result<()> {
+    let connection = user_systemd().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1/unit/hypridle_2eservice",
+        "org.freedesktop.systemd1.Unit",
+    )
+    .await?;
+    let active: String = proxy
+        .get_property("ActiveState")
+        .await
+        .context("read hypridle service state")?;
+    if active != "active" {
+        bail!("hypridle is not running ({active})");
+    }
+    Ok(())
+}
+
+pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<SleepPolicyState> {
+    let _guard = POLICY_WRITE.lock().await;
+    policy.validate()?;
+    validate_config(&policy).await?;
+    idle_running().await?;
+    let plugged = plugged().await?;
+    // A missing helper/capability must not be presented as working hibernation.
+    let support = hibernate_support().await;
+    if [policy.profile(false), policy.profile(true)]
+        .iter()
+        .any(|p| p.sleep_minutes > 0 && p.hibernate_minutes > 0)
+    {
+        if let Err(error) = &support {
+            bail!("{error:#}");
+        }
+    }
+    let previous = load().await?;
+    persist_and_restart(&policy_path(), &policy, &previous, restart_idle).await?;
+    let state = SleepPolicyState {
+        available: true,
+        active_profile: policy.profile_name(plugged).into(),
+        policy,
+        hibernate_available: support.is_ok(),
+        hibernate_error: support.err().map(|error| format!("{error:#}")),
+        last_error: None,
+        error: None,
+    };
+    store.update_sleep_policy(state.clone()).await;
+    Ok(state)
+}
+
+async fn hibernate_support() -> Result<()> {
+    crate::sleep::check_suspend_then_hibernate().await?;
+    helper_available().await
+}
+
+async fn persist_and_restart<F, Fut>(
+    path: &Path,
+    policy: &SleepPolicy,
+    previous: &SleepPolicy,
+    mut restart: F,
+) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    save_json_atomic(path, policy).await?;
+    if let Err(error) = restart().await {
+        save_json_atomic(path, previous)
+            .await
+            .context("restore previous sleep policy after hypridle restart failed")?;
+        restart().await.with_context(|| format!("new sleep policy failed ({error:#}); previous policy was restored but hypridle could not restart"))?;
+        return Err(error).context("sleep settings not applied; previous policy restored");
+    }
+    Ok(())
+}
+
+async fn helper_available() -> Result<()> {
+    let connection = zbus::Connection::system().await?;
+    let proxy = helper_proxy(&connection).await?;
+    let available: bool = proxy
+        .call("SleepSettingsAvailable", &())
+        .await
+        .context("Install the updated system bar-battery-helper to configure hibernation")?;
+    if !available {
+        bail!("system hibernate settings are unavailable");
+    }
+    Ok(())
+}
+
+async fn helper_proxy(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
+    zbus::Proxy::new(
+        connection,
+        crate::battery::helper::BUS_NAME,
+        crate::battery::helper::OBJECT_PATH,
+        crate::battery::helper::INTERFACE,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+/// Called only by the generated hypridle listener. Re-check the power source at
+/// the deadline so an AC change cannot trigger the previous profile early.
+pub(crate) async fn idle_sleep(
+    expected_minutes: u32,
+    generation: &str,
+    store: &StateStore,
+) -> Result<crate::model::PowerSleepState> {
+    let _guard = POLICY_WRITE.lock().await;
+    let result = perform_idle(expected_minutes, generation).await;
+    let mut state = store.snapshot().await.sleep_policy;
+    state.last_error = result.as_ref().err().map(|error| format!("{error:#}"));
+    store.update_sleep_policy(state).await;
+    result
+}
+
+async fn perform_idle(
+    expected_minutes: u32,
+    generation: &str,
+) -> Result<crate::model::PowerSleepState> {
+    base_config()?;
+    hypridle::verify_generation(generation).await?;
+    let policy = load().await?;
+    let profile = policy.idle_profile(plugged().await?, expected_minutes)?;
+    if profile.hibernate_minutes == 0 {
+        return crate::sleep::perform("suspend").await;
+    }
+    crate::sleep::check_suspend_then_hibernate().await?;
+    let connection = zbus::Connection::system().await?;
+    let proxy = helper_proxy(&connection).await?;
+    let _: () = proxy
+        .call("SetHibernateDelay", &(profile.hibernate_minutes,))
+        .await
+        .context("configure systemd's time asleep before hibernation")?;
+    crate::sleep::perform("suspend-then-hibernate").await
+}
+
+/// The privileged helper accepts only a bounded number, never a path or config
+/// fragment. This override is runtime-only and applies to suspend-then-hibernate,
+/// not ordinary explicit Suspend or Hibernate actions.
+pub(crate) fn write_hibernate_delay(directory: &Path, minutes: u32) -> Result<()> {
+    if !(1..=MAX_MINUTES).contains(&minutes) {
+        bail!("hibernate delay must be 1–10080 minutes");
+    }
+    crate::paths::save_bytes_durable(&directory.join("90-shelllist.conf"),
+        format!("# Managed by bar-daemon\n[Sleep]\nHibernateDelaySec={minutes}min\nHibernateOnACPower=yes\n").as_bytes())
+}
+
+pub(crate) async fn monitor(store: StateStore) {
+    let mut events = store.subscribe();
+    let mut timer = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        tokio::select! {
+            _ = timer.tick() => {},
+            event = events.recv() => {
+                match event {
+                    Ok(event) if event.stream == crate::protocol::stream::BATTERY => {},
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    _ => continue,
+                }
+            }
+        }
+        let _guard = POLICY_WRITE.lock().await;
+        let mut state = SleepPolicyState {
+            last_error: store.snapshot().await.sleep_policy.last_error,
+            ..SleepPolicyState::default()
+        };
+        let result: Result<()> = async {
+            state.policy = load().await?;
+            validate_config(&state.policy).await?;
+            idle_running().await?;
+            let plugged = plugged().await?;
+            state.active_profile = state.policy.profile_name(plugged).into();
+            let profile = state.policy.profile(plugged);
+            if hypridle::active_minutes().await? != profile.sleep_minutes {
+                restart_idle().await?;
+            }
+            let support = hibernate_support().await;
+            state.hibernate_available = support.is_ok();
+            state.hibernate_error = support.err().map(|error| format!("{error:#}"));
+            state.available = true;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            state.error = Some(format!("{error:#}"));
+        }
+        store.update_sleep_policy(state).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_and_separate_profiles_preserve_both_values() {
+        let mut policy = SleepPolicy {
+            same_profile: false,
+            battery: SleepProfile {
+                sleep_minutes: 10,
+                hibernate_minutes: 60,
+            },
+            plugged: SleepProfile {
+                sleep_minutes: 45,
+                hibernate_minutes: 180,
+            },
+        };
+        assert_eq!(policy.profile(false).sleep_minutes, 10);
+        assert_eq!(policy.profile(true).sleep_minutes, 45);
+        policy.same_profile = true;
+        assert_eq!(policy.profile(true).sleep_minutes, 10);
+        assert_eq!(policy.plugged.hibernate_minutes, 180);
+        assert!(policy.validate().is_ok());
+        policy.plugged.hibernate_minutes = MAX_MINUTES + 1;
+        assert!(
+            policy.validate().is_err(),
+            "even hidden profiles are validated"
+        );
+        assert!(
+            serde_json::from_str::<SleepProfile>(r#"{"sleep_minutes":-1,"hibernate_minutes":0}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<SleepProfile>(r#"{"sleep_minutes":1.5,"hibernate_minutes":0}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_idle_callbacks_cannot_sleep_early_after_ac_changes_or_never() {
+        let policy = SleepPolicy {
+            same_profile: false,
+            battery: SleepProfile {
+                sleep_minutes: 10,
+                hibernate_minutes: 60,
+            },
+            plugged: SleepProfile {
+                sleep_minutes: 45,
+                hibernate_minutes: 180,
+            },
+        };
+        assert!(policy.idle_profile(true, 10).is_err());
+        assert!(policy.idle_profile(false, 45).is_err());
+        assert_eq!(
+            policy.idle_profile(true, 45).unwrap().hibernate_minutes,
+            180
+        );
+        let never = SleepPolicy {
+            battery: SleepProfile {
+                sleep_minutes: 0,
+                hibernate_minutes: 60,
+            },
+            ..Default::default()
+        };
+        assert!(never.idle_profile(false, 0).is_err());
+        assert!(never.idle_profile(false, 10).is_err());
+    }
+
+    #[tokio::test]
+    async fn saves_durably_and_rolls_back_if_idle_restart_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sleep.json");
+        let previous = SleepPolicy::default();
+        let next = SleepPolicy {
+            same_profile: false,
+            ..Default::default()
+        };
+        persist_and_restart(&path, &next, &previous, || async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(
+            load_json_or_default::<SleepPolicy>(&path, "test")
+                .await
+                .unwrap(),
+            next
+        );
+        let mut calls = 0;
+        let error = persist_and_restart(&path, &next, &previous, || {
+            calls += 1;
+            std::future::ready(if calls == 1 {
+                Err(anyhow::anyhow!("restart failed"))
+            } else {
+                Ok(())
+            })
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("previous policy restored"));
+        assert_eq!(
+            calls, 2,
+            "rollback also restarts hypridle with the old settings"
+        );
+        assert_eq!(
+            load_json_or_default::<SleepPolicy>(&path, "test")
+                .await
+                .unwrap(),
+            previous
+        );
+    }
+
+    #[test]
+    fn helper_writes_only_bounded_runtime_sleep_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        write_hibernate_delay(directory.path(), 120).unwrap();
+        let path = directory.path().join("90-shelllist.conf");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("HibernateDelaySec=120min\nHibernateOnACPower=yes"));
+        assert!(write_hibernate_delay(directory.path(), 0).is_err());
+        assert!(write_hibernate_delay(directory.path(), MAX_MINUTES + 1).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+    }
+}

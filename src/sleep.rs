@@ -158,7 +158,10 @@ async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
 }
 
 pub(crate) async fn perform(action: &str) -> Result<PowerSleepState> {
-    if !matches!(action, "lock" | "suspend" | "hibernate") {
+    if !matches!(
+        action,
+        "lock" | "suspend" | "hibernate" | "suspend-then-hibernate"
+    ) {
         bail!("unsupported power and sleep action: {action}");
     }
     let _guard = SLEEP_ACTION
@@ -185,15 +188,18 @@ async fn perform_connected(
     if action == "hibernate" && !capability_available(&current.can_hibernate) {
         bail!("hibernate is unavailable: {}", current.can_hibernate);
     }
+    if action == "suspend-then-hibernate" {
+        check_combined_capability(connection).await?;
+    }
     lock_session(connection, lock_timeout).await?;
     if action != "lock" {
         manager(connection)
             .await?
             .call_method(
-                if action == "suspend" {
-                    "Suspend"
-                } else {
-                    "Hibernate"
+                match action {
+                    "suspend" => "Suspend",
+                    "suspend-then-hibernate" => "SuspendThenHibernate",
+                    _ => "Hibernate",
                 },
                 &(false,),
             )
@@ -233,6 +239,25 @@ async fn lock_session(connection: &zbus::Connection, deadline: Duration) -> Resu
     })
     .await
     .context("session lock was not confirmed before the deadline; refusing to sleep")?
+}
+
+pub(crate) async fn check_suspend_then_hibernate() -> Result<()> {
+    let connection = zbus::Connection::system().await?;
+    check_combined_capability(&connection).await
+}
+
+async fn check_combined_capability(connection: &zbus::Connection) -> Result<()> {
+    let capability: String = manager(connection)
+        .await?
+        .call("CanSuspendThenHibernate", &())
+        .await
+        .context("read suspend-then-hibernate capability")?;
+    if !capability_available(&capability) {
+        bail!(
+            "suspend-then-hibernate is unavailable: {capability}; check system hibernation and swap/resume configuration"
+        );
+    }
+    Ok(())
 }
 
 fn capability_available(value: &str) -> bool {

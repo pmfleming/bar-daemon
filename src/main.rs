@@ -18,6 +18,20 @@ enum Command {
     Daemon,
     /// Bridge JSON Lines on stdin/stdout to the session service.
     Client,
+    /// Run hypridle with the selected persistent sleep profile.
+    Idle {
+        #[arg(long)]
+        config: std::path::PathBuf,
+        #[arg(long)]
+        hypridle: std::path::PathBuf,
+    },
+    /// Apply the current automatic sleep policy (called by hypridle).
+    IdleSleep {
+        #[arg(long)]
+        sleep_minutes: u32,
+        #[arg(long)]
+        generation: String,
+    },
     /// Print stable protocol metadata or a contract fixture.
     Debug {
         #[command(subcommand)]
@@ -44,6 +58,11 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Daemon => run_daemon().await,
         Command::Client => run_client().await,
+        Command::Idle { config, hypridle } => bar_daemon::run_idle(&config, &hypridle).await,
+        Command::IdleSleep {
+            sleep_minutes,
+            generation,
+        } => bar_daemon::run_idle_sleep(sleep_minutes, &generation).await,
         Command::Debug { command } => {
             let value = match command {
                 DebugCommand::ProtocolRegistry => protocol::registry(),

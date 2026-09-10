@@ -112,6 +112,8 @@ impl ApiService {
             "powerSleep.lock" => self.effects.power_sleep_action("lock").await,
             "powerSleep.suspend" => self.effects.power_sleep_action("suspend").await,
             "powerSleep.hibernate" => self.effects.power_sleep_action("hibernate").await,
+            "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
+            "powerSleep.idle" => self.effects.idle_sleep(params).await,
             "notifications.togglePanel" => self.notifications.notification_action(false).await,
             "notifications.toggleDnd" => self.notifications.notification_action(true).await,
             "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,

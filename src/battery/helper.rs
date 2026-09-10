@@ -34,6 +34,28 @@ impl Default for BatteryHelper {
 
 #[zbus::interface(name = "org.laufan.BarBatteryHelper1")]
 impl BatteryHelper {
+    async fn sleep_settings_available(&self) -> bool {
+        true
+    }
+
+    async fn set_hibernate_delay(
+        &self,
+        minutes: u32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> zbus::fdo::Result<()> {
+        // An idle callback must never launch an authentication prompt.
+        authorize(
+            connection,
+            &header,
+            "org.laufan.bar-daemon.set-hibernate-delay",
+            0,
+        )
+        .await?;
+        crate::sleep_policy::write_hibernate_delay(Path::new("/run/systemd/sleep.conf.d"), minutes)
+            .map_err(failed)
+    }
+
     async fn get_thresholds(&self, battery: &str) -> zbus::fdo::Result<(u8, u8)> {
         self.writer.get_thresholds(battery).map_err(failed)
     }
@@ -46,7 +68,7 @@ impl BatteryHelper {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> zbus::fdo::Result<(u8, u8, bool)> {
-        authorize(connection, &header, POLKIT_THRESHOLDS_ACTION).await?;
+        authorize(connection, &header, POLKIT_THRESHOLDS_ACTION, 1).await?;
         let result = self
             .writer
             .set_thresholds(battery, start_percent, end_percent)
@@ -72,7 +94,7 @@ impl BatteryHelper {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> zbus::fdo::Result<String> {
-        authorize(connection, &header, POLKIT_BEHAVIOUR_ACTION).await?;
+        authorize(connection, &header, POLKIT_BEHAVIOUR_ACTION, 1).await?;
         self.writer
             .set_charge_behaviour(battery, behaviour)
             .map_err(failed)
@@ -87,6 +109,7 @@ async fn authorize(
     connection: &Connection,
     header: &Header<'_>,
     action: &str,
+    flags: u32,
 ) -> zbus::fdo::Result<()> {
     let sender = header
         .sender()
@@ -98,14 +121,14 @@ async fn authorize(
     let subject = ("system-bus-name", subject_details);
     let details = HashMap::<&str, &str>::new();
     let (authorized, _challenge, _details): (bool, bool, HashMap<String, String>) = proxy
-        .call("CheckAuthorization", &(subject, action, details, 1u32, ""))
+        .call("CheckAuthorization", &(subject, action, details, flags, ""))
         .await
         .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
     if authorized {
         Ok(())
     } else {
         Err(zbus::fdo::Error::AccessDenied(
-            "battery threshold change was not authorized".into(),
+            "power setting change was not authorized".into(),
         ))
     }
 }

@@ -39,6 +39,7 @@ impl MonitorTasks {
             tokio::spawn(battery::monitor(state.clone(), notifications.sink())),
             tokio::spawn(power::monitor(state.clone())),
             tokio::spawn(sleep::monitor(state.clone())),
+            tokio::spawn(crate::sleep_policy::monitor(state.clone())),
             tokio::spawn(updates::monitor(state.clone())),
             tokio::spawn(timezone::monitor(state.clone())),
         ];

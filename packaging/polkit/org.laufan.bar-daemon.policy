@@ -23,4 +23,13 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+  <action id="org.laufan.bar-daemon.set-hibernate-delay">
+    <description>Set the delay before a sleeping laptop hibernates</description>
+    <message>Authentication is required to configure the hibernate delay.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
 </policyconfig>
