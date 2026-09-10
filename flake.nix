@@ -36,6 +36,8 @@
               wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl ]}
             '';
             postInstall = ''
+              install -Dm644 protocols/hyprland-lock-notify-v1.xml \
+                $out/share/licenses/bar-daemon/hyprland-lock-notify-v1.xml
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service

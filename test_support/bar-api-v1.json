@@ -832,6 +832,15 @@
       "available": true,
       "can_hibernate": "challenge",
       "can_suspend": "yes",
+      "diagnostics": {
+        "disk_swap_available": null,
+        "guidance": [],
+        "hardware": null,
+        "hibernate_issues": [],
+        "resume_device_configured": null,
+        "supported_suspend_modes": [],
+        "suspend_mode": null
+      },
       "error": null,
       "inhibitors": [
         {

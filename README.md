@@ -13,7 +13,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
 - Native Linux power-supply monitoring, ThinkPad charge protection, recoverable charge-once, health/cycle telemetry, and configurable deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
-- systemd-logind sleep capabilities, active inhibitors, and lock-before-suspend/hibernate actions
+- systemd-logind sleep capabilities, active inhibitors, confirmed lock-before-suspend/hibernate actions, shared/separate idle profiles, and read-only ThinkPad sleep diagnostics
 - Native Freedesktop notification server with expiry, actions, DND, active state, and persistent SQLite history; resilient SwayNC fallback adapter
 - Event-driven NixOS delayed-update readiness across fast and delayed lanes
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
@@ -26,6 +26,8 @@ BAR_DAEMON_NOTIFICATION_BACKEND=swaync bar-daemon daemon # temporary fallback
 bar-daemon client
 bar-daemon debug protocol-registry
 bar-daemon debug contract-fixture
+bar-daemon debug sleep-diagnostics # read-only kernel/swap/ThinkPad evidence
+bar-daemon debug lock-state        # read-only Hyprland lock-notification probe
 ```
 
 JSONL example:

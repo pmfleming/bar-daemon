@@ -321,14 +321,16 @@ async fn perform_idle(
     if profile.hibernate_minutes == 0 {
         return crate::sleep::perform("suspend").await;
     }
-    crate::sleep::check_suspend_then_hibernate().await?;
-    let connection = zbus::Connection::system().await?;
-    let proxy = helper_proxy(&connection).await?;
-    let _: () = proxy
-        .call("SetHibernateDelay", &(profile.hibernate_minutes,))
-        .await
-        .context("configure systemd's time asleep before hibernation")?;
-    crate::sleep::perform("suspend-then-hibernate").await
+    crate::sleep::perform_with_setup("suspend-then-hibernate", || async {
+        let connection = zbus::Connection::system().await?;
+        let proxy = helper_proxy(&connection).await?;
+        let _: () = proxy
+            .call("SetHibernateDelay", &(profile.hibernate_minutes,))
+            .await
+            .context("configure systemd's time asleep before hibernation")?;
+        Ok(())
+    })
+    .await
 }
 
 /// The privileged helper accepts only a bounded number, never a path or config

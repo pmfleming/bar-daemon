@@ -28,7 +28,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 udev = "0.9"
 zbus = { version = "5", features = ["tokio"] }
 zvariant = "5"
+wayland-client = "0.31"
+wayland-scanner = "0.31"
 
 [dev-dependencies]
+wayland-server = "0.31"
 tempfile = "3"
 zbus = { version = "5", features = ["p2p"] }

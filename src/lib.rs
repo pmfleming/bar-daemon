@@ -58,6 +58,18 @@ pub async fn run_idle_sleep(sleep_minutes: u32, generation: &str) -> anyhow::Res
     Ok(())
 }
 
+/// Reports read-only kernel, swap and Lenovo/ThinkPad sleep diagnostics.
+pub fn sleep_diagnostics() -> serde_json::Value {
+    serde_json::to_value(sleep::diagnostics::system()).expect("sleep diagnostics are serializable")
+}
+
+/// Reads the compositor's lock-notification state without changing it.
+pub async fn inspect_lock() -> anyhow::Result<serde_json::Value> {
+    Ok(
+        serde_json::json!({"source": "hyprland-lock-notify-v1", "locked": sleep::inspect_lock().await?}),
+    )
+}
+
 /// Runs the privileged battery helper service.
 pub async fn run_battery_helper() -> anyhow::Result<()> {
     battery::helper::run().await

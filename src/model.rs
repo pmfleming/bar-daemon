@@ -31,6 +31,8 @@ pub(crate) struct PowerSleepState {
     pub preparing_for_sleep: bool,
     pub lock_before_sleep: bool,
     pub inhibitors: Vec<SleepInhibitor>,
+    #[serde(default)]
+    pub diagnostics: crate::sleep::diagnostics::SleepDiagnostics,
     pub error: Option<String>,
 }
 

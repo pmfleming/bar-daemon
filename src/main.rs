@@ -43,6 +43,10 @@ enum Command {
 enum DebugCommand {
     ProtocolRegistry,
     ContractFixture,
+    /// Read kernel/swap/ThinkPad sleep evidence without initiating sleep.
+    SleepDiagnostics,
+    /// Observe compositor lock confirmation without requesting a lock or sleep.
+    LockState,
 }
 
 #[tokio::main]
@@ -67,6 +71,8 @@ async fn main() -> Result<()> {
             let value = match command {
                 DebugCommand::ProtocolRegistry => protocol::registry(),
                 DebugCommand::ContractFixture => protocol::contract_fixture()?,
+                DebugCommand::SleepDiagnostics => bar_daemon::sleep_diagnostics(),
+                DebugCommand::LockState => bar_daemon::inspect_lock().await?,
             };
             println!("{}", serde_json::to_string_pretty(&value)?);
             Ok(())
