@@ -178,7 +178,7 @@ async fn restart_idle() -> Result<()> {
         .call("RestartUnit", &("hypridle.service", "replace"))
         .await
         .context("restart hypridle with the selected sleep profile")?;
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(12), async {
         while let Some(signal) = jobs.next().await {
             let (_, path, _, result): (u32, zvariant::OwnedObjectPath, String, String) =
                 signal.body().deserialize()?;
@@ -189,7 +189,15 @@ async fn restart_idle() -> Result<()> {
                 loop {
                     let generation = hypridle::active_generation().await.ok();
                     if generation.is_some() && generation != previous_generation {
-                        return idle_running().await;
+                        idle_running().await?;
+                        // Reject immediate post-notify exits and replacement by
+                        // systemd's automatic restart before acknowledging a save.
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        idle_running().await?;
+                        if hypridle::active_generation().await.ok() != generation {
+                            bail!("hypridle restarted again during readiness confirmation");
+                        }
+                        return Ok(());
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
@@ -214,8 +222,46 @@ async fn idle_running() -> Result<()> {
         .get_property("ActiveState")
         .await
         .context("read hypridle service state")?;
-    if active != "active" {
-        bail!("hypridle is not running ({active})");
+    let substate: String = proxy.get_property("SubState").await?;
+    let service = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.systemd1",
+        proxy.path().clone(),
+        "org.freedesktop.systemd1.Service",
+    )
+    .await?;
+    let kind: String = service.get_property("Type").await?;
+    let pid: u32 = service.get_property("MainPID").await?;
+    verify_idle_readiness(
+        &active,
+        &substate,
+        &kind,
+        pid,
+        &hypridle::active_generation().await?,
+    )
+}
+
+fn verify_idle_readiness(
+    active: &str,
+    substate: &str,
+    kind: &str,
+    pid: u32,
+    generation: &str,
+) -> Result<()> {
+    if kind != "notify" {
+        bail!(
+            "hypridle readiness integration is missing; activate the updated Shelllist Home Manager module"
+        );
+    }
+    if active != "active" || substate != "running" || pid == 0 {
+        bail!("hypridle is not ready ({active}/{substate})");
+    }
+    let generated_pid = generation
+        .split('-')
+        .next()
+        .and_then(|part| part.parse::<u32>().ok());
+    if generated_pid != Some(pid) {
+        bail!("generated idle configuration belongs to a different hypridle process");
     }
     Ok(())
 }
@@ -528,6 +574,15 @@ mod tests {
                 .unwrap(),
             previous
         );
+    }
+
+    #[test]
+    fn generated_config_alone_never_proves_idle_readiness() {
+        assert!(verify_idle_readiness("active", "running", "simple", 42, "42-123").is_err());
+        assert!(verify_idle_readiness("activating", "start", "notify", 42, "42-123").is_err());
+        assert!(verify_idle_readiness("failed", "failed", "notify", 0, "42-123").is_err());
+        assert!(verify_idle_readiness("active", "running", "notify", 43, "42-123").is_err());
+        assert!(verify_idle_readiness("active", "running", "notify", 42, "42-123").is_ok());
     }
 
     #[test]

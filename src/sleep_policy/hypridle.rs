@@ -177,7 +177,11 @@ pub(crate) async fn run(config: &Path, executable: &Path) -> Result<()> {
         let policy = load().await?;
         render(
             &base,
-            policy.profile(plugged().await?),
+            policy.profile(
+                tokio::time::timeout(std::time::Duration::from_secs(2), plugged())
+                    .await
+                    .context("AC state lookup timed out")??,
+            ),
             &daemon,
             &generation,
         )
@@ -203,6 +207,7 @@ pub(crate) async fn run(config: &Path, executable: &Path) -> Result<()> {
             .ok()
         }
     };
+    let managed = rendered.is_some();
     let selected_path = if let Some(rendered) = rendered {
         crate::paths::save_bytes_durable(&path, rendered.as_bytes())?;
         path.as_path()
@@ -213,6 +218,7 @@ pub(crate) async fn run(config: &Path, executable: &Path) -> Result<()> {
     let error = std::process::Command::new(executable)
         .arg("--config")
         .arg(selected_path)
+        .env("BAR_DAEMON_IDLE_MANAGED", if managed { "1" } else { "0" })
         .exec();
     Err(error).context("start managed hypridle")
 }
