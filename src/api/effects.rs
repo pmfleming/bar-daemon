@@ -123,9 +123,8 @@ impl DesktopEffects {
     pub(super) async fn power_sleep_action(&self, action: &str) -> Value {
         match sleep::perform(action).await {
             Ok(state) => {
-                let response = success(json!({"power_sleep": state, "operation": action}));
                 self.state.update_power_sleep(state).await;
-                response
+                success(json!({"power_sleep": self.state.snapshot().await.power_sleep, "operation": action}))
             }
             Err(value) => error("power-sleep-operation-failed", format!("{value:#}")),
         }
@@ -158,8 +157,8 @@ impl DesktopEffects {
         .await
         {
             Ok(state) => {
-                self.state.update_power_sleep(state.clone()).await;
-                success(json!({"power_sleep": state}))
+                self.state.update_power_sleep(state).await;
+                success(json!({"power_sleep": self.state.snapshot().await.power_sleep}))
             }
             Err(value) => error("automatic-sleep-failed", format!("{value:#}")),
         }

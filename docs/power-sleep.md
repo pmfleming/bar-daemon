@@ -59,6 +59,12 @@ The original review found only zram. A later read-only check found an active **6
 
 The per-profile delay continues to use systemd's suspend-then-hibernate and kernel wake timers, not a Lenovo-specific replacement or a daemon timer that stops during suspend. The helper's runtime delay is system-wide and remains subject to administrator drop-in precedence. End-to-end firmware wake/resume and hibernation reliability still need a controlled hardware test after persistent swap/resume is configured. The automated tests use isolated logind and Wayland protocol servers.
 
+## Resume recovery
+
+`power_sleep.resume_generation` increases on `PrepareForSleep(false)` before telemetry queries. It survives subsequent action/status refreshes and lets a frontend detect resume even if transient preparation states were coalesced. A two-second CLOCK_BOOTTIME minus CLOCK_MONOTONIC check backs up missed logind signals without treating NTP changes or an event-loop stall as sleep. Signal and clock detections for one cycle are deduplicated. A daemon restart resets the generation; clients establish a new baseline.
+
+Shelllist observes this generation to rebuild bar surfaces; screen-change recovery remains independent. There is no wall-clock-gap resume heuristic.
+
 ## Explicit action examples
 
 ```json

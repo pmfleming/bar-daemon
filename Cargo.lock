@@ -254,6 +254,7 @@ dependencies = [
  "pipewire",
  "reqwest",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "shelllist-daemon-core",

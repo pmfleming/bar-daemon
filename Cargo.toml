@@ -17,6 +17,7 @@ notify = "8"
 pipewire = { version = "0.10", features = ["v1_2_0"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "1", features = ["time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shelllist-daemon-core = { path = "../daemon-framework/crates/shelllist-daemon-core" }

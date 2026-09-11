@@ -855,7 +855,8 @@
         }
       ],
       "lock_before_sleep": true,
-      "preparing_for_sleep": false
+      "preparing_for_sleep": false,
+      "resume_generation": 0
     },
     "sleep_policy": {
       "active_profile": "shared",

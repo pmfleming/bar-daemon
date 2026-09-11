@@ -29,6 +29,9 @@ pub(crate) struct PowerSleepState {
     pub can_suspend: String,
     pub can_hibernate: String,
     pub preparing_for_sleep: bool,
+    /// Monotonic within this daemon lifetime; survives telemetry refreshes.
+    #[serde(default)]
+    pub resume_generation: u64,
     pub lock_before_sleep: bool,
     pub inhibitors: Vec<SleepInhibitor>,
     #[serde(default)]

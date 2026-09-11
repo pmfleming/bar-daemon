@@ -67,13 +67,39 @@ impl StateStore {
         update_notification_active(NotificationActiveState) => notification_active, crate::protocol::stream::NOTIFICATION_ACTIVE;
         update_notifications(NotificationState) => notifications, crate::protocol::stream::NOTIFICATIONS;
         update_power_profile(PowerProfileState) => power_profile, crate::protocol::stream::POWER_PROFILE;
-        update_power_sleep(PowerSleepState) => power_sleep, crate::protocol::stream::POWER_SLEEP;
         update_sleep_policy(crate::sleep_policy::SleepPolicyState) => sleep_policy, crate::protocol::stream::SLEEP_POLICY;
         update_osd_hardware(OsdHardwareState) => osd_hardware, crate::protocol::stream::OSD_HARDWARE;
         update_battery(BatteryState) => battery, crate::protocol::stream::BATTERY;
         update_brightness(BrightnessState) => brightness, crate::protocol::stream::BRIGHTNESS;
         update_audio(AudioState) => audio, crate::protocol::stream::AUDIO;
         update_media(MediaState) => media, crate::protocol::stream::MEDIA;
+    }
+
+    pub(crate) async fn update_power_sleep(&self, value: PowerSleepState) {
+        self.commit_power_sleep(Some(value), false).await;
+    }
+
+    pub(crate) async fn record_resume(&self) {
+        self.commit_power_sleep(None, true).await;
+    }
+
+    async fn commit_power_sleep(&self, value: Option<PowerSleepState>, resumed: bool) {
+        let mut snapshot = self.snapshot.write().await;
+        let current = &mut snapshot.power_sleep;
+        let mut next = value.unwrap_or_else(|| current.clone());
+        next.resume_generation = current.resume_generation.saturating_add(u64::from(resumed));
+        if resumed {
+            next.preparing_for_sleep = false;
+        }
+        if *current == next {
+            return;
+        }
+        let data = to_value(&next).unwrap_or(Value::Null);
+        *current = next;
+        let _ = self.events.send(DomainEvent {
+            stream: crate::protocol::stream::POWER_SLEEP.into(),
+            data,
+        });
     }
 
     async fn update<T, F>(&self, value: T, stream: &str, field: F)
@@ -143,6 +169,23 @@ mod tests {
             assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
             assert!(new_events.try_recv().is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn resume_generation_survives_stale_action_and_monitor_telemetry() {
+        let store = StateStore::default();
+        let mut events = store.subscribe();
+        store.record_resume().await;
+        assert_eq!(events.recv().await.unwrap().data["resume_generation"], 1);
+        store
+            .update_power_sleep(crate::model::PowerSleepState {
+                available: true,
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(events.recv().await.unwrap().data["resume_generation"], 1);
+        store.record_resume().await;
+        assert_eq!(store.snapshot().await.power_sleep.resume_generation, 2);
     }
 
     #[tokio::test]
