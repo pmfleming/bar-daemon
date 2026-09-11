@@ -361,6 +361,8 @@ pub(crate) struct MediaPlayer {
     pub can_control: bool,
     pub can_play: bool,
     pub can_pause: bool,
+    #[serde(default)]
+    pub can_seek: bool,
     pub can_next: bool,
     pub can_previous: bool,
 }

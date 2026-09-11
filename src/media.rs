@@ -302,6 +302,7 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         can_control: player.get_property("CanControl").await.unwrap_or(false),
         can_play: player.get_property("CanPlay").await.unwrap_or(false),
         can_pause: player.get_property("CanPause").await.unwrap_or(false),
+        can_seek: player.get_property("CanSeek").await.unwrap_or(false),
         can_next: player.get_property("CanGoNext").await.unwrap_or(false),
         can_previous: player.get_property("CanGoPrevious").await.unwrap_or(false),
     })
@@ -431,6 +432,40 @@ mod tests {
             playback_status: status.into(),
             can_control: controllable,
             ..MediaPlayer::default()
+        }
+    }
+
+    struct FakePlayer {
+        can_seek: bool,
+    }
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+    impl FakePlayer {
+        #[zbus(property)]
+        fn can_seek(&self) -> bool {
+            self.can_seek
+        }
+    }
+
+    #[tokio::test]
+    async fn publishes_mpris_seek_capability() {
+        // An isolated peer connection avoids touching the user's media players.
+        for can_seek in [false, true] {
+            let (server, client) = tokio::net::UnixStream::pair().unwrap();
+            let server = zbus::connection::Builder::unix_stream(server)
+                .server(zbus::Guid::generate())
+                .unwrap()
+                .p2p()
+                .serve_at(super::PATH, FakePlayer { can_seek })
+                .unwrap()
+                .build();
+            let client = zbus::connection::Builder::unix_stream(client).p2p().build();
+            let (_server, client) = tokio::try_join!(server, client).unwrap();
+            let player = super::read_player(&client, "org.mpris.MediaPlayer2.test")
+                .await
+                .unwrap();
+            assert_eq!(player.can_seek, can_seek);
+            assert_eq!(serde_json::to_value(&player).unwrap()["can_seek"], can_seek);
         }
     }
 

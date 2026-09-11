@@ -225,7 +225,7 @@ fn generated_contract_fixture() -> Value {
                     "playback_status": "playing", "title": "Track", "artist": "Artist", "album": "Album", "art_url": "",
                     "length_us": 240000000, "position_us": 60000000,
                     "position_observed_at_unix_ms": 1234567890000_u64, "playback_rate": 1.0,
-                    "can_control": true, "can_play": true, "can_pause": true, "can_next": true, "can_previous": true
+                    "can_control": true, "can_play": true, "can_pause": true, "can_seek": true, "can_next": true, "can_previous": true
                 }],
                 "error": null
             },

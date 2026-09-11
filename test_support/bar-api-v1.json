@@ -719,6 +719,7 @@
           "can_pause": true,
           "can_play": true,
           "can_previous": true,
+          "can_seek": true,
           "desktop_entry": "spotify",
           "id": "org.mpris.MediaPlayer2.spotify",
           "identity": "Spotify",
