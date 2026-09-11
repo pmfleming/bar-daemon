@@ -66,11 +66,12 @@ impl ApiService {
         activity: Arc<ActivityService>,
         notifications: Arc<NotificationService>,
         media: MediaService,
+        brightness: crate::brightness::BrightnessService,
     ) -> Self {
         Self {
             activity: ActivityApi::new(state.clone(), activity),
             battery: BatteryApi::new(state.clone()),
-            effects: DesktopEffects::new(state.clone(), media),
+            effects: DesktopEffects::new(state.clone(), media, brightness),
             notifications: NotificationApi::new(state.clone(), notifications),
             state,
         }
@@ -148,7 +149,14 @@ mod tests {
         let state = StateStore::default();
         let notifications = NotificationService::swaync();
         let activity = ActivityService::new(state.clone(), notifications.sink()).await;
-        ApiService::new(state, activity, notifications, MediaService::default())
+        let brightness = crate::brightness::BrightnessService::new(state.clone());
+        ApiService::new(
+            state,
+            activity,
+            notifications,
+            MediaService::default(),
+            brightness,
+        )
     }
     #[tokio::test]
     async fn returns_versioned_snapshot() {

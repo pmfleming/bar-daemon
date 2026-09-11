@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use super::{error, success};
 use crate::{
-    audio, brightness, hyprland::HyprlandClient, media::MediaService, power, sleep,
-    state::StateStore, updates,
+    audio, brightness::BrightnessService, hyprland::HyprlandClient, media::MediaService, power,
+    sleep, state::StateStore, updates,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Deserialize)]
 struct ProfileRequest {
@@ -101,17 +101,21 @@ pub(super) struct DesktopEffects {
     state: StateStore,
     hyprland: Arc<HyprlandClient>,
     audio: AudioController,
-    brightness: Arc<Mutex<()>>,
+    brightness: BrightnessService,
     media: MediaService,
 }
 
 impl DesktopEffects {
-    pub(super) fn new(state: StateStore, media: MediaService) -> Self {
+    pub(super) fn new(
+        state: StateStore,
+        media: MediaService,
+        brightness: BrightnessService,
+    ) -> Self {
         Self {
             state: state.clone(),
             hyprland: Arc::new(HyprlandClient::default()),
             audio: AudioController::new(state),
-            brightness: Arc::new(Mutex::new(())),
+            brightness,
             media,
         }
     }
@@ -208,26 +212,21 @@ impl DesktopEffects {
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "brightness.adjust");
-        self.apply_brightness(brightness::adjust(request.delta_percent))
+        self.apply_brightness(self.brightness.adjust(request.delta_percent))
             .await
     }
     pub(super) async fn brightness_set(&self, params: Value) -> Value {
         let request = request!(params, PercentRequest, "brightness.set");
-        self.apply_brightness(brightness::set(request.percent))
+        self.apply_brightness(self.brightness.set(request.percent))
             .await
     }
     async fn apply_brightness(
         &self,
         operation: impl std::future::Future<Output = anyhow::Result<crate::model::BrightnessState>>,
     ) -> Value {
-        let _guard = self.brightness.lock().await;
         match operation.await {
-            Ok(state) => {
-                let response = success(json!({"brightness": state}));
-                self.state.update_brightness(state).await;
-                response
-            }
-            Err(value) => error("brightness-operation-failed", value.to_string()),
+            Ok(state) => success(json!({"brightness": state})),
+            Err(value) => error("brightness-operation-failed", format!("{value:#}")),
         }
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {

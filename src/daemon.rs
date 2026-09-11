@@ -37,11 +37,13 @@ pub(crate) async fn run() -> Result<()> {
     };
     let activity = ActivityService::new(state.clone(), notification_service.sink()).await;
     let media = MediaService::default();
+    let brightness = crate::brightness::BrightnessService::new(state.clone());
     let api = ApiService::new(
         state.clone(),
         Arc::clone(&activity),
         Arc::clone(&notification_service),
         media.clone(),
+        brightness.clone(),
     );
     let daemon = BarDaemon::new(api, state.clone());
     let builder = connection::Builder::session()
@@ -72,6 +74,7 @@ pub(crate) async fn run() -> Result<()> {
         notification_service,
         notification_engine,
         media,
+        brightness,
         connection,
     );
 

@@ -52,6 +52,21 @@ D-Bus endpoint:
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
 
+## Brightness control
+
+Observation and adjustment share one service and lock, including readback and state
+publication. Adjustments use requested sysfs brightness (not lagging hardware
+feedback), round to the nearest raw level, and stay between 1% and 100%.
+
+On the default `/sys/class/backlight` root, failed direct writes fall back to
+`brightnessctl`, with a two-second timeout and child termination on cancellation.
+`BAR_DAEMON_BACKLIGHT_ROOT` overrides the root for **both** observation and control;
+any explicit override disables the helper fallback so fixture writes cannot reach
+real hardware. The override is read once at service startup.
+
+Run the isolated regression tests with `cargo test brightness`; they use temporary
+backlight files and fake helpers, never the host backlight.
+
 ## Development
 
 ```sh

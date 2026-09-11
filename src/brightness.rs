@@ -1,15 +1,121 @@
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use notify::{Config, PollWatcher, RecursiveMode, Watcher};
-use tokio::{process::Command, sync::mpsc, time::sleep};
+use tokio::{
+    process::Command,
+    sync::{Mutex, mpsc},
+    time::{sleep, timeout},
+};
 
 use crate::{model::BrightnessState, state::StateStore};
 
 const DEFAULT_BACKLIGHT_ROOT: &str = "/sys/class/backlight";
+const FALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One configuration and transaction boundary for observation and control.
+#[derive(Clone)]
+pub(crate) struct BrightnessService {
+    state: StateStore,
+    root: PathBuf,
+    gate: Arc<Mutex<()>>,
+    fallback: Option<PathBuf>,
+}
+
+impl BrightnessService {
+    pub(crate) fn new(state: StateStore) -> Self {
+        match std::env::var_os("BAR_DAEMON_BACKLIGHT_ROOT") {
+            Some(root) => Self::with_root(state, root.into()),
+            None => Self {
+                fallback: Some("brightnessctl".into()),
+                ..Self::with_root(state, DEFAULT_BACKLIGHT_ROOT.into())
+            },
+        }
+    }
+
+    // An explicit root is isolated: never let a failed fixture write reach the
+    // real machine through brightnessctl (even if device names happen to match).
+    fn with_root(state: StateStore, root: PathBuf) -> Self {
+        Self {
+            state,
+            root,
+            gate: Arc::new(Mutex::new(())),
+            fallback: None,
+        }
+    }
+
+    async fn refresh(&self) {
+        let _guard = self.gate.lock().await;
+        let root = self.root.clone();
+        let result = tokio::task::spawn_blocking(move || discover(&root)).await;
+        let state = match result {
+            Ok(Ok(device)) => device.state(),
+            Ok(Err(error)) => unavailable(error.to_string()),
+            Err(error) => unavailable(error.to_string()),
+        };
+        self.state.update_brightness(state).await;
+    }
+
+    pub(crate) async fn adjust(&self, delta_percent: i16) -> Result<BrightnessState> {
+        let _guard = self.gate.lock().await;
+        let device = discover(&self.root)?;
+        let current = i64::from(percent(device.brightness, device.max_brightness));
+        self.apply(
+            device,
+            (current + i64::from(delta_percent)).clamp(1, 100) as u8,
+        )
+        .await
+    }
+
+    pub(crate) async fn set(&self, percent: u8) -> Result<BrightnessState> {
+        if !(1..=100).contains(&percent) {
+            bail!("brightness percent must be between 1 and 100");
+        }
+        let _guard = self.gate.lock().await;
+        self.apply(discover(&self.root)?, percent).await
+    }
+
+    // Caller holds gate until the readback is committed and broadcast.
+    async fn apply(&self, device: BacklightDevice, percent: u8) -> Result<BrightnessState> {
+        let state = set_for_device(device, percent, self.fallback.as_deref()).await?;
+        self.state.update_brightness(state.clone()).await;
+        Ok(state)
+    }
+
+    pub(crate) async fn monitor(self) {
+        self.refresh().await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut watcher = backlight_watcher(tx);
+        if let Some(watcher) = watcher.as_mut() {
+            watch_device_files(watcher, &self.root);
+        }
+        loop {
+            tokio::select! {
+                value = rx.recv() => {
+                    if value.is_some() {
+                        sleep(Duration::from_millis(50)).await;
+                        while rx.try_recv().is_ok() {}
+                    } else {
+                        sleep(Duration::from_secs(2)).await;
+                    }
+                },
+                _ = sleep(Duration::from_secs(30)) => {}
+            }
+            self.refresh().await;
+        }
+    }
+}
+
+fn unavailable(error: String) -> BrightnessState {
+    BrightnessState {
+        error: Some(error),
+        ..BrightnessState::default()
+    }
+}
 
 #[derive(Debug, Clone)]
 struct BacklightDevice {
@@ -29,33 +135,6 @@ impl BacklightDevice {
             percent: percent(self.brightness, self.max_brightness),
             error: None,
         }
-    }
-}
-
-pub(crate) async fn monitor(store: StateStore) {
-    let root = PathBuf::from(
-        std::env::var_os("BAR_DAEMON_BACKLIGHT_ROOT")
-            .unwrap_or_else(|| DEFAULT_BACKLIGHT_ROOT.into()),
-    );
-    refresh(&store, &root).await;
-    let (tx, mut rx) = mpsc::channel(8);
-    let mut watcher = backlight_watcher(tx);
-    if let Some(watcher) = watcher.as_mut() {
-        watch_device_files(watcher, &root);
-    }
-    loop {
-        tokio::select! {
-            value = rx.recv() => {
-                if value.is_some() {
-                    sleep(Duration::from_millis(50)).await;
-                    while rx.try_recv().is_ok() {}
-                } else {
-                    sleep(Duration::from_secs(2)).await;
-                }
-            },
-            _ = sleep(Duration::from_secs(30)) => {}
-        }
-        refresh(&store, &root).await;
     }
 }
 
@@ -85,74 +164,50 @@ fn watch_device_files(watcher: &mut PollWatcher, root: &Path) {
     }
 }
 
-async fn refresh(store: &StateStore, root: &Path) {
-    let root = root.to_path_buf();
-    match tokio::task::spawn_blocking(move || discover(&root)).await {
-        Ok(Ok(device)) => store.update_brightness(device.state()).await,
-        Ok(Err(error)) => {
-            store
-                .update_brightness(BrightnessState {
-                    error: Some(error.to_string()),
-                    ..BrightnessState::default()
-                })
-                .await
-        }
-        Err(error) => {
-            store
-                .update_brightness(BrightnessState {
-                    error: Some(error.to_string()),
-                    ..BrightnessState::default()
-                })
-                .await
-        }
-    }
-}
-
-pub(crate) async fn adjust(delta_percent: i16) -> Result<BrightnessState> {
-    let device = discover(Path::new(DEFAULT_BACKLIGHT_ROOT))?;
-    let current = i64::from(percent(device.brightness, device.max_brightness));
-    set_for_device(
-        device,
-        (current + i64::from(delta_percent)).clamp(1, 100) as u8,
-    )
-    .await
-}
-
-pub(crate) async fn set(percent: u8) -> Result<BrightnessState> {
-    if !(1..=100).contains(&percent) {
-        bail!("brightness percent must be between 1 and 100");
-    }
-    let device = discover(Path::new(DEFAULT_BACKLIGHT_ROOT))?;
-    set_for_device(device, percent).await
-}
-
-async fn set_for_device(device: BacklightDevice, requested_percent: u8) -> Result<BrightnessState> {
+async fn set_for_device(
+    device: BacklightDevice,
+    requested_percent: u8,
+    fallback: Option<&Path>,
+) -> Result<BrightnessState> {
     let target = raw_brightness(device.max_brightness, requested_percent);
     let direct_result = tokio::fs::write(device.path.join("brightness"), target.to_string()).await;
-    if direct_result.is_err() {
-        let output = Command::new("brightnessctl")
-            .args([
-                "--device",
-                &device.name,
-                "set",
-                &target.to_string(),
-                "--quiet",
-            ])
-            .output()
-            .await
-            .context("start brightnessctl")?;
-        if !output.status.success() {
-            bail!(
-                "brightnessctl failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
+    if let Err(error) = direct_result {
+        let program = fallback.context(format!(
+            "write {}: {error}; brightnessctl fallback disabled for explicit backlight root",
+            device.path.join("brightness").display()
+        ))?;
+        let mut command = Command::new(program);
+        command.args([
+            "--device",
+            &device.name,
+            "set",
+            &target.to_string(),
+            "--quiet",
+        ]);
+        run_fallback(command, FALLBACK_TIMEOUT).await?;
     }
     let root = device
         .path
         .parent()
         .context("backlight device has no parent")?;
     Ok(discover(root)?.state())
+}
+
+async fn run_fallback(mut command: Command, deadline: Duration) -> Result<()> {
+    // Dropping a timed-out/cancelled output future must also stop the helper.
+    command.kill_on_drop(true);
+    let output = timeout(deadline, command.output())
+        .await
+        .context("brightnessctl timed out")?
+        .context("start brightnessctl")?;
+    if !output.status.success() {
+        bail!(
+            "brightnessctl failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 fn discover(root: &Path) -> Result<BacklightDevice> {
@@ -209,37 +264,4 @@ fn raw_brightness(maximum: u64, requested_percent: u8) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-    use tempfile::tempdir;
-
-    use super::discover;
-
-    #[test]
-    fn discovers_highest_resolution_backlight() {
-        let root = tempdir().unwrap();
-        for (name, current, maximum) in [("small", 5, 10), ("panel", 600, 1000)] {
-            let path = root.path().join(name);
-            fs::create_dir(&path).unwrap();
-            fs::write(path.join("actual_brightness"), current.to_string()).unwrap();
-            fs::write(path.join("max_brightness"), maximum.to_string()).unwrap();
-        }
-        let device = discover(root.path()).unwrap();
-        assert_eq!(device.name, "panel");
-        assert_eq!(device.state().percent, 60);
-    }
-
-    #[test]
-    fn prefers_requested_brightness_over_hardware_feedback() {
-        let root = tempdir().unwrap();
-        let path = root.path().join("panel");
-        fs::create_dir(&path).unwrap();
-        fs::write(path.join("brightness"), "600").unwrap();
-        fs::write(path.join("actual_brightness"), "550").unwrap();
-        fs::write(path.join("max_brightness"), "1000").unwrap();
-
-        let state = discover(root.path()).unwrap().state();
-        assert_eq!(state.brightness, 600);
-        assert_eq!(state.percent, 60);
-    }
-}
+mod tests;
