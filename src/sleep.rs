@@ -168,7 +168,7 @@ async fn read_state(
     })
 }
 
-async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
+pub(crate) async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
     zbus::proxy::Builder::new(connection)
         .destination(BUS)?
         .path(MANAGER_PATH)?
@@ -357,6 +357,24 @@ async fn session_proxy<'a>(
         .context("connect to the logind session")
 }
 
+pub(crate) async fn current_session(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
+    let auto = session_proxy(
+        connection,
+        zvariant::OwnedObjectPath::try_from(SESSION_PATH)?,
+    )
+    .await?;
+    let id: String = auto
+        .get_property("Id")
+        .await
+        .context("resolve current session identity")?;
+    let path: zvariant::OwnedObjectPath = manager(connection)
+        .await?
+        .call("GetSession", &(id,))
+        .await
+        .context("resolve concrete logind session")?;
+    session_proxy(connection, path).await
+}
+
 async fn confirmed_locked(
     session: &zbus::Proxy<'_>,
     observer: &mut Option<wayland_lock::LockObserver>,
@@ -377,21 +395,7 @@ async fn lock_session<'a>(
     observer: &mut Option<wayland_lock::LockObserver>,
 ) -> Result<zbus::Proxy<'a>> {
     tokio::time::timeout(deadline, async {
-        let auto = session_proxy(
-            connection,
-            zvariant::OwnedObjectPath::try_from(SESSION_PATH)?,
-        )
-        .await?;
-        let id: String = auto
-            .get_property("Id")
-            .await
-            .context("resolve current session identity")?;
-        let path: zvariant::OwnedObjectPath = manager(connection)
-            .await?
-            .call("GetSession", &(id,))
-            .await
-            .context("resolve concrete logind session")?;
-        let session = session_proxy(connection, path).await?;
+        let session = current_session(connection).await?;
         if require_active {
             ensure_active(&session).await?;
         }

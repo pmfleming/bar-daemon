@@ -133,7 +133,7 @@ pub fn registry() -> Value {
             { "name": "powerSleep.lock", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.suspend", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
-            { "name": "powerSleep.setPolicy", "params": { "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
+            { "name": "powerSleep.setPolicy", "params": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
             { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678" }, "result": "power_sleep" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
@@ -301,7 +301,8 @@ fn generated_contract_fixture() -> Value {
             "sleep_policy": {
                 "available": true, "active_profile": "shared",
                 "hibernate_available": true, "hibernate_error": null, "last_error": null,
-                "policy": { "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } },
+                "lid": { "available": true, "managed": true, "error": null },
+                "policy": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } },
                 "error": null
             },
             "osd_hardware": {

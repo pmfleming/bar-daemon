@@ -208,6 +208,7 @@
       {
         "name": "powerSleep.setPolicy",
         "params": {
+          "lid_action": "profile",
           "battery": {
             "hibernate_minutes": 120,
             "sleep_minutes": 30
@@ -863,7 +864,9 @@
       "hibernate_available": true,
       "hibernate_error": null,
       "last_error": null,
+      "lid": { "available": true, "managed": true, "error": null },
       "policy": {
+        "lid_action": "profile",
         "battery": {
           "hibernate_minutes": 120,
           "sleep_minutes": 30

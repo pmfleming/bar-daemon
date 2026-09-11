@@ -15,10 +15,18 @@ Hypridle remains the owner of idle detection and inhibitor handling. The optiona
 The `sleep_policy` snapshot domain and `sleep-policy.changed` stream expose the persisted policy, active profile (`shared`, `battery`, or `plugged`), integration availability, hibernation availability/reason, and last automatic-action failure. `powerSleep.setPolicy` accepts the complete policy:
 
 ```json
-{"same_profile": false, "battery": {"sleep_minutes": 15, "hibernate_minutes": 60}, "plugged": {"sleep_minutes": 45, "hibernate_minutes": 180}}
+{"lid_action": "profile", "same_profile": false, "battery": {"sleep_minutes": 15, "hibernate_minutes": 60}, "plugged": {"sleep_minutes": 45, "hibernate_minutes": 180}}
 ```
 
 Both fields are whole minutes, 0–10080. Zero means Never. `sleep_minutes` is inactivity before suspend; `hibernate_minutes` is **additional time asleep**, not time since last input. Never sleep disables automatic sleep; Never hibernate uses ordinary suspend. Shared mode uses the battery profile and preserves the plugged profile for later reuse. Initial settings are shared, 30 minutes to sleep, Never hibernate. Policies are atomically persisted under `$XDG_CONFIG_HOME/bar-daemon/sleep.json`. Invalid persisted data fails visibly instead of silently adopting defaults.
+
+### Lid close
+
+`lid_action` accepts `system` (default for existing policies), `ignore`, `lock`, `suspend`, `hibernate`, or `profile`. Profile locks, then uses the current AC/battery profile's additional hibernate delay; zero means ordinary suspend. It works even when inactivity sleep is Never. Manual Suspend is unchanged.
+
+With managed integration enabled, the resident daemon takes logind's **handle-lid-switch** block inhibitor only for a non-System policy in its active, local graphical session. It does not take a sleep-block inhibitor or bypass other applications' sleep inhibitors. Docked/external-display use is ignored. Only a new open→closed transition triggers an action; startup, reconnect, undocking, and session activation with the lid already closed do not. The lid and session are rechecked after lock/setup. Failures are exposed in `sleep_policy.lid.error`; there is no automatic retry.
+
+Selecting System, disabling integration, stopping the daemon, or losing its connection releases the FD and restores the administrator's logind policy. This is a deliberate fallback, not a system-wide logind configuration rewrite. The snapshot's `lid.available` and `lid.managed` distinguish configured policy from current ownership. No sleep cycle is initiated by saving settings.
 
 ### Integration and ownership
 
@@ -47,7 +55,7 @@ bar-daemon debug lock-state
 
 The reviewed host is a **Lenovo ThinkPad P14s Gen 5 AMD (21ME)**. Its kernel exposes `[s2idle]`, not `deep`; `amd_pmc` is loaded and bound to `AMDI0009:00`. Do not force `mem_sleep_default=deep`, write firmware/EC registers, unload drivers, or blanket-disable wake sources. For excessive sleep drain, first check Lenovo BIOS/EC updates and current kernel fixes, then measure AMD PMC/S0ix residency and inspect wake sources during a deliberately scheduled suspend/resume test. None of those hardware state changes or sleep cycles are performed by the diagnostics command.
 
-On this host `/proc/swaps` lists **only `/dev/zram0`** and `/sys/power/resume` is `0:0`. Zram is volatile and cannot hold a hibernation image. Persistent, sufficiently sized disk-backed swap and working boot/initrd resume support are still required; merely enabling a timer cannot supply them. Swapfile setup is filesystem-specific (including Btrfs allocation rules and resume offsets), so no automatic swap allocation or bootloader changes are attempted. Conversely, `resume=0:0` alone does **not** prove hibernation impossible: modern systemd can discover persistent swap and record the target through EFI. Missing/unreadable evidence stays unknown. Kernel lockdown is reported as a possible policy restriction, never automatically disabled.
+The original review found only zram. A later read-only check found an active **64-GiB `/swapfile`**, and logind advertised both hibernate and suspend-then-hibernate as supported. These checks are not proof of successful end-to-end resume. Zram itself is volatile and cannot hold a hibernation image; persistent swap and working boot/initrd resume support remain required. Swapfile setup is filesystem-specific (including Btrfs allocation rules and resume offsets), so no automatic swap allocation or bootloader changes are attempted. Conversely, `resume=0:0` alone does **not** prove hibernation impossible: modern systemd can discover persistent swap and record the target through EFI. Missing/unreadable evidence stays unknown. Kernel lockdown is reported as a possible policy restriction, never automatically disabled.
 
 The per-profile delay continues to use systemd's suspend-then-hibernate and kernel wake timers, not a Lenovo-specific replacement or a daemon timer that stops during suspend. The helper's runtime delay is system-wide and remains subject to administrator drop-in precedence. End-to-end firmware wake/resume and hibernation reliability still need a controlled hardware test after persistent swap/resume is configured. The automated tests use isolated logind and Wayland protocol servers.
 

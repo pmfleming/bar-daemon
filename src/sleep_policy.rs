@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod hypridle;
+pub(crate) mod lid;
 pub(crate) use hypridle::run;
 
 // Serializes saves, power-source changes and idle callbacks.
@@ -42,6 +43,9 @@ impl Default for SleepProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SleepPolicy {
+    /// Older policies retain logind's declarative lid behavior.
+    #[serde(default)]
+    pub lid_action: lid::LidAction,
     pub same_profile: bool,
     pub battery: SleepProfile,
     pub plugged: SleepProfile,
@@ -50,6 +54,7 @@ pub(crate) struct SleepPolicy {
 impl Default for SleepPolicy {
     fn default() -> Self {
         Self {
+            lid_action: lid::LidAction::System,
             same_profile: true,
             battery: SleepProfile::default(),
             plugged: SleepProfile::default(),
@@ -101,6 +106,7 @@ pub(crate) struct SleepPolicyState {
     pub active_profile: String,
     pub hibernate_available: bool,
     pub hibernate_error: Option<String>,
+    pub lid: lid::LidState,
     pub last_error: Option<String>,
     pub error: Option<String>,
 }
@@ -224,7 +230,10 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
     let support = hibernate_support().await;
     if [policy.profile(false), policy.profile(true)]
         .iter()
-        .any(|p| p.sleep_minutes > 0 && p.hibernate_minutes > 0)
+        .any(|p| {
+            (p.sleep_minutes > 0 || policy.lid_action == lid::LidAction::Profile)
+                && p.hibernate_minutes > 0
+        })
     {
         if let Err(error) = &support {
             bail!("{error:#}");
@@ -238,6 +247,7 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         policy,
         hibernate_available: support.is_ok(),
         hibernate_error: support.err().map(|error| format!("{error:#}")),
+        lid: store.snapshot().await.sleep_policy.lid,
         last_error: None,
         error: None,
     };
@@ -318,17 +328,36 @@ async fn perform_idle(
     hypridle::verify_generation(generation).await?;
     let policy = load().await?;
     let profile = policy.idle_profile(plugged().await?, expected_minutes)?;
-    if profile.hibernate_minutes == 0 {
-        return crate::sleep::perform("suspend").await;
-    }
-    crate::sleep::perform_with_setup("suspend-then-hibernate", || async {
-        let connection = zbus::Connection::system().await?;
-        let proxy = helper_proxy(&connection).await?;
-        let _: () = proxy
-            .call("SetHibernateDelay", &(profile.hibernate_minutes,))
-            .await
-            .context("configure systemd's time asleep before hibernation")?;
-        Ok(())
+    perform_profile(profile, || std::future::ready(Ok(()))).await
+}
+
+/// Shared by idle and lid-close. A lid action can use the hibernate delay even
+/// when automatic inactivity sleep is Never. Revalidate the trigger after lock
+/// confirmation and privileged setup, immediately before logind preflight.
+async fn perform_profile<F, Fut>(
+    profile: &SleepProfile,
+    validate_trigger: F,
+) -> Result<crate::model::PowerSleepState>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let action = if profile.hibernate_minutes == 0 {
+        "suspend"
+    } else {
+        "suspend-then-hibernate"
+    };
+    crate::sleep::perform_with_setup(action, || async {
+        validate_trigger().await?;
+        if profile.hibernate_minutes > 0 {
+            let connection = zbus::Connection::system().await?;
+            let proxy = helper_proxy(&connection).await?;
+            let _: () = proxy
+                .call("SetHibernateDelay", &(profile.hibernate_minutes,))
+                .await
+                .context("configure systemd's time asleep before hibernation")?;
+        }
+        validate_trigger().await
     })
     .await
 }
@@ -362,6 +391,7 @@ pub(crate) async fn monitor(store: StateStore) {
         let _guard = POLICY_WRITE.lock().await;
         let mut state = SleepPolicyState {
             last_error: store.snapshot().await.sleep_policy.last_error,
+            lid: store.snapshot().await.sleep_policy.lid,
             ..SleepPolicyState::default()
         };
         let result: Result<()> = async {
@@ -395,6 +425,7 @@ mod tests {
     #[test]
     fn shared_and_separate_profiles_preserve_both_values() {
         let mut policy = SleepPolicy {
+            lid_action: lid::LidAction::System,
             same_profile: false,
             battery: SleepProfile {
                 sleep_minutes: 10,
@@ -429,6 +460,7 @@ mod tests {
     #[test]
     fn stale_idle_callbacks_cannot_sleep_early_after_ac_changes_or_never() {
         let policy = SleepPolicy {
+            lid_action: lid::LidAction::System,
             same_profile: false,
             battery: SleepProfile {
                 sleep_minutes: 10,
