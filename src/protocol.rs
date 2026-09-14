@@ -241,7 +241,12 @@ fn generated_contract_fixture() -> Value {
             },
             "battery": {
                 "available": true, "native_path": "BAT0", "percentage": 80, "state": "discharging",
-                "charging": false, "plugged": false, "power_watts": 8.2, "time_to_empty_seconds": 14400,
+                "charging": false, "plugged": false, "power_watts": 8.2, "power_available": true, "time_to_empty_seconds": 14400,
+                "forecast": crate::battery::derived::forecast(&crate::model::BatteryState {
+                    available: true, percentage: 80,
+                    protection: crate::model::BatteryProtectionState { enabled: true, end_percent: Some(80), ..Default::default() },
+                    ..Default::default()
+                }),
                 "time_to_full_seconds": 0, "health_percent": 85, "cycles": 101, "warning": false,
                 "critical": false,
                 "policy": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "auto_power_saver": true, "notify_warning": true, "notify_critical": true, "warning_profile": "power-saver", "critical_profile": "power-saver", "recovery_margin_percent": 3 },
@@ -278,6 +283,7 @@ fn generated_contract_fixture() -> Value {
                 "history": {
                     "retention_days": 7, "last_charge_timestamp_ms": 1768464000000_u64,
                     "latest_timestamp_ms": 1768464900000_u64, "active_duration_ms": 900000_u64,
+                    "energy": crate::battery::derived::energy(&[]),
                     "points": []
                 },
                 "error": null
@@ -357,7 +363,16 @@ mod tests {
 
     #[test]
     fn checked_contract_fixture_is_current() -> serde_json::Result<()> {
-        assert_eq!(contract_fixture()?, generated_contract_fixture());
+        let actual = generated_contract_fixture();
+        if std::env::var_os("BAR_DAEMON_UPDATE_CONTRACT_FIXTURE").is_some() {
+            std::fs::write(
+                "test_support/bar-api-v1.json",
+                format!("{}\n", serde_json::to_string_pretty(&actual)?),
+            )
+            .expect("write contract fixture");
+            return Ok(());
+        }
+        assert_eq!(contract_fixture()?, actual);
         Ok(())
     }
 }

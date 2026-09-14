@@ -18,6 +18,7 @@ use crate::{
 };
 
 pub(crate) mod config;
+pub(crate) mod derived;
 mod history;
 pub(crate) mod levels;
 mod model;

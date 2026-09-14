@@ -70,8 +70,7 @@ fn read_battery(path: &Path) -> Result<NativeBattery> {
         .or_else(|| ratio_percent(energy_now_uwh, energy_full_uwh))
         .unwrap_or(0);
     let power_uw = read_u64(&path.join("power_now"))
-        .or_else(|| multiply_micro(read_u64(&path.join("current_now"))?, voltage_uv?))
-        .unwrap_or(0);
+        .or_else(|| multiply_micro(read_u64(&path.join("current_now"))?, voltage_uv?));
     let (charge_behaviour, available_behaviours) = read_choices(&path.join("charge_behaviour"));
 
     Ok(NativeBattery {
@@ -88,7 +87,8 @@ fn read_battery(path: &Path) -> Result<NativeBattery> {
             energy_now_uwh,
             energy_full_uwh,
             energy_full_design_uwh,
-            power_uw,
+            power_uw: power_uw.unwrap_or(0),
+            power_available: power_uw.is_some(),
             voltage_uv,
             cycles: read_u64(&path.join("cycle_count")).and_then(|value| value.try_into().ok()),
         },
@@ -137,6 +137,9 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         charging,
         plugged: snapshot.plugged,
         power_watts: power_uw as f64 / 1_000_000.0,
+        power_available: present
+            .iter()
+            .all(|battery| battery.telemetry.power_available),
         time_to_empty_seconds,
         time_to_full_seconds,
         health_percent,
@@ -150,6 +153,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         protection,
         devices,
         history: Default::default(),
+        forecast: Default::default(),
         error: None,
     }
 }

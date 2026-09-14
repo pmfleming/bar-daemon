@@ -22,6 +22,7 @@ pub(super) struct BatteryTelemetry {
     pub energy_full_uwh: Option<u64>,
     pub energy_full_design_uwh: Option<u64>,
     pub power_uw: u64,
+    pub power_available: bool,
     pub voltage_uv: Option<u64>,
     pub cycles: Option<u32>,
 }

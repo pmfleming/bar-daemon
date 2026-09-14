@@ -43,6 +43,7 @@ struct HistoryStore {
     points: VecDeque<BatteryHistoryPoint>,
     active_time_ms: u64,
     last_observation: Option<(u64, Instant)>,
+    energy: OnceLock<super::derived::EnergyHistory>,
 }
 
 impl HistoryStore {
@@ -66,6 +67,7 @@ impl HistoryStore {
             // A process start always begins a new graph segment. This also
             // prevents downtime before startup from entering the timescale.
             last_observation: None,
+            energy: OnceLock::new(),
         };
         store.prune(now_ms);
         store
@@ -111,6 +113,7 @@ impl HistoryStore {
         if observation_continuous && !bucket_changed && !power_transition {
             return false;
         }
+        self.energy.take();
         self.points.push_back(BatteryHistoryPoint {
             timestamp_ms: now_ms,
             active_time_ms: self.active_time_ms,
@@ -118,6 +121,9 @@ impl HistoryStore {
             mode: mode(state.charging, state.plugged).into(),
             percentage: state.percentage,
             power_watts: finite_nonnegative(state.power_watts),
+            power_valid: Some(
+                state.power_available && state.power_watts.is_finite() && state.power_watts >= 0.0,
+            ),
             time_to_full_seconds: (state.charging && state.time_to_full_seconds > 0)
                 .then_some(state.time_to_full_seconds),
             charging: state.charging,
@@ -135,7 +141,7 @@ impl HistoryStore {
         let active_duration_ms = self.points.back().map_or(0, |point| {
             point.active_time_ms.saturating_sub(first_active_time_ms)
         });
-        let points = if include_points {
+        let points: Vec<_> = if include_points {
             self.points
                 .iter()
                 .cloned()
@@ -157,6 +163,13 @@ impl HistoryStore {
             last_charge_timestamp_ms: self.last_charge_timestamp_ms,
             latest_timestamp_ms: self.points.back().map_or(0, |point| point.timestamp_ms),
             active_duration_ms,
+            energy: if include_points {
+                self.energy
+                    .get_or_init(|| super::derived::energy(&points))
+                    .clone()
+            } else {
+                Default::default()
+            },
             points,
         }
     }
@@ -169,6 +182,7 @@ impl HistoryStore {
             .is_some_and(|point| point.timestamp_ms < cutoff)
         {
             self.points.pop_front();
+            self.energy.take();
         }
     }
 
@@ -202,6 +216,7 @@ pub(super) fn attach_summary(mut state: BatteryState) -> BatteryState {
         tracing::warn!(%error, "battery history could not be saved");
     }
     state.history = history.state(false);
+    state.forecast = super::derived::forecast(&state);
     state
 }
 

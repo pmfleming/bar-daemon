@@ -208,11 +208,11 @@
       {
         "name": "powerSleep.setPolicy",
         "params": {
-          "lid_action": "profile",
           "battery": {
             "hibernate_minutes": 120,
             "sleep_minutes": 30
           },
+          "lid_action": "profile",
           "plugged": {
             "hibernate_minutes": 180,
             "sleep_minutes": 60
@@ -454,130 +454,130 @@
         }
       ],
       "syncing": false,
+      "weather": {
+        "apparent_temperature_c": 16.0,
+        "available": true,
+        "condition": "Clear",
+        "condition_code": 0,
+        "daily": [
+          {
+            "condition": "Clear",
+            "condition_code": 0,
+            "date_unix_ms": 1766361600000,
+            "high_c": 21.0,
+            "low_c": 13.0,
+            "precipitation_probability": 5,
+            "sunrise_unix_ms": 1766385120000,
+            "sunset_unix_ms": 1766436420000
+          }
+        ],
+        "error": null,
+        "high_c": 21.0,
+        "home": true,
+        "hourly": [
+          {
+            "condition": "Clear",
+            "condition_code": 0,
+            "is_day": true,
+            "precipitation_mm": 0.0,
+            "precipitation_probability": 5,
+            "temperature_c": 17.0,
+            "time_unix_ms": 1766448000000,
+            "wind_direction_degrees": 315,
+            "wind_speed_kmh": 12.0
+          }
+        ],
+        "humidity_percent": 73,
+        "id": "home",
+        "is_day": true,
+        "latitude": 52.3676,
+        "location": "Amsterdam",
+        "longitude": 4.9041,
+        "low_c": 13.0,
+        "precipitation_mm": 0.0,
+        "precipitation_probability": 5,
+        "sunrise_unix_ms": 1766385120000,
+        "sunset_unix_ms": 1766436420000,
+        "temperature_c": 17.0,
+        "timezone": "Europe/Amsterdam",
+        "timezone_region_ids": [
+          "Africa-Johannesburg",
+          "Europe-Paris"
+        ],
+        "updated_unix_ms": 1766446800000,
+        "utc_offset_seconds": 7200,
+        "wind_direction_degrees": 315,
+        "wind_gust_kmh": 18.0,
+        "wind_speed_kmh": 12.0
+      },
+      "weather_locations": [
+        {
+          "apparent_temperature_c": 16.0,
+          "available": true,
+          "condition": "Clear",
+          "condition_code": 0,
+          "daily": [
+            {
+              "condition": "Clear",
+              "condition_code": 0,
+              "date_unix_ms": 1766361600000,
+              "high_c": 21.0,
+              "low_c": 13.0,
+              "precipitation_probability": 5,
+              "sunrise_unix_ms": 1766385120000,
+              "sunset_unix_ms": 1766436420000
+            }
+          ],
+          "error": null,
+          "high_c": 21.0,
+          "home": true,
+          "hourly": [
+            {
+              "condition": "Clear",
+              "condition_code": 0,
+              "is_day": true,
+              "precipitation_mm": 0.0,
+              "precipitation_probability": 5,
+              "temperature_c": 17.0,
+              "time_unix_ms": 1766448000000,
+              "wind_direction_degrees": 315,
+              "wind_speed_kmh": 12.0
+            }
+          ],
+          "humidity_percent": 73,
+          "id": "home",
+          "is_day": true,
+          "latitude": 52.3676,
+          "location": "Amsterdam",
+          "longitude": 4.9041,
+          "low_c": 13.0,
+          "precipitation_mm": 0.0,
+          "precipitation_probability": 5,
+          "sunrise_unix_ms": 1766385120000,
+          "sunset_unix_ms": 1766436420000,
+          "temperature_c": 17.0,
+          "timezone": "Europe/Amsterdam",
+          "timezone_region_ids": [
+            "Africa-Johannesburg",
+            "Europe-Paris"
+          ],
+          "updated_unix_ms": 1766446800000,
+          "utc_offset_seconds": 7200,
+          "wind_direction_degrees": 315,
+          "wind_gust_kmh": 18.0,
+          "wind_speed_kmh": 12.0
+        }
+      ],
       "world_clocks": [
         {
           "abbreviation": "JST",
           "city": "Tokyo",
           "label": "Tokyo",
           "timezone": "Asia/Tokyo",
-          "utc_offset_seconds": 32400,
           "timezone_region_ids": [
             "Asia-Tokyo"
-          ]
-        }
-      ],
-      "weather": {
-        "available": true,
-        "location": "Amsterdam",
-        "timezone": "Europe/Amsterdam",
-        "latitude": 52.3676,
-        "longitude": 4.9041,
-        "condition": "Clear",
-        "temperature_c": 17.0,
-        "apparent_temperature_c": 16.0,
-        "high_c": 21.0,
-        "low_c": 13.0,
-        "precipitation_probability": 5,
-        "wind_speed_kmh": 12.0,
-        "humidity_percent": 73,
-        "sunrise_unix_ms": 1766385120000,
-        "sunset_unix_ms": 1766436420000,
-        "updated_unix_ms": 1766446800000,
-        "hourly": [
-          {
-            "time_unix_ms": 1766448000000,
-            "temperature_c": 17.0,
-            "precipitation_probability": 5,
-            "condition": "Clear",
-            "wind_speed_kmh": 12.0,
-            "condition_code": 0,
-            "is_day": true,
-            "precipitation_mm": 0.0,
-            "wind_direction_degrees": 315
-          }
-        ],
-        "daily": [
-          {
-            "date_unix_ms": 1766361600000,
-            "high_c": 21.0,
-            "low_c": 13.0,
-            "precipitation_probability": 5,
-            "condition": "Clear",
-            "sunrise_unix_ms": 1766385120000,
-            "sunset_unix_ms": 1766436420000,
-            "condition_code": 0
-          }
-        ],
-        "error": null,
-        "id": "home",
-        "home": true,
-        "utc_offset_seconds": 7200,
-        "timezone_region_ids": [
-          "Africa-Johannesburg",
-          "Europe-Paris"
-        ],
-        "condition_code": 0,
-        "is_day": true,
-        "precipitation_mm": 0.0,
-        "wind_direction_degrees": 315,
-        "wind_gust_kmh": 18.0
-      },
-      "weather_locations": [
-        {
-          "available": true,
-          "location": "Amsterdam",
-          "timezone": "Europe/Amsterdam",
-          "latitude": 52.3676,
-          "longitude": 4.9041,
-          "condition": "Clear",
-          "temperature_c": 17.0,
-          "apparent_temperature_c": 16.0,
-          "high_c": 21.0,
-          "low_c": 13.0,
-          "precipitation_probability": 5,
-          "wind_speed_kmh": 12.0,
-          "humidity_percent": 73,
-          "sunrise_unix_ms": 1766385120000,
-          "sunset_unix_ms": 1766436420000,
-          "updated_unix_ms": 1766446800000,
-          "hourly": [
-            {
-              "time_unix_ms": 1766448000000,
-              "temperature_c": 17.0,
-              "precipitation_probability": 5,
-              "condition": "Clear",
-              "wind_speed_kmh": 12.0,
-              "condition_code": 0,
-              "is_day": true,
-              "precipitation_mm": 0.0,
-              "wind_direction_degrees": 315
-            }
           ],
-          "daily": [
-            {
-              "date_unix_ms": 1766361600000,
-              "high_c": 21.0,
-              "low_c": 13.0,
-              "precipitation_probability": 5,
-              "condition": "Clear",
-              "sunrise_unix_ms": 1766385120000,
-              "sunset_unix_ms": 1766436420000,
-              "condition_code": 0
-            }
-          ],
-          "error": null,
-          "id": "home",
-          "home": true,
-          "utc_offset_seconds": 7200,
-          "timezone_region_ids": [
-            "Africa-Johannesburg",
-            "Europe-Paris"
-          ],
-          "condition_code": 0,
-          "is_day": true,
-          "precipitation_mm": 0.0,
-          "wind_direction_degrees": 315,
-          "wind_gust_kmh": 18.0
+          "utc_offset_seconds": 32400
         }
       ]
     },
@@ -640,9 +640,27 @@
         }
       ],
       "error": null,
+      "forecast": {
+        "approximate": false,
+        "estimating": false,
+        "limit": 80,
+        "percentage": 80,
+        "scope": "aggregate",
+        "seconds": 0.0,
+        "status": "limit-reached",
+        "target": 80
+      },
       "health_percent": 85,
       "history": {
         "active_duration_ms": 900000,
+        "energy": {
+          "activeDurationMs": 0,
+          "bars": [],
+          "intervalMs": 900000,
+          "maximum": 0.0,
+          "observedMs": 0,
+          "totalWh": -0.0
+        },
         "last_charge_timestamp_ms": 1768464000000,
         "latest_timestamp_ms": 1768464900000,
         "points": [],
@@ -669,6 +687,7 @@
         "warning_percent": 25,
         "warning_profile": "power-saver"
       },
+      "power_available": true,
       "power_watts": 8.2,
       "protection": {
         "available_behaviours": [
@@ -865,13 +884,17 @@
       "hibernate_available": true,
       "hibernate_error": null,
       "last_error": null,
-      "lid": { "available": true, "managed": true, "error": null },
+      "lid": {
+        "available": true,
+        "error": null,
+        "managed": true
+      },
       "policy": {
-        "lid_action": "profile",
         "battery": {
           "hibernate_minutes": 120,
           "sleep_minutes": 30
         },
+        "lid_action": "profile",
         "plugged": {
           "hibernate_minutes": 180,
           "sleep_minutes": 60

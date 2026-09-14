@@ -161,6 +161,8 @@ pub(crate) struct BatteryState {
     pub charging: bool,
     pub plugged: bool,
     pub power_watts: f64,
+    #[serde(default)]
+    pub power_available: bool,
     pub time_to_empty_seconds: u64,
     pub time_to_full_seconds: u64,
     pub health_percent: Option<u8>,
@@ -172,6 +174,8 @@ pub(crate) struct BatteryState {
     pub protection: BatteryProtectionState,
     pub devices: Vec<BatteryDeviceState>,
     pub history: BatteryHistoryState,
+    #[serde(default)]
+    pub forecast: crate::battery::derived::ChargeForecast,
     pub error: Option<String>,
 }
 
@@ -184,6 +188,8 @@ pub(crate) struct BatteryHistoryState {
     /// observing the laptop have been removed.
     pub active_duration_ms: u64,
     pub points: Vec<BatteryHistoryPoint>,
+    #[serde(default)]
+    pub energy: crate::battery::derived::EnergyHistory,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -200,6 +206,7 @@ pub(crate) struct BatteryHistoryPoint {
     pub mode: String,
     pub percentage: u8,
     pub power_watts: f64,
+    pub power_valid: Option<bool>,
     pub time_to_full_seconds: Option<u64>,
     pub charging: bool,
     pub plugged: bool,

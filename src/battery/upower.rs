@@ -41,6 +41,11 @@ pub(super) async fn read_state(
         .await
         .ok()
         .map(|value| value.round().clamp(0.0, 100.0) as u8);
+    let power = device
+        .get_property::<f64>("EnergyRate")
+        .await
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0);
     Ok(BatteryState {
         available: present && device_type == 2,
         native_path: native_path.clone(),
@@ -48,10 +53,8 @@ pub(super) async fn read_state(
         state: state_name(state_code).into(),
         charging: matches!(state_code, 1 | 5),
         plugged: !on_battery,
-        power_watts: device
-            .get_property::<f64>("EnergyRate")
-            .await
-            .unwrap_or(0.0),
+        power_watts: power.unwrap_or(0.0),
+        power_available: power.is_some(),
         time_to_empty_seconds: device.get_property("TimeToEmpty").await.unwrap_or(0),
         time_to_full_seconds: device.get_property("TimeToFull").await.unwrap_or(0),
         health_percent: health,
@@ -63,6 +66,7 @@ pub(super) async fn read_state(
         protection: Default::default(),
         devices: Vec::new(),
         history: Default::default(),
+        forecast: Default::default(),
         error: None,
     })
 }

@@ -124,7 +124,9 @@ impl DesktopEffects {
         match sleep::perform(action).await {
             Ok(state) => {
                 self.state.update_power_sleep(state).await;
-                success(json!({"power_sleep": self.state.snapshot().await.power_sleep, "operation": action}))
+                success(
+                    json!({"power_sleep": self.state.snapshot().await.power_sleep, "operation": action}),
+                )
             }
             Err(value) => error("power-sleep-operation-failed", format!("{value:#}")),
         }
