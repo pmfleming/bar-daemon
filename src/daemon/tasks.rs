@@ -35,6 +35,7 @@ impl MonitorTasks {
         let mut tasks = vec![
             tokio::spawn(activity.monitor()),
             tokio::spawn(hyprland::monitor(state.clone())),
+            tokio::spawn(crate::work_area::monitor(state.clone())),
             tokio::spawn(media::monitor(state.clone(), media)),
             tokio::spawn(audio::monitor(state.clone())),
             tokio::spawn(brightness.monitor()),

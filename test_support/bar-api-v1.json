@@ -329,6 +329,14 @@
           "changed",
           "lagged"
         ],
+        "name": "workarea.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
         "name": "media.changed"
       },
       {
@@ -930,6 +938,12 @@
       ],
       "ready": true,
       "state_directory": "/var/lib/nixos-delayed-updates-v2"
+    },
+    "workarea": {
+      "available": false,
+      "error": null,
+      "monitors": {},
+      "revision": 0
     },
     "workspaces": {
       "active_window": {

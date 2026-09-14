@@ -204,8 +204,14 @@ async fn monitor_events(client: &HyprlandClient, store: &StateStore, stream: Uni
     refresh(client, store).await;
     loop {
         match lines.next_line().await {
-            Ok(Some(event)) if refresh_event(&event) => refresh(client, store).await,
-            Ok(Some(_)) => {}
+            Ok(Some(event)) => {
+                if shelllist_hyprland::work_area::geometry_event(&event) {
+                    store.work_area_changed.notify_one();
+                }
+                if refresh_event(&event) {
+                    refresh(client, store).await;
+                }
+            }
             Ok(None) => return,
             Err(error) => {
                 tracing::warn!(%error, "Hyprland event stream failed");

@@ -20,6 +20,8 @@ pub(crate) struct DomainEvent {
 pub(crate) struct StateStore {
     snapshot: Arc<RwLock<BarSnapshot>>,
     events: broadcast::Sender<DomainEvent>,
+    work_area_demand: tokio::sync::watch::Sender<usize>,
+    pub(crate) work_area_changed: Arc<tokio::sync::Notify>,
 }
 
 impl Default for StateStore {
@@ -28,6 +30,8 @@ impl Default for StateStore {
         Self {
             snapshot: Arc::new(RwLock::new(BarSnapshot::default())),
             events,
+            work_area_demand: tokio::sync::watch::channel(0).0,
+            work_area_changed: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -73,6 +77,27 @@ impl StateStore {
         update_brightness(BrightnessState) => brightness, crate::protocol::stream::BRIGHTNESS;
         update_audio(AudioState) => audio, crate::protocol::stream::AUDIO;
         update_media(MediaState) => media, crate::protocol::stream::MEDIA;
+    }
+
+    pub(crate) fn work_area_interest(&self) -> crate::work_area::Interest {
+        crate::work_area::Interest::new(self.work_area_demand.clone())
+    }
+    pub(crate) fn work_area_demand(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.work_area_demand.subscribe()
+    }
+    pub(crate) async fn update_work_area(&self, mut value: crate::work_area::WorkAreaState) {
+        let mut snapshot = self.snapshot.write().await;
+        value.revision = snapshot.workarea.revision;
+        if value == snapshot.workarea {
+            return;
+        }
+        value.revision = value.revision.saturating_add(1);
+        let data = to_value(&value).unwrap_or(Value::Null);
+        snapshot.workarea = value;
+        let _ = self.events.send(DomainEvent {
+            stream: crate::protocol::stream::WORKAREA.into(),
+            data,
+        });
     }
 
     pub(crate) async fn update_power_sleep(&self, value: PowerSleepState) {

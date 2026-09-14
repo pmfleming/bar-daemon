@@ -11,6 +11,7 @@ pub mod stream {
     pub const ACTIVITY: &str = "activity.changed";
     /// Workspace state changed.
     pub const WORKSPACES: &str = "workspaces.changed";
+    pub const WORKAREA: &str = "workarea.changed";
     /// Media player state changed.
     pub const MEDIA: &str = "media.changed";
     /// Audio state changed.
@@ -85,6 +86,7 @@ pub const METHODS: &[&str] = &[
 pub const STREAMS: &[&str] = &[
     stream::ACTIVITY,
     stream::WORKSPACES,
+    stream::WORKAREA,
     stream::MEDIA,
     stream::AUDIO,
     stream::BRIGHTNESS,
@@ -150,6 +152,7 @@ pub fn registry() -> Value {
         "streams": [
             { "name": stream::ACTIVITY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::WORKAREA, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
@@ -206,6 +209,7 @@ fn generated_contract_fixture() -> Value {
                 "weather_locations": [weather],
                 "error": null
             },
+            "workarea": { "available": false, "revision": 0, "monitors": {}, "error": null },
             "workspaces": {
                 "available": true,
                 "focused_monitor": "eDP-1",

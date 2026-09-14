@@ -8,6 +8,8 @@ pub(crate) use crate::activity::model::ActivityState;
 pub(crate) struct BarSnapshot {
     pub activity: ActivityState,
     pub workspaces: WorkspaceState,
+    #[serde(default)]
+    pub workarea: crate::work_area::WorkAreaState,
     pub media: MediaState,
     pub audio: AudioState,
     pub brightness: BrightnessState,

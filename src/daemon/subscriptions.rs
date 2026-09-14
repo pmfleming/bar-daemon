@@ -139,6 +139,10 @@ async fn forward_events(
     subscription_id: String,
     streams: Vec<String>,
 ) {
+    let _work_area_interest = streams
+        .iter()
+        .any(|stream| stream == protocol::stream::WORKAREA)
+        .then(|| state.work_area_interest());
     let (snapshot, mut events) = state.snapshot_and_subscribe().await;
     for stream in &streams {
         let data = initial_stream_data(stream, &snapshot);
@@ -182,6 +186,9 @@ fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
     match stream {
         protocol::stream::ACTIVITY => {
             serde_json::to_value(&snapshot.activity).unwrap_or(Value::Null)
+        }
+        protocol::stream::WORKAREA => {
+            serde_json::to_value(&snapshot.workarea).unwrap_or(Value::Null)
         }
         protocol::stream::WORKSPACES => {
             serde_json::to_value(&snapshot.workspaces).unwrap_or(Value::Null)

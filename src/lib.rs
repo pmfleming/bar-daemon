@@ -27,6 +27,7 @@ mod time;
 mod timezone;
 mod timezone_regions;
 mod updates;
+mod work_area;
 
 /// Runs the session D-Bus daemon until it receives a termination signal.
 pub async fn run_daemon() -> anyhow::Result<()> {
