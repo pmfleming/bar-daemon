@@ -42,11 +42,10 @@ pub(super) fn render(
         if let Some(lines) = listener.as_mut() {
             lines.push(line);
             if code == "}" {
-                let lines = listener.take().expect("listener is open");
-                if !is_sleep_listener(&lines)? {
-                    result.push_str(&lines.join("\n"));
-                    result.push('\n');
+                if !is_sleep_listener(lines)? {
+                    result.extend(lines.iter().flat_map(|line| [*line, "\n"]));
                 }
+                listener = None;
             } else if code.contains(['{', '}']) {
                 bail!("nested or inline hypridle listeners are not supported");
             }
@@ -271,6 +270,9 @@ mod tests {
         for base in [
             "source = more.conf",
             "listener { timeout=30 }",
+            "listener {\nlistener {\n}\n}",
+            "listener {\nsource = more.conf\n}",
+            "listener {\non-timeout = { nested }\n}",
             "listener {\n timeout=30\n on-timeout=lock && systemctl suspend\n}",
             "listener {\n timeout=30\n on-timeout=systemctl suspend\n on-resume=echo resumed\n}",
             "listener {\n timeout=30\n",
