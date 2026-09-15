@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::task::JoinHandle;
+use shelllist_daemon_tokio::TaskGroup;
 
 use crate::{
     activity::{
@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub(super) struct MonitorTasks {
-    tasks: Vec<JoinHandle<()>>,
+    tasks: TaskGroup,
 }
 
 impl MonitorTasks {
@@ -32,36 +32,37 @@ impl MonitorTasks {
         brightness: BrightnessService,
         connection: zbus::Connection,
     ) -> Self {
-        let mut tasks = vec![
-            tokio::spawn(activity.monitor()),
-            tokio::spawn(hyprland::monitor(state.clone())),
-            tokio::spawn(crate::work_area::monitor(state.clone())),
-            tokio::spawn(media::monitor(state.clone(), media)),
-            tokio::spawn(audio::monitor(state.clone())),
-            tokio::spawn(brightness.monitor()),
-            tokio::spawn(osd_hardware::monitor(state.clone())),
-            tokio::spawn(battery::monitor(state.clone(), notifications.sink())),
-            tokio::spawn(power::monitor(state.clone())),
-            tokio::spawn(sleep::monitor(state.clone())),
-            tokio::spawn(crate::sleep_policy::monitor(state.clone())),
-            tokio::spawn(crate::sleep_policy::lid::monitor(state.clone())),
-            tokio::spawn(updates::monitor(state.clone())),
-            tokio::spawn(timezone::monitor(state.clone())),
-        ];
+        let tasks = TaskGroup::default();
+        tasks.spawn("activity", activity.monitor());
+        tasks.spawn("hyprland", hyprland::monitor(state.clone()));
+        tasks.spawn("work-area", crate::work_area::monitor(state.clone()));
+        tasks.spawn("media", media::monitor(state.clone(), media));
+        tasks.spawn("audio", audio::monitor(state.clone()));
+        tasks.spawn("brightness", brightness.monitor());
+        tasks.spawn("osd-hardware", osd_hardware::monitor(state.clone()));
+        tasks.spawn(
+            "battery",
+            battery::monitor(state.clone(), notifications.sink()),
+        );
+        tasks.spawn("power", power::monitor(state.clone()));
+        tasks.spawn("sleep", sleep::monitor(state.clone()));
+        tasks.spawn("sleep-policy", crate::sleep_policy::monitor(state.clone()));
+        tasks.spawn("lid", crate::sleep_policy::lid::monitor(state.clone()));
+        tasks.spawn("updates", updates::monitor(state.clone()));
+        tasks.spawn("timezone", timezone::monitor(state.clone()));
         if let Some(engine) = notification_engine {
-            tasks.push(tokio::spawn(Arc::clone(&engine).run_expiry()));
-            tasks.push(tokio::spawn(forward_signals(engine, connection)));
+            tasks.spawn("notification-expiry", Arc::clone(&engine).run_expiry());
+            tasks.spawn("notification-signals", forward_signals(engine, connection));
         } else {
-            tasks.push(tokio::spawn(crate::activity::notifications::monitor(state)));
+            tasks.spawn(
+                "notifications",
+                crate::activity::notifications::monitor(state),
+            );
         }
         Self { tasks }
     }
-}
 
-impl Drop for MonitorTasks {
-    fn drop(&mut self) {
-        for task in &self.tasks {
-            task.abort();
-        }
+    pub(super) async fn shutdown(&self) {
+        self.tasks.shutdown().await;
     }
 }

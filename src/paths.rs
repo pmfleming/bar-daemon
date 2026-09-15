@@ -1,13 +1,8 @@
-use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
-use shelllist_daemon_core::{XdgRoot, resolve_xdg_path};
+use shelllist_daemon_core::{AtomicFilePolicy, XdgRoot, resolve_xdg_path};
 
 pub(crate) fn data_file(root: XdgRoot, name: &str) -> PathBuf {
     resolve_xdg_path(root, "bar-daemon", Path::new(name))
@@ -26,99 +21,25 @@ where
     }
 }
 
-pub(crate) async fn save_json_atomic<T>(path: &Path, value: &T) -> Result<()>
-where
-    T: Serialize + ?Sized,
-{
-    let contents = serde_json::to_vec_pretty(value)?;
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || save_bytes_durable(&path, &contents))
-        .await
-        .context("join durable JSON write")?
+pub(crate) async fn save_json_atomic<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
+    shelllist_daemon_tokio::write_bytes_atomic_async(
+        path.to_owned(),
+        serde_json::to_vec_pretty(value)?,
+        AtomicFilePolicy::DURABLE,
+    )
+    .await
 }
 
-fn parent_directory(path: &Path) -> Result<&Path> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("data path {} has no parent", path.display()))?;
-    Ok(if parent.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        parent
-    })
-}
-
-fn sync_directory(path: &Path) -> Result<()> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("sync directory {}", path.display()))
-}
-
-fn create_directory_durable(path: &Path) -> Result<()> {
-    let missing = path
-        .ancestors()
-        .take_while(|path| !path.as_os_str().is_empty() && !path.exists())
-        .collect::<Vec<_>>();
-    fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
-    // On the first save, the state directory itself may also be new. Persist
-    // its ancestors' directory entries, not just the final JSON rename.
-    for directory in missing.into_iter().rev() {
-        sync_directory(directory)?;
-        sync_directory(parent_directory(directory)?)?;
-    }
-    Ok(())
-}
-
-struct TemporaryFile(PathBuf);
-
-impl Drop for TemporaryFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
-fn temporary_file(path: &Path) -> Result<(File, TemporaryFile)> {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let name = path.file_name().context("data path has no file name")?;
-    loop {
-        let mut temporary_name = name.to_os_string();
-        temporary_name.push(format!(
-            ".{}-{}.tmp",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let temporary = path.with_file_name(temporary_name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
-            Ok(file) => return Ok((file, TemporaryFile(temporary))),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("create {}", temporary.display()));
-            }
-        }
-    }
-}
-
+/// This successful return remains the durability barrier before hardware changes.
 pub(crate) fn save_bytes_durable(path: &Path, contents: &[u8]) -> Result<()> {
-    let parent = parent_directory(path)?;
-    create_directory_durable(parent)?;
-    let (mut file, temporary) = temporary_file(path)?;
-    file.write_all(contents)
-        .with_context(|| format!("write {}", temporary.0.display()))?;
-    file.sync_all()
-        .with_context(|| format!("sync {}", temporary.0.display()))?;
-    fs::rename(&temporary.0, path).with_context(|| format!("replace {}", path.display()))?;
-    // A successful return is the durability barrier before battery hardware
-    // changes. Atomic rename alone does not survive power loss reliably.
-    sync_directory(parent)
+    shelllist_daemon_core::write_bytes_atomic(path, contents, AtomicFilePolicy::DURABLE)
+        .with_context(|| format!("persist {}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[tokio::test]
     async fn durable_json_save_creates_parents_and_replaces_existing_data() {
@@ -144,9 +65,5 @@ mod tests {
         assert!(save_bytes_durable(&target, b"replacement").is_err());
         assert_eq!(fs::read_to_string(target.join("sentinel")).unwrap(), "keep");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
-        assert_eq!(
-            parent_directory(Path::new("relative.json")).unwrap(),
-            Path::new(".")
-        );
     }
 }

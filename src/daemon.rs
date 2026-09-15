@@ -46,6 +46,7 @@ pub(crate) async fn run() -> Result<()> {
         brightness.clone(),
     );
     let daemon = BarDaemon::new(api, state.clone());
+    let subscriptions = Arc::clone(&daemon.subscriptions);
     let builder = connection::Builder::session()
         .context("connect to session D-Bus")?
         .name(BUS_NAME)
@@ -68,7 +69,7 @@ pub(crate) async fn run() -> Result<()> {
         .build()
         .await
         .context("start bar-daemon D-Bus service")?;
-    let _tasks = MonitorTasks::spawn(
+    let tasks = MonitorTasks::spawn(
         state,
         activity,
         notification_service,
@@ -83,5 +84,8 @@ pub(crate) async fn run() -> Result<()> {
         object_path = OBJECT_PATH,
         "bar-daemon started"
     );
-    shelllist_daemon_tokio::wait_for_shutdown().await
+    let result = shelllist_daemon_tokio::wait_for_shutdown().await;
+    subscriptions.shutdown().await;
+    tasks.shutdown().await;
+    result
 }

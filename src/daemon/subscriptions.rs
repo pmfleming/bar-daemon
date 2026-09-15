@@ -1,17 +1,7 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
-use shelllist_daemon_tokio::{directed_emitter, wait_for_owner_name_loss};
-use tokio::{
-    sync::{Mutex, oneshot},
-    task::JoinHandle,
-};
+use shelllist_daemon_tokio::{OwnedTaskRegistry, directed_emitter};
 use zbus::{message::Header, object_server::SignalEmitter};
 
 use crate::{
@@ -21,18 +11,10 @@ use crate::{
     state::StateStore,
 };
 
-struct Subscription {
-    owner: Option<String>,
-    task: JoinHandle<()>,
-}
-
-type Subscriptions = Arc<Mutex<HashMap<String, Subscription>>>;
-
 pub(super) struct BarDaemon {
     api: ApiService,
     state: StateStore,
-    sequence: AtomicU64,
-    subscriptions: Subscriptions,
+    pub(super) subscriptions: Arc<OwnedTaskRegistry>,
 }
 
 impl BarDaemon {
@@ -40,8 +22,7 @@ impl BarDaemon {
         Self {
             api,
             state,
-            sequence: AtomicU64::new(1),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            subscriptions: Arc::new(OwnedTaskRegistry::default()),
         }
     }
 }
@@ -75,49 +56,29 @@ impl BarDaemon {
             )
             .to_string();
         }
-        let id = format!(
-            "subscription-{}",
-            self.sequence.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = self.subscriptions.next_id("subscription");
         let owner = header.sender().map(ToString::to_string);
         let connection = emitter.connection().clone();
         let directed = directed_emitter(&emitter, &header);
         let state = self.state.clone();
-        let (start_sender, start_receiver) = oneshot::channel();
-        let task_id = id.clone();
-        let task_owner = owner.clone();
-        let subscriptions = Arc::clone(&self.subscriptions);
-        let task = tokio::spawn(async move {
-            if start_receiver.await.is_err() {
-                return;
-            }
-            let events = forward_events(state, directed, task_id.clone(), streams);
-            if let Some(owner) = task_owner {
-                tokio::select! {
-                    _ = events => {}
-                    _ = wait_for_owner_name_loss(&connection, &owner) => {}
-                }
-            } else {
-                events.await;
-            }
-            subscriptions.lock().await.remove(&task_id);
-        });
-        self.subscriptions
-            .lock()
-            .await
-            .insert(id.clone(), Subscription { owner, task });
-        let _ = start_sender.send(());
+        if let Err(error) = self.subscriptions.spawn_for_owner(
+            id.clone(),
+            owner,
+            &connection,
+            forward_events(state, directed, id.clone(), streams),
+        ) {
+            return api::error("subscription-unavailable", error.to_string()).to_string();
+        }
         api::success(json!({ "subscription": { "id": id } })).to_string()
     }
 
     async fn cancel(&self, request_id: &str, #[zbus(header)] header: Header<'_>) -> String {
         let owner = header.sender().map(ToString::to_string);
-        let mut subscriptions = self.subscriptions.lock().await;
-        let owned = subscriptions
-            .get(request_id)
-            .is_some_and(|subscription| subscription.owner == owner);
-        if owned && let Some(subscription) = subscriptions.remove(request_id) {
-            subscription.task.abort();
+        if self
+            .subscriptions
+            .cancel_owned(request_id, owner.as_deref())
+            .await
+        {
             return api::success(json!({ "cancelled": request_id, "kind": "subscription" }))
                 .to_string();
         }
@@ -232,14 +193,17 @@ async fn emit_event(
     subscription_id: &str,
     data: Value,
 ) {
-    let value = shelllist_daemon_core::event_envelope(
+    let result = shelllist_daemon_tokio::emit_json_event(
+        emitter,
+        api::INTERFACE,
         shelllist_daemon_core::ApiIdentity::new(protocol::NAME, protocol::VERSION as u32),
         stream,
         event,
         shelllist_daemon_core::Correlation::Subscription(subscription_id),
         json!({ "data": data }),
-    );
-    if let Err(error) = BarDaemon::event(emitter, stream, &value.to_string()).await {
+    )
+    .await;
+    if let Err(error) = result {
         tracing::warn!(%stream, %error, "bar-api event could not be emitted");
     }
 }
