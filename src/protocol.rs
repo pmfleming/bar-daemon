@@ -173,8 +173,8 @@ pub fn registry() -> Value {
 fn generated_contract_fixture() -> Value {
     let weather = json!({
         "available": true, "id": "home", "location": "Amsterdam", "home": true,
-        "timezone": "Europe/Amsterdam", "utc_offset_seconds": 7200,
-        "timezone_region_ids": ["Africa-Johannesburg", "Europe-Paris"],
+        "timezone": "Europe/Amsterdam", "utc_offset_seconds": 3600,
+        "timezone_region_ids": ["Europe-Paris"],
         "latitude": 52.3676, "longitude": 4.9041,
         "condition": "Clear", "condition_code": 0, "is_day": true,
         "temperature_c": 17.0, "apparent_temperature_c": 16.0,
@@ -182,7 +182,8 @@ fn generated_contract_fixture() -> Value {
         "precipitation_mm": 0.0, "wind_speed_kmh": 12.0,
         "wind_direction_degrees": 315, "wind_gust_kmh": 18.0, "humidity_percent": 73,
         "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64,
-        "updated_unix_ms": 1766446800000_i64,
+        "updated_unix_ms": 1766400000000_i64,
+        "solar_noon": crate::activity::astronomy::solar_noon(1766385120000, 1766436420000, 1766400000000, "Europe/Amsterdam"),
         "hourly": [{ "time_unix_ms": 1766448000000_i64, "temperature_c": 17.0, "precipitation_probability": 5, "precipitation_mm": 0.0, "wind_speed_kmh": 12.0, "wind_direction_degrees": 315, "condition": "Clear", "condition_code": 0, "is_day": true }],
         "daily": [{ "date_unix_ms": 1766361600000_i64, "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5, "condition": "Clear", "condition_code": 0, "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64 }],
         "error": null
@@ -205,6 +206,7 @@ fn generated_contract_fixture() -> Value {
                 },
                 "sources": [{ "id": "work", "name": "Work", "kind": "ics-directory", "available": true, "item_count": 1, "error": null }],
                 "world_clocks": [{ "timezone": "Asia/Tokyo", "label": "Tokyo", "city": "Tokyo", "abbreviation": "JST", "utc_offset_seconds": 32400, "timezone_region_ids": ["Asia-Tokyo"] }],
+                "lunar": crate::activity::astronomy::lunar(1766400000000),
                 "weather": weather.clone(),
                 "weather_locations": [weather],
                 "error": null

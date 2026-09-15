@@ -440,8 +440,14 @@ impl ActivityService {
             next_event,
             sources,
             world_clocks,
-            weather: data.weather.clone(),
-            weather_locations: data.weather_locations.clone(),
+            lunar: super::astronomy::lunar(now),
+            weather: super::astronomy::weather(data.weather.clone(), now),
+            weather_locations: data
+                .weather_locations
+                .iter()
+                .cloned()
+                .map(|weather| super::astronomy::weather(weather, now))
+                .collect(),
             error,
         };
         drop(data);
@@ -587,6 +593,12 @@ mod tests {
         service.refresh().await;
         let snapshot = state.snapshot().await.activity;
         assert_eq!(snapshot.event_count, 2);
+        assert!(
+            snapshot.lunar.is_some(),
+            "lunar metadata does not require weather"
+        );
+        assert!(!snapshot.weather.available);
+        assert!(snapshot.weather.solar_noon.is_none());
         assert_eq!(snapshot.sources.len(), 2);
         assert!(snapshot.sources.iter().all(|source| source.available));
         let range = service
@@ -604,6 +616,10 @@ mod tests {
         service.refresh().await;
         let failed = state.snapshot().await.activity;
         assert_eq!(failed.event_count, 2);
+        assert!(
+            failed.lunar.is_some(),
+            "provider failures do not remove lunar metadata"
+        );
         assert!(!failed.sources[0].available);
         assert!(failed.sources[0].error.is_some());
         assert!(failed.sources[1].available);

@@ -161,6 +161,7 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
         sunrise_unix_ms: today.sunrise_unix_ms,
         sunset_unix_ms: today.sunset_unix_ms,
         updated_unix_ms: now_ms,
+        solar_noon: None, // Refreshed against the local date when activity is published.
         hourly,
         daily,
         error: None,

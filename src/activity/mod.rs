@@ -1,3 +1,4 @@
+pub(crate) mod astronomy;
 pub(crate) mod config;
 mod ics;
 pub(crate) mod model;

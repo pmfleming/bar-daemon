@@ -436,6 +436,16 @@
       "error": null,
       "event_count": 1,
       "incomplete_todo_count": 1,
+      "lunar": {
+        "age_days": 2.3657004092218976,
+        "approximate": true,
+        "evaluated_unix_ms": 1766400000000,
+        "fraction": 0.08011016715576151,
+        "illumination_percent": 6,
+        "method": "mean-synodic-month",
+        "phase": "waxing-crescent",
+        "time_basis": "utc"
+      },
       "next_event": {
         "all_day": false,
         "calendar_name": "Work",
@@ -504,16 +514,24 @@
         "low_c": 13.0,
         "precipitation_mm": 0.0,
         "precipitation_probability": 5,
+        "solar_noon": {
+          "approximate": true,
+          "evaluated_unix_ms": 1766400000000,
+          "local_date": "2025-12-22",
+          "method": "sunrise-sunset-midpoint",
+          "timezone": "Europe/Amsterdam",
+          "unix_ms": 1766410770000,
+          "utc_offset_seconds": 3600
+        },
         "sunrise_unix_ms": 1766385120000,
         "sunset_unix_ms": 1766436420000,
         "temperature_c": 17.0,
         "timezone": "Europe/Amsterdam",
         "timezone_region_ids": [
-          "Africa-Johannesburg",
           "Europe-Paris"
         ],
-        "updated_unix_ms": 1766446800000,
-        "utc_offset_seconds": 7200,
+        "updated_unix_ms": 1766400000000,
+        "utc_offset_seconds": 3600,
         "wind_direction_degrees": 315,
         "wind_gust_kmh": 18.0,
         "wind_speed_kmh": 12.0
@@ -561,16 +579,24 @@
           "low_c": 13.0,
           "precipitation_mm": 0.0,
           "precipitation_probability": 5,
+          "solar_noon": {
+            "approximate": true,
+            "evaluated_unix_ms": 1766400000000,
+            "local_date": "2025-12-22",
+            "method": "sunrise-sunset-midpoint",
+            "timezone": "Europe/Amsterdam",
+            "unix_ms": 1766410770000,
+            "utc_offset_seconds": 3600
+          },
           "sunrise_unix_ms": 1766385120000,
           "sunset_unix_ms": 1766436420000,
           "temperature_c": 17.0,
           "timezone": "Europe/Amsterdam",
           "timezone_region_ids": [
-            "Africa-Johannesburg",
             "Europe-Paris"
           ],
-          "updated_unix_ms": 1766446800000,
-          "utc_offset_seconds": 7200,
+          "updated_unix_ms": 1766400000000,
+          "utc_offset_seconds": 3600,
           "wind_direction_degrees": 315,
           "wind_gust_kmh": 18.0,
           "wind_speed_kmh": 12.0

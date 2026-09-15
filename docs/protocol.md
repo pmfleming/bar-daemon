@@ -84,6 +84,10 @@ Run `bar-daemon debug protocol-registry` for canonical parameter examples. `medi
 - `updates.changed`
 - `timezone.changed`
 
+`activity.changed` includes `lunar`: an optional, UTC-instant-based mean-synodic-month estimate with a semantic phase ID, fraction, age, rounded illumination percent, evaluation timestamp, method and `approximate: true`. It is refreshed on activity publication (normally once per minute), independently of weather availability. Null means unavailable; clients must not substitute a local estimate.
+
+Each weather record includes optional `solar_noon`: the approximate sunrise/sunset midpoint for the current **IANA-zone local date**, with Unix milliseconds, evaluation timestamp, local date, timezone, offset at the midpoint, method and approximation flag. Missing/polar, invalid, reversed, cross-date and stale-day provider times yield null. Cached weather is revalidated at publication; neither estimate is an ephemeris. Clients retain localized labels, disc masks, sun-arc progress and time formatting (using the supplied solar-noon offset).
+
 `activity.changed` is a compact summary containing source health, counts, next event, and world-clock metadata. Clients query event/todo collections with `activity.queryRange`; large collections are intentionally excluded from `BarSnapshot`.
 
 `power-sleep.changed` includes systemd-logind capabilities, current inhibitors, and the live `PreparingForSleep` state. Inhibitors refresh on logind property changes as well as the recovery poll. Only `what` containing the colon-delimited `sleep` token is relevant to explicit sleep actions; `delay` handlers are normal preparation, not blockers. Lock/sleep requests reject concurrent operations, and Suspend/Hibernate reject a system already preparing to sleep. Confirmed screen locking is still required before invoking sleep; failure responses retain the underlying error chain. `osd-hardware.changed` publishes native LED-class state for Caps Lock, Num Lock, keyboard backlight, and microphone/camera privacy indicators; presentation and timeout policy remain owned by Shelllist.
