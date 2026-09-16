@@ -18,29 +18,23 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: bar-daemon
-      - name: Read dependency revisions
-        id: dependencies
-        run: |
-          framework=$(jq -er '.nodes.daemonFramework.locked.rev' flake.lock)
-          hyprland=$(jq -er '.nodes.hyprlandIpc.locked.rev' flake.lock)
-          printf 'framework=%s\nhyprland=%s\n' "$framework" "$hyprland" >> "$GITHUB_OUTPUT"
-      # Cargo path dependencies and local Nix inputs require sibling checkouts.
+      # Co-development: test current upstream worktrees, never private lock pins.
       - name: Check out daemon framework
         uses: actions/checkout@v7
         with:
           repository: pmfleming/daemon-framework
-          ref: ${{ steps.dependencies.outputs.framework }}
+          ref: main
           path: daemon-framework
       - name: Check out Hyprland IPC
         uses: actions/checkout@v7
         with:
           repository: pmfleming/shelllist-hyprland
-          ref: ${{ steps.dependencies.outputs.hyprland }}
+          ref: main
           path: shelllist-hyprland
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: Test battery policy mutations
         run: |
-          nix develop --command cargo mutants \
+          python3 ../daemon-framework/tools/local-build.py develop . --command cargo mutants \
             --file src/battery/config.rs \
             --file src/battery/history.rs \
             --file src/battery/policy.rs \

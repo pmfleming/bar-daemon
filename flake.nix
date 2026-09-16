@@ -2,12 +2,14 @@
   description = "Status, policy, and action daemon for a Quickshell desktop bar";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+  # Co-development: one live sibling framework; no per-daemon revision pins.
+  # Use ../daemon-framework/tools/local-build.py for Nix builds/checks.
   inputs.daemonFramework = {
-    url = "git+file:../daemon-framework?ref=main";
+    url = "git+file:../daemon-framework";
     inputs.nixpkgs.follows = "nixpkgs";
   };
   inputs.hyprlandIpc = {
-    url = "git+file:../shelllist-hyprland?ref=main";
+    url = "git+file:../shelllist-hyprland";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 

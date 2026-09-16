@@ -69,11 +69,15 @@ backlight files and fake helpers, never the host backlight.
 
 ## Development
 
+Keep `daemon-framework` and `shelllist-hyprland` beside this checkout. The helper
+uses their current tracked worktrees, not persistent local-project pins. All five
+daemons must share one framework; do not vendor or revision-pin it.
+
 ```sh
-nix develop
+python3 ../daemon-framework/tools/local-build.py develop .
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml
-nix flake check
+python3 ../daemon-framework/tools/local-build.py check .
 ```

@@ -19,40 +19,34 @@ jobs:
         with:
           fetch-depth: 0
           path: bar-daemon
-      - name: Read dependency revisions
-        id: dependencies
-        run: |
-          framework=$(jq -er '.nodes.daemonFramework.locked.rev' flake.lock)
-          hyprland=$(jq -er '.nodes.hyprlandIpc.locked.rev' flake.lock)
-          printf 'framework=%s\nhyprland=%s\n' "$framework" "$hyprland" >> "$GITHUB_OUTPUT"
-      # Cargo path dependencies and local Nix inputs require sibling checkouts.
+      # Co-development: test current upstream worktrees, never private lock pins.
       - name: Check out daemon framework
         uses: actions/checkout@v7
         with:
           repository: pmfleming/daemon-framework
-          ref: ${{ steps.dependencies.outputs.framework }}
+          ref: main
           path: daemon-framework
       - name: Check out Hyprland IPC
         uses: actions/checkout@v7
         with:
           repository: pmfleming/shelllist-hyprland
-          ref: ${{ steps.dependencies.outputs.hyprland }}
+          ref: main
           path: shelllist-hyprland
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: Format
-        run: nix develop --command cargo fmt --all -- --check
+        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo fmt --all -- --check
       - name: Clippy
-        run: nix develop --command cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Dependency policy
         run: |
-          nix develop --command cargo audit
-          nix develop --command cargo deny check
-          nix develop --command cargo shear
+          python3 ../daemon-framework/tools/local-build.py develop . --command cargo audit
+          python3 ../daemon-framework/tools/local-build.py develop . --command cargo deny check
+          python3 ../daemon-framework/tools/local-build.py develop . --command cargo shear
       - name: Test and collect coverage
-        run: nix develop --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml
+        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml
       - name: Check changed-line coverage
         if: github.event_name == 'pull_request'
-        run: nix develop --command diff-cover cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
+        run: python3 ../daemon-framework/tools/local-build.py develop . --command diff-cover cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
       - uses: actions/upload-artifact@v7
         with:
           name: coverage
