@@ -15,6 +15,25 @@ The native battery module replaces UPower for bar-daemon's laptop use case. It r
 
 Multiple batteries are aggregated by energy. If every present battery lacks compatible energy values, the daemon falls back to the mean reported capacity. External power is determined from the `online` attribute of non-battery supplies rather than inferred from battery status.
 
+The aggregate `forecast` drives Shelllist's combined charge/power timeline. While
+unplugged and not charging, `target: 0` and `seconds` use the reported
+`time_to_empty_seconds`; a missing estimate or one beyond seven days is marked
+`estimating` with no projected line. While charging, the target is full or the
+active protection limit (ignored during charge-once), and the bounded full-charge
+estimate is scaled to that target. Plugging in while holding/inhibiting charge
+does not retain a discharge forecast. Reaching a protection limit reports
+`limit-reached` only on AC; an unplugged battery above that limit still forecasts
+depletion. All valid forecasts are approximate. Historical `power_watts` samples
+are battery flow, not whole-machine AC consumption; `power_valid` distinguishes
+an observed zero from an unavailable reading. Existing Wh history bins remain
+available to API consumers.
+
+History metadata includes a lightweight `current_point` on every observation,
+using the same active-time origin as the stored points. Clients can append it
+when it is newer than their last stored point to align the live charge marker
+and forecast. It is not persisted between 15-minute buckets, so live plotting
+does not add disk writes or require repeated full-history requests.
+
 The defaults are low at 25%, critical at 12%, notifications and Power saver at both levels, full notification enabled, and a suggested protected range of 75–80%. A fresh installation does not take ownership of or change existing firmware thresholds. `battery.setThresholds` stores the desired range without enabling protection or taking ownership; when protection is already managed and enabled, it also updates the hardware. Threshold management starts when `battery.setProtection` succeeds.
 
 ## Battery levels & actions

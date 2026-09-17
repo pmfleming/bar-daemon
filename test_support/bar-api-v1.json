@@ -675,18 +675,30 @@
       ],
       "error": null,
       "forecast": {
-        "approximate": false,
+        "approximate": true,
         "estimating": false,
         "limit": 80,
         "percentage": 80,
         "scope": "aggregate",
-        "seconds": 0.0,
-        "status": "limit-reached",
-        "target": 80
+        "seconds": 14400.0,
+        "status": "valid",
+        "target": 0
       },
       "health_percent": 85,
       "history": {
         "active_duration_ms": 900000,
+        "current_point": {
+          "active_time_ms": 930000,
+          "charging": false,
+          "continuous": true,
+          "mode": "discharging",
+          "percentage": 80,
+          "plugged": false,
+          "power_valid": true,
+          "power_watts": 8.2,
+          "time_to_full_seconds": null,
+          "timestamp_ms": 1768464930000
+        },
         "energy": {
           "activeDurationMs": 0,
           "bars": [],

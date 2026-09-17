@@ -190,6 +190,9 @@ pub(crate) struct BatteryHistoryState {
     /// observing the laptop have been removed.
     pub active_duration_ms: u64,
     pub points: Vec<BatteryHistoryPoint>,
+    /// Latest observation, including readings between persisted history buckets.
+    #[serde(default)]
+    pub current_point: Option<BatteryHistoryPoint>,
     #[serde(default)]
     pub energy: crate::battery::derived::EnergyHistory,
 }

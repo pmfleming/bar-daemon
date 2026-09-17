@@ -43,6 +43,7 @@ struct HistoryStore {
     points: VecDeque<BatteryHistoryPoint>,
     active_time_ms: u64,
     last_observation: Option<(u64, Instant)>,
+    current_point: Option<BatteryHistoryPoint>,
     energy: OnceLock<super::derived::EnergyHistory>,
 }
 
@@ -67,6 +68,7 @@ impl HistoryStore {
             // A process start always begins a new graph segment. This also
             // prevents downtime before startup from entering the timescale.
             last_observation: None,
+            current_point: None,
             energy: OnceLock::new(),
         };
         store.prune(now_ms);
@@ -76,6 +78,7 @@ impl HistoryStore {
     fn record(&mut self, state: &BatteryState, now_ms: u64, awake_now: Instant) -> bool {
         if !state.available {
             self.last_observation = None;
+            self.current_point = None;
             return false;
         }
         self.prune(now_ms);
@@ -110,11 +113,7 @@ impl HistoryStore {
             point.timestamp_ms - point.timestamp_ms % BUCKET_MILLISECONDS != current_bucket
         });
         self.last_observation = Some((now_ms, awake_now));
-        if observation_continuous && !bucket_changed && !power_transition {
-            return false;
-        }
-        self.energy.take();
-        self.points.push_back(BatteryHistoryPoint {
+        let point = BatteryHistoryPoint {
             timestamp_ms: now_ms,
             active_time_ms: self.active_time_ms,
             continuous: observation_continuous && previous.is_some(),
@@ -128,7 +127,13 @@ impl HistoryStore {
                 .then_some(state.time_to_full_seconds),
             charging: state.charging,
             plugged: state.plugged,
-        });
+        };
+        self.current_point = Some(point.clone());
+        if observation_continuous && !bucket_changed && !power_transition {
+            return false;
+        }
+        self.energy.take();
+        self.points.push_back(point);
         self.prune(now_ms);
         true
     }
@@ -171,6 +176,10 @@ impl HistoryStore {
                 Default::default()
             },
             points,
+            current_point: self.current_point.clone().map(|mut point| {
+                point.active_time_ms = point.active_time_ms.saturating_sub(first_active_time_ms);
+                point
+            }),
         }
     }
 
@@ -364,6 +373,49 @@ mod tests {
         assert_eq!(snapshot.points.len(), 2);
         assert_eq!(snapshot.active_duration_ms, 900_000);
         assert!(snapshot.points[1].continuous);
+    }
+
+    #[test]
+    fn exposes_live_endpoint_without_persisting_each_observation() {
+        let start = Instant::now();
+        let mut history = HistoryStore::load(None, 1_000);
+        assert!(record(
+            &mut history,
+            &state(80, false, false),
+            1_000,
+            1_000,
+            start
+        ));
+        assert!(!record(
+            &mut history,
+            &state(79, false, false),
+            31_000,
+            31_000,
+            start
+        ));
+        let snapshot = history.state(true);
+        assert_eq!(snapshot.points.len(), 1);
+        assert_eq!(snapshot.latest_timestamp_ms, 1_000);
+        let current = snapshot.current_point.unwrap();
+        assert_eq!((current.percentage, current.active_time_ms), (79, 30_000));
+        assert!(current.continuous);
+        assert_eq!(history.state(false).current_point.unwrap(), current);
+        assert!(record(
+            &mut history,
+            &state(78, false, false),
+            91_000,
+            61_000,
+            start
+        ));
+        assert!(!history.state(false).current_point.unwrap().continuous);
+        record(
+            &mut history,
+            &BatteryState::default(),
+            121_000,
+            91_000,
+            start,
+        );
+        assert!(history.state(false).current_point.is_none());
     }
 
     #[test]

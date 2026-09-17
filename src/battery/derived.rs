@@ -38,9 +38,17 @@ pub(crate) fn forecast(battery: &BatteryState) -> ChargeForecast {
     let limit = protection.end_percent.filter(|value| {
         protection.enabled && !protection.charge_once_active && (1..100).contains(value)
     });
-    let target = limit.unwrap_or(100);
-    let valid = battery.available && battery.charging && battery.percentage < target;
-    let seconds = if valid && (1..=86400).contains(&battery.time_to_full_seconds) {
+    let discharging = !battery.plugged && !battery.charging;
+    let target = if discharging { 0 } else { limit.unwrap_or(100) };
+    let valid = battery.available
+        && if discharging {
+            battery.percentage > 0
+        } else {
+            battery.charging && battery.percentage < target
+        };
+    let seconds = if valid && discharging && (1..=604800).contains(&battery.time_to_empty_seconds) {
+        battery.time_to_empty_seconds as f64
+    } else if valid && !discharging && (1..=86400).contains(&battery.time_to_full_seconds) {
         battery.time_to_full_seconds as f64 * (target - battery.percentage) as f64
             / (100 - battery.percentage) as f64
     } else {
@@ -50,8 +58,10 @@ pub(crate) fn forecast(battery: &BatteryState) -> ChargeForecast {
         "valid"
     } else if valid {
         "estimating"
-    } else if battery.available && limit.is_some() && battery.percentage >= target {
+    } else if battery.available && !discharging && limit.is_some() && battery.percentage >= target {
         "limit-reached"
+    } else if battery.available && battery.plugged && battery.percentage == 100 {
+        "full"
     } else {
         "unavailable"
     };
@@ -217,6 +227,7 @@ mod tests {
         let mut battery = BatteryState {
             available: true,
             charging: true,
+            plugged: true,
             percentage: 60,
             time_to_full_seconds: 3600,
             ..Default::default()
@@ -234,6 +245,39 @@ mod tests {
         battery.percentage = 88;
         battery.charging = false;
         assert_eq!(forecast(&battery).status, "limit-reached");
+        battery.available = false;
+        assert_eq!(forecast(&battery).status, "unavailable");
+    }
+
+    #[test]
+    fn discharge_forecast_survives_limits_and_stops_when_plugged_in() {
+        let mut battery = BatteryState {
+            available: true,
+            percentage: 85,
+            time_to_empty_seconds: 12600,
+            ..Default::default()
+        };
+        battery.protection.enabled = true;
+        battery.protection.end_percent = Some(80);
+        let value = forecast(&battery);
+        assert_eq!(
+            (value.target, value.seconds, value.status.as_str()),
+            (0, 12600.0, "valid")
+        );
+        assert_eq!(value.limit, Some(80));
+        for seconds in [0, 604801, u64::MAX] {
+            battery.time_to_empty_seconds = seconds;
+            assert!(forecast(&battery).estimating);
+            assert_eq!(forecast(&battery).seconds, 0.0);
+        }
+        battery.time_to_empty_seconds = 12600;
+        battery.plugged = true;
+        assert_eq!(forecast(&battery).seconds, 0.0);
+        assert_eq!(forecast(&battery).status, "limit-reached");
+        battery.protection.enabled = false;
+        assert_eq!(forecast(&battery).status, "unavailable");
+        battery.percentage = 100;
+        assert_eq!(forecast(&battery).status, "full");
         battery.available = false;
         assert_eq!(forecast(&battery).status, "unavailable");
     }

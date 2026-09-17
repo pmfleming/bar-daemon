@@ -249,7 +249,7 @@ fn generated_contract_fixture() -> Value {
                 "available": true, "native_path": "BAT0", "percentage": 80, "state": "discharging",
                 "charging": false, "plugged": false, "power_watts": 8.2, "power_available": true, "time_to_empty_seconds": 14400,
                 "forecast": crate::battery::derived::forecast(&crate::model::BatteryState {
-                    available: true, percentage: 80,
+                    available: true, percentage: 80, time_to_empty_seconds: 14400,
                     protection: crate::model::BatteryProtectionState { enabled: true, end_percent: Some(80), ..Default::default() },
                     ..Default::default()
                 }),
@@ -290,6 +290,11 @@ fn generated_contract_fixture() -> Value {
                     "retention_days": 7, "last_charge_timestamp_ms": 1768464000000_u64,
                     "latest_timestamp_ms": 1768464900000_u64, "active_duration_ms": 900000_u64,
                     "energy": crate::battery::derived::energy(&[]),
+                    "current_point": crate::model::BatteryHistoryPoint {
+                        timestamp_ms: 1768464930000, active_time_ms: 930000,
+                        continuous: true, mode: "discharging".into(), percentage: 80,
+                        power_watts: 8.2, power_valid: Some(true), ..Default::default()
+                    },
                     "points": []
                 },
                 "error": null
