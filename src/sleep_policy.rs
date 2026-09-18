@@ -374,7 +374,34 @@ async fn perform_idle(
     hypridle::verify_generation(generation).await?;
     let policy = load().await?;
     let profile = policy.idle_profile(plugged().await?, expected_minutes)?;
-    perform_profile(profile, || std::future::ready(Ok(()))).await
+    perform_profile(profile, || validate_idle_trigger(generation, profile)).await
+}
+
+async fn validate_idle_trigger(generation: &str, selected: &SleepProfile) -> Result<()> {
+    base_config()?;
+    let policy = load().await?;
+    let plugged = plugged().await?;
+    // Check the generation after the potentially slow AC lookup as well as at
+    // entry. An external hypridle restart is not serialized by POLICY_WRITE.
+    let active_generation = hypridle::active_generation().await?;
+    validate_idle_selection(generation, selected, &active_generation, &policy, plugged)
+}
+
+fn validate_idle_selection(
+    generation: &str,
+    selected: &SleepProfile,
+    active_generation: &str,
+    policy: &SleepPolicy,
+    plugged: bool,
+) -> Result<()> {
+    if generation != active_generation {
+        bail!("idle countdown restarted; ignoring a stale sleep callback");
+    }
+    let current = policy.idle_profile(plugged, selected.sleep_minutes)?;
+    if current != selected {
+        bail!("idle hibernate profile changed; refusing to use the previous sleep settings");
+    }
+    Ok(())
 }
 
 /// Shared by idle and lid-close. A lid action can use the hibernate delay even
@@ -393,19 +420,34 @@ where
     } else {
         "suspend-then-hibernate"
     };
-    crate::sleep::perform_with_setup(action, || async {
-        validate_trigger().await?;
-        if profile.hibernate_minutes > 0 {
-            let connection = zbus::Connection::system().await?;
-            let proxy = helper_proxy(&connection).await?;
-            let _: () = proxy
-                .call("SetHibernateDelay", &(profile.hibernate_minutes,))
-                .await
-                .context("configure systemd's time asleep before hibernation")?;
-        }
-        validate_trigger().await
+    crate::sleep::perform_with_setup(action, || {
+        validated_setup(&validate_trigger, || async {
+            if profile.hibernate_minutes > 0 {
+                let connection = zbus::Connection::system().await?;
+                let proxy = helper_proxy(&connection).await?;
+                let _: () = proxy
+                    .call("SetHibernateDelay", &(profile.hibernate_minutes,))
+                    .await
+                    .context("configure systemd's time asleep before hibernation")?;
+            }
+            Ok(())
+        })
     })
     .await
+}
+
+// Runs only after confirmed locking. A changed trigger must prevent helper
+// writes, and a change while the helper is running must prevent sleep.
+async fn validated_setup<F, Fut, S, Setup>(validate: F, setup: S) -> Result<()>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+    S: FnOnce() -> Setup,
+    Setup: std::future::Future<Output = Result<()>>,
+{
+    validate().await?;
+    setup().await?;
+    validate().await
 }
 
 /// The privileged helper accepts only a bounded number, never a path or config
@@ -532,6 +574,88 @@ mod tests {
         };
         assert!(never.idle_profile(false, 0).is_err());
         assert!(never.idle_profile(false, 10).is_err());
+    }
+
+    #[tokio::test]
+    async fn idle_trigger_changes_after_lock_or_during_helper_abort_sleep_setup() {
+        use std::cell::Cell;
+
+        for change in [
+            "longer-ac-deadline",
+            "never-on-ac",
+            "different-hibernate-delay",
+            "restarted",
+        ] {
+            for during_helper in [false, true] {
+                let policy = SleepPolicy {
+                    same_profile: false,
+                    battery: SleepProfile {
+                        sleep_minutes: 10,
+                        hibernate_minutes: 60,
+                    },
+                    plugged: match change {
+                        "longer-ac-deadline" => SleepProfile {
+                            sleep_minutes: 45,
+                            hibernate_minutes: 60,
+                        },
+                        "never-on-ac" => SleepProfile {
+                            sleep_minutes: 0,
+                            hibernate_minutes: 60,
+                        },
+                        _ => SleepProfile {
+                            sleep_minutes: 10,
+                            hibernate_minutes: 180,
+                        },
+                    },
+                    ..SleepPolicy::default()
+                };
+                let changed = Cell::new(!during_helper);
+                let helper_calls = Cell::new(0);
+                let result = validated_setup(
+                    || {
+                        std::future::ready(validate_idle_selection(
+                            "original",
+                            &policy.battery,
+                            if changed.get() && change == "restarted" {
+                                "replacement"
+                            } else {
+                                "original"
+                            },
+                            &policy,
+                            changed.get() && change != "restarted",
+                        ))
+                    },
+                    || async {
+                        helper_calls.set(helper_calls.get() + 1);
+                        changed.set(true);
+                        Ok(())
+                    },
+                )
+                .await;
+                assert!(result.is_err(), "{change}, during_helper={during_helper}");
+                assert_eq!(
+                    helper_calls.get(),
+                    usize::from(during_helper),
+                    "a change while locking must not write hibernate settings"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_and_equivalent_shared_profiles_remain_valid() {
+        let policy = SleepPolicy::default();
+        for plugged in [false, true] {
+            assert!(
+                validate_idle_selection("current", &policy.battery, "current", &policy, plugged)
+                    .is_ok()
+            );
+        }
+        let mut separate = policy.clone();
+        separate.same_profile = false;
+        assert!(
+            validate_idle_selection("current", &policy.battery, "current", &separate, true).is_ok()
+        );
     }
 
     #[tokio::test]
