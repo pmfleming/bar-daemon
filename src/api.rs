@@ -113,6 +113,7 @@ impl ApiService {
             "powerSleep.lock" => self.effects.power_sleep_action("lock").await,
             "powerSleep.suspend" => self.effects.power_sleep_action("suspend").await,
             "powerSleep.hibernate" => self.effects.power_sleep_action("hibernate").await,
+            "powerSleep.setKeepAwake" => self.effects.set_keep_awake(params).await,
             "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
             "powerSleep.idle" => self.effects.idle_sleep(params).await,
             "notifications.togglePanel" => self.notifications.notification_action(false).await,
@@ -158,6 +159,21 @@ mod tests {
             brightness,
         )
     }
+    #[tokio::test]
+    async fn keep_awake_rejects_missing_mistyped_or_extra_parameters() {
+        let api = api().await;
+        for params in [
+            json!({}),
+            json!({"enabled": "true"}),
+            json!({"enabled": null}),
+            json!({"enabled": true, "command": "anything"}),
+        ] {
+            let response = api.dispatch("powerSleep.setKeepAwake", params).await;
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"]["code"], "validation-error");
+        }
+    }
+
     #[tokio::test]
     async fn returns_versioned_snapshot() {
         let response = api().await.dispatch("bar.snapshot", json!({})).await;

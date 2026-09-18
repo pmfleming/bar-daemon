@@ -206,6 +206,13 @@
         "result": "power_sleep"
       },
       {
+        "name": "powerSleep.setKeepAwake",
+        "params": {
+          "enabled": true
+        },
+        "result": "power_sleep"
+      },
+      {
         "name": "powerSleep.setPolicy",
         "params": {
           "battery": {
@@ -919,6 +926,7 @@
           "why": "Writing snapshot"
         }
       ],
+      "keep_awake": false,
       "lock_before_sleep": true,
       "preparing_for_sleep": false,
       "resume_generation": 0

@@ -131,6 +131,22 @@ impl DesktopEffects {
             Err(value) => error("power-sleep-operation-failed", format!("{value:#}")),
         }
     }
+    pub(super) async fn set_keep_awake(&self, params: Value) -> Value {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct KeepAwakeRequest {
+            enabled: bool,
+        }
+        let request = request!(params, KeepAwakeRequest, "powerSleep.setKeepAwake");
+        match sleep::set_keep_awake(request.enabled).await {
+            Ok(state) => {
+                self.state.update_power_sleep(state).await;
+                success(json!({"power_sleep": self.state.snapshot().await.power_sleep}))
+            }
+            Err(value) => error("keep-awake-failed", format!("{value:#}")),
+        }
+    }
+
     pub(super) async fn sleep_policy_set(&self, params: Value) -> Value {
         let policy = request!(
             params,

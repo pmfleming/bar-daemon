@@ -10,6 +10,32 @@ Before sleep, the pinned session must still be active and locked, and logind mus
 
 Hypridle remains the owner of idle detection and inhibitor handling. The optional managed integration below supplies its sleep timeout; bar-daemon does not add an independent inactivity timer.
 
+## Keep awake
+
+The coffee-cup toggle beside Lock/Suspend/Hibernate calls `powerSleep.setKeepAwake`
+with `{"enabled": true}` (or `false`). The resident daemon holds a logind
+**sleep:handle-lid-switch / block** inhibitor FD; closing the panel does not
+release it. The low-level lid inhibitor is necessary because logind normally
+uses `LidSwitchIgnoreInhibited=yes`. No `idle` inhibitor is taken: automatic
+locking and screen blanking continue, as does explicit Lock. The saved sleep
+profiles and hypridle configuration are not changed.
+
+`power_sleep.keep_awake` reports this daemon's inhibitor from logind's live list,
+not an optimistic frontend flag. Shelllist disables its manual sleep buttons
+while active. Manual, idle and managed-lid sleep paths also reject it before
+locking or changing hibernate settings, and recheck before the logind request.
+Toggle changes share the sleep-action guard. Enabling during sleep preparation
+fails; acquisition/permission failures never claim success. Disabling closes
+the FD even if status telemetry is unavailable. Other applications' inhibitors
+are never released. Old daemons show the new button disabled with an upgrade
+explanation; both shelllist and bar-daemon must be rebuilt for the feature.
+
+This is temporary, not persisted: turning it off, daemon exit/restart, reboot,
+or logind restart ends protection. After logind restart, the live list reports
+it off; enabling again reacquires the FD. It does not prevent shutdown, forced
+privileged sleep/inhibitor bypass, or hardware battery exhaustion. Keep awake
+can therefore increase battery drain; do not rely on it as battery protection.
+
 ## Automatic sleep, then hibernate
 
 The `sleep_policy` snapshot domain and `sleep-policy.changed` stream expose the persisted policy, active profile (`shared`, `battery`, or `plugged`), integration availability, hibernation availability/reason, and last automatic-action failure. `powerSleep.setPolicy` accepts the complete policy:
@@ -74,4 +100,5 @@ Shelllist observes this generation to rebuild bar surfaces; screen-change recove
 {"op":"call","id":"lock","method":"powerSleep.lock","params":{}}
 {"op":"call","id":"suspend","method":"powerSleep.suspend","params":{}}
 {"op":"call","id":"hibernate","method":"powerSleep.hibernate","params":{}}
+{"op":"call","id":"keep-awake","method":"powerSleep.setKeepAwake","params":{"enabled":true}}
 ```

@@ -68,6 +68,7 @@ pub const METHODS: &[&str] = &[
     "powerSleep.lock",
     "powerSleep.suspend",
     "powerSleep.hibernate",
+    "powerSleep.setKeepAwake",
     "powerSleep.setPolicy",
     "powerSleep.idle",
     "notifications.togglePanel",
@@ -135,6 +136,7 @@ pub fn registry() -> Value {
             { "name": "powerSleep.lock", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.suspend", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
+            { "name": "powerSleep.setKeepAwake", "params": { "enabled": true }, "result": "power_sleep" },
             { "name": "powerSleep.setPolicy", "params": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
             { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678" }, "result": "power_sleep" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
@@ -311,6 +313,7 @@ fn generated_contract_fixture() -> Value {
             "power_sleep": {
                 "available": true, "can_suspend": "yes", "can_hibernate": "challenge",
                 "preparing_for_sleep": false, "resume_generation": 0, "lock_before_sleep": true,
+                "keep_awake": false,
                 "diagnostics": crate::sleep::diagnostics::SleepDiagnostics::default(),
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null

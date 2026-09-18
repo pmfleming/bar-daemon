@@ -35,6 +35,9 @@ pub(crate) struct PowerSleepState {
     #[serde(default)]
     pub resume_generation: u64,
     pub lock_before_sleep: bool,
+    /// True only when logind reports this daemon's temporary sleep inhibitor.
+    #[serde(default)]
+    pub keep_awake: bool,
     pub inhibitors: Vec<SleepInhibitor>,
     #[serde(default)]
     pub diagnostics: crate::sleep::diagnostics::SleepDiagnostics,

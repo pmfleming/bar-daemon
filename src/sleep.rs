@@ -13,8 +13,11 @@ use crate::{
 };
 
 pub(crate) mod diagnostics;
+mod keep_awake;
 mod resume;
 mod wayland_lock;
+
+pub(crate) use keep_awake::set_keep_awake;
 
 fn is_hyprland_session() -> bool {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
@@ -173,6 +176,7 @@ async fn read_state(
         preparing_for_sleep,
         resume_generation: 0, // StateStore preserves the resident generation.
         lock_before_sleep: true,
+        keep_awake: inhibitors.iter().any(keep_awake::is_ours),
         inhibitors: inhibitors
             .into_iter()
             .map(|(what, who, why, mode, uid, pid)| SleepInhibitor {
@@ -284,6 +288,7 @@ where
     let mut current = read_state(connection, false).await?;
     if action != Action::Lock {
         ensure_not_preparing(connection).await?;
+        ensure_sleep_allowed(&current)?;
     }
     if action == Action::Suspend && !capability_available(&current.can_suspend) {
         bail!("suspend is unavailable: {}", current.can_suspend);
@@ -315,6 +320,7 @@ where
     .await?;
     if action != Action::Lock {
         setup().await?;
+        ensure_sleep_allowed(&read_state(connection, false).await?)?;
         ensure_active(&session).await?;
         if !confirmed_locked(&session, &mut observer).await? {
             bail!("session unlocked before the sleep request; refusing to sleep");
@@ -337,6 +343,13 @@ where
             Ok(current)
         }
     }
+}
+
+fn ensure_sleep_allowed(state: &PowerSleepState) -> Result<()> {
+    if state.keep_awake {
+        bail!("Keep awake is enabled; turn it off before sleeping");
+    }
+    Ok(())
 }
 
 async fn ensure_not_preparing(connection: &zbus::Connection) -> Result<()> {

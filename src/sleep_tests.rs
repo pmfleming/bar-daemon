@@ -10,9 +10,14 @@ use zbus::{Connection, connection::Builder};
 use super::*;
 
 #[derive(Default)]
-struct SessionState {
+pub(super) struct SessionState {
     locked: AtomicBool,
-    preparing: AtomicBool,
+    pub(super) preparing: AtomicBool,
+    pub(super) inhibit_calls: AtomicUsize,
+    pub(super) inhibit_fails: AtomicBool,
+    pub(super) inhibitor_peer: std::sync::Mutex<Option<std::os::unix::net::UnixStream>>,
+    pub(super) keep_awake: AtomicBool,
+    pub(super) telemetry_fails: AtomicBool,
     lock_calls: AtomicUsize,
     requested: Notify,
     sleep_calls: AtomicUsize,
@@ -89,9 +94,41 @@ impl FakeManager {
         self.0.sleep_calls.fetch_add(1, Ordering::SeqCst);
         self.0.preparing.store(true, Ordering::SeqCst);
     }
+    fn inhibit(
+        &self,
+        what: &str,
+        who: &str,
+        why: &str,
+        mode: &str,
+    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+        assert_eq!(what, "sleep:handle-lid-switch");
+        assert_eq!(who, "Shelllist Keep awake");
+        assert!(!why.is_empty());
+        assert_eq!(mode, "block");
+        if self.0.inhibit_fails.load(Ordering::SeqCst) {
+            return Err(zbus::fdo::Error::AccessDenied("inhibition denied".into()));
+        }
+        self.0.inhibit_calls.fetch_add(1, Ordering::SeqCst);
+        self.0.keep_awake.store(true, Ordering::SeqCst);
+        let (peer, fd) = std::os::unix::net::UnixStream::pair().unwrap();
+        *self.0.inhibitor_peer.lock().unwrap() = Some(peer);
+        Ok(std::os::fd::OwnedFd::from(fd).into())
+    }
     fn list_inhibitors(&self) -> zbus::fdo::Result<Vec<RawInhibitor>> {
-        if self.0.telemetry_fails_after_sleep && self.0.sleep_calls.load(Ordering::SeqCst) > 0 {
+        if self.0.telemetry_fails.load(Ordering::SeqCst)
+            || (self.0.telemetry_fails_after_sleep && self.0.sleep_calls.load(Ordering::SeqCst) > 0)
+        {
             return Err(zbus::fdo::Error::Failed("telemetry disconnected".into()));
+        }
+        if self.0.keep_awake.load(Ordering::SeqCst) {
+            return Ok(vec![(
+                "sleep:handle-lid-switch".into(),
+                "Shelllist Keep awake".into(),
+                "test".into(),
+                "block".into(),
+                1000,
+                std::process::id(),
+            )]);
         }
         Ok(Vec::new())
     }
@@ -114,7 +151,7 @@ impl FakeManager {
     }
 }
 
-async fn fake_logind(state: Arc<SessionState>) -> (Connection, Connection) {
+pub(super) async fn fake_logind(state: Arc<SessionState>) -> (Connection, Connection) {
     let (server, client) = UnixStream::pair().unwrap();
     let server = Builder::unix_stream(server)
         .server(zbus::Guid::generate())
@@ -246,6 +283,7 @@ async fn changes_during_setup_are_rechecked_before_sleep() {
         "preparing",
         "preparing-unreadable",
         "setup-failed",
+        "keep-awake",
     ] {
         let state = Arc::new(SessionState::default());
         state.locked.store(true, Ordering::SeqCst);
@@ -264,6 +302,7 @@ async fn changes_during_setup_are_rechecked_before_sleep() {
                     "unlocked" => state.locked.store(false, Ordering::SeqCst),
                     "inactive" => state.inactive.store(true, Ordering::SeqCst),
                     "preparing" => state.preparing.store(true, Ordering::SeqCst),
+                    "keep-awake" => state.keep_awake.store(true, Ordering::SeqCst),
                     "preparing-unreadable" => state.preparing_fails.store(true, Ordering::SeqCst),
                     _ => bail!("helper rejected settings"),
                 }
@@ -330,6 +369,33 @@ async fn invalid_actions_never_fall_through_to_hibernate() {
     );
     assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
     assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn keep_awake_blocks_every_sleep_path_before_lock_or_setup_but_allows_lock() {
+    let state = Arc::new(SessionState::default());
+    state.keep_awake.store(true, Ordering::SeqCst);
+    let (_server, client) = fake_logind(Arc::clone(&state)).await;
+    for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
+        let error = perform_connected_with_setup(
+            &client,
+            action,
+            Duration::from_secs(1),
+            false,
+            || async { panic!("blocked sleep must not change hibernate settings") },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Keep awake"));
+    }
+    assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
+    state.locked.store(true, Ordering::SeqCst);
+    assert!(
+        perform_connected(&client, "lock", Duration::from_secs(1))
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
