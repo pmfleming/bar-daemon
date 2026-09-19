@@ -367,7 +367,8 @@ fn generated_contract_fixture() -> Value {
             },
             "updates": {
                 "available": true, "ready": true,
-                "lanes": [{ "name": "fast", "ready": true, "revision": "abc", "base_hash": "def", "created_at": 123, "auto_apply": false, "system": "/nix/store/system" }],
+                "lanes": [{ "name": "delayed", "ready": true, "revision": "abc", "base_hash": "def", "created_at": 123, "auto_apply": false, "system": "/nix/store/system" }],
+                "jobs": [{ "name": "system", "operation": "run-delayed", "status": "completed", "phase": "ready", "started_at": 123, "finished_at": 124, "exit_code": 0, "error": null }],
                 "state_directory": "/var/lib/nixos-delayed-updates-v2", "error": null
             },
             "timezone": {

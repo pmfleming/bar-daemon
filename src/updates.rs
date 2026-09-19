@@ -12,6 +12,8 @@ use crate::{
     state::StateStore,
 };
 
+mod jobs;
+
 const DEFAULT_STATE_DIR: &str = "/var/lib/nixos-delayed-updates-v2";
 
 pub(crate) fn state_dir() -> PathBuf {
@@ -115,7 +117,7 @@ fn read_state(directory: &Path) -> Result<UpdateState> {
             ..UpdateState::default()
         });
     }
-    let lanes = ["fast", "delayed"]
+    let lanes = ["delayed"]
         .into_iter()
         .map(|name| read_lane(directory, name))
         .collect::<Vec<_>>();
@@ -123,6 +125,7 @@ fn read_state(directory: &Path) -> Result<UpdateState> {
         available: true,
         ready: lanes.iter().any(|lane| lane.ready),
         lanes,
+        jobs: jobs::read(directory),
         state_directory: directory_display(directory),
         error: None,
     })
@@ -167,7 +170,7 @@ mod tests {
     #[test]
     fn requires_complete_ready_lane() {
         let root = tempdir().unwrap();
-        let fast = root.path().join("fast");
+        let fast = root.path().join("delayed");
         fs::create_dir(&fast).unwrap();
         fs::write(fast.join("ready-flake.lock"), "lock").unwrap();
         assert!(!read_state(root.path()).unwrap().ready);

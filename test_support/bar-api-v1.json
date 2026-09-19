@@ -1032,12 +1032,24 @@
     "updates": {
       "available": true,
       "error": null,
+      "jobs": [
+        {
+          "error": null,
+          "exit_code": 0,
+          "finished_at": 124,
+          "name": "system",
+          "operation": "run-delayed",
+          "phase": "ready",
+          "started_at": 123,
+          "status": "completed"
+        }
+      ],
       "lanes": [
         {
           "auto_apply": false,
           "base_hash": "def",
           "created_at": 123,
-          "name": "fast",
+          "name": "delayed",
           "ready": true,
           "revision": "abc",
           "system": "/nix/store/system"
