@@ -101,23 +101,47 @@ impl StateStore {
     }
 
     pub(crate) async fn update_power_sleep(&self, value: PowerSleepState) {
-        self.commit_power_sleep(Some(value), false).await;
+        self.commit_power_sleep(Some(value), false, None, None)
+            .await;
+    }
+
+    pub(crate) async fn update_power_sleep_if_unchanged(
+        &self,
+        value: PowerSleepState,
+        expected: &PowerSleepState,
+    ) -> bool {
+        self.commit_power_sleep(Some(value), false, None, Some(expected))
+            .await
     }
 
     pub(crate) async fn record_resume(&self) {
-        self.commit_power_sleep(None, true).await;
+        self.commit_power_sleep(None, true, Some(false), None).await;
     }
 
-    async fn commit_power_sleep(&self, value: Option<PowerSleepState>, resumed: bool) {
+    pub(crate) async fn record_sleep_preparation(&self, preparing: bool) {
+        self.commit_power_sleep(None, false, Some(preparing), None)
+            .await;
+    }
+
+    async fn commit_power_sleep(
+        &self,
+        value: Option<PowerSleepState>,
+        resumed: bool,
+        preparing: Option<bool>,
+        expected: Option<&PowerSleepState>,
+    ) -> bool {
         let mut snapshot = self.snapshot.write().await;
         let current = &mut snapshot.power_sleep;
+        if expected.is_some_and(|expected| expected != current) {
+            return false;
+        }
         let mut next = value.unwrap_or_else(|| current.clone());
         next.resume_generation = current.resume_generation.saturating_add(u64::from(resumed));
-        if resumed {
-            next.preparing_for_sleep = false;
+        if let Some(preparing) = preparing {
+            next.preparing_for_sleep = preparing;
         }
         if *current == next {
-            return;
+            return true;
         }
         let data = to_value(&next).unwrap_or(Value::Null);
         *current = next;
@@ -125,6 +149,7 @@ impl StateStore {
             stream: crate::protocol::stream::POWER_SLEEP.into(),
             data,
         });
+        true
     }
 
     async fn update<T, F>(&self, value: T, stream: &str, field: F)
@@ -211,6 +236,43 @@ mod tests {
         assert_eq!(events.recv().await.unwrap().data["resume_generation"], 1);
         store.record_resume().await;
         assert_eq!(store.snapshot().await.power_sleep.resume_generation, 2);
+    }
+
+    #[tokio::test]
+    async fn slow_telemetry_cannot_overwrite_newer_sleep_state() {
+        let store = StateStore::default();
+        let before = store.snapshot().await.power_sleep;
+        store.record_sleep_preparation(true).await;
+        assert!(
+            !store
+                .update_power_sleep_if_unchanged(before.clone(), &before)
+                .await
+        );
+        assert!(store.snapshot().await.power_sleep.preparing_for_sleep);
+        let asleep = store.snapshot().await.power_sleep;
+        store.record_resume().await;
+        assert!(
+            !store
+                .update_power_sleep_if_unchanged(asleep.clone(), &asleep)
+                .await
+        );
+        let resumed = store.snapshot().await.power_sleep;
+        assert!(!resumed.preparing_for_sleep);
+        assert_eq!(resumed.resume_generation, 1);
+        let mut inhibited = resumed.clone();
+        inhibited.keep_awake = true;
+        store.update_power_sleep(inhibited.clone()).await;
+        assert!(
+            !store
+                .update_power_sleep_if_unchanged(resumed.clone(), &resumed)
+                .await
+        );
+        assert!(
+            store
+                .update_power_sleep_if_unchanged(inhibited.clone(), &inhibited)
+                .await
+        );
+        assert_eq!(store.snapshot().await.power_sleep, inhibited);
     }
 
     #[tokio::test]

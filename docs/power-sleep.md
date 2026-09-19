@@ -89,7 +89,9 @@ The per-profile delay continues to use systemd's suspend-then-hibernate and kern
 
 ## Resume recovery
 
-`power_sleep.resume_generation` increases on `PrepareForSleep(false)` before telemetry queries. It survives subsequent action/status refreshes and lets a frontend detect resume even if transient preparation states were coalesced. A two-second CLOCK_BOOTTIME minus CLOCK_MONOTONIC check backs up missed logind signals without treating NTP changes or an event-loop stall as sleep. Signal and clock detections for one cycle are deduplicated. A daemon restart resets the generation; clients establish a new baseline.
+`power_sleep.resume_generation` increases on `PrepareForSleep(false)` independently of telemetry queries. It survives subsequent action/status refreshes and lets a frontend detect resume even if transient preparation states were coalesced. A two-second CLOCK_BOOTTIME minus CLOCK_MONOTONIC check backs up missed logind signals without treating NTP changes or an event-loop stall as sleep. Signal and clock detections for one cycle are deduplicated. A daemon restart resets the generation; clients establish a new baseline.
+
+Signal connection/reconnection, transition detection, and telemetry refresh run as three independently polled futures with one cancellation owner. Neither a stuck capability/inhibitor query nor slow system-bus setup can stall the clock detector. Preparation and resume changes are published immediately. Telemetry has a ten-second deadline and a single worker; refresh bursts coalesce rather than spawning parallel queries. A reply is committed only if the sleep state has not changed since its query began, so an old response cannot restore pre-resume preparation state or overwrite a newer Keep awake change. Superseded queries trigger a fresh read. Dropping the monitor cancels all three futures; these display-telemetry deadlines do not weaken action preflight.
 
 Shelllist observes this generation to rebuild bar surfaces; screen-change recovery remains independent. There is no wall-clock-gap resume heuristic.
 

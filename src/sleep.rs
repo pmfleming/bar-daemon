@@ -1,23 +1,18 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use futures::StreamExt;
-use tokio::{
-    sync::Mutex,
-    time::{interval, sleep},
-};
+use tokio::{sync::Mutex, time::sleep};
 
-use crate::{
-    model::{PowerSleepState, SleepInhibitor},
-    state::StateStore,
-};
+use crate::model::{PowerSleepState, SleepInhibitor};
 
 pub(crate) mod diagnostics;
 mod keep_awake;
+mod monitoring;
 mod resume;
 mod wayland_lock;
 
 pub(crate) use keep_awake::set_keep_awake;
+pub(crate) use monitoring::monitor;
 
 fn is_hyprland_session() -> bool {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
@@ -46,106 +41,6 @@ static SLEEP_ACTION: Mutex<()> = Mutex::const_new(());
 mod lock_tests;
 
 type RawInhibitor = (String, String, String, String, u32, u32);
-
-pub(crate) async fn monitor(store: StateStore) {
-    let mut resumes = resume::ResumeDetector::default();
-    loop {
-        if resumes.poll(resume::suspend_offset()) {
-            store.record_resume().await;
-        }
-        match zbus::Connection::system().await {
-            Ok(connection) => {
-                if let Err(error) = monitor_connection(&connection, &store, &mut resumes).await {
-                    store
-                        .update_power_sleep(PowerSleepState {
-                            error: Some(error.to_string()),
-                            lock_before_sleep: true,
-                            ..PowerSleepState::default()
-                        })
-                        .await;
-                }
-            }
-            Err(error) => {
-                store
-                    .update_power_sleep(PowerSleepState {
-                        error: Some(error.to_string()),
-                        lock_before_sleep: true,
-                        ..PowerSleepState::default()
-                    })
-                    .await;
-            }
-        }
-        sleep(Duration::from_secs(3)).await;
-    }
-}
-
-async fn monitor_connection(
-    connection: &zbus::Connection,
-    store: &StateStore,
-    resumes: &mut resume::ResumeDetector,
-) -> Result<()> {
-    let proxy = manager(connection).await?;
-    let mut prepare = proxy.receive_signal("PrepareForSleep").await?;
-    let properties = zbus::Proxy::new(
-        connection,
-        BUS,
-        MANAGER_PATH,
-        "org.freedesktop.DBus.Properties",
-    )
-    .await?;
-    let mut changes = properties.receive_signal("PropertiesChanged").await?;
-    let mut resume_poll = interval(Duration::from_secs(2));
-    resume_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut fallback = interval(Duration::from_secs(60));
-    fallback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    fallback.tick().await;
-    refresh(connection, store, false).await;
-    loop {
-        tokio::select! {
-            signal = prepare.next() => {
-                let Some(signal) = signal else { bail!("logind sleep signal stream ended"); };
-                let (preparing,): (bool,) = signal
-                    .body()
-                    .deserialize()
-                    .context("decode logind PrepareForSleep signal")?;
-                if !preparing && resumes.signal(resume::suspend_offset()) {
-                    // Publish before slow capability/swap queries; the generation
-                    // cannot be coalesced away like a transient true/false hint.
-                    store.record_resume().await;
-                }
-                refresh(connection, store, preparing).await;
-            }
-            _ = resume_poll.tick() => {
-                if resumes.poll(resume::suspend_offset()) { store.record_resume().await; }
-            }
-            signal = changes.next() => {
-                if signal.is_none() { bail!("logind property stream ended"); }
-                let preparing = store.snapshot().await.power_sleep.preparing_for_sleep;
-                refresh(connection, store, preparing).await;
-            }
-            _ = fallback.tick() => {
-                let preparing = store.snapshot().await.power_sleep.preparing_for_sleep;
-                refresh(connection, store, preparing).await;
-            }
-        }
-    }
-}
-
-async fn refresh(connection: &zbus::Connection, store: &StateStore, preparing: bool) {
-    match read_state(connection, preparing).await {
-        Ok(state) => store.update_power_sleep(state).await,
-        Err(error) => {
-            store
-                .update_power_sleep(PowerSleepState {
-                    error: Some(error.to_string()),
-                    preparing_for_sleep: preparing,
-                    lock_before_sleep: true,
-                    ..PowerSleepState::default()
-                })
-                .await;
-        }
-    }
-}
 
 async fn read_state(
     connection: &zbus::Connection,

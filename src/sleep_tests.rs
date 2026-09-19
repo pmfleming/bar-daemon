@@ -18,13 +18,17 @@ pub(super) struct SessionState {
     pub(super) inhibitor_peer: std::sync::Mutex<Option<std::os::unix::net::UnixStream>>,
     pub(super) keep_awake: AtomicBool,
     pub(super) telemetry_fails: AtomicBool,
+    pub(super) telemetry_stalled: AtomicBool,
+    pub(super) telemetry_started: Notify,
+    pub(super) telemetry_release: Notify,
+    pub(super) telemetry_queries: AtomicUsize,
     lock_calls: AtomicUsize,
     requested: Notify,
     sleep_calls: AtomicUsize,
     lock_fails: bool,
     hint_fails: bool,
     inactive: AtomicBool,
-    preparing_fails: AtomicBool,
+    pub(super) preparing_fails: AtomicBool,
     telemetry_fails_after_sleep: bool,
 }
 
@@ -81,7 +85,12 @@ impl FakeManager {
         zvariant::OwnedObjectPath::try_from("/org/freedesktop/login1/session/test").unwrap()
     }
 
-    fn can_suspend(&self) -> &str {
+    async fn can_suspend(&self) -> &str {
+        self.0.telemetry_queries.fetch_add(1, Ordering::SeqCst);
+        if self.0.telemetry_stalled.load(Ordering::SeqCst) {
+            self.0.telemetry_started.notify_one();
+            self.0.telemetry_release.notified().await;
+        }
         "yes"
     }
     fn can_hibernate(&self) -> &str {
