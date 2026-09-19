@@ -116,6 +116,7 @@ impl ApiService {
             "powerSleep.setKeepAwake" => self.effects.set_keep_awake(params).await,
             "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
             "powerSleep.idle" => self.effects.idle_sleep(params).await,
+            "displayPolicy.set" => self.effects.display_policy_set(params).await,
             "notifications.togglePanel" => self.notifications.notification_action(false).await,
             "notifications.toggleDnd" => self.notifications.notification_action(true).await,
             "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,

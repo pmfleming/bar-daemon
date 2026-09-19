@@ -26,6 +26,8 @@ pub mod stream {
     pub const POWER_SLEEP: &str = "power-sleep.changed";
     /// Automatic sleep profiles or their runtime status changed.
     pub const SLEEP_POLICY: &str = "sleep-policy.changed";
+    /// Laptop display preference or docking recovery status changed.
+    pub const DISPLAY_POLICY: &str = "display-policy.changed";
     /// Keyboard LED, keyboard backlight, or privacy hardware state changed.
     pub const OSD_HARDWARE: &str = "osd-hardware.changed";
     /// Notification summary changed.
@@ -71,6 +73,7 @@ pub const METHODS: &[&str] = &[
     "powerSleep.setKeepAwake",
     "powerSleep.setPolicy",
     "powerSleep.idle",
+    "displayPolicy.set",
     "notifications.togglePanel",
     "notifications.toggleDnd",
     "notifications.setDnd",
@@ -95,6 +98,7 @@ pub const STREAMS: &[&str] = &[
     stream::POWER_PROFILE,
     stream::POWER_SLEEP,
     stream::SLEEP_POLICY,
+    stream::DISPLAY_POLICY,
     stream::OSD_HARDWARE,
     stream::NOTIFICATIONS,
     stream::NOTIFICATION_ACTIVE,
@@ -139,6 +143,7 @@ pub fn registry() -> Value {
             { "name": "powerSleep.setKeepAwake", "params": { "enabled": true }, "result": "power_sleep" },
             { "name": "powerSleep.setPolicy", "params": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
             { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678" }, "result": "power_sleep" },
+            { "name": "displayPolicy.set", "params": { "prefer_external": true }, "result": "display_policy" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true, "until_unix_ms": 1768467500000_u64 }, "result": "notifications" },
@@ -162,6 +167,7 @@ pub fn registry() -> Value {
             { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::POWER_SLEEP, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::SLEEP_POLICY, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::DISPLAY_POLICY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::OSD_HARDWARE, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::NOTIFICATION_ACTIVE, "events": ["subscribed", "changed", "lagged"] },
@@ -318,6 +324,7 @@ fn generated_contract_fixture() -> Value {
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null
             },
+            "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null },
             "sleep_policy": {
                 "available": true, "active_profile": "shared",
                 "hibernate_available": true, "hibernate_error": null, "last_error": null,

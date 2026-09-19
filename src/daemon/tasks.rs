@@ -48,6 +48,10 @@ impl MonitorTasks {
         tasks.spawn("sleep", sleep::monitor(state.clone()));
         tasks.spawn("sleep-policy", crate::sleep_policy::monitor(state.clone()));
         tasks.spawn("lid", crate::sleep_policy::lid::monitor(state.clone()));
+        tasks.spawn(
+            "display-policy",
+            crate::display_policy::monitor(state.clone()),
+        );
         tasks.spawn("updates", updates::monitor(state.clone()));
         tasks.spawn("timezone", timezone::monitor(state.clone()));
         if let Some(engine) = notification_engine {

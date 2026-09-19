@@ -82,7 +82,7 @@ impl HyprlandClient {
         }
     }
 
-    async fn request(&self, command: &str) -> Result<String> {
+    pub(crate) async fn request(&self, command: &str) -> Result<String> {
         self.ipc.request(command).await
     }
 

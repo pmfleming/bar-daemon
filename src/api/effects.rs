@@ -147,6 +147,18 @@ impl DesktopEffects {
         }
     }
 
+    pub(super) async fn display_policy_set(&self, params: Value) -> Value {
+        let policy = request!(
+            params,
+            crate::display_policy::DisplayPolicy,
+            "displayPolicy.set"
+        );
+        match crate::display_policy::set(policy, &self.state).await {
+            Ok(state) => success(json!({"display_policy": state})),
+            Err(error) => super::error("display-policy-failed", format!("{error:#}")),
+        }
+    }
+
     pub(super) async fn sleep_policy_set(&self, params: Value) -> Value {
         let policy = request!(
             params,

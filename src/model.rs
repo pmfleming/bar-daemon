@@ -18,6 +18,8 @@ pub(crate) struct BarSnapshot {
     pub power_sleep: PowerSleepState,
     #[serde(default)]
     pub sleep_policy: crate::sleep_policy::SleepPolicyState,
+    #[serde(default)]
+    pub display_policy: crate::display_policy::DisplayPolicyState,
     pub osd_hardware: OsdHardwareState,
     pub notifications: NotificationState,
     pub notification_active: NotificationActiveState,

@@ -36,6 +36,47 @@ it off; enabling again reacquires the FD. It does not prevent shutdown, forced
 privileged sleep/inhibitor bypass, or hardware battery exhaustion. Keep awake
 can therefore increase battery drain; do not rely on it as battery protection.
 
+## Laptop docking and external-only displays
+
+With Home Manager's `programs.shelllist.displays.enable = true`, the resident
+bar-daemon owns laptop-panel switching. Nix only opts into ownership through
+`BAR_DAEMON_DISPLAY_CONTROL=1`; the **Use only the external display** preference
+in Battery & Power is persisted in `$XDG_CONFIG_HOME/bar-daemon/displays.json`.
+`displayPolicy.set` accepts only `{"prefer_external": true|false}`. The additive
+`display_policy` snapshot and `display-policy.changed` stream expose the saved
+preference, integration availability, recovery status and errors. The preference
+defaults to true when the integration is enabled; without the opt-in, the daemon
+never changes displays. Turning the preference off enables the internal panel
+alongside external displays. Settings can be saved even while the compositor is
+unavailable; the daemon reconciles them when the active session returns.
+
+On startup, wake, output loss or replacement, an internal eDP/LVDS/DSI panel is
+kept as a fallback until the same enabled, nonzero-size external output topology
+has been observed for five seconds. Polling every two seconds is independent of
+compositor event traffic. Resume generation resets stability; sleep preparation
+pauses changes. Before disabling a panel, the daemon rechecks external topology,
+active local Wayland-session ownership, and sleep generation. Failed commands
+remain retryable. DPMS-off is **not** output loss, so idle blanking is preserved.
+Existing external modes/positions are left alone, avoiding a second mode change
+during hotplug. Internal fallback uses its reported scale and preferred mode.
+No saved Lua file is executed, no shell command is spawned, and no lock or lid
+sleep policy is changed. Only validated compositor-reported internal connector
+names can be passed to the fixed native Hyprland IPC operation.
+
+**Migration:** remove the old `hypr-monitor-auto` script, package and user service
+when enabling this integration. The managed daemon unit conflicts with and is
+ordered after that legacy unit, and the runtime also refuses display mutations
+while it is still active. Do not run another automatic display manager alongside
+this policy. Activate the updated daemon, UI and Home Manager wiring together;
+source changes alone do not replace a currently running legacy service.
+
+This improves display-policy recovery, not GPU/USB-C firmware recovery. A cable
+being connected or logind reporting a successful resume does not prove the
+external display is usable. The output can still disappear after the final
+check; the next reconciliation restores the laptop fallback when Hyprland can
+control it. No forced GPU resets, DPMS wake loops, or sleep-inhibitor bypasses
+are attempted.
+
 ## Automatic sleep, then hibernate
 
 The `sleep_policy` snapshot domain and `sleep-policy.changed` stream expose the persisted policy, active profile (`shared`, `battery`, or `plugged`), integration availability, hibernation availability/reason, and last automatic-action failure. `powerSleep.setPolicy` accepts the complete policy:

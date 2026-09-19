@@ -169,6 +169,9 @@ fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
         protocol::stream::SLEEP_POLICY => {
             serde_json::to_value(&snapshot.sleep_policy).unwrap_or(Value::Null)
         }
+        protocol::stream::DISPLAY_POLICY => {
+            serde_json::to_value(&snapshot.display_policy).unwrap_or(Value::Null)
+        }
         protocol::stream::OSD_HARDWARE => {
             serde_json::to_value(&snapshot.osd_hardware).unwrap_or(Value::Null)
         }

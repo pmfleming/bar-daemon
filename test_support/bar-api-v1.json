@@ -237,6 +237,13 @@
         "result": "power_sleep"
       },
       {
+        "name": "displayPolicy.set",
+        "params": {
+          "prefer_external": true
+        },
+        "result": "display_policy"
+      },
+      {
         "name": "notifications.togglePanel",
         "params": {},
         "result": "operation"
@@ -393,6 +400,14 @@
           "lagged"
         ],
         "name": "sleep-policy.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
+        "name": "display-policy.changed"
       },
       {
         "events": [
@@ -777,6 +792,14 @@
       "error": null,
       "max_brightness": 1000,
       "percent": 50
+    },
+    "display_policy": {
+      "available": true,
+      "error": null,
+      "policy": {
+        "prefer_external": true
+      },
+      "status": "external"
     },
     "media": {
       "active_player": "org.mpris.MediaPlayer2.spotify",

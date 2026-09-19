@@ -12,6 +12,7 @@ mod battery;
 mod brightness;
 mod client;
 mod daemon;
+mod display_policy;
 mod hyprland;
 mod media;
 mod model;
