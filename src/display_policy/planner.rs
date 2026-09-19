@@ -1,13 +1,13 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const SETTLE: Duration = Duration::from_secs(5);
 const MAX_OBSERVATION_GAP: Duration = Duration::from_secs(6);
 
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct Output {
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub(crate) struct Output {
     pub id: i64,
     pub name: String,
     pub width: u32,
@@ -16,6 +16,14 @@ pub(super) struct Output {
     pub scale: f64,
     #[serde(rename = "refreshRate")]
     pub refresh_rate: f64,
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
+    #[serde(default)]
+    pub transform: u8,
+    #[serde(default, rename = "availableModes")]
+    pub available_modes: Vec<String>,
     // DPMS intentionally does not participate in eligibility: idle blanking
     // must not turn another display on.
 }
@@ -31,7 +39,7 @@ impl Output {
             .iter()
             .any(|prefix| self.name.starts_with(prefix))
     }
-    fn usable(&self) -> bool {
+    pub(super) fn usable(&self) -> bool {
         !self.disabled && self.width > 0 && self.height > 0
     }
     pub fn command(&self, disable: bool) -> Result<String> {

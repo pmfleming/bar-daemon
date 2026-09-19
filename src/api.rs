@@ -117,6 +117,9 @@ impl ApiService {
             "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
             "powerSleep.idle" => self.effects.idle_sleep(params).await,
             "displayPolicy.set" => self.effects.display_policy_set(params).await,
+            "displayLayout.preview" | "displayLayout.confirm" | "displayLayout.revert" => {
+                self.effects.display_layout(method, params).await
+            }
             "notifications.togglePanel" => self.notifications.notification_action(false).await,
             "notifications.toggleDnd" => self.notifications.notification_action(true).await,
             "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,

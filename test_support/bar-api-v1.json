@@ -244,6 +244,37 @@
         "result": "display_policy"
       },
       {
+        "name": "displayLayout.preview",
+        "params": {
+          "outputs": [
+            {
+              "enabled": true,
+              "mode": "1920x1200@60",
+              "name": "eDP-1",
+              "scale": 1.25,
+              "transform": 0,
+              "x": 0,
+              "y": 0
+            }
+          ]
+        },
+        "result": "display_policy"
+      },
+      {
+        "name": "displayLayout.confirm",
+        "params": {
+          "id": "preview-id"
+        },
+        "result": "display_policy"
+      },
+      {
+        "name": "displayLayout.revert",
+        "params": {
+          "id": "preview-id"
+        },
+        "result": "display_policy"
+      },
+      {
         "name": "notifications.togglePanel",
         "params": {},
         "result": "operation"
@@ -796,6 +827,13 @@
     "display_policy": {
       "available": true,
       "error": null,
+      "layout": {
+        "saved": {
+          "outputs": []
+        },
+        "trial": null
+      },
+      "outputs": [],
       "policy": {
         "prefer_external": true
       },

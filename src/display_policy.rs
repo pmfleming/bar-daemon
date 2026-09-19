@@ -17,6 +17,7 @@ use crate::{
 };
 use planner::{Output, Planner, external_signature};
 
+pub(crate) mod layout;
 mod planner;
 #[cfg(test)]
 mod tests;
@@ -42,6 +43,8 @@ pub(crate) struct DisplayPolicyState {
     pub policy: DisplayPolicy,
     pub status: String,
     pub error: Option<String>,
+    pub outputs: Vec<Output>,
+    pub layout: layout::Document,
 }
 
 fn enabled() -> bool {
@@ -65,15 +68,63 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
         policy,
         status: "pending".into(),
         error: None,
+        ..store.snapshot().await.display_policy
     };
     store.update_display_policy(state.clone()).await;
     Ok(state)
+}
+
+pub(crate) async fn layout_action(
+    action: &str,
+    params: serde_json::Value,
+    store: &StateStore,
+) -> Result<DisplayPolicyState> {
+    ensure_enabled()?;
+    let _guard = POLICY_WRITE.lock().await;
+    let backend = HyprlandClient::default();
+    let document = tokio::time::timeout(Duration::from_secs(8), async {
+        if action == "displayLayout.preview" {
+            layout::preview(&backend, serde_json::from_value(params)?, store).await
+        } else {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Token {
+                id: String,
+            }
+            let token: Token = serde_json::from_value(params)?;
+            layout::finish(
+                &backend,
+                &token.id,
+                action == "displayLayout.confirm",
+                store,
+            )
+            .await
+        }
+    })
+    .await
+    .context("Display layout request timed out; unconfirmed changes will revert")??;
+    let mut state = store.snapshot().await.display_policy;
+    state.layout = document;
+    state.outputs = backend.outputs().await?;
+    state.error = None;
+    store.update_display_policy(state.clone()).await;
+    Ok(state)
+}
+
+fn ensure_enabled() -> Result<()> {
+    if !enabled() {
+        bail!("Enable programs.shelllist.displays.enable to manage displays")
+    }
+    Ok(())
 }
 
 trait Backend {
     async fn eligible(&self) -> Result<()>;
     async fn outputs(&self) -> Result<Vec<Output>>;
     async fn apply(&self, output: &Output, disable: bool) -> Result<()>;
+    async fn configure(&self, _setting: &layout::Setting) -> Result<()> {
+        bail!("Layout control is unavailable")
+    }
 }
 
 impl Backend for HyprlandClient {
@@ -93,7 +144,21 @@ impl Backend for HyprlandClient {
         serde_json::from_str(&self.request("j/monitors all").await?)
             .context("read Hyprland display topology")
     }
+    async fn configure(&self, setting: &layout::Setting) -> Result<()> {
+        let response = self.request(&setting.command()?).await?;
+        if response.trim() != "ok" {
+            bail!("Hyprland rejected layout change: {}", response.trim());
+        }
+        Ok(())
+    }
     async fn apply(&self, output: &Output, disable: bool) -> Result<()> {
+        if !disable {
+            if let Ok(Some(setting)) = layout::saved_internal(&output.name).await {
+                if self.configure(&setting).await.is_ok() {
+                    return Ok(());
+                }
+            }
+        }
         let response = self.request(&output.command(disable)?).await?;
         if response.trim() != "ok" {
             bail!("Hyprland rejected display change: {}", response.trim());
@@ -221,20 +286,25 @@ pub(crate) async fn monitor(store: StateStore) {
         }
         let mut state = DisplayPolicyState {
             available: true,
-            ..Default::default()
+            error: None,
+            ..store.snapshot().await.display_policy
         };
         let result = async {
             state.policy = load().await?;
-            tokio::time::timeout(
-                Duration::from_secs(8),
-                reconcile(
-                    &backend,
-                    &mut planner,
-                    &state.policy,
-                    &store,
-                    Instant::now(),
-                ),
-            )
+            tokio::time::timeout(Duration::from_secs(8), async {
+                let layout_result = layout::tick(&backend, &store).await;
+                let paused = layout_result.as_ref().map_or(true, |(_, paused)| *paused);
+                let mut policy = state.policy.clone();
+                if paused {
+                    policy.prefer_external = false;
+                }
+                let status =
+                    reconcile(&backend, &mut planner, &policy, &store, Instant::now()).await?;
+                state.outputs = backend.outputs().await?;
+                let (layout, _) = layout_result?;
+                state.layout = layout;
+                Ok::<_, anyhow::Error>(if paused { "layout-preview" } else { status })
+            })
             .await
             .context("display reconciliation timed out")?
         }

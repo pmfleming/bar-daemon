@@ -14,6 +14,7 @@ fn internal(disabled: bool) -> Output {
         disabled,
         scale: 1.25,
         refresh_rate: 60.0,
+        ..Default::default()
     }
 }
 fn external() -> Output {
@@ -25,6 +26,7 @@ fn external() -> Output {
         disabled: false,
         scale: 1.25,
         refresh_rate: 75.0,
+        ..Default::default()
     }
 }
 

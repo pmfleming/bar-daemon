@@ -74,6 +74,9 @@ pub const METHODS: &[&str] = &[
     "powerSleep.setPolicy",
     "powerSleep.idle",
     "displayPolicy.set",
+    "displayLayout.preview",
+    "displayLayout.confirm",
+    "displayLayout.revert",
     "notifications.togglePanel",
     "notifications.toggleDnd",
     "notifications.setDnd",
@@ -144,6 +147,9 @@ pub fn registry() -> Value {
             { "name": "powerSleep.setPolicy", "params": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
             { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678" }, "result": "power_sleep" },
             { "name": "displayPolicy.set", "params": { "prefer_external": true }, "result": "display_policy" },
+            { "name": "displayLayout.preview", "params": { "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true }] }, "result": "display_policy" },
+            { "name": "displayLayout.confirm", "params": { "id": "preview-id" }, "result": "display_policy" },
+            { "name": "displayLayout.revert", "params": { "id": "preview-id" }, "result": "display_policy" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true, "until_unix_ms": 1768467500000_u64 }, "result": "notifications" },
@@ -324,7 +330,7 @@ fn generated_contract_fixture() -> Value {
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null
             },
-            "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null },
+            "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null, "outputs": [], "layout": { "saved": { "outputs": [] }, "trial": null } },
             "sleep_policy": {
                 "available": true, "active_profile": "shared",
                 "hibernate_available": true, "hibernate_error": null, "last_error": null,
