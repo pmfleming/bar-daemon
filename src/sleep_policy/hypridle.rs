@@ -44,17 +44,20 @@ pub(super) fn render(
         );
         result.extend([line, "\n"]);
     }
-    if profile.sleep_minutes > 0 {
-        let executable = executable
-            .to_str()
-            .context("bar-daemon executable path is not UTF-8")?;
-        if executable.contains(['\n', '\r', '#', '{', '}']) {
-            bail!("unsupported executable path in hypridle config");
-        }
-        let quoted = format!("'{}'", executable.replace('\'', "'\\''"));
-        result.push_str(&format!("\nlistener {{\n  timeout = {}\n  on-timeout = {quoted} idle-sleep --sleep-minutes {} --generation {generation}\n}}\n", profile.sleep_minutes * 60, profile.sleep_minutes));
-    }
+    // The native control owns one separate sleep listener. Base lock/DPMS
+    // listeners and process-owned inhibitor cookies are never restarted.
+    quoted_executable(executable)?;
     Ok(result)
+}
+
+fn quoted_executable(executable: &Path) -> Result<String> {
+    let executable = executable
+        .to_str()
+        .context("bar-daemon executable path is not UTF-8")?;
+    if executable.contains(['\n', '\r', '#', '{', '}']) {
+        bail!("unsupported executable path in hypridle config");
+    }
+    Ok(format!("'{}'", executable.replace('\'', "'\\''")))
 }
 
 fn config_code(line: &str) -> Result<&str> {
@@ -138,29 +141,58 @@ fn runtime_config() -> Result<std::path::PathBuf> {
     Ok(Path::new(&runtime).join("bar-daemon/hypridle.conf"))
 }
 
-pub(super) async fn active_minutes() -> Result<u32> {
-    let config = tokio::fs::read_to_string(runtime_config()?)
-        .await
-        .context("read managed hypridle state")?;
-    config
-        .lines()
-        .nth(1)
-        .and_then(|line| line.strip_prefix("# shelllist-idle-minutes="))
-        .context("hypridle has not loaded a managed sleep profile")?
-        .parse()
-        .context("invalid managed idle timeout")
+async fn control(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
+    Ok(zbus::Proxy::new(
+        connection,
+        "org.laufan.Hypridle",
+        "/org/laufan/Hypridle",
+        "org.laufan.Hypridle1",
+    )
+    .await?)
 }
 
-pub(super) async fn active_generation() -> Result<String> {
-    let config = tokio::fs::read_to_string(runtime_config()?)
+pub(super) async fn live_state() -> Result<(u32, String, u32)> {
+    let connection = super::user_systemd().await?;
+    live_state_on(&connection).await
+}
+
+async fn live_state_on(connection: &zbus::Connection) -> Result<(u32, String, u32)> {
+    let (state,): ((u32, String, u32),) = control(connection)
+        .await?
+        .call("GetState", &())
         .await
-        .context("read active idle countdown")?;
-    config
-        .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("# shelllist-idle-generation="))
-        .map(str::to_owned)
-        .context("hypridle has not loaded a managed countdown")
+        .context("activate the updated native Hypridle control integration")?;
+    Ok(state)
+}
+
+pub(super) async fn active_minutes() -> Result<u32> {
+    Ok(live_state().await?.2)
+}
+pub(super) async fn active_generation() -> Result<String> {
+    Ok(live_state().await?.1)
+}
+
+pub(super) async fn set_timeout(minutes: u32) -> Result<()> {
+    let connection = super::user_systemd().await?;
+    set_timeout_on(&connection, minutes).await
+}
+
+async fn set_timeout_on(connection: &zbus::Connection, minutes: u32) -> Result<()> {
+    let (pid, generation, previous) = live_state_on(connection).await?;
+    if previous == minutes {
+        return Ok(());
+    }
+    let _: () = control(connection)
+        .await?
+        .call("SetTimeout", &(generation, minutes))
+        .await
+        .context("update only the managed sleep listener")?;
+    let (current_pid, _, applied) = live_state_on(connection).await?;
+    anyhow::ensure!(
+        pid == current_pid && applied == minutes,
+        "idle process changed or timeout update was not confirmed"
+    );
+    Ok(())
 }
 
 pub(super) async fn verify_generation(generation: &str) -> Result<()> {
@@ -217,6 +249,12 @@ pub(crate) async fn run(config: &Path, executable: &Path) -> Result<()> {
         }
     };
     let managed = rendered.is_some();
+    let minutes = rendered
+        .as_ref()
+        .and_then(|text| text.lines().nth(1))
+        .and_then(|line| line.strip_prefix("# shelllist-idle-minutes="))
+        .unwrap_or("0")
+        .to_string();
     let selected_path = if let Some(rendered) = rendered {
         crate::paths::save_bytes_durable(&path, rendered.as_bytes())?;
         path.as_path()
@@ -228,6 +266,9 @@ pub(crate) async fn run(config: &Path, executable: &Path) -> Result<()> {
         .arg("--config")
         .arg(selected_path)
         .env("BAR_DAEMON_IDLE_MANAGED", if managed { "1" } else { "0" })
+        .env("BAR_DAEMON_IDLE_GENERATION", &generation)
+        .env("BAR_DAEMON_IDLE_MINUTES", minutes)
+        .env("BAR_DAEMON_IDLE_COMMAND", quoted_executable(&daemon)?)
         .exec();
     Err(error).context("start managed hypridle")
 }
@@ -238,6 +279,43 @@ mod tests {
     use crate::sleep_policy::SleepProfile;
     use std::path::Path;
 
+    struct FakeControl(std::sync::Arc<std::sync::Mutex<(u32, u32)>>);
+    #[zbus::interface(name = "org.laufan.Hypridle1")]
+    impl FakeControl {
+        fn get_state(&self) -> ((u32, String, u32),) {
+            let state = self.0.lock().unwrap();
+            ((42, format!("42-{}", state.1), state.0),)
+        }
+        fn set_timeout(&self, expected: &str, minutes: u32) {
+            let mut state = self.0.lock().unwrap();
+            assert_eq!(expected, format!("42-{}", state.1));
+            state.0 = minutes;
+            state.1 += 1;
+        }
+    }
+
+    #[tokio::test]
+    async fn live_timeout_updates_preserve_process_and_skip_unchanged_timeout() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new((30, 0)));
+        let (a, b) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(a)
+            .server(zbus::Guid::generate())
+            .unwrap()
+            .p2p()
+            .serve_at("/org/laufan/Hypridle", FakeControl(state.clone()))
+            .unwrap()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(b).p2p().build();
+        let (_server, client) = tokio::try_join!(server, client).unwrap();
+        super::set_timeout_on(&client, 30).await.unwrap();
+        assert_eq!(*state.lock().unwrap(), (30, 0));
+        super::set_timeout_on(&client, 45).await.unwrap();
+        assert_eq!(*state.lock().unwrap(), (45, 1));
+        super::set_timeout_on(&client, 0).await.unwrap();
+        assert_eq!(*state.lock().unwrap(), (0, 2));
+        assert_eq!(super::live_state_on(&client).await.unwrap().0, 42);
+    }
+
     #[test]
     fn replaces_only_sleep_and_preserves_lock_dpms_and_inhibitors() {
         let base = "general {\n  before_sleep_cmd = loginctl lock-session\n}\nlistener {\n timeout=300\n on-timeout=loginctl lock-session\n}\nlistener {\n timeout=420\n on-timeout=hyprctl dispatch dpms off\n on-resume=hyprctl dispatch dpms on\n}\nlistener {\n timeout=1800\n on-timeout=/run/current-system/sw/bin/systemctl suspend\n}\n";
@@ -247,7 +325,7 @@ mod tests {
         };
         let rendered = render(base, &profile, Path::new("/test/bar-daemon"), "test-1").unwrap();
         assert!(rendered.starts_with("# shelllist-idle-generation=test-1\n"));
-        assert!(rendered.contains("--generation test-1"));
+        assert!(rendered.contains("# shelllist-idle-minutes=15"));
         assert!(
             render(
                 base,
@@ -260,8 +338,10 @@ mod tests {
         assert!(rendered.contains("before_sleep_cmd = loginctl lock-session"));
         assert!(rendered.contains("on-resume=hyprctl dispatch dpms on"));
         assert!(!rendered.contains("systemctl suspend"));
-        assert!(rendered.contains("timeout = 900"));
-        assert!(rendered.contains("idle-sleep --sleep-minutes 15"));
+        assert!(
+            !rendered.contains("idle-sleep"),
+            "native listener must not have a second config timer"
+        );
         assert!(!rendered.contains("ignore_inhibit"));
         let never = render(
             base,

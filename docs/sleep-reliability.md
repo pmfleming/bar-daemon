@@ -20,3 +20,18 @@ and restore logind policy. A two-second fallback supplements property signals.
 
 Validation: 46 sleep-filtered Rust tests passed, including dependency cancellation
 and independent lid-state publication under a held policy mutex.
+
+## 2. Live Hypridle listener updates
+
+The paired Shelllist native patch exports a bounded SetTimeout/GetState interface
+and owns one separate sleep listener. Changes never restart Hypridle, its
+lock/DPMS listeners, or its screensaver inhibitor-cookie owner. Equal timeouts
+are no-ops. Each changed timeout invalidates the old countdown generation.
+The daemon verifies live process/generation/timeout state instead of treating a
+stale generated file as evidence of a running timer. Failed updates roll back
+policy and attempt to restore the previous live timeout. Activate both updated
+packages together; old native integrations are reported unavailable.
+
+Validation: patched Hypridle 0.1.7 built successfully; isolated D-Bus tests cover
+unchanged, changed and Never timeouts with the same PID. Configuration rendering
+retains lock/DPMS listeners without adding a competing sleep timer.

@@ -159,55 +159,18 @@ async fn validate_config(policy: &SleepPolicy) -> Result<()> {
 async fn user_systemd() -> Result<zbus::Connection> {
     crate::sleep::bounded("connect to user systemd", Duration::from_secs(3), async {
         Ok(zbus::connection::Builder::session()?
-            .method_timeout(Duration::from_secs(3)).build().await?)
-    }).await
-}
-
-async fn restart_idle() -> Result<()> {
-    let connection = user_systemd().await?;
-    let manager = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.systemd1",
-        "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
-    )
-    .await?;
-    use futures::StreamExt;
-    let mut jobs = manager.receive_signal("JobRemoved").await?;
-    let previous_generation = hypridle::active_generation().await.ok();
-    let job: zvariant::OwnedObjectPath = manager
-        .call("RestartUnit", &("hypridle.service", "replace"))
-        .await
-        .context("restart hypridle with the selected sleep profile")?;
-    tokio::time::timeout(Duration::from_secs(12), async {
-        while let Some(signal) = jobs.next().await {
-            let (_, path, _, result): (u32, zvariant::OwnedObjectPath, String, String) =
-                signal.body().deserialize()?;
-            if path == job {
-                if result != "done" {
-                    bail!("hypridle restart failed: {result}");
-                }
-                loop {
-                    let generation = hypridle::active_generation().await.ok();
-                    if generation.is_some() && generation != previous_generation {
-                        idle_running().await?;
-                        // Reject immediate post-notify exits and replacement by
-                        // systemd's automatic restart before acknowledging a save.
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        idle_running().await?;
-                        if hypridle::active_generation().await.ok() != generation {
-                            bail!("hypridle restarted again during readiness confirmation");
-                        }
-                        return Ok(());
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }
-        }
-        bail!("systemd job stream ended while restarting hypridle")
+            .method_timeout(Duration::from_secs(3))
+            .build()
+            .await?)
     })
     .await
-    .context("timed out restarting hypridle")?
+}
+
+async fn apply_idle() -> Result<()> {
+    idle_running().await?;
+    let policy = load().await?;
+    hypridle::set_timeout(policy.profile(plugged().await?).sleep_minutes).await?;
+    idle_running().await
 }
 
 async fn idle_running() -> Result<()> {
@@ -287,7 +250,7 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         }
     }
     let previous = load().await?;
-    persist_and_restart(&policy_path(), &policy, &previous, restart_idle).await?;
+    persist_and_restart(&policy_path(), &policy, &previous, apply_idle).await?;
     let state = SleepPolicyState {
         available: true,
         active_profile: policy.profile_name(plugged).into(),
@@ -321,8 +284,8 @@ where
     if let Err(error) = restart().await {
         save_json_atomic(path, previous)
             .await
-            .context("restore previous sleep policy after hypridle restart failed")?;
-        restart().await.with_context(|| format!("new sleep policy failed ({error:#}); previous policy was restored but hypridle could not restart"))?;
+            .context("restore previous sleep policy after live timeout update failed")?;
+        restart().await.with_context(|| format!("new sleep policy failed ({error:#}); previous policy was restored but its live timeout could not be confirmed"))?;
         return Err(error).context("sleep settings not applied; previous policy restored");
     }
     Ok(())
@@ -491,7 +454,7 @@ pub(crate) async fn monitor(store: StateStore) {
             state.active_profile = state.policy.profile_name(plugged).into();
             let profile = state.policy.profile(plugged);
             if hypridle::active_minutes().await? != profile.sleep_minutes {
-                restart_idle().await?;
+                apply_idle().await?;
             }
             let support = hibernate_support().await;
             state.hibernate_available = support.is_ok();
