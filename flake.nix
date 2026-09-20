@@ -36,6 +36,7 @@
             strictDeps = true;
             postFixup = ''
               wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl ]}
+              wrapProgram $out/bin/bar-battery-helper --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
             '';
             postInstall = ''
               install -Dm644 protocols/hyprland-lock-notify-v1.xml \

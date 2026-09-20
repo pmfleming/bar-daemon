@@ -185,6 +185,10 @@ where
         .try_lock()
         .context("a lock or sleep request is already in progress")?;
     if action != "lock" {
+        anyhow::ensure!(
+            outcome::TRACKER.ready_for_new_request(),
+            "a previously accepted sleep operation is still pending"
+        );
         outcome::TRACKER.begin(action);
     }
     let _cancellation = (action != "lock").then(|| outcome::TRACKER.cancellation_guard());

@@ -88,3 +88,26 @@ systemd service completed, not proof of firmware residency or durable resume.
 
 Validation: transition/correlation/cancellation tests, stale-result preservation,
 frontend uncertainty/late-failure presentation checks, and updated API fixtures.
+
+## 7. Runtime override ownership, readback and cleanup
+
+The privileged helper replaces sticky writes with an exclusive FD lease. It
+refuses non-regular/admin-owned files, installs only bounded generated contents,
+and verifies effective drop-in precedence using a fixed, bounded systemd-analyze
+command (packaged in its PATH). Conflicting overrides abort setup. Equivalently
+spelled administrator durations are conservatively reported as overrides rather
+than interpreted by a second time-expression parser.
+
+Operation completion/failure/uncertainty releases the daemon's FD; daemon death
+also closes it. The helper waits at least 30 awake seconds from acquisition and
+confirms logind is not preparing and no relevant systemd service/job is active
+before removing its unchanged file. It checks abandoned leases after 120 awake
+seconds and defers on unreadable state. Startup/periodic maintenance reclaims
+orphaned and legacy generated files; disabling hibernation requests cleanup.
+No administrator-owned or subsequently edited contents are removed. The global
+nature of systemd sleep.conf remains: other callers can share the effective
+delay during a lease, and an administrator can still change settings after the
+readback barrier. There is no claim of a per-request systemd configuration API.
+
+Validation: temporary-directory ownership/compare-before-delete tests and
+readback precedence/reset tests pass. No live /run settings were written.

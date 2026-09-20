@@ -54,7 +54,7 @@ impl Drop for CancellationGuard<'_> {
 }
 
 pub(super) static TRACKER: LazyLock<Tracker> = LazyLock::new(Tracker::default);
-pub(super) fn current() -> Operation {
+pub(crate) fn current() -> Operation {
     TRACKER.state.borrow().clone()
 }
 
@@ -73,6 +73,12 @@ fn service(action: &str) -> &str {
     }
 }
 impl Tracker {
+    pub(super) fn ready_for_new_request(&self) -> bool {
+        !matches!(
+            self.state.borrow().phase.as_str(),
+            "requested" | "dispatching" | "accepted" | "preparing" | "returned"
+        )
+    }
     pub(super) fn cancellation_guard(&self) -> CancellationGuard<'_> {
         CancellationGuard {
             tracker: self,
@@ -80,6 +86,10 @@ impl Tracker {
         }
     }
     pub(super) fn begin(&self, action: &str) {
+        let previous = self.state.borrow().clone();
+        if matches!(previous.phase.as_str(), "failed" | "completed" | "unknown") {
+            crate::sleep_policy::runtime::release(previous.id);
+        }
         *self.started.lock().unwrap() = Instant::now();
         self.state.send_modify(|s| {
             *s = Operation {
@@ -183,6 +193,9 @@ pub(super) async fn monitor(store: StateStore) {
                     changed = updates.changed() => { if changed.is_err() { return; } }
                 }
                 let value = updates.borrow_and_update().clone();
+                if matches!(value.phase.as_str(), "failed" | "completed" | "unknown") {
+                    crate::sleep_policy::runtime::release(value.id);
+                }
                 store.record_sleep_operation(value).await;
             }
         },

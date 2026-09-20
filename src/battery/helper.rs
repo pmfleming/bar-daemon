@@ -53,12 +53,29 @@ impl BatteryHelper {
         .is_ok()
     }
 
-    async fn set_hibernate_delay(
+    async fn cleanup_hibernate_delay(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> zbus::fdo::Result<bool> {
+        authorize(
+            connection,
+            &header,
+            "org.laufan.bar-daemon.set-hibernate-delay",
+            0,
+        )
+        .await?;
+        crate::sleep_policy::runtime::cleanup()
+            .await
+            .map_err(failed)
+    }
+
+    async fn acquire_hibernate_delay(
         &self,
         minutes: u32,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> zbus::fdo::Result<()> {
+    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
         // An idle callback must never launch an authentication prompt.
         authorize(
             connection,
@@ -67,7 +84,8 @@ impl BatteryHelper {
             0,
         )
         .await?;
-        crate::sleep_policy::write_hibernate_delay(Path::new("/run/systemd/sleep.conf.d"), minutes)
+        crate::sleep_policy::runtime::acquire(minutes)
+            .await
             .map_err(failed)
     }
 
@@ -324,6 +342,7 @@ fn write_percent(path: &Path, value: u8) -> Result<()> {
 pub(crate) async fn run() -> Result<()> {
     let _connection = connection::Builder::system()
         .context("connect battery helper to system D-Bus")?
+        .method_timeout(std::time::Duration::from_secs(3))
         .name(BUS_NAME)
         .context("claim battery helper bus name")?
         .serve_at(OBJECT_PATH, BatteryHelper::default())
@@ -338,6 +357,7 @@ pub(crate) async fn run() -> Result<()> {
     );
     let mut terminate = signal(SignalKind::terminate()).context("listen for SIGTERM")?;
     tokio::select! {
+        _ = crate::sleep_policy::runtime::maintain() => Ok(()),
         result = ctrl_c() => result.context("wait for Ctrl-C"),
         _ = terminate.recv() => Ok(()),
     }

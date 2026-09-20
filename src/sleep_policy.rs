@@ -16,6 +16,7 @@ use crate::{
 
 mod hypridle;
 pub(crate) mod lid;
+pub(crate) mod runtime;
 pub(crate) use hypridle::run;
 
 // Serializes saves, power-source changes and idle callbacks.
@@ -254,6 +255,27 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
     }
     let previous = load().await?;
     persist_and_restart(&policy_path(), &policy, &previous, apply_idle).await?;
+    if [policy.profile(false), policy.profile(true)]
+        .iter()
+        .all(|p| {
+            p.hibernate_minutes == 0
+                || (p.sleep_minutes == 0 && policy.lid_action != lid::LidAction::Profile)
+        })
+    {
+        // Disabling protection must remain possible with an unavailable helper.
+        let cleanup: Result<()> = async {
+            let connection = crate::sleep::system_bus().await?;
+            let _: bool = helper_proxy(&connection)
+                .await?
+                .call("CleanupHibernateDelay", &())
+                .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = cleanup {
+            tracing::warn!(%error, "runtime hibernate cleanup deferred to helper maintenance");
+        }
+    }
     let state = SleepPolicyState {
         available: true,
         active_profile: policy.profile_name(plugged).into(),
@@ -418,10 +440,11 @@ where
                 if profile.hibernate_minutes > 0 {
                     let connection = crate::sleep::system_bus().await?;
                     let proxy = helper_proxy(&connection).await?;
-                    let _: () = proxy
-                        .call("SetHibernateDelay", &(profile.hibernate_minutes,))
+                    let fd: zvariant::OwnedFd = proxy
+                        .call("AcquireHibernateDelay", &(profile.hibernate_minutes,))
                         .await
-                        .context("configure systemd's time asleep before hibernation")?;
+                        .context("lease and verify systemd's time asleep before hibernation")?;
+                    runtime::retain(crate::sleep::outcome::current().id, fd)?;
                 }
                 Ok(())
             })
@@ -448,12 +471,9 @@ where
 /// The privileged helper accepts only a bounded number, never a path or config
 /// fragment. This override is runtime-only and applies to suspend-then-hibernate,
 /// not ordinary explicit Suspend or Hibernate actions.
-pub(crate) fn write_hibernate_delay(directory: &Path, minutes: u32) -> Result<()> {
-    if !(1..=MAX_MINUTES).contains(&minutes) {
-        bail!("hibernate delay must be 1–10080 minutes");
-    }
-    crate::paths::save_bytes_durable(&directory.join("90-shelllist.conf"),
-        format!("# Managed by bar-daemon\n[Sleep]\nHibernateDelaySec={minutes}min\nHibernateOnACPower=yes\n").as_bytes())
+#[cfg(test)]
+fn write_hibernate_delay(directory: &Path, minutes: u32) -> Result<()> {
+    runtime::install(directory, minutes).map(|_| ())
 }
 
 pub(crate) async fn monitor(store: StateStore) {
