@@ -1,5 +1,5 @@
 //! Keep transition detection independent of slow capability/inhibitor queries.
-//! The three futures have one owner: dropping monitor cancels all of them.
+//! Signal, clock, telemetry and operation-outcome futures share one cancellation owner.
 use std::{future::Future, time::Duration};
 
 use anyhow::{Context, Result, bail};

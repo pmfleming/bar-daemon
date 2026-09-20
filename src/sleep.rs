@@ -311,6 +311,12 @@ where
                 ensure_not_preparing(connection).await?;
                 // Last check, after potentially slow status/session queries.
                 validate().await?;
+                // A fresh trigger may itself consult a slow service. It must
+                // not make the previously observed lock/session timeless.
+                ensure_active(&session).await?;
+                if !confirmed_locked(&session, &mut observer).await? {
+                    bail!("session unlocked during final trigger validation; refusing to sleep");
+                }
             }
             Ok((current, observer))
         },

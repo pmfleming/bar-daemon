@@ -272,7 +272,7 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
             "critical battery protection requires hibernation support: {capability}"
         );
     }
-    persist_and_restart(&policy_path(), &policy, &previous, apply_idle).await?;
+    persist_and_apply(&policy_path(), &policy, &previous, apply_idle).await?;
     if [policy.profile(false), policy.profile(true)]
         .iter()
         .all(|p| {
@@ -324,22 +324,22 @@ async fn hibernate_support() -> Result<Option<String>> {
     })
 }
 
-async fn persist_and_restart<F, Fut>(
+async fn persist_and_apply<F, Fut>(
     path: &Path,
     policy: &SleepPolicy,
     previous: &SleepPolicy,
-    mut restart: F,
+    mut apply: F,
 ) -> Result<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
     save_json_atomic(path, policy).await?;
-    if let Err(error) = restart().await {
+    if let Err(error) = apply().await {
         save_json_atomic(path, previous)
             .await
             .context("restore previous sleep policy after live timeout update failed")?;
-        restart().await.with_context(|| format!("new sleep policy failed ({error:#}); previous policy was restored but its live timeout could not be confirmed"))?;
+        apply().await.with_context(|| format!("new sleep policy failed ({error:#}); previous policy was restored but its live timeout could not be confirmed"))?;
         return Err(error).context("sleep settings not applied; previous policy restored");
     }
     Ok(())
@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saves_durably_and_rolls_back_if_idle_restart_fails() {
+    async fn saves_durably_and_rolls_back_if_live_idle_update_fails() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("sleep.json");
         let previous = SleepPolicy::default();
@@ -704,7 +704,7 @@ mod tests {
             same_profile: false,
             ..Default::default()
         };
-        persist_and_restart(&path, &next, &previous, || async { Ok(()) })
+        persist_and_apply(&path, &next, &previous, || async { Ok(()) })
             .await
             .unwrap();
         assert_eq!(
@@ -714,10 +714,10 @@ mod tests {
             next
         );
         let mut calls = 0;
-        let error = persist_and_restart(&path, &next, &previous, || {
+        let error = persist_and_apply(&path, &next, &previous, || {
             calls += 1;
             std::future::ready(if calls == 1 {
-                Err(anyhow::anyhow!("restart failed"))
+                Err(anyhow::anyhow!("live update failed"))
             } else {
                 Ok(())
             })
@@ -727,7 +727,7 @@ mod tests {
         assert!(error.to_string().contains("previous policy restored"));
         assert_eq!(
             calls, 2,
-            "rollback also restarts hypridle with the old settings"
+            "rollback also restores the old live timeout without restarting Hypridle"
         );
         assert_eq!(
             load_json_or_default::<SleepPolicy>(&path, "test")

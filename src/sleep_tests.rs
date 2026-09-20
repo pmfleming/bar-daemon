@@ -60,6 +60,35 @@ async fn final_trigger_validation_cancels_after_setup_and_preflight_queries() {
 }
 
 #[tokio::test]
+async fn trigger_validation_cannot_hide_a_concurrent_unlock_or_session_switch() {
+    for switched in [false, true] {
+        let state = Arc::new(SessionState::default());
+        state.locked.store(true, Ordering::SeqCst);
+        let (_server, client) = fake_logind(state.clone()).await;
+        let changed = state.clone();
+        let result = perform_connected_with_validation(
+            &client,
+            "suspend",
+            Duration::from_secs(1),
+            false,
+            || std::future::ready(Ok(())),
+            move || {
+                if switched {
+                    changed.inactive.store(true, Ordering::SeqCst);
+                } else {
+                    changed.locked.store(false, Ordering::SeqCst);
+                }
+                std::future::ready(Ok(()))
+            },
+            &outcome::Tracker::default(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
 async fn dependency_deadline_cancels_pending_work() {
     struct Dropped(Arc<AtomicBool>);
     impl Drop for Dropped {

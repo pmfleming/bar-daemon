@@ -127,7 +127,7 @@ impl Tracker {
     }
     pub(super) fn prepared(&self, preparing: bool) {
         self.state.send_if_modified(|s| {
-            if !unfinished(&s.phase) || s.phase == "requested" {
+            if !unfinished(&s.phase) || matches!(s.phase.as_str(), "requested" | "unknown") {
                 return false;
             }
             s.phase = if preparing { "preparing" } else { "returned" }.into();
@@ -137,7 +137,7 @@ impl Tracker {
     fn job_new(&self, path: &str, unit: &str) {
         self.state.send_if_modified(|s| {
             if !unfinished(&s.phase)
-                || s.phase == "requested"
+                || matches!(s.phase.as_str(), "requested" | "unknown")
                 || s.job.is_some()
                 || service(&s.action) != unit
             {
@@ -278,6 +278,20 @@ mod tests {
         assert_eq!(t.state.borrow().phase, "failed");
     }
     #[test]
+    fn unknown_untracked_requests_cannot_adopt_later_external_sleep_jobs() {
+        let t = Tracker::default();
+        t.begin("suspend");
+        t.dispatching();
+        t.accepted();
+        t.lost_monitor("lost subscription");
+        t.prepared(true);
+        t.job_new("/job/8", "systemd-suspend.service");
+        t.job_removed("/job/8", "systemd-suspend.service", "done");
+        assert_eq!(t.state.borrow().phase, "unknown");
+        assert!(t.state.borrow().job.is_none());
+    }
+
+    #[test]
     fn unrelated_or_old_jobs_never_complete_a_new_operation() {
         let t = Tracker::default();
         t.begin("suspend");
@@ -290,9 +304,9 @@ mod tests {
         t.accepted();
         t.job_removed("/job/2", "systemd-suspend.service", "done");
         assert_eq!(t.state.borrow().phase, "accepted");
+        t.job_new("/job/3", "systemd-suspend.service");
         t.lost_monitor("disconnected");
         assert_eq!(t.state.borrow().phase, "unknown");
-        t.job_new("/job/3", "systemd-suspend.service");
         t.job_removed("/job/3", "systemd-suspend.service", "done");
         t.failed("lost reply".into(), true);
         assert_eq!(t.state.borrow().phase, "completed");

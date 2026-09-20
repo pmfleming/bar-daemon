@@ -143,3 +143,26 @@ sleep policy for asleep battery protection.
 Validation: pure countdown/cancellation/AC/unknown-data/hysteresis/restart tests,
 frontend bounds/dispatch checks, API fixture checks and the offscreen BatterySleep
 QML suite (10 passed). No live battery policy or power action was exercised.
+
+## Final integration validation and activation
+
+- Full Rust suite: 176 unit tests and two startup tests passed; one unrelated
+  library test remains ignored by default.
+- Native integration: the built, patched Hypridle 0.1.7 passed an additional test
+  against private D-Bus and Wayland servers. It verifies live SetTimeout/GetState
+  wire types, PID/base-listener preservation, surviving screensaver inhibitor
+  cookies, cancellation on activity, unchanged-timeout no-op, and Never mode.
+  Run explicitly with `HYPRIDLE_TEST_BIN=/path/to/patched/hypridle cargo test
+  --test native_idle -- --ignored`. Callbacks only write a temporary log.
+- `cargo clippy --all-targets -- -D warnings` passed.
+- Full offscreen frontend suite: 231 QML tests passed; battery/bar JavaScript,
+  checked API fixtures and generated protocol bindings passed.
+- Final race tests recheck lock/session after potentially slow trigger validation
+  and prevent an unknown, untracked operation from adopting a later external job.
+
+Activate the updated system bar-battery-helper and Shelllist/Home Manager
+Hypridle integration together. Building/committing this work does not activate
+services or change live power settings. Initial package activation necessarily
+restarts the old Hypridle once; subsequent policy/AC changes use live listener
+updates. Hardware hibernate/resume and firmware residency still require an
+explicitly scheduled test with saved work; no hardware sleep was performed here.
