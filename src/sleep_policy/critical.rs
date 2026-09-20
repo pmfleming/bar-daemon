@@ -8,14 +8,14 @@ use crate::{
     sleep,
     state::StateStore,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Policy {
     pub enabled: bool,
@@ -109,7 +109,7 @@ impl Engine {
         token: u64,
     ) -> (bool, bool) {
         if self.policy.as_ref() != Some(policy) {
-            self.policy = Some(policy.clone());
+            self.policy = Some(*policy);
             self.deadline = None;
             self.latched = false;
         }
@@ -156,10 +156,12 @@ impl Engine {
         }
         let warning = self.deadline.is_none();
         if warning {
-            self.deadline = Some(now + u64::from(policy.grace_seconds));
             self.token = token;
         }
-        let remaining = self.deadline.unwrap().saturating_sub(now);
+        let remaining = self
+            .deadline
+            .get_or_insert_with(|| now.saturating_add(u64::from(policy.grace_seconds)))
+            .saturating_sub(now);
         if remaining == 0 {
             self.stop("acting", None);
             return (false, true);
@@ -299,10 +301,10 @@ pub(crate) async fn set_policy(
     }
     previous.critical_battery = policy;
     crate::paths::save_json_atomic(&super::policy_path(), &previous).await?;
-    let mut state = store.snapshot().await.sleep_policy;
+    let mut state = store.read(|s| s.sleep_policy.clone()).await;
     state.policy = previous;
     store.update_sleep_policy(state).await;
-    Ok(store.snapshot().await.sleep_policy)
+    Ok(store.read(|s| s.sleep_policy.clone()).await)
 }
 
 pub(crate) async fn cancel(store: &StateStore) -> Result<State> {
@@ -355,7 +357,7 @@ pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) 
             }
         };
     let mut engine = Engine {
-        policy: Some(saved.policy.clone()),
+        policy: Some(saved.policy),
         latched: saved.attempted,
         state: State {
             phase: if saved.attempted {
@@ -391,29 +393,46 @@ pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) 
                 store.update_critical_battery(engine.state.clone()).await; continue;
             }
         }
-        let policy = match sleep::bounded(
+        match engine.refresh(&mut saved, &notifications, started).await {
+            Ok(Some(policy)) if actions.is_empty() => {
+                actions.spawn(perform(policy, engine.token));
+            }
+            Err(error) => engine.stop("blocked", Some(format!("{error:#}"))),
+            _ => {}
+        }
+        store.update_critical_battery(engine.state.clone()).await;
+    }
+}
+
+impl Engine {
+    /// Read fresh evidence, deliver the warning, then persist intent before
+    /// returning an action. A failed prerequisite never reaches the worker.
+    async fn refresh(
+        &mut self,
+        saved: &mut Recovery,
+        notifications: &NotificationSink,
+        started: std::time::Instant,
+    ) -> Result<Option<Policy>> {
+        let policy = sleep::bounded(
             "read critical battery policy",
             Duration::from_secs(2),
             super::load(),
         )
-        .await
-        {
-            Ok(policy) => policy.critical_battery,
-            Err(error) => {
-                engine.stop("blocked", Some(format!("{error:#}")));
-                store.update_critical_battery(engine.state.clone()).await;
-                continue;
-            }
-        };
-        let sample_result = if policy.enabled {
+        .await?
+        .critical_battery;
+        let sample = if policy.enabled {
             sample().await.map(Some)
         } else {
             Ok(None)
         };
-        let sample_error = sample_result.as_ref().err().map(|e| format!("{e:#}"));
-        let evidence = sample_result.ok().flatten();
+        let sample_error = sample.as_ref().err().map(|e| format!("{e:#}"));
         let token = CANCELLATION.load(Ordering::SeqCst);
-        let (warning, fire) = engine.observe(&policy, evidence, started.elapsed().as_secs(), token);
+        let (warning, fire) = self.observe(
+            &policy,
+            sample.ok().flatten(),
+            started.elapsed().as_secs(),
+            token,
+        );
         if warning {
             let result = sleep::bounded("critical battery warning", Duration::from_secs(2), async {
                 notifications.send(IncomingNotification {
@@ -424,54 +443,44 @@ pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) 
                     expire_timeout: (policy.grace_seconds * 1000) as i32,
                 }).await?; Ok(())
             }).await;
-            if result.is_ok() {
-                // The grace interval starts after delivery, not before a slow
-                // notification backend has made the warning visible.
-                engine.deadline =
-                    Some(started.elapsed().as_secs() + u64::from(policy.grace_seconds));
-                engine.state.remaining_seconds = policy.grace_seconds;
-            }
-            if let Err(error) = result {
-                engine.stop(
-                    "blocked",
-                    Some(format!(
-                        "Cannot deliver critical battery warning: {error:#}"
-                    )),
-                );
-            }
+            self.warning_delivered(result, &policy, started.elapsed().as_secs());
         }
         if let Some(error) = sample_error {
-            engine.state.error = Some(error);
+            self.state.error = Some(error);
         }
         let recovery = Recovery {
-            policy: policy.clone(),
-            attempted: engine.latched,
+            policy,
+            attempted: self.latched,
         };
-        if recovery != saved {
-            match persist_recovery(recovery, token).await {
-                Ok(value) => saved = value,
-                Err(error) => {
-                    engine.stop(
-                        "blocked",
-                        Some(format!(
-                            "Cannot durably record critical battery intent: {error:#}"
-                        )),
-                    );
-                    store.update_critical_battery(engine.state.clone()).await;
-                    continue;
-                }
+        if recovery != *saved {
+            *saved = persist_recovery(recovery, token)
+                .await
+                .context("Cannot durably record critical battery intent")?;
+        }
+        Ok(fire.then_some(policy))
+    }
+
+    fn warning_delivered(&mut self, result: Result<()>, policy: &Policy, now: u64) {
+        match result {
+            Ok(()) => {
+                // Start the full grace interval after delivery, not before a slow backend.
+                self.deadline = Some(now.saturating_add(u64::from(policy.grace_seconds)));
+                self.state.remaining_seconds = policy.grace_seconds;
             }
+            Err(error) => self.stop(
+                "blocked",
+                Some(format!(
+                    "Cannot deliver critical battery warning: {error:#}"
+                )),
+            ),
         }
-        if fire && actions.is_empty() {
-            actions.spawn(perform(policy, engine.token));
-        }
-        store.update_critical_battery(engine.state.clone()).await;
+        // A failed warning latches the episode before refresh persists recovery.
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Engine, Policy, Recovery, Sample};
     fn low() -> Option<Sample> {
         Some(Sample {
             percent: 4.0,
@@ -485,6 +494,18 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn warning_delivery_restarts_full_grace_and_failure_latches_before_persistence() {
+        let mut e = Engine::default();
+        e.observe(&policy(), low(), 0, 0);
+        e.warning_delivered(Ok(()), &policy(), 10);
+        assert_eq!(e.observe(&policy(), low(), 60, 0), (false, false));
+        e.warning_delivered(Err(anyhow::anyhow!("unavailable")), &policy(), 60);
+        assert!(e.latched);
+        assert_eq!(e.state.phase, "blocked");
+        assert_eq!(e.observe(&policy(), low(), 600, 0), (false, false));
+    }
+
     #[test]
     fn persisted_attempt_is_not_replayed_after_daemon_restart() {
         let saved = Recovery {

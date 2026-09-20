@@ -86,6 +86,13 @@ impl SleepPolicy {
         }
     }
 
+    fn uses_timed_hibernation(&self) -> bool {
+        [self.profile(false), self.profile(true)].iter().any(|p| {
+            p.hibernate_minutes > 0
+                && (p.sleep_minutes > 0 || self.lid_action == lid::LidAction::Profile)
+        })
+    }
+
     fn idle_profile(&self, plugged: bool, expected_minutes: u32) -> Result<&SleepProfile> {
         let profile = self.profile(plugged);
         if profile.sleep_minutes == 0 || profile.sleep_minutes != expected_minutes {
@@ -249,13 +256,8 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
     let plugged = plugged().await?;
     // A missing helper/capability must not be presented as working hibernation.
     let support = hibernate_support().await;
-    if [policy.profile(false), policy.profile(true)]
-        .iter()
-        .any(|p| {
-            (p.sleep_minutes > 0 || policy.lid_action == lid::LidAction::Profile)
-                && p.hibernate_minutes > 0
-        })
-    {
+    let timed_hibernation = policy.uses_timed_hibernation();
+    if timed_hibernation {
         if let Err(error) = &support {
             bail!("{error:#}");
         }
@@ -273,13 +275,7 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         );
     }
     persist_and_apply(&policy_path(), &policy, &previous, apply_idle).await?;
-    if [policy.profile(false), policy.profile(true)]
-        .iter()
-        .all(|p| {
-            p.hibernate_minutes == 0
-                || (p.sleep_minutes == 0 && policy.lid_action != lid::LidAction::Profile)
-        })
-    {
+    if !timed_hibernation {
         // Disabling protection must remain possible with an unavailable helper.
         let cleanup: Result<()> = async {
             let connection = crate::sleep::system_bus().await?;
@@ -301,13 +297,10 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         hibernate_available: support.is_ok(),
         hibernate_ready: matches!(&support, Ok(None)),
         hibernate_error: support.unwrap_or_else(|error| Some(format!("{error:#}"))),
-        lid: store.snapshot().await.sleep_policy.lid,
-        critical_battery: store.snapshot().await.sleep_policy.critical_battery,
-        last_error: None,
-        error: None,
+        ..Default::default()
     };
-    store.update_sleep_policy(state.clone()).await;
-    Ok(state)
+    store.update_sleep_policy(state).await;
+    Ok(store.read(|s| s.sleep_policy.clone()).await)
 }
 
 async fn hibernate_support() -> Result<Option<String>> {
@@ -384,7 +377,7 @@ pub(crate) async fn idle_sleep(
         .await
         .context("idle policy is busy; this callback was cancelled")?;
     let result = perform_idle(expected_minutes, generation, episode).await;
-    let mut state = store.snapshot().await.sleep_policy;
+    let mut state = store.read(|s| s.sleep_policy.clone()).await;
     state.last_error = result.as_ref().err().map(|error| format!("{error:#}"));
     store.update_sleep_policy(state).await;
     result
@@ -416,19 +409,14 @@ async fn validate_idle_trigger(
     // Check the generation after the potentially slow AC lookup as well as at
     // entry. An external hypridle restart is not serialized by POLICY_WRITE.
     hypridle::verify_episode(generation, episode).await?;
-    validate_idle_selection(generation, selected, generation, &policy, plugged)
+    validate_idle_selection(selected, &policy, plugged)
 }
 
 fn validate_idle_selection(
-    generation: &str,
     selected: &SleepProfile,
-    active_generation: &str,
     policy: &SleepPolicy,
     plugged: bool,
 ) -> Result<()> {
-    if generation != active_generation {
-        bail!("idle countdown restarted; ignoring a stale sleep callback");
-    }
     let current = policy.idle_profile(plugged, selected.sleep_minutes)?;
     if current != selected {
         bail!("idle hibernate profile changed; refusing to use the previous sleep settings");
@@ -463,7 +451,7 @@ where
                         .call("AcquireHibernateDelay", &(profile.hibernate_minutes,))
                         .await
                         .context("lease and verify systemd's time asleep before hibernation")?;
-                    runtime::retain(crate::sleep::outcome::current().id, fd)?;
+                    crate::sleep::retain_lease(fd)?;
                 }
                 Ok(())
             })
@@ -487,14 +475,6 @@ where
     validate().await
 }
 
-/// The privileged helper accepts only a bounded number, never a path or config
-/// fragment. This override is runtime-only and applies to suspend-then-hibernate,
-/// not ordinary explicit Suspend or Hibernate actions.
-#[cfg(test)]
-fn write_hibernate_delay(directory: &Path, minutes: u32) -> Result<()> {
-    runtime::install(directory, minutes).map(|_| ())
-}
-
 pub(crate) async fn monitor(store: StateStore) {
     let mut events = store.subscribe();
     let mut timer = tokio::time::interval(Duration::from_secs(30));
@@ -512,8 +492,7 @@ pub(crate) async fn monitor(store: StateStore) {
         }
         let _guard = POLICY_WRITE.lock().await;
         let mut state = SleepPolicyState {
-            last_error: store.snapshot().await.sleep_policy.last_error,
-            lid: store.snapshot().await.sleep_policy.lid,
+            last_error: store.read(|s| s.sleep_policy.last_error.clone()).await,
             ..SleepPolicyState::default()
         };
         let result: Result<()> = async {
@@ -650,17 +629,21 @@ mod tests {
                 let helper_calls = Cell::new(0);
                 let result = validated_setup(
                     || {
-                        std::future::ready(validate_idle_selection(
-                            "original",
-                            &policy.battery,
-                            if changed.get() && change == "restarted" {
-                                "replacement"
-                            } else {
-                                "original"
-                            },
-                            &policy,
-                            changed.get() && change != "restarted",
-                        ))
+                        std::future::ready(if change == "restarted" {
+                            hypridle::validate_episode(
+                                "original",
+                                1,
+                                if changed.get() {
+                                    "replacement"
+                                } else {
+                                    "original"
+                                },
+                                1,
+                                true,
+                            )
+                        } else {
+                            validate_idle_selection(&policy.battery, &policy, changed.get())
+                        })
                     },
                     || async {
                         helper_calls.set(helper_calls.get() + 1);
@@ -683,16 +666,11 @@ mod tests {
     fn unchanged_and_equivalent_shared_profiles_remain_valid() {
         let policy = SleepPolicy::default();
         for plugged in [false, true] {
-            assert!(
-                validate_idle_selection("current", &policy.battery, "current", &policy, plugged)
-                    .is_ok()
-            );
+            assert!(validate_idle_selection(&policy.battery, &policy, plugged).is_ok());
         }
         let mut separate = policy.clone();
         separate.same_profile = false;
-        assert!(
-            validate_idle_selection("current", &policy.battery, "current", &separate, true).is_ok()
-        );
+        assert!(validate_idle_selection(&policy.battery, &separate, true).is_ok());
     }
 
     #[tokio::test]
@@ -744,17 +722,5 @@ mod tests {
         assert!(verify_idle_readiness("failed", "failed", "notify", 0, "42-123").is_err());
         assert!(verify_idle_readiness("active", "running", "notify", 43, "42-123").is_err());
         assert!(verify_idle_readiness("active", "running", "notify", 42, "42-123").is_ok());
-    }
-
-    #[test]
-    fn helper_writes_only_bounded_runtime_sleep_settings() {
-        let directory = tempfile::tempdir().unwrap();
-        write_hibernate_delay(directory.path(), 120).unwrap();
-        let path = directory.path().join("90-shelllist.conf");
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("HibernateDelaySec=120min\nHibernateOnACPower=yes"));
-        assert!(write_hibernate_delay(directory.path(), 0).is_err());
-        assert!(write_hibernate_delay(directory.path(), MAX_MINUTES + 1).is_err());
-        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
     }
 }

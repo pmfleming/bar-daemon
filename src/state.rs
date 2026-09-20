@@ -7,7 +7,7 @@ use tokio::sync::{RwLock, broadcast};
 use crate::model::{
     ActivityState, AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState,
     NotificationActiveState, NotificationState, OsdHardwareState, PowerProfileState,
-    PowerSleepState, TimezoneState, UpdateState, WorkspaceState,
+    PowerSleepState, SleepOperation, TimezoneState, UpdateState, WorkspaceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -93,40 +93,41 @@ impl StateStore {
         let mut snapshot = self.snapshot.write().await;
         value.lid = snapshot.sleep_policy.lid.clone();
         value.critical_battery = snapshot.sleep_policy.critical_battery.clone();
-        self.publish_sleep_policy(&mut snapshot, value);
+        if snapshot.sleep_policy != value {
+            snapshot.sleep_policy = value;
+            self.publish(
+                crate::protocol::stream::SLEEP_POLICY,
+                &snapshot.sleep_policy,
+            );
+        }
     }
 
     pub(crate) async fn update_critical_battery(
         &self,
         state: crate::sleep_policy::critical::State,
     ) {
-        let mut snapshot = self.snapshot.write().await;
-        let mut value = snapshot.sleep_policy.clone();
-        value.critical_battery = state;
-        self.publish_sleep_policy(&mut snapshot, value);
+        self.update_policy_part(state, |s| &mut s.critical_battery)
+            .await;
     }
 
     pub(crate) async fn update_lid(&self, lid: crate::sleep_policy::lid::LidState) {
-        let mut snapshot = self.snapshot.write().await;
-        let mut value = snapshot.sleep_policy.clone();
-        value.lid = lid;
-        self.publish_sleep_policy(&mut snapshot, value);
+        self.update_policy_part(lid, |s| &mut s.lid).await;
     }
 
-    fn publish_sleep_policy(
+    async fn update_policy_part<T: PartialEq>(
         &self,
-        snapshot: &mut BarSnapshot,
-        value: crate::sleep_policy::SleepPolicyState,
+        value: T,
+        field: impl FnOnce(&mut crate::sleep_policy::SleepPolicyState) -> &mut T,
     ) {
-        if snapshot.sleep_policy == value {
-            return;
+        let mut snapshot = self.snapshot.write().await;
+        let current = field(&mut snapshot.sleep_policy);
+        if *current != value {
+            *current = value;
+            self.publish(
+                crate::protocol::stream::SLEEP_POLICY,
+                &snapshot.sleep_policy,
+            );
         }
-        let data = to_value(&value).unwrap_or(Value::Null);
-        snapshot.sleep_policy = value;
-        let _ = self.events.send(DomainEvent {
-            stream: crate::protocol::stream::SLEEP_POLICY.into(),
-            data,
-        });
     }
 
     pub(crate) fn work_area_interest(&self) -> crate::work_area::Interest {
@@ -142,12 +143,8 @@ impl StateStore {
             return;
         }
         value.revision = value.revision.saturating_add(1);
-        let data = to_value(&value).unwrap_or(Value::Null);
         snapshot.workarea = value;
-        let _ = self.events.send(DomainEvent {
-            stream: crate::protocol::stream::WORKAREA.into(),
-            data,
-        });
+        self.publish(crate::protocol::stream::WORKAREA, &snapshot.workarea);
     }
 
     pub(crate) async fn update_power_sleep(&self, value: PowerSleepState) {
@@ -164,17 +161,13 @@ impl StateStore {
             .await
     }
 
-    pub(crate) async fn record_sleep_operation(&self, operation: crate::sleep::outcome::Operation) {
+    pub(crate) async fn record_sleep_operation(&self, operation: SleepOperation) {
         let mut snapshot = self.snapshot.write().await;
         if snapshot.power_sleep.operation == operation {
             return;
         }
         snapshot.power_sleep.operation = operation;
-        let data = to_value(&snapshot.power_sleep).unwrap_or(Value::Null);
-        let _ = self.events.send(DomainEvent {
-            stream: crate::protocol::stream::POWER_SLEEP.into(),
-            data,
-        });
+        self.publish(crate::protocol::stream::POWER_SLEEP, &snapshot.power_sleep);
     }
 
     pub(crate) async fn record_resume(&self) {
@@ -207,12 +200,8 @@ impl StateStore {
         if *current == next {
             return true;
         }
-        let data = to_value(&next).unwrap_or(Value::Null);
         *current = next;
-        let _ = self.events.send(DomainEvent {
-            stream: crate::protocol::stream::POWER_SLEEP.into(),
-            data,
-        });
+        self.publish(crate::protocol::stream::POWER_SLEEP, current);
         true
     }
 
@@ -226,13 +215,15 @@ impl StateStore {
         if *current == value {
             return;
         }
-        let data = to_value(&value).unwrap_or(Value::Null);
         *current = value;
-        // Commit and broadcast share the snapshot/subscription boundary. Sending
-        // is synchronous, so retaining the lock also preserves commit order.
+        self.publish(stream, current);
+    }
+
+    // Called under the snapshot write lock: subscription and commit order agree.
+    fn publish(&self, stream: &str, value: &impl Serialize) {
         let _ = self.events.send(DomainEvent {
-            stream: stream.to_string(),
-            data,
+            stream: stream.into(),
+            data: to_value(value).unwrap_or(Value::Null),
         });
     }
 }
@@ -322,7 +313,7 @@ mod tests {
     async fn stale_action_telemetry_cannot_clear_a_late_sleep_job_failure() {
         let store = StateStore::default();
         let stale = store.snapshot().await.power_sleep;
-        let operation = crate::sleep::outcome::Operation {
+        let operation = crate::model::SleepOperation {
             id: 3,
             action: "hibernate".into(),
             phase: "failed".into(),

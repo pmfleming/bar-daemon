@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 use tokio::{io::AsyncReadExt, sync::Mutex as AsyncMutex};
@@ -11,23 +11,6 @@ use tokio::{io::AsyncReadExt, sync::Mutex as AsyncMutex};
 const NAME: &str = "90-shelllist.conf";
 const HEADER: &str = "# Managed by bar-daemon\n";
 static SERIAL: LazyLock<Arc<AsyncMutex<()>>> = LazyLock::new(|| Arc::new(AsyncMutex::new(())));
-static CLIENT_LEASE: Mutex<Option<(u64, zvariant::OwnedFd)>> = Mutex::new(None);
-
-pub(crate) fn retain(id: u64, fd: zvariant::OwnedFd) -> Result<()> {
-    let mut lease = CLIENT_LEASE.lock().unwrap();
-    anyhow::ensure!(
-        lease.is_none(),
-        "a previous hibernate settings lease is still active"
-    );
-    *lease = Some((id, fd));
-    Ok(())
-}
-pub(crate) fn release(id: u64) {
-    let mut lease = CLIENT_LEASE.lock().unwrap();
-    if lease.as_ref().is_some_and(|(owner, _)| *owner == id) {
-        *lease = None;
-    }
-}
 
 fn contents(minutes: u32) -> String {
     format!("{HEADER}[Sleep]\nHibernateDelaySec={minutes}min\nHibernateOnACPower=yes\n")
@@ -208,15 +191,14 @@ pub(crate) async fn acquire(minutes: u32) -> Result<zvariant::OwnedFd> {
     let (mut peer, fd) = tokio::net::UnixStream::pair()?;
     let fd = std::os::fd::OwnedFd::from(fd.into_std()?);
     let directory = Path::new("/run/systemd/sleep.conf.d");
-    let bytes = install(directory, minutes)?;
-    let path = directory.join(NAME);
     let mut pending = PendingOverride {
-        path: path.clone(),
-        bytes: bytes.clone(),
+        path: directory.join(NAME),
+        bytes: install(directory, minutes)?,
         armed: true,
     };
     if let Err(error) = effective(minutes).await {
-        remove_if_unchanged(&path, &bytes).context("remove rejected runtime override")?;
+        remove_if_unchanged(&pending.path, &pending.bytes)
+            .context("remove rejected runtime override")?;
         return Err(error);
     }
     pending.armed = false;
@@ -231,7 +213,7 @@ pub(crate) async fn acquire(minutes: u32) -> Result<zvariant::OwnedFd> {
         tokio::time::sleep(settle).await;
         loop {
             if matches!(safe_to_restore().await, Ok(true)) {
-                match remove_if_unchanged(&path, &bytes) {
+                match remove_if_unchanged(&pending.path, &pending.bytes) {
                     Ok(_) => break,
                     Err(error) => {
                         tracing::warn!(%error, "runtime hibernate cleanup failed; retrying")
@@ -276,7 +258,7 @@ pub(crate) async fn maintain() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{NAME, PendingOverride, contents, install, remove_if_unchanged, verify_effective};
     #[test]
     fn only_exact_owned_and_unchanged_overrides_can_be_removed() {
         let dir = tempfile::tempdir().unwrap();
@@ -284,6 +266,13 @@ mod tests {
         let bytes = install(dir.path(), 120).unwrap();
         assert!(verify_effective(std::str::from_utf8(&bytes).unwrap(), 120).is_ok());
         assert!(install(dir.path(), 0).is_err());
+        assert!(install(dir.path(), super::super::MAX_MINUTES + 1).is_err());
+        assert!(
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("HibernateDelaySec=120min\nHibernateOnACPower=yes")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert!(remove_if_unchanged(&path, &bytes).unwrap());
         std::fs::write(&path, "# admin\n[Sleep]\nHibernateDelaySec=5h\n").unwrap();
         assert!(install(dir.path(), 120).is_err());

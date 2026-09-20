@@ -9,12 +9,13 @@ pub(crate) mod capability;
 pub(crate) mod diagnostics;
 mod keep_awake;
 mod monitoring;
-pub(crate) mod outcome;
+mod outcome;
 mod resume;
 mod wayland_lock;
 
 pub(crate) use keep_awake::set_keep_awake;
 pub(crate) use monitoring::monitor;
+pub(crate) use outcome::retain_lease;
 
 fn is_hyprland_session() -> bool {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
@@ -156,28 +157,23 @@ impl Action {
 }
 
 pub(crate) async fn perform(action: &str) -> Result<PowerSleepState> {
-    perform_with_setup(action, || std::future::ready(Ok(()))).await
+    perform_with_validation(
+        action,
+        || std::future::ready(Ok(())),
+        || std::future::ready(Ok(())),
+    )
+    .await
 }
 
-/// Setup (e.g. a privileged hibernate delay write) happens only after locking,
-/// under the same action guard as manual sleep. Never mutate it before preflight.
-pub(crate) async fn perform_with_setup<F, Fut>(action: &str, setup: F) -> Result<PowerSleepState>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<()>>,
-{
-    perform_with_validation(action, setup, || std::future::ready(Ok(()))).await
-}
-
-pub(crate) async fn perform_with_validation<F, Fut, V, Check>(
+/// Setup happens only after locking, under the manual action guard. Revalidate
+/// the trigger and lock afterwards, before dispatching a non-interactive request.
+pub(crate) async fn perform_with_validation<Fut, Check>(
     action: &str,
-    setup: F,
-    validate: V,
+    setup: impl FnOnce() -> Fut,
+    validate: impl FnOnce() -> Check,
 ) -> Result<PowerSleepState>
 where
-    F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
-    V: FnOnce() -> Check,
     Check: std::future::Future<Output = Result<()>>,
 {
     Action::parse(action)?;
@@ -227,15 +223,14 @@ async fn perform_connected(
 }
 
 #[cfg(test)]
-async fn perform_connected_with_setup<F, Fut>(
+async fn perform_connected_with_setup<Fut>(
     connection: &zbus::Connection,
     action: &str,
     lock_timeout: Duration,
     use_wayland: bool,
-    setup: F,
+    setup: impl FnOnce() -> Fut,
 ) -> Result<PowerSleepState>
 where
-    F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
     perform_connected_with_validation(
@@ -250,19 +245,17 @@ where
     .await
 }
 
-async fn perform_connected_with_validation<F, Fut, V, Check>(
+async fn perform_connected_with_validation<Fut, Check>(
     connection: &zbus::Connection,
     action: &str,
     lock_timeout: Duration,
     use_wayland: bool,
-    setup: F,
-    validate: V,
+    setup: impl FnOnce() -> Fut,
+    validate: impl FnOnce() -> Check,
     tracker: &outcome::Tracker,
 ) -> Result<PowerSleepState>
 where
-    F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
-    V: FnOnce() -> Check,
     Check: std::future::Future<Output = Result<()>>,
 {
     let action = Action::parse(action)?;
@@ -275,17 +268,7 @@ where
                 ensure_not_preparing(connection).await?;
                 ensure_sleep_allowed(&current)?;
             }
-            if action == Action::Suspend {
-                capability::require_authorized(&current.can_suspend)
-                    .context("suspend is unavailable")?;
-            }
-            if action == Action::Hibernate {
-                capability::require_authorized(&current.can_hibernate)
-                    .context("hibernate is unavailable")?;
-            }
-            if action == Action::SuspendThenHibernate {
-                check_combined_capability(connection).await?;
-            }
+            action.require_available(connection, &current).await?;
             // Resolve 'auto' once and keep the concrete session object through the
             // complete operation. A VT/session switch must not lock one session and
             // then read a different session's hint.
@@ -304,43 +287,20 @@ where
             if action != Action::Lock {
                 setup().await?;
                 ensure_sleep_allowed(&read_state(connection, false).await?)?;
-                ensure_active(&session).await?;
-                if !confirmed_locked(&session, &mut observer).await? {
-                    bail!("session unlocked before the sleep request; refusing to sleep");
-                }
+                ensure_locked(&session, &mut observer, "before the sleep request").await?;
                 ensure_not_preparing(connection).await?;
                 // Last check, after potentially slow status/session queries.
                 validate().await?;
                 // A fresh trigger may itself consult a slow service. It must
                 // not make the previously observed lock/session timeless.
-                ensure_active(&session).await?;
-                if !confirmed_locked(&session, &mut observer).await? {
-                    bail!("session unlocked during final trigger validation; refusing to sleep");
-                }
+                ensure_locked(&session, &mut observer, "during final trigger validation").await?;
             }
             Ok((current, observer))
         },
     )
     .await?;
     if action != Action::Lock {
-        let proxy = manager(connection).await?;
-        tracker.dispatching();
-        match proxy.call_method(action.method(), &(false,)).await {
-            Ok(_) => tracker.accepted(),
-            Err(error) => {
-                let ambiguous = match &error {
-                    zbus::Error::MethodError(name, _, _) => matches!(
-                        name.as_str(),
-                        "org.freedesktop.DBus.Error.NoReply"
-                            | "org.freedesktop.DBus.Error.Timeout"
-                            | "org.freedesktop.DBus.Error.Disconnected"
-                    ),
-                    _ => true,
-                };
-                tracker.failed(format!("{}: {error}", action.method()), ambiguous);
-                return Err(error).with_context(|| format!("could not confirm {}; a lost reply may mean acceptance. Inspect the session before another request", action.method()));
-            }
-        }
+        action.dispatch(connection, tracker).await?;
     }
     // A successful effect is not undone by an unrelated telemetry failure.
     // Returning Err here used to invite a second, potentially destructive Retry.
@@ -477,10 +437,63 @@ pub(crate) async fn combined_capability() -> Result<String> {
         .await?)
 }
 
-async fn check_combined_capability(connection: &zbus::Connection) -> Result<()> {
-    let value: String = manager(connection)
-        .await?
-        .call("CanSuspendThenHibernate", &())
-        .await?;
-    capability::require_authorized(&value).context("suspend-then-hibernate is unavailable")
+impl Action {
+    async fn require_available(
+        self,
+        connection: &zbus::Connection,
+        state: &PowerSleepState,
+    ) -> Result<()> {
+        let combined;
+        let value = match self {
+            Self::Lock => return Ok(()),
+            Self::Suspend => &state.can_suspend,
+            Self::Hibernate => &state.can_hibernate,
+            Self::SuspendThenHibernate => {
+                combined = manager(connection)
+                    .await?
+                    .call::<_, _, String>("CanSuspendThenHibernate", &())
+                    .await?;
+                &combined
+            }
+        };
+        capability::require_authorized(value)
+            .with_context(|| format!("{} is unavailable", self.method()))
+    }
+
+    async fn dispatch(
+        self,
+        connection: &zbus::Connection,
+        tracker: &outcome::Tracker,
+    ) -> Result<()> {
+        let proxy = manager(connection).await?;
+        tracker.dispatching();
+        if let Err(error) = proxy.call_method(self.method(), &(false,)).await {
+            let ambiguous = match &error {
+                zbus::Error::MethodError(name, _, _) => matches!(
+                    name.as_str(),
+                    "org.freedesktop.DBus.Error.NoReply"
+                        | "org.freedesktop.DBus.Error.Timeout"
+                        | "org.freedesktop.DBus.Error.Disconnected"
+                ),
+                _ => true,
+            };
+            tracker.failed(format!("{}: {error}", self.method()), ambiguous);
+            return Err(error).with_context(|| format!("could not confirm {}; a lost reply may mean acceptance. Inspect the session before another request", self.method()));
+        }
+        tracker.accepted();
+        Ok(())
+    }
+}
+
+async fn ensure_locked(
+    session: &zbus::Proxy<'_>,
+    observer: &mut Option<wayland_lock::LockObserver>,
+    stage: &str,
+) -> Result<()> {
+    ensure_active(session).await?;
+    anyhow::ensure!(
+        confirmed_locked(session, observer).await?,
+        "session unlocked {stage}; refusing to sleep"
+    );
+    Ok(())
 }

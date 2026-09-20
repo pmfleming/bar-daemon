@@ -147,7 +147,7 @@ async fn refresh_loop<F, Fut>(
 {
     while requests.changed().await.is_ok() {
         requests.borrow_and_update();
-        let before = store.snapshot().await.power_sleep;
+        let before = store.read(|s| s.power_sleep.clone()).await;
         let result = timeout(deadline, read(before.preparing_for_sleep))
             .await
             .context("sleep status refresh timed out")

@@ -37,7 +37,7 @@ pub(crate) struct PowerSleepState {
     #[serde(default)]
     pub resume_generation: u64,
     #[serde(default)]
-    pub operation: crate::sleep::outcome::Operation,
+    pub operation: SleepOperation,
     pub lock_before_sleep: bool,
     /// True only when logind reports this daemon's temporary sleep inhibitor.
     #[serde(default)]
@@ -45,6 +45,16 @@ pub(crate) struct PowerSleepState {
     pub inhibitors: Vec<SleepInhibitor>,
     #[serde(default)]
     pub diagnostics: crate::sleep::diagnostics::SleepDiagnostics,
+    pub error: Option<String>,
+}
+
+/// Public sleep outcome data; tracking and lease ownership stay in the sleep domain.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SleepOperation {
+    pub id: u64,
+    pub action: String,
+    pub phase: String,
+    pub job: Option<String>,
     pub error: Option<String>,
 }
 

@@ -200,7 +200,7 @@ pub(super) async fn verify_episode(generation: &str, episode: u64) -> Result<()>
     validate_episode(generation, episode, &current, current_episode, idle)
 }
 
-fn validate_episode(
+pub(super) fn validate_episode(
     generation: &str,
     episode: u64,
     current: &str,

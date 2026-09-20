@@ -1,33 +1,32 @@
 //! Track acceptance separately from the result of the systemd sleep service.
 //! Never infer successful sleep from a D-Bus reply, and never replay an action.
-use crate::state::StateStore;
+use crate::{model::SleepOperation, state::StateStore};
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
 use std::{
     sync::LazyLock,
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Operation {
-    pub id: u64,
-    pub action: String,
-    pub phase: String,
-    pub job: Option<String>,
-    pub error: Option<String>,
+struct Tracked {
+    operation: SleepOperation,
+    started: Instant,
+    lease: Option<zvariant::OwnedFd>,
 }
 
 pub(super) struct Tracker {
-    state: watch::Sender<Operation>,
-    started: std::sync::Mutex<Instant>,
+    state: watch::Sender<Tracked>,
 }
 impl Default for Tracker {
     fn default() -> Self {
         Self {
-            state: watch::channel(Operation::default()).0,
-            started: std::sync::Mutex::new(Instant::now()),
+            state: watch::channel(Tracked {
+                operation: SleepOperation::default(),
+                started: Instant::now(),
+                lease: None,
+            })
+            .0,
         }
     }
 }
@@ -37,32 +36,36 @@ pub(super) struct CancellationGuard<'a> {
 }
 impl Drop for CancellationGuard<'_> {
     fn drop(&mut self) {
-        let state = self.tracker.state.borrow().clone();
-        if state.id != self.id {
-            return;
-        }
-        if state.phase == "requested" {
-            self.tracker
-                .failed("Sleep request cancelled before dispatch".into(), false);
-        } else if state.phase == "dispatching" {
-            self.tracker.failed(
-                "Sleep dispatch was interrupted; outcome unknown".into(),
-                true,
-            );
-        }
+        self.tracker.modify(|s| {
+            if s.id != self.id {
+                return false;
+            }
+            let (phase, error) = match s.phase.as_str() {
+                "requested" => ("failed", "Sleep request cancelled before dispatch"),
+                "dispatching" => ("unknown", "Sleep dispatch was interrupted; outcome unknown"),
+                _ => return false,
+            };
+            s.phase = phase.into();
+            s.error = Some(error.into());
+            true
+        });
     }
 }
 
 pub(super) static TRACKER: LazyLock<Tracker> = LazyLock::new(Tracker::default);
-pub(crate) fn current() -> Operation {
-    TRACKER.state.borrow().clone()
+pub(super) fn current() -> SleepOperation {
+    TRACKER.state.borrow().operation.clone()
 }
 
+pub(crate) fn retain_lease(fd: zvariant::OwnedFd) -> Result<()> {
+    TRACKER.retain_lease(fd)
+}
+
+fn dispatched(phase: &str) -> bool {
+    matches!(phase, "dispatching" | "accepted" | "preparing" | "returned")
+}
 fn unfinished(phase: &str) -> bool {
-    matches!(
-        phase,
-        "requested" | "dispatching" | "accepted" | "preparing" | "returned" | "unknown"
-    )
+    dispatched(phase) || matches!(phase, "requested" | "unknown")
 }
 fn service(action: &str) -> &str {
     match action {
@@ -73,61 +76,89 @@ fn service(action: &str) -> &str {
     }
 }
 impl Tracker {
+    // Outcome, clock and FD have one owner and one atomic update boundary.
+    // Releasing a terminal lease does not depend on the telemetry monitor running.
+    fn modify(&self, update: impl FnOnce(&mut SleepOperation) -> bool) {
+        self.state.send_if_modified(|state| {
+            let changed = update(&mut state.operation);
+            if matches!(
+                state.operation.phase.as_str(),
+                "failed" | "completed" | "unknown"
+            ) {
+                state.lease = None;
+            }
+            changed
+        });
+    }
+    fn retain_lease(&self, fd: zvariant::OwnedFd) -> Result<()> {
+        anyhow::ensure!(
+            self.state.send_if_modified(|state| {
+                if state.operation.phase != "requested" || state.lease.is_some() {
+                    return false;
+                }
+                state.lease = Some(fd);
+                true
+            }),
+            "hibernate settings lease requires an unleased, undispatched sleep request"
+        );
+        Ok(())
+    }
     pub(super) fn ready_for_new_request(&self) -> bool {
-        !matches!(
-            self.state.borrow().phase.as_str(),
-            "requested" | "dispatching" | "accepted" | "preparing" | "returned"
-        )
+        let state = self.state.borrow();
+        state.operation.phase != "requested" && !dispatched(&state.operation.phase)
     }
     pub(super) fn cancellation_guard(&self) -> CancellationGuard<'_> {
         CancellationGuard {
             tracker: self,
-            id: self.state.borrow().id,
+            id: self.state.borrow().operation.id,
         }
     }
     pub(super) fn begin(&self, action: &str) {
-        let previous = self.state.borrow().clone();
-        if matches!(previous.phase.as_str(), "failed" | "completed" | "unknown") {
-            crate::sleep_policy::runtime::release(previous.id);
-        }
-        *self.started.lock().unwrap() = Instant::now();
         self.state.send_modify(|s| {
-            *s = Operation {
-                id: s.id.saturating_add(1),
+            s.operation = SleepOperation {
+                id: s.operation.id.saturating_add(1),
                 action: action.into(),
                 phase: "requested".into(),
                 ..Default::default()
-            }
+            };
+            s.started = Instant::now();
+            s.lease = None;
         });
     }
     pub(super) fn dispatching(&self) {
-        self.state.send_modify(|s| s.phase = "dispatching".into());
+        self.modify(|s| {
+            s.phase = "dispatching".into();
+            true
+        });
     }
     pub(super) fn accepted(&self) {
-        self.state.send_modify(|s| {
-            if matches!(s.phase.as_str(), "requested" | "dispatching") {
-                s.phase = "accepted".into();
+        self.modify(|s| {
+            if !matches!(s.phase.as_str(), "requested" | "dispatching") {
+                return false;
             }
+            s.phase = "accepted".into();
+            true
         });
     }
     pub(super) fn failed(&self, error: String, ambiguous: bool) {
-        self.state.send_modify(|s| {
+        self.modify(|s| {
             // A correlated terminal result outranks a lost method reply.
             if ambiguous && matches!(s.phase.as_str(), "completed" | "failed") {
-                return;
+                return false;
             }
             s.phase = if ambiguous { "unknown" } else { "failed" }.into();
             s.error = Some(error);
+            true
         });
     }
     pub(super) fn finish_preflight_error(&self, error: &anyhow::Error) {
-        if self.state.borrow().phase == "requested" {
+        if self.state.borrow().operation.phase == "requested" {
             self.failed(format!("{error:#}"), false);
         }
     }
     pub(super) fn prepared(&self, preparing: bool) {
-        self.state.send_if_modified(|s| {
-            if !unfinished(&s.phase) || matches!(s.phase.as_str(), "requested" | "unknown") {
+        self.modify(|s| {
+            if !dispatched(&s.phase) {
                 return false;
             }
             s.phase = if preparing { "preparing" } else { "returned" }.into();
@@ -135,12 +166,8 @@ impl Tracker {
         });
     }
     fn job_new(&self, path: &str, unit: &str) {
-        self.state.send_if_modified(|s| {
-            if !unfinished(&s.phase)
-                || matches!(s.phase.as_str(), "requested" | "unknown")
-                || s.job.is_some()
-                || service(&s.action) != unit
-            {
+        self.modify(|s| {
+            if !dispatched(&s.phase) || s.job.is_some() || service(&s.action) != unit {
                 return false;
             }
             s.job = Some(path.into());
@@ -148,7 +175,7 @@ impl Tracker {
         });
     }
     fn job_removed(&self, path: &str, unit: &str, result: &str) {
-        self.state.send_if_modified(|s| {
+        self.modify(|s| {
             if s.job.as_deref() != Some(path) || service(&s.action) != unit || !unfinished(&s.phase)
             {
                 return false;
@@ -166,8 +193,8 @@ impl Tracker {
         });
     }
     fn lost_monitor(&self, reason: &str) {
-        self.state.send_if_modified(|s| {
-            if !unfinished(&s.phase) || matches!(s.phase.as_str(), "requested" | "unknown") {
+        self.modify(|s| {
+            if !dispatched(&s.phase) {
                 return false;
             }
             s.phase = "unknown".into();
@@ -176,7 +203,7 @@ impl Tracker {
         });
     }
     fn expire(&self) {
-        if self.started.lock().unwrap().elapsed() >= Duration::from_secs(120) {
+        if self.state.borrow().started.elapsed() >= Duration::from_secs(120) {
             self.lost_monitor("No correlated sleep-job result was received. Outcome unknown; inspect the session before another request.");
         }
     }
@@ -192,10 +219,7 @@ pub(super) async fn monitor(store: StateStore) {
                     _ = timer.tick() => TRACKER.expire(),
                     changed = updates.changed() => { if changed.is_err() { return; } }
                 }
-                let value = updates.borrow_and_update().clone();
-                if matches!(value.phase.as_str(), "failed" | "completed" | "unknown") {
-                    crate::sleep_policy::runtime::release(value.id);
-                }
+                let value = updates.borrow_and_update().operation.clone();
                 store.record_sleep_operation(value).await;
             }
         },
@@ -247,18 +271,55 @@ async fn connected() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Tracker;
+    use std::{
+        io::{ErrorKind, Read},
+        os::{fd::OwnedFd, unix::net::UnixStream},
+    };
+
+    #[test]
+    fn terminal_outcomes_release_the_lease_without_a_running_monitor() {
+        for result in ["done", "failed", "unknown", "cancelled"] {
+            let t = Tracker::default();
+            t.begin("hibernate");
+            let (mut peer, fd) = UnixStream::pair().unwrap();
+            peer.set_nonblocking(true).unwrap();
+            t.retain_lease(OwnedFd::from(fd).into()).unwrap();
+            assert_eq!(
+                peer.read(&mut [0]).unwrap_err().kind(),
+                ErrorKind::WouldBlock
+            );
+            let guard = t.cancellation_guard();
+            if result != "cancelled" {
+                t.dispatching();
+                t.job_new("/job/1", "systemd-hibernate.service");
+                if result == "unknown" {
+                    t.lost_monitor("disconnected");
+                } else {
+                    t.job_removed("/job/1", "systemd-hibernate.service", result);
+                }
+            }
+            drop(guard);
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0, "{result}");
+        }
+    }
+
     #[test]
     fn cancellation_distinguishes_unsent_from_dispatched_work() {
         let t = Tracker::default();
         t.begin("suspend");
         drop(t.cancellation_guard());
-        assert_eq!(t.state.borrow().phase, "failed");
+        assert_eq!(t.state.borrow().operation.phase, "failed");
         t.begin("suspend");
         let guard = t.cancellation_guard();
         t.dispatching();
         drop(guard);
-        assert_eq!(t.state.borrow().phase, "unknown");
+        assert_eq!(t.state.borrow().operation.phase, "unknown");
+        t.begin("suspend");
+        let stale = t.cancellation_guard();
+        t.begin("hibernate");
+        drop(stale);
+        assert_eq!(t.state.borrow().operation.phase, "requested");
     }
 
     #[test]
@@ -270,12 +331,20 @@ mod tests {
         t.job_new("/job/7", "systemd-hibernate.service");
         t.prepared(true);
         t.prepared(false);
-        assert_eq!(t.state.borrow().phase, "returned");
+        assert_eq!(t.state.borrow().operation.phase, "returned");
         t.job_removed("/job/7", "systemd-hibernate.service", "failed");
-        assert_eq!(t.state.borrow().phase, "failed");
-        assert!(t.state.borrow().error.as_ref().unwrap().contains("journal"));
+        assert_eq!(t.state.borrow().operation.phase, "failed");
+        assert!(
+            t.state
+                .borrow()
+                .operation
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("journal")
+        );
         t.accepted();
-        assert_eq!(t.state.borrow().phase, "failed");
+        assert_eq!(t.state.borrow().operation.phase, "failed");
     }
     #[test]
     fn unknown_untracked_requests_cannot_adopt_later_external_sleep_jobs() {
@@ -287,8 +356,8 @@ mod tests {
         t.prepared(true);
         t.job_new("/job/8", "systemd-suspend.service");
         t.job_removed("/job/8", "systemd-suspend.service", "done");
-        assert_eq!(t.state.borrow().phase, "unknown");
-        assert!(t.state.borrow().job.is_none());
+        assert_eq!(t.state.borrow().operation.phase, "unknown");
+        assert!(t.state.borrow().operation.job.is_none());
     }
 
     #[test]
@@ -297,18 +366,18 @@ mod tests {
         t.begin("suspend");
         t.dispatching();
         t.job_new("/job/1", "systemd-hibernate.service");
-        assert!(t.state.borrow().job.is_none());
+        assert!(t.state.borrow().operation.job.is_none());
         t.job_new("/job/2", "systemd-suspend.service");
         t.begin("suspend");
         t.dispatching();
         t.accepted();
         t.job_removed("/job/2", "systemd-suspend.service", "done");
-        assert_eq!(t.state.borrow().phase, "accepted");
+        assert_eq!(t.state.borrow().operation.phase, "accepted");
         t.job_new("/job/3", "systemd-suspend.service");
         t.lost_monitor("disconnected");
-        assert_eq!(t.state.borrow().phase, "unknown");
+        assert_eq!(t.state.borrow().operation.phase, "unknown");
         t.job_removed("/job/3", "systemd-suspend.service", "done");
         t.failed("lost reply".into(), true);
-        assert_eq!(t.state.borrow().phase, "completed");
+        assert_eq!(t.state.borrow().operation.phase, "completed");
     }
 }

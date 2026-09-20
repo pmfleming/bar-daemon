@@ -166,22 +166,27 @@ async fn connected(store: &StateStore) -> Result<()> {
         let docked: bool = manager.get_property("Docked").await?;
         let triggered = edge.observe(closed, managed && !docked);
         if triggered && actions.is_empty() {
-            actions.spawn(async move {
-                let _guard = tokio::time::timeout(Duration::from_secs(3), POLICY_WRITE.lock())
-                    .await
-                    .context("lid policy is busy; ignoring this close")?;
-                if load().await? != policy {
-                    bail!("lid policy changed before action");
-                }
-                let connection = power_sleep::system_bus().await?;
-                let manager = power_sleep::manager(&connection).await?;
-                let session = power_sleep::current_session(&connection).await?;
-                act(&policy, &manager, &session).await
-            });
+            actions.spawn(perform(policy));
         }
         status.managed = managed;
         store.update_lid(status.clone()).await;
     }
+}
+
+// The action owns its policy guard and connection; the observer must remain
+// independent so session changes can release native lid ownership promptly.
+async fn perform(policy: SleepPolicy) -> Result<Option<crate::model::PowerSleepState>> {
+    let _guard = tokio::time::timeout(Duration::from_secs(3), POLICY_WRITE.lock())
+        .await
+        .context("lid policy is busy; ignoring this close")?;
+    anyhow::ensure!(load().await? == policy, "lid policy changed before action");
+    let connection = power_sleep::system_bus().await?;
+    act(
+        &policy,
+        &power_sleep::manager(&connection).await?,
+        &power_sleep::current_session(&connection).await?,
+    )
+    .await
 }
 
 pub(super) async fn active_local_graphical(session: &zbus::Proxy<'_>) -> Result<bool> {
@@ -249,7 +254,10 @@ fn validate_lid_selection(selected_delay: u32, policy: &SleepPolicy, plugged: bo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Duration, LidAction, LidEdge, LidState, POLICY_WRITE, SleepPolicy, StateStore,
+        validate_lid_selection,
+    };
 
     #[tokio::test]
     async fn policy_transaction_does_not_block_lid_ownership_publication() {

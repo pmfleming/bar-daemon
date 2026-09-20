@@ -46,7 +46,11 @@ pub async fn run_idle(config: &std::path::Path, hypridle: &std::path::Path) -> a
 }
 
 /// Requests the current idle policy through the resident service.
-pub async fn run_idle_sleep(sleep_minutes: u32, generation: &str, episode: u64) -> anyhow::Result<()> {
+pub async fn run_idle_sleep(
+    sleep_minutes: u32,
+    generation: &str,
+    episode: u64,
+) -> anyhow::Result<()> {
     let connection = zbus::Connection::session().await?;
     let proxy =
         zbus::Proxy::new(&connection, api::BUS_NAME, api::OBJECT_PATH, api::INTERFACE).await?;
