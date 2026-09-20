@@ -77,13 +77,45 @@ impl StateStore {
         update_notification_active(NotificationActiveState) => notification_active, crate::protocol::stream::NOTIFICATION_ACTIVE;
         update_notifications(NotificationState) => notifications, crate::protocol::stream::NOTIFICATIONS;
         update_power_profile(PowerProfileState) => power_profile, crate::protocol::stream::POWER_PROFILE;
-        update_sleep_policy(crate::sleep_policy::SleepPolicyState) => sleep_policy, crate::protocol::stream::SLEEP_POLICY;
         update_display_policy(crate::display_policy::DisplayPolicyState) => display_policy, crate::protocol::stream::DISPLAY_POLICY;
         update_osd_hardware(OsdHardwareState) => osd_hardware, crate::protocol::stream::OSD_HARDWARE;
         update_battery(BatteryState) => battery, crate::protocol::stream::BATTERY;
         update_brightness(BrightnessState) => brightness, crate::protocol::stream::BRIGHTNESS;
         update_audio(AudioState) => audio, crate::protocol::stream::AUDIO;
         update_media(MediaState) => media, crate::protocol::stream::MEDIA;
+    }
+
+    /// Lid ownership is independently observed; policy I/O must not overwrite it.
+    pub(crate) async fn update_sleep_policy(
+        &self,
+        mut value: crate::sleep_policy::SleepPolicyState,
+    ) {
+        let mut snapshot = self.snapshot.write().await;
+        value.lid = snapshot.sleep_policy.lid.clone();
+        self.publish_sleep_policy(&mut snapshot, value);
+    }
+
+    pub(crate) async fn update_lid(&self, lid: crate::sleep_policy::lid::LidState) {
+        let mut snapshot = self.snapshot.write().await;
+        let mut value = snapshot.sleep_policy.clone();
+        value.lid = lid;
+        self.publish_sleep_policy(&mut snapshot, value);
+    }
+
+    fn publish_sleep_policy(
+        &self,
+        snapshot: &mut BarSnapshot,
+        value: crate::sleep_policy::SleepPolicyState,
+    ) {
+        if snapshot.sleep_policy == value {
+            return;
+        }
+        let data = to_value(&value).unwrap_or(Value::Null);
+        snapshot.sleep_policy = value;
+        let _ = self.events.send(DomainEvent {
+            stream: crate::protocol::stream::SLEEP_POLICY.into(),
+            data,
+        });
     }
 
     pub(crate) fn work_area_interest(&self) -> crate::work_area::Interest {
@@ -226,6 +258,22 @@ mod tests {
             assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
             assert!(new_events.try_recv().is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn sleep_policy_refresh_cannot_overwrite_independent_lid_ownership() {
+        let store = StateStore::default();
+        let stale = store.snapshot().await.sleep_policy;
+        let lid = crate::sleep_policy::lid::LidState {
+            available: true,
+            managed: false,
+            error: Some("session inactive".into()),
+        };
+        timeout(Duration::from_millis(50), store.update_lid(lid.clone()))
+            .await
+            .unwrap();
+        store.update_sleep_policy(stale).await;
+        assert_eq!(store.snapshot().await.sleep_policy.lid, lid);
     }
 
     #[tokio::test]

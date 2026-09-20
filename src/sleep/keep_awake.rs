@@ -27,7 +27,7 @@ pub(crate) async fn set_keep_awake(enabled: bool) -> Result<PowerSleepState> {
         // Releasing protection must not depend on telemetry or bus health.
         *inhibitor = None;
     }
-    match zbus::Connection::system().await {
+    match system_bus().await {
         Ok(connection) => set_connected(&connection, &mut inhibitor, enabled).await,
         Err(error) if !enabled => Ok(PowerSleepState {
             error: Some(format!(

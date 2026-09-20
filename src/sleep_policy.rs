@@ -128,7 +128,7 @@ fn base_config() -> Result<PathBuf> {
 }
 
 pub(crate) async fn plugged() -> Result<bool> {
-    let connection = zbus::Connection::system().await?;
+    let connection = crate::sleep::system_bus().await?;
     let proxy = zbus::Proxy::new(
         &connection,
         "org.freedesktop.UPower",
@@ -157,9 +157,10 @@ async fn validate_config(policy: &SleepPolicy) -> Result<()> {
 }
 
 async fn user_systemd() -> Result<zbus::Connection> {
-    zbus::Connection::session()
-        .await
-        .context("connect to user systemd")
+    crate::sleep::bounded("connect to user systemd", Duration::from_secs(3), async {
+        Ok(zbus::connection::Builder::session()?
+            .method_timeout(Duration::from_secs(3)).build().await?)
+    }).await
 }
 
 async fn restart_idle() -> Result<()> {
@@ -328,7 +329,7 @@ where
 }
 
 async fn helper_available() -> Result<()> {
-    let connection = zbus::Connection::system().await?;
+    let connection = crate::sleep::system_bus().await?;
     let proxy = helper_proxy(&connection).await?;
     let available: bool = proxy
         .call("SleepSettingsAvailable", &())
@@ -423,7 +424,7 @@ where
     crate::sleep::perform_with_setup(action, || {
         validated_setup(&validate_trigger, || async {
             if profile.hibernate_minutes > 0 {
-                let connection = zbus::Connection::system().await?;
+                let connection = crate::sleep::system_bus().await?;
                 let proxy = helper_proxy(&connection).await?;
                 let _: () = proxy
                     .call("SetHibernateDelay", &(profile.hibernate_minutes,))

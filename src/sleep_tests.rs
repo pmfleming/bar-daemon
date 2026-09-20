@@ -9,6 +9,30 @@ use zbus::{Connection, connection::Builder};
 
 use super::*;
 
+#[tokio::test]
+async fn dependency_deadline_cancels_pending_work() {
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = dropped.clone();
+    let result = bounded("preflight", Duration::from_millis(10), async move {
+        let _owned = Dropped(flag);
+        std::future::pending::<Result<()>>().await
+    })
+    .await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("preflight timed out")
+    );
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
 #[derive(Default)]
 pub(super) struct SessionState {
     locked: AtomicBool,

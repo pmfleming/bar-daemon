@@ -53,22 +53,21 @@ pub(crate) async fn monitor(store: StateStore) {
     }
     loop {
         if let Err(error) = connected(&store).await {
-            let _guard = POLICY_WRITE.lock().await;
-            let mut state = store.snapshot().await.sleep_policy;
-            state.lid = LidState {
-                error: Some(format!(
-                    "Lid control unavailable; system policy applies: {error:#}"
-                )),
-                ..Default::default()
-            };
-            store.update_sleep_policy(state).await;
+            store
+                .update_lid(LidState {
+                    error: Some(format!(
+                        "Lid control unavailable; system policy applies: {error:#}"
+                    )),
+                    ..Default::default()
+                })
+                .await;
         }
         sleep(Duration::from_secs(3)).await;
     }
 }
 
 async fn connected(store: &StateStore) -> Result<()> {
-    let connection = zbus::Connection::system().await?;
+    let connection = power_sleep::system_bus().await?;
     let manager = power_sleep::manager(&connection).await?;
     let session = power_sleep::current_session(&connection).await?;
     let upower = zbus::Proxy::new(
@@ -105,21 +104,30 @@ async fn connected(store: &StateStore) -> Result<()> {
         .receive_signal("PropertiesChanged")
         .await?;
     let mut policies = store.subscribe();
-    let mut fallback = interval(Duration::from_secs(30));
+    let mut fallback = interval(Duration::from_secs(2));
     fallback.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut inhibitor: Option<zvariant::OwnedFd> = None;
     let mut edge = LidEdge::default();
-    {
-        let _guard = POLICY_WRITE.lock().await;
-        let mut state = store.snapshot().await.sleep_policy;
-        state.lid = LidState {
-            available: true,
-            ..Default::default()
-        };
-        store.update_sleep_policy(state).await;
-    }
+    // JoinSet cancellation drops the action when this connection/owner is lost.
+    // The observer never waits for POLICY_WRITE or for locking/helper setup.
+    let mut actions = tokio::task::JoinSet::new();
+    let mut status = LidState {
+        available: true,
+        ..Default::default()
+    };
+    store.update_lid(status.clone()).await;
     loop {
         tokio::select! {
+            result = actions.join_next(), if !actions.is_empty() => {
+                match result.context("lid action worker ended")? {
+                    Ok(Ok(Some(state))) => { store.update_power_sleep(state).await; status.error = None; }
+                    Ok(Ok(None)) => { status.error = None; }
+                    Ok(Err(error)) => status.error = Some(format!("Lid action failed: {error:#}")),
+                    Err(error) => status.error = Some(format!("Lid action worker failed: {error}")),
+                }
+                store.update_lid(status.clone()).await;
+                continue;
+            }
             _ = fallback.tick() => {},
             _ = owner_changes.next() => bail!("logind restarted; reacquiring lid ownership"),
             signal = changes.next() => { if signal.is_none() { bail!("lid signal stream ended"); } },
@@ -131,8 +139,8 @@ async fn connected(store: &StateStore) -> Result<()> {
                 _ => continue,
             }
         }
-        let _guard = POLICY_WRITE.lock().await;
-        let policy = load().await?;
+        let policy =
+            power_sleep::bounded("read lid policy", Duration::from_secs(2), load()).await?;
         let active = active_local_graphical(&session).await?;
         let managed = policy.lid_action != LidAction::System && active;
         if managed && inhibitor.is_none() {
@@ -157,24 +165,22 @@ async fn connected(store: &StateStore) -> Result<()> {
         // logind's Docked also covers external displays. Keep clamshell use safe.
         let docked: bool = manager.get_property("Docked").await?;
         let triggered = edge.observe(closed, managed && !docked);
-        let result = if triggered {
-            act(&policy, &manager, &session).await
-        } else {
-            Ok(None)
-        };
-        let mut state = store.snapshot().await.sleep_policy;
-        state.lid.available = true;
-        state.lid.managed = managed;
-        if triggered {
-            state.lid.error = result
-                .as_ref()
-                .err()
-                .map(|error| format!("Lid action failed: {error:#}"));
+        if triggered && actions.is_empty() {
+            actions.spawn(async move {
+                let _guard = tokio::time::timeout(Duration::from_secs(3), POLICY_WRITE.lock())
+                    .await
+                    .context("lid policy is busy; ignoring this close")?;
+                if load().await? != policy {
+                    bail!("lid policy changed before action");
+                }
+                let connection = power_sleep::system_bus().await?;
+                let manager = power_sleep::manager(&connection).await?;
+                let session = power_sleep::current_session(&connection).await?;
+                act(&policy, &manager, &session).await
+            });
         }
-        if let Ok(Some(power_state)) = result {
-            store.update_power_sleep(power_state).await;
-        }
-        store.update_sleep_policy(state).await;
+        status.managed = managed;
+        store.update_lid(status.clone()).await;
     }
 }
 
@@ -223,6 +229,23 @@ async fn act(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn policy_transaction_does_not_block_lid_ownership_publication() {
+        let _busy = POLICY_WRITE.lock().await;
+        let store = StateStore::default();
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            store.update_lid(LidState {
+                available: true,
+                managed: false,
+                error: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(store.snapshot().await.sleep_policy.lid.available);
+    }
 
     #[test]
     fn old_policies_preserve_system_behavior_and_unknown_actions_are_rejected() {

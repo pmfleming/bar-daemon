@@ -33,6 +33,30 @@ const MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
 const SESSION_PATH: &str = "/org/freedesktop/login1/session/auto";
 const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const DEPENDENCY_TIMEOUT: Duration = Duration::from_secs(3);
+const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Bound connection setup as well as every method on action/policy connections.
+/// Dispatch timeouts are ambiguous outcomes: never automatically replay them.
+pub(crate) async fn system_bus() -> Result<zbus::Connection> {
+    bounded("connect to system D-Bus", DEPENDENCY_TIMEOUT, async {
+        Ok(zbus::connection::Builder::system()?
+            .method_timeout(DEPENDENCY_TIMEOUT)
+            .build()
+            .await?)
+    })
+    .await
+}
+
+pub(crate) async fn bounded<T>(
+    label: &str,
+    deadline: Duration,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(deadline, future)
+        .await
+        .with_context(|| format!("{label} timed out"))?
+}
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 static SLEEP_ACTION: Mutex<()> = Mutex::const_new(());
 
@@ -143,9 +167,7 @@ where
     let _guard = SLEEP_ACTION
         .try_lock()
         .context("a lock or sleep request is already in progress")?;
-    let connection = zbus::Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
+    let connection = system_bus().await?;
     perform_connected_with_setup(
         &connection,
         action,
@@ -180,53 +202,69 @@ where
     Fut: std::future::Future<Output = Result<()>>,
 {
     let action = Action::parse(action)?;
-    let mut current = read_state(connection, false).await?;
-    if action != Action::Lock {
-        ensure_not_preparing(connection).await?;
-        ensure_sleep_allowed(&current)?;
-    }
-    if action == Action::Suspend && !capability_available(&current.can_suspend) {
-        bail!("suspend is unavailable: {}", current.can_suspend);
-    }
-    if action == Action::Hibernate && !capability_available(&current.can_hibernate) {
-        bail!(
-            "hibernate is unavailable: {}. {}",
-            current.can_hibernate,
-            current.diagnostics.hibernate_issues.join(" ")
-        );
-    }
-    if action == Action::SuspendThenHibernate {
-        check_combined_capability(connection).await?;
-    }
-    // Resolve 'auto' once and keep the concrete session object through the
-    // complete operation. A VT/session switch must not lock one session and
-    // then read a different session's hint.
-    let mut observer = if use_wayland {
-        Some(wayland_lock::LockObserver::connect().await?)
-    } else {
-        None
-    };
-    let session = lock_session(
-        connection,
-        lock_timeout,
-        action != Action::Lock,
-        &mut observer,
+    let (mut current, _observer) = bounded(
+        "sleep preflight (no sleep request sent)",
+        PREFLIGHT_TIMEOUT,
+        async {
+            let current = read_state(connection, false).await?;
+            if action != Action::Lock {
+                ensure_not_preparing(connection).await?;
+                ensure_sleep_allowed(&current)?;
+            }
+            if action == Action::Suspend && !capability_available(&current.can_suspend) {
+                bail!("suspend is unavailable: {}", current.can_suspend);
+            }
+            if action == Action::Hibernate && !capability_available(&current.can_hibernate) {
+                bail!(
+                    "hibernate is unavailable: {}. {}",
+                    current.can_hibernate,
+                    current.diagnostics.hibernate_issues.join(" ")
+                );
+            }
+            if action == Action::SuspendThenHibernate {
+                check_combined_capability(connection).await?;
+            }
+            // Resolve 'auto' once and keep the concrete session object through the
+            // complete operation. A VT/session switch must not lock one session and
+            // then read a different session's hint.
+            let mut observer = if use_wayland {
+                Some(wayland_lock::LockObserver::connect().await?)
+            } else {
+                None
+            };
+            let session = lock_session(
+                connection,
+                lock_timeout,
+                action != Action::Lock,
+                &mut observer,
+            )
+            .await?;
+            if action != Action::Lock {
+                setup().await?;
+                ensure_sleep_allowed(&read_state(connection, false).await?)?;
+                ensure_active(&session).await?;
+                if !confirmed_locked(&session, &mut observer).await? {
+                    bail!("session unlocked before the sleep request; refusing to sleep");
+                }
+                ensure_not_preparing(connection).await?;
+            }
+            Ok((current, observer))
+        },
     )
     .await?;
     if action != Action::Lock {
-        setup().await?;
-        ensure_sleep_allowed(&read_state(connection, false).await?)?;
-        ensure_active(&session).await?;
-        if !confirmed_locked(&session, &mut observer).await? {
-            bail!("session unlocked before the sleep request; refusing to sleep");
-        }
-        ensure_not_preparing(connection).await?;
         manager(connection).await?.call_method(action.method(), &(false,)).await
             .with_context(|| format!("could not confirm {} through systemd-logind; a lost reply may mean the action was already accepted. Check the session before retrying", action.method()))?;
     }
     // A successful effect is not undone by an unrelated telemetry failure.
     // Returning Err here used to invite a second, potentially destructive Retry.
-    match read_state(connection, action != Action::Lock).await {
+    match bounded(
+        "post-action status",
+        DEPENDENCY_TIMEOUT,
+        read_state(connection, action != Action::Lock),
+    )
+    .await
+    {
         Ok(state) => Ok(state),
         Err(error) => {
             current.available = false;
@@ -346,7 +384,7 @@ async fn lock_session<'a>(
 }
 
 pub(crate) async fn check_suspend_then_hibernate() -> Result<()> {
-    let connection = zbus::Connection::system().await?;
+    let connection = system_bus().await?;
     check_combined_capability(&connection).await
 }
 
