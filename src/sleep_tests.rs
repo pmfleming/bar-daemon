@@ -47,6 +47,7 @@ async fn final_trigger_validation_cancels_after_setup_and_preflight_queries() {
         false,
         || std::future::ready(Ok(())),
         || std::future::ready(Err(anyhow::anyhow!("idle episode ended"))),
+        &outcome::Tracker::default(),
     )
     .await;
     assert!(

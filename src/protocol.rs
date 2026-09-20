@@ -325,6 +325,7 @@ fn generated_contract_fixture() -> Value {
             "power_sleep": {
                 "available": true, "can_suspend": "yes", "can_hibernate": "challenge",
                 "preparing_for_sleep": false, "resume_generation": 0, "lock_before_sleep": true,
+                "operation": { "id": 0, "action": "", "phase": "", "job": null, "error": null },
                 "keep_awake": false,
                 "diagnostics": crate::sleep::diagnostics::SleepDiagnostics::default(),
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],

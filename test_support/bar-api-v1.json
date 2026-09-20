@@ -990,6 +990,13 @@
       ],
       "keep_awake": false,
       "lock_before_sleep": true,
+      "operation": {
+        "action": "",
+        "error": null,
+        "id": 0,
+        "job": null,
+        "phase": ""
+      },
       "preparing_for_sleep": false,
       "resume_generation": 0
     },

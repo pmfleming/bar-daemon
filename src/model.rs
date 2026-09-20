@@ -36,6 +36,8 @@ pub(crate) struct PowerSleepState {
     /// Monotonic within this daemon lifetime; survives telemetry refreshes.
     #[serde(default)]
     pub resume_generation: u64,
+    #[serde(default)]
+    pub operation: crate::sleep::outcome::Operation,
     pub lock_before_sleep: bool,
     /// True only when logind reports this daemon's temporary sleep inhibitor.
     #[serde(default)]

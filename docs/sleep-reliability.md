@@ -71,3 +71,20 @@ Direct lid suspend/hibernate also rechecks the trigger at the final barrier.
 
 Validation: AC removal/insertion, policy changes and equivalent/shared profiles
 are covered by unit tests, alongside the existing final-trigger failure test.
+
+## 6. Accepted versus completed sleep operations
+
+`power_sleep.operation` retains an ID, action, phase, correlated systemd job and
+error. Phases distinguish requested, dispatching, accepted, preparing, returned,
+completed, failed and unknown. PrepareForSleep(false) alone is not proof of a
+successful sleep job. An independently polled monitor subscribes to ordered
+systemd JobNew/JobRemoved signals and matches the expected sleep service/job.
+Later job failures survive telemetry refreshes and appear in the UI with journal
+guidance. Missed/unmatched results become unknown after 120 awake seconds; a
+monitor disconnect or uncertain method reply also exposes uncertainty. No jobs
+are replayed. Cancellation before dispatch is failed; interrupted dispatch is
+unknown. The frontend hides Retry for unknown outcomes. Completion means the
+systemd service completed, not proof of firmware residency or durable resume.
+
+Validation: transition/correlation/cancellation tests, stale-result preservation,
+frontend uncertainty/late-failure presentation checks, and updated API fixtures.

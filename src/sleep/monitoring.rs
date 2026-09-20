@@ -28,6 +28,7 @@ pub(crate) async fn monitor(store: StateStore) {
     // flight. No unbounded queue or per-signal telemetry task is created.
     let (refresh, requests) = watch::channel(());
     tokio::join!(
+        super::outcome::monitor(store.clone()),
         signal_connections(events),
         observe(
             &store,
@@ -113,6 +114,7 @@ async fn observe<F>(
         tokio::select! {
             event = events.recv() => match event {
                 Some(Event::Prepare(preparing)) => {
+                    super::outcome::TRACKER.prepared(preparing);
                     if !preparing && resumes.signal(sample()) {
                         store.record_resume().await;
                     } else {

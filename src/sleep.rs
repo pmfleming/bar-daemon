@@ -9,6 +9,7 @@ pub(crate) mod capability;
 pub(crate) mod diagnostics;
 mod keep_awake;
 mod monitoring;
+pub(crate) mod outcome;
 mod resume;
 mod wayland_lock;
 
@@ -95,6 +96,7 @@ async fn read_state(
         can_hibernate,
         preparing_for_sleep,
         resume_generation: 0, // StateStore preserves the resident generation.
+        operation: outcome::current(),
         lock_before_sleep: true,
         keep_awake: inhibitors.iter().any(keep_awake::is_ours),
         inhibitors: inhibitors
@@ -182,16 +184,30 @@ where
     let _guard = SLEEP_ACTION
         .try_lock()
         .context("a lock or sleep request is already in progress")?;
-    let connection = system_bus().await?;
-    perform_connected_with_validation(
-        &connection,
-        action,
-        LOCK_TIMEOUT,
-        is_hyprland_session(),
-        setup,
-        validate,
-    )
-    .await
+    if action != "lock" {
+        outcome::TRACKER.begin(action);
+    }
+    let _cancellation = (action != "lock").then(|| outcome::TRACKER.cancellation_guard());
+    let result = async {
+        let connection = system_bus().await?;
+        perform_connected_with_validation(
+            &connection,
+            action,
+            LOCK_TIMEOUT,
+            is_hyprland_session(),
+            setup,
+            validate,
+            &outcome::TRACKER,
+        )
+        .await
+    }
+    .await;
+    if action != "lock" {
+        if let Err(error) = &result {
+            outcome::TRACKER.finish_preflight_error(error);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -218,9 +234,15 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    perform_connected_with_validation(connection, action, lock_timeout, use_wayland, setup, || {
-        std::future::ready(Ok(()))
-    })
+    perform_connected_with_validation(
+        connection,
+        action,
+        lock_timeout,
+        use_wayland,
+        setup,
+        || std::future::ready(Ok(())),
+        &outcome::Tracker::default(),
+    )
     .await
 }
 
@@ -231,6 +253,7 @@ async fn perform_connected_with_validation<F, Fut, V, Check>(
     use_wayland: bool,
     setup: F,
     validate: V,
+    tracker: &outcome::Tracker,
 ) -> Result<PowerSleepState>
 where
     F: FnOnce() -> Fut,
@@ -290,8 +313,24 @@ where
     )
     .await?;
     if action != Action::Lock {
-        manager(connection).await?.call_method(action.method(), &(false,)).await
-            .with_context(|| format!("could not confirm {} through systemd-logind; a lost reply may mean the action was already accepted. Check the session before retrying", action.method()))?;
+        let proxy = manager(connection).await?;
+        tracker.dispatching();
+        match proxy.call_method(action.method(), &(false,)).await {
+            Ok(_) => tracker.accepted(),
+            Err(error) => {
+                let ambiguous = match &error {
+                    zbus::Error::MethodError(name, _, _) => matches!(
+                        name.as_str(),
+                        "org.freedesktop.DBus.Error.NoReply"
+                            | "org.freedesktop.DBus.Error.Timeout"
+                            | "org.freedesktop.DBus.Error.Disconnected"
+                    ),
+                    _ => true,
+                };
+                tracker.failed(format!("{}: {error}", action.method()), ambiguous);
+                return Err(error).with_context(|| format!("could not confirm {}; a lost reply may mean acceptance. Inspect the session before another request", action.method()));
+            }
+        }
     }
     // A successful effect is not undone by an unrelated telemetry failure.
     // Returning Err here used to invite a second, potentially destructive Retry.

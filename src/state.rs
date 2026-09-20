@@ -153,6 +153,19 @@ impl StateStore {
             .await
     }
 
+    pub(crate) async fn record_sleep_operation(&self, operation: crate::sleep::outcome::Operation) {
+        let mut snapshot = self.snapshot.write().await;
+        if snapshot.power_sleep.operation == operation {
+            return;
+        }
+        snapshot.power_sleep.operation = operation;
+        let data = to_value(&snapshot.power_sleep).unwrap_or(Value::Null);
+        let _ = self.events.send(DomainEvent {
+            stream: crate::protocol::stream::POWER_SLEEP.into(),
+            data,
+        });
+    }
+
     pub(crate) async fn record_resume(&self) {
         self.commit_power_sleep(None, true, Some(false), None).await;
     }
@@ -176,6 +189,7 @@ impl StateStore {
         }
         let mut next = value.unwrap_or_else(|| current.clone());
         next.resume_generation = current.resume_generation.saturating_add(u64::from(resumed));
+        next.operation = current.operation.clone();
         if let Some(preparing) = preparing {
             next.preparing_for_sleep = preparing;
         }
@@ -291,6 +305,22 @@ mod tests {
         assert_eq!(events.recv().await.unwrap().data["resume_generation"], 1);
         store.record_resume().await;
         assert_eq!(store.snapshot().await.power_sleep.resume_generation, 2);
+    }
+
+    #[tokio::test]
+    async fn stale_action_telemetry_cannot_clear_a_late_sleep_job_failure() {
+        let store = StateStore::default();
+        let stale = store.snapshot().await.power_sleep;
+        let operation = crate::sleep::outcome::Operation {
+            id: 3,
+            action: "hibernate".into(),
+            phase: "failed".into(),
+            job: Some("/job/3".into()),
+            error: Some("hibernate service failed".into()),
+        };
+        store.record_sleep_operation(operation.clone()).await;
+        store.update_power_sleep(stale).await;
+        assert_eq!(store.snapshot().await.power_sleep.operation, operation);
     }
 
     #[tokio::test]
