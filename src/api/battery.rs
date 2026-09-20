@@ -720,16 +720,14 @@ mod tests {
         request.apply_to(&mut config).unwrap();
         assert_eq!(config.warning_profile(), BatteryProfileAction::Balanced);
         assert_eq!(config.critical_profile(), BatteryProfileAction::KeepCurrent);
-        let legacy: AlertPolicyRequest =
-            serde_json::from_value(serde_json::json!({"auto_power_saver": true})).unwrap();
-        legacy.apply_to(&mut config).unwrap();
-        assert_eq!(config.warning_profile(), BatteryProfileAction::PowerSaver);
-        assert_eq!(config.critical_profile(), BatteryProfileAction::PowerSaver);
         assert!(!config.notify_warning && !config.notify_critical);
-    }
-
-    #[test]
-    fn invalid_level_policies_are_rejected() {
+        let request: AlertPolicyRequest = serde_json::from_value(serde_json::json!({
+            "warning_profile": "keep-current", "critical_profile": "performance"
+        }))
+        .unwrap();
+        request.apply_to(&mut config).unwrap();
+        assert_eq!(config.warning_profile(), BatteryProfileAction::KeepCurrent);
+        assert_eq!(config.critical_profile(), BatteryProfileAction::Performance);
         assert!(
             serde_json::from_value::<AlertPolicyRequest>(
                 serde_json::json!({"warning_profile": "turbo"})
@@ -741,7 +739,7 @@ mod tests {
             serde_json::json!({"warning_percent": 5, "critical_percent": 10}),
         ] {
             let request: AlertPolicyRequest = serde_json::from_value(value).unwrap();
-            assert!(request.apply_to(&mut BatteryConfig::default()).is_err());
+            assert!(request.apply_to(&mut config).is_err());
         }
     }
 

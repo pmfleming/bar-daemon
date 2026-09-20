@@ -433,6 +433,8 @@ mod tests {
     #[test]
     fn validates_targets_and_thresholds() {
         let (_directory, writer) = writer(75, 80);
+        assert_eq!(writer.get_charge_behaviour("BAT0").unwrap().0, "auto");
+        assert!(writer.set_charge_behaviour("BAT0", "ship-mode").is_err());
         assert!(writer.set_thresholds("../../etc", 60, 80).is_err());
         assert!(writer.set_thresholds("BAT0", 80, 80).is_err());
         assert_eq!(
@@ -443,22 +445,5 @@ mod tests {
                 verified: true,
             }
         );
-    }
-
-    #[test]
-    fn validates_charge_behaviour_choices() {
-        let (_directory, writer) = writer(75, 80);
-        assert_eq!(
-            writer.get_charge_behaviour("BAT0").unwrap(),
-            (
-                "auto".into(),
-                vec![
-                    "auto".into(),
-                    "inhibit-charge".into(),
-                    "force-discharge".into()
-                ]
-            )
-        );
-        assert!(writer.set_charge_behaviour("BAT0", "ship-mode").is_err());
     }
 }

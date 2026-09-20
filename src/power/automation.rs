@@ -345,11 +345,8 @@ fn runtime_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{PowerEnvelope, Runtime};
-    use crate::{
-        battery::levels::BatteryLevel,
-        model::{BatteryProfileAction, BatteryState},
-    };
+    use super::PowerEnvelope;
+    use crate::model::{BatteryProfileAction, BatteryState};
 
     fn battery(percentage: u8) -> BatteryState {
         BatteryState {
@@ -357,27 +354,6 @@ mod tests {
             percentage,
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn manual_override_survives_critical_and_recovers_with_hysteresis() {
-        let mut envelope = PowerEnvelope::default();
-        envelope.observe(&battery(25));
-        assert_eq!(envelope.status.status, "active");
-        envelope.runtime.manual_override = true;
-        for percent in [10, 15, 26, 28] {
-            envelope.observe(&battery(percent));
-            assert_eq!(envelope.status.status, "paused");
-        }
-        envelope.observe(&battery(29));
-        assert_eq!(envelope.status.status, "waiting");
-        envelope.observe(&battery(25));
-        assert_eq!(envelope.status.status, "active");
-        envelope.runtime.manual_override = true;
-        let mut plugged = battery(10);
-        plugged.plugged = true;
-        envelope.observe(&plugged);
-        assert!(!envelope.runtime.manual_override);
     }
 
     #[test]
@@ -395,16 +371,5 @@ mod tests {
         state.policy.warning_profile = BatteryProfileAction::KeepCurrent;
         envelope.observe(&state);
         assert_eq!(envelope.status.status, "keep-current");
-    }
-
-    #[test]
-    fn runtime_roundtrip_preserves_manual_pause_and_balanced_restoration() {
-        let runtime = Runtime {
-            level: BatteryLevel::Low,
-            manual_override: true,
-            balanced_restore_profile: Some("performance".into()),
-        };
-        let value = serde_json::to_string(&runtime).unwrap();
-        assert_eq!(serde_json::from_str::<Runtime>(&value).unwrap(), runtime);
     }
 }

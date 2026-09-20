@@ -333,16 +333,21 @@ mod tests {
     #[test]
     fn excludes_short_sleeps_long_sleeps_and_unobserved_time() {
         let start = Instant::now();
-        for (wall_gap, awake_gap) in [(60_000, 30_000), (600_000, 30_000), (300_000, 300_000)] {
+        for (next_wall, next_awake) in [
+            (91_000, 61_000),
+            (631_000, 61_000),
+            (331_000, 331_000),
+            (500, 61_000),
+        ] {
             let mut history = HistoryStore::load(None, 1_000);
             record(&mut history, &state(80, false, false), 1_000, 1_000, start);
-            record(&mut history, &state(80, true, false), 31_000, 31_000, start);
+            record(&mut history, &state(80, true, false), 31_500, 31_000, start);
             assert_eq!(history.state(true).active_duration_ms, 30_000);
             assert!(record(
                 &mut history,
                 &state(90, true, false),
-                31_000 + wall_gap,
-                31_000 + awake_gap,
+                next_wall,
+                next_awake,
                 start,
             ));
             let snapshot = history.state(true);
@@ -351,28 +356,14 @@ mod tests {
             record(
                 &mut history,
                 &state(89, false, false),
-                61_000 + wall_gap,
-                61_000 + awake_gap,
+                next_wall + 30_000,
+                next_awake + 30_000,
                 start,
             );
             let snapshot = history.state(true);
             assert_eq!(snapshot.active_duration_ms, 60_000);
             assert!(snapshot.points.last().unwrap().continuous);
         }
-    }
-
-    #[test]
-    fn accumulates_awake_polling_between_history_buckets() {
-        let start = Instant::now();
-        let mut history = HistoryStore::load(None, 1_000);
-        for index in 0..=30 {
-            let time = 1_000 + index * 30_000;
-            record(&mut history, &state(80, false, false), time, time, start);
-        }
-        let snapshot = history.state(true);
-        assert_eq!(snapshot.points.len(), 2);
-        assert_eq!(snapshot.active_duration_ms, 900_000);
-        assert!(snapshot.points[1].continuous);
     }
 
     #[test]
@@ -400,19 +391,28 @@ mod tests {
         assert_eq!((current.percentage, current.active_time_ms), (79, 30_000));
         assert!(current.continuous);
         assert_eq!(history.state(false).current_point.unwrap(), current);
+        for index in 2..=30 {
+            let time = 1_000 + index * 30_000;
+            record(&mut history, &state(79, false, false), time, time, start);
+        }
+        let graph = history.state(true);
+        assert_eq!(graph.points.len(), 2);
+        assert_eq!(graph.active_duration_ms, 900_000);
+        assert!(graph.points[1].continuous);
+        assert!(history.state(false).points.is_empty());
         assert!(record(
             &mut history,
             &state(78, false, false),
-            91_000,
-            61_000,
+            961_000,
+            931_000,
             start
         ));
         assert!(!history.state(false).current_point.unwrap().continuous);
         record(
             &mut history,
             &BatteryState::default(),
-            121_000,
-            91_000,
+            991_000,
+            961_000,
             start,
         );
         assert!(history.state(false).current_point.is_none());
@@ -424,8 +424,15 @@ mod tests {
         let path = dir.path().join("history.json");
         let start = Instant::now();
         let mut history = HistoryStore::load(Some(path.clone()), 1_000);
-        record(&mut history, &state(80, false, false), 1_000, 1_000, start);
-        record(&mut history, &state(79, true, false), 31_000, 31_000, start);
+        record(&mut history, &state(80, true, true), 1_000, 1_000, start);
+        record(
+            &mut history,
+            &state(79, false, false),
+            31_000,
+            31_000,
+            start,
+        );
+        assert_eq!(history.last_charge_timestamp_ms, 31_000);
         history.persist().unwrap();
         let later = 2 * 24 * 60 * 60 * 1_000;
         let mut restarted = HistoryStore::load(Some(path), later);
@@ -435,71 +442,18 @@ mod tests {
         assert_eq!(snapshot.active_duration_ms, 30_000);
         assert_eq!(snapshot.points[0].percentage, 80);
         assert!(!snapshot.points[2].continuous);
-    }
-
-    #[test]
-    fn wall_clock_adjustments_never_add_active_time() {
-        let start = Instant::now();
-        let mut history = HistoryStore::load(None, 1_000);
-        record(&mut history, &state(80, false, false), 1_000, 1_000, start);
-        record(&mut history, &state(79, true, false), 31_500, 31_000, start);
-        assert_eq!(history.state(true).active_duration_ms, 30_000);
-        record(&mut history, &state(78, false, false), 500, 61_000, start);
-        let snapshot = history.state(true);
-        assert_eq!(snapshot.active_duration_ms, 30_000);
-        assert!(!snapshot.points.last().unwrap().continuous);
-    }
-
-    #[test]
-    fn records_power_transitions_and_prunes_expired_buckets() {
-        let start = Instant::now();
-        let mut history = HistoryStore::load(None, 1_000);
-        assert!(record(
-            &mut history,
-            &state(80, true, true),
-            1_000,
-            1_000,
-            start
-        ));
-        assert!(!record(
-            &mut history,
-            &state(81, true, true),
-            2_000,
-            2_000,
-            start
-        ));
-        assert!(record(
-            &mut history,
-            &state(81, false, false),
-            3_000,
-            3_000,
-            start
-        ));
-        assert_eq!(history.last_charge_timestamp_ms, 3_000);
-        assert_eq!(history.points.len(), 2);
-        assert_eq!(history.points[0].time_to_full_seconds, Some(3_600));
-        assert_eq!(history.points[0].mode, "charging");
-        assert_eq!(history.points[1].time_to_full_seconds, None);
-        assert_eq!(history.points[1].mode, "discharging");
-        let summary = history.state(false);
-        assert_eq!(summary.latest_timestamp_ms, 3_000);
-        assert_eq!(summary.active_duration_ms, 2_000);
-        assert!(summary.points.is_empty());
-        let graph = history.state(true);
-        assert_eq!(graph.points.len(), 2);
-        assert_eq!(graph.points[0].active_time_ms, 0);
-        assert_eq!(graph.points[1].active_time_ms, 2_000);
-        assert!(!graph.points[0].continuous);
-        assert!(graph.points[1].continuous);
-
-        let day = 24 * 60 * 60 * 1_000;
+        assert_eq!(snapshot.points[0].mode, "charging");
+        assert_eq!(snapshot.points[0].time_to_full_seconds, Some(3_600));
+        assert_eq!(snapshot.points[1].mode, "discharging");
+        assert_eq!(snapshot.points[1].time_to_full_seconds, None);
+        let expired = later + 8 * 24 * 60 * 60 * 1_000;
         record(
-            &mut history,
+            &mut restarted,
             &state(80, false, false),
-            8 * day,
-            8 * day,
+            expired,
+            expired,
             start,
         );
-        assert_eq!(history.points.len(), 1);
+        assert_eq!(restarted.state(true).points.len(), 1);
     }
 }

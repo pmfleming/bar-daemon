@@ -607,30 +607,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_todo_store_can_be_created_and_reloaded() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("new/todos.json");
-        let config = directory.path().join("activity.json");
-        let service =
-            ActivityService::with_paths(StateStore::default(), config.clone(), path.clone()).await;
-        let todo = service
-            .create_todo("Keep me".into(), None, None, 0)
-            .await
-            .unwrap();
-        let restarted = ActivityService::with_paths(StateStore::default(), config, path).await;
-        assert_eq!(restarted.query_range(0, 1).await.unwrap().todos, vec![todo]);
-    }
-
-    #[tokio::test]
     async fn date_only_queries_use_local_half_open_days_including_dst_and_partial_days() {
         use chrono::{DateTime, TimeZone};
         let directory = tempdir().unwrap();
-        let service = ActivityService::with_paths(
-            StateStore::default(),
-            directory.path().join("activity.json"),
-            directory.path().join("todos.json"),
-        )
-        .await;
+        let config = directory.path().join("activity.json");
+        let todos = directory.path().join("new/todos.json");
+        let service =
+            ActivityService::with_paths(StateStore::default(), config.clone(), todos.clone()).await;
+        let todo = service
+            .create_todo("Keep me".into(), None, None, 3)
+            .await
+            .unwrap();
+        let service = ActivityService::with_paths(StateStore::default(), config, todos).await;
+        assert_eq!(
+            service.query_range(0, 1).await.unwrap().todos,
+            vec![todo.clone()]
+        );
+        assert!(
+            service
+                .complete_todo(&todo.id, true)
+                .await
+                .unwrap()
+                .completed
+        );
+        service.delete_todo(&todo.id).await.unwrap();
+        assert!(service.query_range(0, 1).await.unwrap().todos.is_empty());
+        const MAX_RANGE_MS: i64 = 370 * 24 * 60 * 60 * 1_000;
+        for (from, to) in [
+            (10, 10),
+            (i64::MIN, i64::MAX),
+            (i64::MIN, 0),
+            (0, MAX_RANGE_MS + 1),
+        ] {
+            assert!(service.query_range(from, to).await.is_err());
+        }
+        assert!(service.query_range(0, MAX_RANGE_MS).await.is_ok());
         for (zone, from, to, date) in [
             (
                 chrono_tz::Africa::Johannesburg,
@@ -696,90 +707,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_todos_round_trip_and_query() {
-        let directory = tempdir().unwrap();
-        let service = ActivityService::with_paths(
-            StateStore::default(),
-            directory.path().join("activity.json"),
-            directory.path().join("todos.json"),
-        )
-        .await;
-        assert!(service.query_range(10, 10).await.is_err());
-        assert!(service.query_range(i64::MIN, i64::MAX).await.is_err());
-        assert!(service.query_range(i64::MIN, 0).await.is_err());
-        const MAX_RANGE_MS: i64 = 370 * 24 * 60 * 60 * 1_000;
-        assert!(service.query_range(0, MAX_RANGE_MS).await.is_ok());
-        assert!(service.query_range(0, MAX_RANGE_MS + 1).await.is_err());
-        let todo = service
-            .create_todo("Write tests".into(), None, Some("2026-01-20".into()), 3)
-            .await
-            .unwrap();
-        let from = 1_767_225_600_000;
-        let to = 1_769_904_000_000;
-        assert_eq!(service.query_range(from, to).await.unwrap().todos.len(), 1);
-        let completed = service.complete_todo(&todo.id, true).await.unwrap();
-        assert!(completed.completed);
-        service.delete_todo(&todo.id).await.unwrap();
-        assert!(
-            service
-                .query_range(from, to)
-                .await
-                .unwrap()
-                .todos
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn summary_selects_earliest_unfinished_event_without_reordering_sources() {
-        let directory = tempdir().unwrap();
-        let service = ActivityService::with_paths(
-            StateStore::default(),
-            directory.path().join("activity.json"),
-            directory.path().join("todos.json"),
-        )
-        .await;
-        let now = super::unix_ms();
-        let events: Vec<_> = [
-            ("future", 60_000, 120_000),
-            ("expired", -120_000, -60_000),
-            ("ongoing", -60_000, 60_000),
-        ]
-        .into_iter()
-        .map(|(id, start, end)| super::ActivityEvent {
-            id: id.into(),
-            start_unix_ms: now + start,
-            end_unix_ms: now + end,
-            ..Default::default()
-        })
-        .collect();
-        service
-            .data
-            .write()
-            .await
-            .events_by_source
-            .insert("test".into(), events.clone());
-        service.publish_state(None, false).await;
-        let summary = service.state.snapshot().await.activity;
-        assert_eq!(summary.event_count, 3);
-        assert_eq!(summary.next_event, Some(events[2].clone()));
-        assert_eq!(service.data.read().await.events_by_source["test"], events);
-    }
-
-    #[tokio::test]
     async fn refreshes_multiple_local_calendar_sources() {
         let directory = tempdir().unwrap();
         let first = directory.path().join("first.ics");
         let second = directory.path().join("second.ics");
+        let now = chrono::Utc::now();
+        let today = now.date_naive();
+        let first_date = today + chrono::Days::new(2);
+        let second_date = today + chrono::Days::new(7);
+        let end_date = second_date.succ_opt().unwrap();
         tokio::fs::write(
             &first,
-            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:first\nSUMMARY:First\nDTSTART:20260115T090000Z\nDTEND:20260115T100000Z\nEND:VEVENT\nEND:VCALENDAR\n",
+            format!(concat!(
+                "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:first\nSUMMARY:First\nDTSTART:{date}T090000Z\nDTEND:{date}T100000Z\nEND:VEVENT\n",
+                "BEGIN:VEVENT\nUID:expired\nSUMMARY:Expired\nDTSTART:{expired_start}\nDTEND:{expired_end}\nEND:VEVENT\n",
+                "BEGIN:VEVENT\nUID:ongoing\nSUMMARY:Ongoing\nDTSTART:{ongoing_start}\nDTEND:{ongoing_end}\nEND:VEVENT\nEND:VCALENDAR\n"
+            ), date = first_date.format("%Y%m%d"),
+               expired_start = (now - chrono::Duration::hours(2)).format("%Y%m%dT%H%M%SZ"),
+               expired_end = (now - chrono::Duration::hours(1)).format("%Y%m%dT%H%M%SZ"),
+               ongoing_start = (now - chrono::Duration::minutes(30)).format("%Y%m%dT%H%M%SZ"),
+               ongoing_end = (now + chrono::Duration::hours(1)).format("%Y%m%dT%H%M%SZ")),
         )
         .await
         .unwrap();
         tokio::fs::write(
             &second,
-            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:second\nSUMMARY:Second\nDTSTART;VALUE=DATE:20260120\nDTEND;VALUE=DATE:20260121\nEND:VEVENT\nEND:VCALENDAR\n",
+            format!("BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:second\nSUMMARY:Second\nDTSTART;VALUE=DATE:{}\nDTEND;VALUE=DATE:{}\nEND:VEVENT\nEND:VCALENDAR\n", second_date.format("%Y%m%d"), end_date.format("%Y%m%d")),
         )
         .await
         .unwrap();
@@ -803,7 +756,8 @@ mod tests {
         .await;
         service.refresh().await;
         let snapshot = state.snapshot().await.activity;
-        assert_eq!(snapshot.event_count, 2);
+        assert_eq!(snapshot.event_count, 4);
+        assert_eq!(snapshot.next_event.as_ref().unwrap().title, "Ongoing");
         assert!(
             snapshot.lunar.is_some(),
             "lunar metadata does not require weather"
@@ -813,11 +767,26 @@ mod tests {
         assert_eq!(snapshot.sources.len(), 2);
         assert!(snapshot.sources.iter().all(|source| source.available));
         let range = service
-            .query_range(1_767_225_600_000, 1_769_904_000_000)
+            .query_range_in_timezone(
+                first_date
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()
+                    .timestamp_millis(),
+                end_date
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()
+                    .timestamp_millis(),
+                chrono_tz::UTC,
+            )
             .await
             .unwrap();
         assert_eq!(range.events.len(), 2);
-        assert_eq!(range.busy_dates, vec!["2026-01-15", "2026-01-20"]);
+        assert_eq!(
+            range.busy_dates,
+            vec![first_date.to_string(), second_date.to_string()]
+        );
 
         // A partial write must retain the source's last good data, report its
         // failure independently, and recover when the file is valid again.
@@ -826,7 +795,7 @@ mod tests {
             .unwrap();
         service.refresh().await;
         let failed = state.snapshot().await.activity;
-        assert_eq!(failed.event_count, 2);
+        assert_eq!(failed.event_count, 4);
         assert!(
             failed.lunar.is_some(),
             "provider failures do not remove lunar metadata"

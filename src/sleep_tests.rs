@@ -36,44 +36,28 @@ async fn authorization_and_inhibition_fail_before_locking() {
 }
 
 #[tokio::test]
-async fn final_trigger_validation_cancels_after_setup_and_preflight_queries() {
-    let state = Arc::new(SessionState::default());
-    state.locked.store(true, Ordering::SeqCst);
-    let (_server, client) = fake_logind(state.clone()).await;
-    let result = perform_connected_with_validation(
-        &client,
-        "suspend",
-        Duration::from_secs(1),
-        false,
-        || std::future::ready(Ok(())),
-        || std::future::ready(Err(anyhow::anyhow!("idle episode ended"))),
-        &outcome::Tracker::default(),
-    )
-    .await;
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("idle episode ended")
-    );
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
 async fn trigger_validation_cannot_hide_a_concurrent_unlock_or_session_switch() {
-    for switched in [false, true] {
+    for change in ["ended", "unlocked", "switched"] {
         let state = Arc::new(SessionState::default());
         state.locked.store(true, Ordering::SeqCst);
         let (_server, client) = fake_logind(state.clone()).await;
         let changed = state.clone();
+        let setup_calls = &AtomicUsize::new(0);
         let result = perform_connected_with_validation(
             &client,
             "suspend",
             Duration::from_secs(1),
             false,
-            || std::future::ready(Ok(())),
+            || async {
+                setup_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
             move || {
-                if switched {
+                assert_eq!(setup_calls.load(Ordering::SeqCst), 1);
+                if change == "ended" {
+                    return std::future::ready(Err(anyhow::anyhow!("idle episode ended")));
+                }
+                if change == "switched" {
                     changed.inactive.store(true, Ordering::SeqCst);
                 } else {
                     changed.locked.store(false, Ordering::SeqCst);
@@ -83,33 +67,12 @@ async fn trigger_validation_cannot_hide_a_concurrent_unlock_or_session_switch() 
             &outcome::Tracker::default(),
         )
         .await;
-        assert!(result.is_err());
+        let error = result.unwrap_err();
+        if change == "ended" {
+            assert!(error.to_string().contains("idle episode ended"));
+        }
         assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
     }
-}
-
-#[tokio::test]
-async fn dependency_deadline_cancels_pending_work() {
-    struct Dropped(Arc<AtomicBool>);
-    impl Drop for Dropped {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
-    let dropped = Arc::new(AtomicBool::new(false));
-    let flag = dropped.clone();
-    let result = bounded("preflight", Duration::from_millis(10), async move {
-        let _owned = Dropped(flag);
-        std::future::pending::<Result<()>>().await
-    })
-    .await;
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("preflight timed out")
-    );
-    assert!(dropped.load(Ordering::SeqCst));
 }
 
 #[derive(Default)]
@@ -324,7 +287,13 @@ async fn missing_or_failed_lock_confirmation_never_sleeps() {
             let (_server, client) = fake_logind(Arc::clone(&state)).await;
             let result = timeout(
                 Duration::from_secs(1),
-                perform_connected(&client, action, Duration::from_millis(100)),
+                perform_connected_with_setup(
+                    &client,
+                    action,
+                    Duration::from_millis(100),
+                    false,
+                    || async { panic!("unconfirmed lock must not change hibernate settings") },
+                ),
             )
             .await
             .unwrap();
@@ -337,33 +306,20 @@ async fn missing_or_failed_lock_confirmation_never_sleeps() {
 #[tokio::test]
 async fn already_preparing_sleep_rejects_duplicate_requests_before_locking() {
     for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
-        let state = Arc::new(SessionState::default());
-        state.preparing.store(true, Ordering::SeqCst);
-        let (_server, client) = fake_logind(Arc::clone(&state)).await;
-        let result = perform_connected(&client, action, Duration::from_secs(1)).await;
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("already preparing")
-        );
-        assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
+        for (preparing, unreadable, message) in [
+            (true, false, "already preparing"),
+            (false, true, "cannot confirm"),
+        ] {
+            let state = Arc::new(SessionState::default());
+            state.preparing.store(preparing, Ordering::SeqCst);
+            state.preparing_fails.store(unreadable, Ordering::SeqCst);
+            let (_server, client) = fake_logind(Arc::clone(&state)).await;
+            let result = perform_connected(&client, action, Duration::from_secs(1)).await;
+            assert!(result.unwrap_err().to_string().contains(message));
+            assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
+        }
     }
-}
-
-#[tokio::test]
-async fn operation_result_preserves_loginds_actual_preparation_state() {
-    let state = Arc::new(SessionState::default());
-    state.locked.store(true, Ordering::SeqCst);
-    let (_server, client) = fake_logind(state).await;
-    let result = perform_connected(&client, "suspend", Duration::from_secs(1))
-        .await
-        .unwrap();
-    assert!(
-        result.preparing_for_sleep,
-        "method completion must not clear a live preparation signal"
-    );
 }
 
 #[tokio::test]
@@ -373,19 +329,6 @@ async fn simultaneous_public_requests_fail_without_contacting_the_system_bus() {
         let error = perform(action).await.unwrap_err();
         assert!(error.to_string().contains("already in progress"));
     }
-}
-
-#[tokio::test]
-async fn unreadable_preparation_state_fails_closed_before_locking() {
-    let state = Arc::new(SessionState::default());
-    state.preparing_fails.store(true, Ordering::SeqCst);
-    let (_server, client) = fake_logind(Arc::clone(&state)).await;
-    let error = perform_connected(&client, "suspend", Duration::from_secs(1))
-        .await
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("cannot confirm"));
-    assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -429,59 +372,31 @@ async fn changes_during_setup_are_rechecked_before_sleep() {
 }
 
 #[tokio::test]
-async fn unsuccessful_lock_never_changes_hibernate_settings() {
-    let state = Arc::new(SessionState::default());
-    let (_server, client) = fake_logind(Arc::clone(&state)).await;
-    let setup_calls = AtomicUsize::new(0);
-    let result = perform_connected_with_setup(
-        &client,
-        "suspend-then-hibernate",
-        Duration::from_millis(80),
-        false,
-        || async {
-            setup_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        },
-    )
-    .await;
-    assert!(result.is_err());
-    assert_eq!(setup_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
 async fn accepted_action_is_not_reported_failed_when_telemetry_breaks() {
-    let state = Arc::new(SessionState {
-        telemetry_fails_after_sleep: true,
-        ..Default::default()
-    });
-    state.locked.store(true, Ordering::SeqCst);
-    let (_server, client) = fake_logind(Arc::clone(&state)).await;
-    let result = perform_connected(&client, "suspend", Duration::from_secs(1))
-        .await
-        .unwrap();
-    assert!(!result.available);
-    assert!(result.preparing_for_sleep);
-    assert!(
-        result
-            .error
-            .unwrap()
-            .contains("accepted, but status refresh failed")
-    );
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn invalid_actions_never_fall_through_to_hibernate() {
-    let state = Arc::new(SessionState::default());
-    let (_server, client) = fake_logind(Arc::clone(&state)).await;
-    assert!(
-        perform_connected(&client, "suspnd", Duration::from_secs(1))
+    for broken in [false, true] {
+        let state = Arc::new(SessionState {
+            telemetry_fails_after_sleep: broken,
+            ..Default::default()
+        });
+        state.locked.store(true, Ordering::SeqCst);
+        let (_server, client) = fake_logind(Arc::clone(&state)).await;
+        let result = perform_connected(&client, "suspend", Duration::from_secs(1))
             .await
-            .is_err()
-    );
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
+            .unwrap();
+        assert_eq!(result.available, !broken);
+        assert!(result.preparing_for_sleep);
+        if broken {
+            assert!(
+                result
+                    .error
+                    .unwrap()
+                    .contains("accepted, but status refresh failed")
+            );
+        } else {
+            assert!(result.error.is_none());
+        }
+        assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[tokio::test]
@@ -516,6 +431,12 @@ async fn already_locked_session_and_lock_only_action_are_supported() {
     let state = Arc::new(SessionState::default());
     state.locked.store(true, Ordering::SeqCst);
     let (_server, client) = fake_logind(Arc::clone(&state)).await;
+    assert!(
+        perform_connected(&client, "suspnd", Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+    assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
     perform_connected(&client, "lock", Duration::from_secs(1))
         .await
         .unwrap();

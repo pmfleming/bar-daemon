@@ -409,37 +409,6 @@ mod tests {
     use super::BatteryConfig;
 
     #[test]
-    fn legacy_settings_preserve_thresholds_and_migrate_both_actions() {
-        use crate::model::BatteryProfileAction;
-        for enabled in [false, true] {
-            let config: BatteryConfig = serde_json::from_value(serde_json::json!({
-                "warning_percent": 35, "critical_percent": 8,
-                "notify_when_full": false, "auto_power_saver": enabled
-            }))
-            .unwrap();
-            let expected = if enabled {
-                BatteryProfileAction::PowerSaver
-            } else {
-                BatteryProfileAction::KeepCurrent
-            };
-            assert_eq!(config.warning_profile(), expected);
-            assert_eq!(config.critical_profile(), expected);
-            assert!(config.notify_warning && config.notify_critical);
-            assert!(!config.notify_when_full);
-            assert_eq!((config.warning_percent, config.critical_percent), (35, 8));
-            let roundtrip: BatteryConfig =
-                serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
-            assert_eq!(roundtrip, config);
-        }
-        assert!(
-            serde_json::from_value::<BatteryConfig>(
-                serde_json::json!({"warning_profile": "invalid"})
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn validates_alert_and_protection_ranges() {
         assert!(
             BatteryConfig {

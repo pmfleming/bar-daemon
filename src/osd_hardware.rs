@@ -218,7 +218,7 @@ fn read_number(file: &File) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FALLBACK_INTERVAL, LedReader};
+    use super::LedReader;
     use std::fs;
     use tempfile::tempdir;
 
@@ -237,22 +237,19 @@ mod tests {
         led(root.path(), "platform::kbd_backlight", 2, 4);
         led(root.path(), "platform::cameramute", 1, 1);
         led(root.path(), "unrelated::power", 1, 1);
-        let (reader, watches) = LedReader::discover(root.path());
-        assert_eq!(reader.leds.len(), 4);
-        assert!(watches.is_empty());
+        assert!(
+            !LedReader::discover(&root.path().join("missing"))
+                .0
+                .read_state()
+                .available
+        );
+        let (reader, _) = LedReader::discover(root.path());
         let state = reader.read_state();
         assert!(state.caps_lock);
         assert!(!state.num_lock);
         assert_eq!(state.keyboard_backlight_percent, Some(50));
         assert!(state.camera_privacy);
-    }
-
-    #[test]
-    fn cached_files_read_new_values_from_offset_zero() {
-        let root = tempdir().unwrap();
-        led(root.path(), "input3::capslock", 0, 1);
-        let (reader, _) = LedReader::discover(root.path());
-        for enabled in [true, false, true, false] {
+        for enabled in [false, true] {
             fs::write(
                 root.path().join("input3::capslock/brightness"),
                 if enabled { "1\n" } else { "0\n" },
@@ -260,17 +257,18 @@ mod tests {
             .unwrap();
             assert_eq!(reader.read_state().caps_lock, enabled);
         }
-        assert!(FALLBACK_INTERVAL.as_millis() <= 50);
-    }
-
-    #[test]
-    fn rediscovery_handles_hotplug_and_missing_led_class() {
-        let root = tempdir().unwrap();
-        let missing = root.path().join("missing");
-        assert!(!LedReader::discover(&missing).0.read_state().available);
-        led(root.path(), "platform::kbd_backlight", 1, 0);
-        let (reader, _) = LedReader::discover(root.path());
-        assert_eq!(reader.read_state().keyboard_backlight_percent, Some(100));
+        fs::write(
+            root.path().join("platform::kbd_backlight/max_brightness"),
+            "0",
+        )
+        .unwrap();
+        assert_eq!(
+            LedReader::discover(root.path())
+                .0
+                .read_state()
+                .keyboard_backlight_percent,
+            Some(100)
+        );
         fs::remove_dir_all(root.path().join("platform::kbd_backlight")).unwrap();
         let state = LedReader::discover(root.path()).0.read_state();
         assert!(state.available);

@@ -248,4 +248,17 @@ async fn telemetry_deadline_and_owner_cancellation_drop_pending_work() {
         !active.load(Ordering::SeqCst),
         "no detached telemetry work survives cancellation"
     );
+    active.store(true, Ordering::SeqCst);
+    let query = ActiveQuery(Arc::clone(&active));
+    let error = crate::sleep::bounded("preflight", Duration::from_millis(10), async {
+        let _query = query;
+        std::future::pending::<Result<()>>().await
+    })
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("preflight timed out"));
+    assert!(
+        !active.load(Ordering::SeqCst),
+        "bounded preflight must also drop pending work"
+    );
 }

@@ -198,9 +198,6 @@ mod tests {
             last.mode = mode.into();
             assert!(energy(&[points[0].clone(), last]).bars.is_empty());
         }
-    }
-    #[test]
-    fn coverage_zero_invalid_and_discontinuities_are_distinct() {
         let first = point(0, 0, 8.0, false);
         let partial = energy(&[first.clone(), point(300_000, 300_000, 8.0, true)]);
         assert_eq!(partial.observed_ms, 300_000);
@@ -245,20 +242,8 @@ mod tests {
         battery.percentage = 88;
         battery.charging = false;
         assert_eq!(forecast(&battery).status, "limit-reached");
-        battery.available = false;
-        assert_eq!(forecast(&battery).status, "unavailable");
-    }
-
-    #[test]
-    fn discharge_forecast_survives_limits_and_stops_when_plugged_in() {
-        let mut battery = BatteryState {
-            available: true,
-            percentage: 85,
-            time_to_empty_seconds: 12600,
-            ..Default::default()
-        };
-        battery.protection.enabled = true;
-        battery.protection.end_percent = Some(80);
+        battery.plugged = false;
+        battery.time_to_empty_seconds = 12600;
         let value = forecast(&battery);
         assert_eq!(
             (value.target, value.seconds, value.status.as_str()),

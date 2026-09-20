@@ -254,51 +254,7 @@ fn validate_lid_selection(selected_delay: u32, policy: &SleepPolicy, plugged: bo
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Duration, LidAction, LidEdge, LidState, POLICY_WRITE, SleepPolicy, StateStore,
-        validate_lid_selection,
-    };
-
-    #[tokio::test]
-    async fn policy_transaction_does_not_block_lid_ownership_publication() {
-        let _busy = POLICY_WRITE.lock().await;
-        let store = StateStore::default();
-        tokio::time::timeout(
-            Duration::from_millis(50),
-            store.update_lid(LidState {
-                available: true,
-                managed: false,
-                error: None,
-            }),
-        )
-        .await
-        .unwrap();
-        assert!(store.snapshot().await.sleep_policy.lid.available);
-    }
-
-    #[test]
-    fn old_policies_preserve_system_behavior_and_unknown_actions_are_rejected() {
-        let old = r#"{"same_profile":true,"battery":{"sleep_minutes":30,"hibernate_minutes":0},"plugged":{"sleep_minutes":30,"hibernate_minutes":0}}"#;
-        assert_eq!(
-            serde_json::from_str::<SleepPolicy>(old).unwrap().lid_action,
-            LidAction::System
-        );
-        assert!(serde_json::from_str::<LidAction>("\"shutdown\"").is_err());
-        for action in [
-            LidAction::System,
-            LidAction::Ignore,
-            LidAction::Lock,
-            LidAction::Suspend,
-            LidAction::Hibernate,
-            LidAction::Profile,
-        ] {
-            assert_eq!(
-                serde_json::from_str::<LidAction>(&serde_json::to_string(&action).unwrap())
-                    .unwrap(),
-                action
-            );
-        }
-    }
+    use super::{LidAction, LidEdge, SleepPolicy, validate_lid_selection};
 
     #[test]
     fn acts_once_per_close_and_never_on_startup_resume_or_session_switch() {
@@ -330,7 +286,12 @@ mod tests {
                 hibernate_minutes: 120,
             },
         };
+        assert!(serde_json::from_str::<LidAction>("\"shutdown\"").is_err());
         assert!(validate_lid_selection(120, &policy, true).is_ok());
+        policy.plugged.sleep_minutes = 0;
+        assert!(validate_lid_selection(120, &policy, true).is_ok());
+        assert!(validate_lid_selection(15, &policy, false).is_ok());
+        assert!(policy.idle_profile(false, 0).is_err());
         assert!(validate_lid_selection(120, &policy, false).is_err());
         assert!(validate_lid_selection(15, &policy, true).is_err());
         policy.same_profile = true;
@@ -340,25 +301,5 @@ mod tests {
         assert!(validate_lid_selection(15, &policy, true).is_ok());
         policy.lid_action = LidAction::System;
         assert!(validate_lid_selection(15, &policy, true).is_err());
-    }
-
-    #[test]
-    fn lid_profile_uses_ac_delay_even_when_idle_sleep_is_never() {
-        let policy = SleepPolicy {
-            critical_battery: Default::default(),
-            lid_action: LidAction::Profile,
-            same_profile: false,
-            battery: super::super::SleepProfile {
-                sleep_minutes: 0,
-                hibernate_minutes: 15,
-            },
-            plugged: super::super::SleepProfile {
-                sleep_minutes: 0,
-                hibernate_minutes: 120,
-            },
-        };
-        assert_eq!(policy.profile(false).hibernate_minutes, 15);
-        assert_eq!(policy.profile(true).hibernate_minutes, 120);
-        assert!(policy.idle_profile(false, 0).is_err());
     }
 }

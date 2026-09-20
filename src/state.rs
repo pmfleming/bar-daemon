@@ -232,8 +232,6 @@ impl StateStore {
 mod tests {
     use tokio::time::{Duration, timeout};
 
-    use crate::model::WorkspaceState;
-
     use super::StateStore;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -241,7 +239,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let store = StateStore::default();
-        let mut events = store.subscribe();
+        let (initial, mut events) = store.snapshot_and_subscribe().await;
+        assert_eq!(initial.notifications.count, 0);
         for round in 0..1_000 {
             let committed = Arc::new(Mutex::new(Vec::new()));
             let mut tasks = tokio::task::JoinSet::new();
@@ -272,7 +271,15 @@ mod tests {
             );
             let (snapshot, mut new_events) = store.snapshot_and_subscribe().await;
             assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
-            assert!(new_events.try_recv().is_err());
+            store
+                .update(snapshot.notifications.count, "test", |s| {
+                    &mut s.notifications.count
+                })
+                .await;
+            assert!(
+                new_events.try_recv().is_err(),
+                "unchanged values must not emit events"
+            );
         }
     }
 
@@ -290,23 +297,6 @@ mod tests {
             .unwrap();
         store.update_sleep_policy(stale).await;
         assert_eq!(store.snapshot().await.sleep_policy.lid, lid);
-    }
-
-    #[tokio::test]
-    async fn resume_generation_survives_stale_action_and_monitor_telemetry() {
-        let store = StateStore::default();
-        let mut events = store.subscribe();
-        store.record_resume().await;
-        assert_eq!(events.recv().await.unwrap().data["resume_generation"], 1);
-        store
-            .update_power_sleep(crate::model::PowerSleepState {
-                available: true,
-                ..Default::default()
-            })
-            .await;
-        assert_eq!(events.recv().await.unwrap().data["resume_generation"], 1);
-        store.record_resume().await;
-        assert_eq!(store.snapshot().await.power_sleep.resume_generation, 2);
     }
 
     #[tokio::test]
@@ -360,39 +350,11 @@ mod tests {
                 .await
         );
         assert_eq!(store.snapshot().await.power_sleep, inhibited);
-    }
-
-    #[tokio::test]
-    async fn only_emits_changed_domain_values() {
-        let store = StateStore::default();
-        let mut events = store.subscribe();
-        let state = WorkspaceState {
-            available: true,
-            ..WorkspaceState::default()
-        };
-        store.update_workspaces(state.clone()).await;
-        assert_eq!(events.recv().await.unwrap().data["available"], true);
-        store.update_workspaces(state).await;
-        assert!(
-            timeout(Duration::from_millis(10), events.recv())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn snapshot_and_subscription_share_one_update_boundary() {
-        let store = StateStore::default();
-        let (snapshot, mut events) = store.snapshot_and_subscribe().await;
-        assert!(!snapshot.workspaces.available);
-        assert!(!store.read(|snapshot| snapshot.workspaces.available).await);
         store
-            .update_workspaces(WorkspaceState {
-                available: true,
-                ..WorkspaceState::default()
-            })
+            .update_power_sleep(crate::model::PowerSleepState::default())
             .await;
-        assert_eq!(events.recv().await.unwrap().data["available"], true);
-        assert!(store.read(|snapshot| snapshot.workspaces.available).await);
+        assert_eq!(store.snapshot().await.power_sleep.resume_generation, 1);
+        store.record_resume().await;
+        assert_eq!(store.snapshot().await.power_sleep.resume_generation, 2);
     }
 }

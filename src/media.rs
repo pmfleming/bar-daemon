@@ -421,7 +421,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaService, seek_offset_microseconds, select_active_player};
+    use super::{MediaService, seek_offset_microseconds};
     use crate::{model::MediaPlayer, state::StateStore};
 
     fn player(id: &str, status: &str, spotify: bool, controllable: bool) -> MediaPlayer {
@@ -449,6 +449,14 @@ mod tests {
 
     #[tokio::test]
     async fn publishes_mpris_seek_capability() {
+        for (seconds, expected) in [
+            (-15, Some(-15_000_000)),
+            (30, Some(30_000_000)),
+            (0, None),
+            (86_401, None),
+        ] {
+            assert_eq!(seek_offset_microseconds(seconds).ok(), expected);
+        }
         // An isolated peer connection avoids touching the user's media players.
         for can_seek in [false, true] {
             let (server, client) = tokio::net::UnixStream::pair().unwrap();
@@ -477,14 +485,23 @@ mod tests {
             player("browser", "paused", false, true),
             player("spotify", "paused", true, true),
         ];
-        store
-            .update_media(crate::model::MediaState {
-                available: true,
-                active_player: Some("spotify".into()),
-                players: players.clone(),
-                error: None,
-            })
-            .await;
+        service.publish(&store, players[..1].to_vec()).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("browser")
+        );
+        let mut playing = players.clone();
+        playing.push(player("playing", "playing", false, true));
+        service.publish(&store, playing).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("playing")
+        );
+        service.publish(&store, players.clone()).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("spotify")
+        );
 
         let state = service.cycle(&store).await.unwrap();
 
@@ -494,25 +511,5 @@ mod tests {
             store.snapshot().await.media.active_player.as_deref(),
             Some("browser")
         );
-    }
-
-    #[test]
-    fn validates_and_converts_seek_offsets() {
-        assert_eq!(seek_offset_microseconds(-15).unwrap(), -15_000_000);
-        assert_eq!(seek_offset_microseconds(30).unwrap(), 30_000_000);
-        assert!(seek_offset_microseconds(0).is_err());
-        assert!(seek_offset_microseconds(86_401).is_err());
-    }
-
-    #[test]
-    fn selects_playing_then_spotify_then_controllable_player() {
-        let players = vec![
-            player("browser", "paused", false, true),
-            player("spotify", "paused", true, true),
-            player("playing", "playing", false, true),
-        ];
-        assert_eq!(select_active_player(&players).unwrap().id, "playing");
-        assert_eq!(select_active_player(&players[..2]).unwrap().id, "spotify");
-        assert_eq!(select_active_player(&players[..1]).unwrap().id, "browser");
     }
 }

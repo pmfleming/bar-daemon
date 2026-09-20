@@ -75,6 +75,8 @@ mod tests {
         battery.percentage = 12;
         level = level.observe(&battery);
         assert_eq!(level, BatteryLevel::Critical);
+        battery.policy.critical_profile = BatteryProfileAction::KeepCurrent;
+        assert_eq!(level.action(&battery), BatteryProfileAction::KeepCurrent);
         battery.percentage = 15;
         assert_eq!(level.observe(&battery), BatteryLevel::Critical);
         battery.percentage = 16;
@@ -88,19 +90,5 @@ mod tests {
         battery.plugged = false;
         battery.available = false;
         assert_eq!(level.observe(&battery), BatteryLevel::Normal);
-    }
-
-    #[test]
-    fn critical_keep_current_does_not_inherit_low_action() {
-        let mut battery = BatteryState {
-            available: true,
-            percentage: 10,
-            ..Default::default()
-        };
-        battery.policy.critical_profile = BatteryProfileAction::KeepCurrent;
-        assert_eq!(
-            BatteryLevel::Normal.observe(&battery).action(&battery),
-            BatteryProfileAction::KeepCurrent
-        );
     }
 }

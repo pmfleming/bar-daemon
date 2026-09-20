@@ -133,31 +133,25 @@ impl FakeCompositor {
 
 #[tokio::test]
 async fn observes_actual_lock_completion_and_does_not_reuse_an_unlocked_hint() {
-    let (server, connection) = FakeCompositor::start(true, false);
-    let mut observer = LockObserver::from_connection(connection).await.unwrap();
-    assert!(!observer.locked().await.unwrap());
-    server.set_locked(true).await;
-    assert!(observer.locked().await.unwrap());
-    server.set_locked(false).await;
-    assert!(
-        !observer.locked().await.unwrap(),
-        "the final pre-sleep check must drain unlock events"
-    );
-    server.set_locked(true).await;
-    assert!(observer.locked().await.unwrap());
-}
-
-#[tokio::test]
-async fn already_locked_is_supported_and_connection_loss_is_not_confirmation() {
-    let (server, connection) = FakeCompositor::start(true, true);
-    let mut observer = LockObserver::from_connection(connection).await.unwrap();
-    assert!(observer.locked().await.unwrap());
-    server.task.abort();
-    // Yield until the server has dropped its connection.
-    while !server.task.is_finished() {
-        tokio::task::yield_now().await;
+    for initially_locked in [false, true] {
+        let (server, connection) = FakeCompositor::start(true, initially_locked);
+        let mut observer = LockObserver::from_connection(connection).await.unwrap();
+        assert_eq!(observer.locked().await.unwrap(), initially_locked);
+        server.set_locked(true).await;
+        assert!(observer.locked().await.unwrap());
+        server.set_locked(false).await;
+        assert!(
+            !observer.locked().await.unwrap(),
+            "the final pre-sleep check must drain unlock events"
+        );
+        server.set_locked(true).await;
+        assert!(observer.locked().await.unwrap());
+        server.task.abort();
+        while !server.task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        assert!(observer.locked().await.is_err());
     }
-    assert!(observer.locked().await.is_err());
 }
 
 #[tokio::test]

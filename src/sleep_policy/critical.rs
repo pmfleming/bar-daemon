@@ -496,42 +496,39 @@ mod tests {
     }
     #[test]
     fn warning_delivery_restarts_full_grace_and_failure_latches_before_persistence() {
-        let mut e = Engine::default();
-        e.observe(&policy(), low(), 0, 0);
-        e.warning_delivered(Ok(()), &policy(), 10);
-        assert_eq!(e.observe(&policy(), low(), 60, 0), (false, false));
-        e.warning_delivered(Err(anyhow::anyhow!("unavailable")), &policy(), 60);
-        assert!(e.latched);
-        assert_eq!(e.state.phase, "blocked");
-        assert_eq!(e.observe(&policy(), low(), 600, 0), (false, false));
+        for delivered in [false, true] {
+            let mut e = Engine::default();
+            assert_eq!(e.observe(&Policy::default(), low(), 0, 0), (false, false));
+            assert_eq!(e.observe(&policy(), low(), 0, 0), (true, false));
+            e.warning_delivered(Ok(()), &policy(), 10);
+            assert_eq!(e.observe(&policy(), low(), 69, 0), (false, false));
+            if delivered {
+                assert_eq!(e.observe(&policy(), low(), 70, 0), (false, true));
+                e.stop("failed", Some("inhibited".into()));
+            } else {
+                e.warning_delivered(Err(anyhow::anyhow!("unavailable")), &policy(), 69);
+                assert_eq!(e.state.phase, "blocked");
+            }
+            assert!(e.latched);
+            assert_eq!(e.observe(&policy(), low(), 600, 0), (false, false));
+            let saved = Recovery {
+                policy: policy(),
+                attempted: e.latched,
+            };
+            let restored: Recovery =
+                serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+            let mut restarted = Engine {
+                policy: Some(restored.policy),
+                latched: restored.attempted,
+                ..Default::default()
+            };
+            assert_eq!(
+                restarted.observe(&policy(), low(), 10000, 0),
+                (false, false)
+            );
+        }
     }
 
-    #[test]
-    fn persisted_attempt_is_not_replayed_after_daemon_restart() {
-        let saved = Recovery {
-            policy: policy(),
-            attempted: true,
-        };
-        let restored: Recovery =
-            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-        let mut e = Engine {
-            policy: Some(restored.policy),
-            latched: restored.attempted,
-            ..Default::default()
-        };
-        assert_eq!(e.observe(&policy(), low(), 10000, 0), (false, false));
-    }
-
-    #[test]
-    fn disabled_by_default_and_requires_a_full_warning_period() {
-        let mut e = Engine::default();
-        assert_eq!(e.observe(&Policy::default(), low(), 0, 0), (false, false));
-        assert_eq!(e.observe(&policy(), low(), 0, 0), (true, false));
-        assert_eq!(e.observe(&policy(), low(), 59, 0), (false, false));
-        assert_eq!(e.observe(&policy(), low(), 60, 0), (false, true));
-        e.stop("failed", Some("inhibited".into()));
-        assert_eq!(e.observe(&policy(), low(), 600, 0), (false, false));
-    }
     #[test]
     fn cancellation_ac_recovery_and_unknown_evidence_never_fire_old_deadlines() {
         let p = policy();

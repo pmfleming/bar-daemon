@@ -122,19 +122,6 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn policy_changes_are_blocked_by_durable_trials_including_after_restart() {
-    let mut f = Fixture::new();
-    ensure_policy_change_allowed_at(&f.path).await.unwrap();
-    let proposed = Layout::observed(&f.backend.outputs.borrow());
-    let doc = f.preview(proposed).await.unwrap();
-    assert!(ensure_policy_change_allowed_at(&f.path).await.is_err());
-    f.runtime = Runtime::default();
-    assert!(ensure_policy_change_allowed_at(&f.path).await.is_err());
-    f.finish(&doc.trial.unwrap().id, false).await.unwrap();
-    ensure_policy_change_allowed_at(&f.path).await.unwrap();
-}
-
-#[tokio::test]
 async fn replacement_with_same_connector_cannot_be_confirmed_and_rolls_back_early() {
     let mut f = Fixture::new();
     let mut proposed = Layout::observed(&f.backend.outputs.borrow());
@@ -145,22 +132,6 @@ async fn replacement_with_same_connector_cannot_be_confirmed_and_rolls_back_earl
     assert!(error.to_string().contains("topology changed"));
     let (doc, paused) = f.tick(trial.expires_at - 19, Instant::now()).await.unwrap();
     assert!(!paused);
-    assert!(doc.trial.is_none());
-    assert_eq!(f.backend.outputs.borrow()[0].scale, 1.25);
-}
-
-#[tokio::test]
-async fn monotonic_timeout_and_failed_rollback_keep_recovery_intent() {
-    let mut f = Fixture::new();
-    let mut proposed = Layout::observed(&f.backend.outputs.borrow());
-    proposed.outputs[0].scale = 1.5;
-    f.preview(proposed).await.unwrap();
-    let expired = Instant::now() + Duration::from_secs(21);
-    f.backend.fail.set(true);
-    assert!(f.tick(0, expired).await.is_err());
-    assert!(ensure_policy_change_allowed_at(&f.path).await.is_err());
-    f.backend.fail.set(false);
-    let (doc, _) = f.tick(0, expired).await.unwrap();
     assert!(doc.trial.is_none());
     assert_eq!(f.backend.outputs.borrow()[0].scale, 1.25);
 }
@@ -223,28 +194,38 @@ fn validates_names_modes_bounds_topology_and_fallback() {
 
 #[tokio::test]
 async fn expired_restart_and_resume_previews_roll_back_durably() {
-    for recovery in ["expiry", "restart", "resume"] {
+    for recovery in ["expiry", "monotonic", "restart", "resume"] {
         let mut f = Fixture::new();
         let mut proposed = Layout::observed(&f.backend.outputs.borrow());
         proposed.outputs[0].scale = 1.5;
         let trial = f.preview(proposed).await.unwrap().trial.unwrap();
         assert_eq!(f.backend.outputs.borrow()[0].scale, 1.5);
-        let clock = if recovery == "expiry" {
-            trial.expires_at
-        } else {
-            trial.expires_at - 1
+        assert!(ensure_policy_change_allowed_at(&f.path).await.is_err());
+        let (clock, monotonic) = match recovery {
+            "expiry" => (trial.expires_at, Instant::now()),
+            "monotonic" => (0, Instant::now() + Duration::from_secs(21)),
+            _ => (trial.expires_at - 1, Instant::now()),
         };
         if recovery == "restart" {
             f.runtime = Runtime::default();
+            assert!(ensure_policy_change_allowed_at(&f.path).await.is_err());
         }
         if recovery == "resume" {
             f.store.record_resume().await;
         }
-        let (doc, paused) = f.tick(clock, Instant::now()).await.unwrap();
+        if recovery == "monotonic" {
+            f.backend.fail.set(true);
+            assert!(f.tick(clock, monotonic).await.is_err());
+            assert!(f.document().await.trial.is_some());
+            assert!(ensure_policy_change_allowed_at(&f.path).await.is_err());
+            f.backend.fail.set(false);
+        }
+        let (doc, paused) = f.tick(clock, monotonic).await.unwrap();
         assert!(!paused);
         assert!(doc.trial.is_none());
         assert_eq!(f.backend.outputs.borrow()[0].scale, 1.25);
         assert!(f.document().await.trial.is_none());
+        ensure_policy_change_allowed_at(&f.path).await.unwrap();
     }
 }
 
@@ -263,6 +244,13 @@ async fn confirmation_is_token_bound_verified_and_persistent() {
     assert!(doc.trial.is_none());
     assert_eq!(f.document().await, doc);
     assert!(f.finish(&id, true).await.is_err());
+    let mut replacement = proposed.clone();
+    replacement.outputs[0].scale = 2.0;
+    let trial = f.preview(replacement).await.unwrap().trial.unwrap();
+    let cancelled = f.finish(&trial.id, false).await.unwrap();
+    assert!(cancelled.trial.is_none());
+    assert_eq!(cancelled.saved, proposed);
+    assert_eq!(f.backend.outputs.borrow()[0].scale, 1.5);
 }
 
 #[tokio::test]

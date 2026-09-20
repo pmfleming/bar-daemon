@@ -828,26 +828,21 @@ mod tests {
     use super::{config, reconciliation_target};
 
     #[test]
-    fn managed_policy_is_reapplied() {
-        let config = config::BatteryDeviceConfig {
+    fn pending_calibration_restoration_does_not_reopen_thresholds() {
+        let device = config::BatteryDeviceConfig {
             manage_thresholds: true,
             protection_enabled: true,
-            ..config::BatteryDeviceConfig::default()
+            ..Default::default()
         };
         assert_eq!(
             reconciliation_target(
-                &config,
+                &device,
                 &config::BatteryRuntimeState::default(),
                 false,
                 "BAT0"
             ),
             Some((75, 80))
         );
-    }
-
-    #[test]
-    fn pending_calibration_restoration_does_not_reopen_thresholds() {
-        let device = config::BatteryDeviceConfig::default();
         let mut runtime = config::BatteryRuntimeState::start_calibration(1, "BAT0".into(), 75, 80);
         assert_eq!(
             reconciliation_target(&device, &runtime, false, "BAT0"),

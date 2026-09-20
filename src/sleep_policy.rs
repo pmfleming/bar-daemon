@@ -524,74 +524,6 @@ pub(crate) async fn monitor(store: StateStore) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shared_and_separate_profiles_preserve_both_values() {
-        let mut policy = SleepPolicy {
-            critical_battery: Default::default(),
-            lid_action: lid::LidAction::System,
-            same_profile: false,
-            battery: SleepProfile {
-                sleep_minutes: 10,
-                hibernate_minutes: 60,
-            },
-            plugged: SleepProfile {
-                sleep_minutes: 45,
-                hibernate_minutes: 180,
-            },
-        };
-        assert_eq!(policy.profile(false).sleep_minutes, 10);
-        assert_eq!(policy.profile(true).sleep_minutes, 45);
-        policy.same_profile = true;
-        assert_eq!(policy.profile(true).sleep_minutes, 10);
-        assert_eq!(policy.plugged.hibernate_minutes, 180);
-        assert!(policy.validate().is_ok());
-        policy.plugged.hibernate_minutes = MAX_MINUTES + 1;
-        assert!(
-            policy.validate().is_err(),
-            "even hidden profiles are validated"
-        );
-        assert!(
-            serde_json::from_str::<SleepProfile>(r#"{"sleep_minutes":-1,"hibernate_minutes":0}"#)
-                .is_err()
-        );
-        assert!(
-            serde_json::from_str::<SleepProfile>(r#"{"sleep_minutes":1.5,"hibernate_minutes":0}"#)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn stale_idle_callbacks_cannot_sleep_early_after_ac_changes_or_never() {
-        let policy = SleepPolicy {
-            critical_battery: Default::default(),
-            lid_action: lid::LidAction::System,
-            same_profile: false,
-            battery: SleepProfile {
-                sleep_minutes: 10,
-                hibernate_minutes: 60,
-            },
-            plugged: SleepProfile {
-                sleep_minutes: 45,
-                hibernate_minutes: 180,
-            },
-        };
-        assert!(policy.idle_profile(true, 10).is_err());
-        assert!(policy.idle_profile(false, 45).is_err());
-        assert_eq!(
-            policy.idle_profile(true, 45).unwrap().hibernate_minutes,
-            180
-        );
-        let never = SleepPolicy {
-            battery: SleepProfile {
-                sleep_minutes: 0,
-                hibernate_minutes: 60,
-            },
-            ..Default::default()
-        };
-        assert!(never.idle_profile(false, 0).is_err());
-        assert!(never.idle_profile(false, 10).is_err());
-    }
-
     #[tokio::test]
     async fn idle_trigger_changes_after_lock_or_during_helper_abort_sleep_setup() {
         use std::cell::Cell;
@@ -601,10 +533,14 @@ mod tests {
             "never-on-ac",
             "different-hibernate-delay",
             "restarted",
+            "unchanged",
+            "shared",
+            "equivalent",
         ] {
             for during_helper in [false, true] {
+                let allowed = matches!(change, "unchanged" | "shared" | "equivalent");
                 let policy = SleepPolicy {
-                    same_profile: false,
+                    same_profile: change == "shared",
                     battery: SleepProfile {
                         sleep_minutes: 10,
                         hibernate_minutes: 60,
@@ -616,6 +552,10 @@ mod tests {
                         },
                         "never-on-ac" => SleepProfile {
                             sleep_minutes: 0,
+                            hibernate_minutes: 60,
+                        },
+                        "unchanged" | "equivalent" => SleepProfile {
+                            sleep_minutes: 10,
                             hibernate_minutes: 60,
                         },
                         _ => SleepProfile {
@@ -642,7 +582,11 @@ mod tests {
                                 true,
                             )
                         } else {
-                            validate_idle_selection(&policy.battery, &policy, changed.get())
+                            validate_idle_selection(
+                                &policy.battery,
+                                &policy,
+                                changed.get() && change != "unchanged",
+                            )
                         })
                     },
                     || async {
@@ -652,25 +596,18 @@ mod tests {
                     },
                 )
                 .await;
-                assert!(result.is_err(), "{change}, during_helper={during_helper}");
+                assert_eq!(
+                    result.is_ok(),
+                    allowed,
+                    "{change}, during_helper={during_helper}"
+                );
                 assert_eq!(
                     helper_calls.get(),
-                    usize::from(during_helper),
+                    usize::from(allowed || during_helper),
                     "a change while locking must not write hibernate settings"
                 );
             }
         }
-    }
-
-    #[test]
-    fn unchanged_and_equivalent_shared_profiles_remain_valid() {
-        let policy = SleepPolicy::default();
-        for plugged in [false, true] {
-            assert!(validate_idle_selection(&policy.battery, &policy, plugged).is_ok());
-        }
-        let mut separate = policy.clone();
-        separate.same_profile = false;
-        assert!(validate_idle_selection(&policy.battery, &separate, true).is_ok());
     }
 
     #[tokio::test]
@@ -682,6 +619,14 @@ mod tests {
             same_profile: false,
             ..Default::default()
         };
+        assert!(next.validate().is_ok());
+        let mut invalid = next.clone();
+        invalid.same_profile = true;
+        invalid.plugged.hibernate_minutes = MAX_MINUTES + 1;
+        assert!(
+            invalid.validate().is_err(),
+            "hidden profiles must also be validated"
+        );
         persist_and_apply(&path, &next, &previous, || async { Ok(()) })
             .await
             .unwrap();

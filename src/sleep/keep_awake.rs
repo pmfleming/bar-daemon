@@ -92,52 +92,39 @@ mod tests {
     use std::sync::{Arc, atomic::Ordering};
 
     #[tokio::test]
-    async fn inhibitor_is_idempotent_and_lives_until_released() {
-        let state = Arc::new(SessionState::default());
-        let (_server, client) = fake_logind(Arc::clone(&state)).await;
-        let mut fd = None;
-        assert!(
-            set_connected(&client, &mut fd, true)
-                .await
-                .unwrap()
-                .keep_awake
-        );
-        assert!(fd.is_some());
-        assert!(
-            set_connected(&client, &mut fd, true)
-                .await
-                .unwrap()
-                .keep_awake
-        );
-        assert_eq!(state.inhibit_calls.load(Ordering::SeqCst), 1);
-        assert!(
-            !set_connected(&client, &mut fd, false)
-                .await
-                .unwrap()
-                .keep_awake
-        );
-        assert!(fd.is_none());
-        let peer = state.inhibitor_peer.lock().unwrap().take().unwrap();
-        let mut byte = [0];
-        assert_eq!(std::io::Read::read(&mut &peer, &mut byte).unwrap(), 0);
-    }
-
-    #[tokio::test]
     async fn lost_inhibitor_is_reacquired_and_release_does_not_need_telemetry() {
-        let state = Arc::new(SessionState::default());
-        let (_server, client) = fake_logind(Arc::clone(&state)).await;
-        let mut fd = None;
-        set_connected(&client, &mut fd, true).await.unwrap();
-        state.keep_awake.store(false, Ordering::SeqCst); // logind lost ownership
-        assert!(!read_state(&client, false).await.unwrap().keep_awake);
-        set_connected(&client, &mut fd, true).await.unwrap();
-        assert_eq!(state.inhibit_calls.load(Ordering::SeqCst), 2);
-        state.telemetry_fails.store(true, Ordering::SeqCst);
-        let result = set_connected(&client, &mut fd, false).await.unwrap();
-        assert!(!result.keep_awake);
-        assert!(!result.available);
-        assert!(result.error.is_some());
-        assert!(fd.is_none());
+        for broken in [false, true] {
+            let state = Arc::new(SessionState::default());
+            let (_server, client) = fake_logind(Arc::clone(&state)).await;
+            let mut fd = None;
+            assert!(
+                set_connected(&client, &mut fd, true)
+                    .await
+                    .unwrap()
+                    .keep_awake
+            );
+            assert!(
+                set_connected(&client, &mut fd, true)
+                    .await
+                    .unwrap()
+                    .keep_awake
+            );
+            assert!(fd.is_some());
+            assert_eq!(state.inhibit_calls.load(Ordering::SeqCst), 1);
+            state.keep_awake.store(false, Ordering::SeqCst); // logind lost ownership
+            assert!(!read_state(&client, false).await.unwrap().keep_awake);
+            set_connected(&client, &mut fd, true).await.unwrap();
+            assert_eq!(state.inhibit_calls.load(Ordering::SeqCst), 2);
+            state.telemetry_fails.store(broken, Ordering::SeqCst);
+            let result = set_connected(&client, &mut fd, false).await.unwrap();
+            assert!(!result.keep_awake);
+            assert_eq!(result.available, !broken);
+            assert_eq!(result.error.is_some(), broken);
+            assert!(result.inhibitors.is_empty());
+            assert!(fd.is_none());
+            let peer = state.inhibitor_peer.lock().unwrap().take().unwrap();
+            assert_eq!(std::io::Read::read(&mut &peer, &mut [0]).unwrap(), 0);
+        }
     }
 
     #[test]

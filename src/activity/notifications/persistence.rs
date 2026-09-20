@@ -437,6 +437,7 @@ mod tests {
             let mut writes = reserve.await.unwrap();
             writes.close(1, 200, 2);
             writes.save(notification(2, false));
+            writes.save(notification(3, true)); // transient content must not survive restart
             writes.set_dnd(true, Some(1234));
             worker
         };
@@ -503,28 +504,5 @@ mod tests {
         let restarted = NotificationStore::open(&path).unwrap();
         assert!(restarted.load_active().unwrap().is_empty());
         assert_eq!(restarted.load_dnd().unwrap(), (true, None));
-    }
-
-    #[tokio::test]
-    async fn stopped_worker_rejects_reservations_and_queries() {
-        let (commands, receiver) = mpsc::channel(1);
-        let persistence = NotificationPersistence { commands };
-        drop(receiver);
-        assert!(persistence.reserve().await.is_err());
-        assert!(persistence.list(None, 10).await.is_err());
-    }
-
-    #[test]
-    fn persists_closed_history_without_retaining_transient_notifications() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("notifications.sqlite3");
-        let store = NotificationStore::open(&path).unwrap();
-        store.save(&notification(7, false)).unwrap();
-        store.save(&notification(8, true)).unwrap();
-        store.close(7, 200, 2).unwrap();
-        let history = store.list(None, 10).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].notification.id, 7);
-        assert_eq!(history[0].close_reason, Some(2));
     }
 }

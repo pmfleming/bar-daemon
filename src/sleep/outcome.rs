@@ -279,9 +279,12 @@ mod tests {
 
     #[test]
     fn terminal_outcomes_release_the_lease_without_a_running_monitor() {
-        for result in ["done", "failed", "unknown", "cancelled"] {
+        for result in ["done", "failed", "unknown", "cancelled", "interrupted"] {
             let t = Tracker::default();
             t.begin("hibernate");
+            let stale = t.cancellation_guard();
+            t.begin("hibernate");
+            drop(stale);
             let (mut peer, fd) = UnixStream::pair().unwrap();
             peer.set_nonblocking(true).unwrap();
             t.retain_lease(OwnedFd::from(fd).into()).unwrap();
@@ -292,34 +295,24 @@ mod tests {
             let guard = t.cancellation_guard();
             if result != "cancelled" {
                 t.dispatching();
-                t.job_new("/job/1", "systemd-hibernate.service");
-                if result == "unknown" {
-                    t.lost_monitor("disconnected");
-                } else {
-                    t.job_removed("/job/1", "systemd-hibernate.service", result);
+                if result != "interrupted" {
+                    t.job_new("/job/1", "systemd-hibernate.service");
+                    if result == "unknown" {
+                        t.lost_monitor("disconnected");
+                    } else {
+                        t.job_removed("/job/1", "systemd-hibernate.service", result);
+                    }
                 }
             }
             drop(guard);
+            let expected = match result {
+                "done" => "completed",
+                "unknown" | "interrupted" => "unknown",
+                _ => "failed",
+            };
+            assert_eq!(t.state.borrow().operation.phase, expected);
             assert_eq!(peer.read(&mut [0]).unwrap(), 0, "{result}");
         }
-    }
-
-    #[test]
-    fn cancellation_distinguishes_unsent_from_dispatched_work() {
-        let t = Tracker::default();
-        t.begin("suspend");
-        drop(t.cancellation_guard());
-        assert_eq!(t.state.borrow().operation.phase, "failed");
-        t.begin("suspend");
-        let guard = t.cancellation_guard();
-        t.dispatching();
-        drop(guard);
-        assert_eq!(t.state.borrow().operation.phase, "unknown");
-        t.begin("suspend");
-        let stale = t.cancellation_guard();
-        t.begin("hibernate");
-        drop(stale);
-        assert_eq!(t.state.borrow().operation.phase, "requested");
     }
 
     #[test]
@@ -346,38 +339,36 @@ mod tests {
         t.accepted();
         assert_eq!(t.state.borrow().operation.phase, "failed");
     }
-    #[test]
-    fn unknown_untracked_requests_cannot_adopt_later_external_sleep_jobs() {
-        let t = Tracker::default();
-        t.begin("suspend");
-        t.dispatching();
-        t.accepted();
-        t.lost_monitor("lost subscription");
-        t.prepared(true);
-        t.job_new("/job/8", "systemd-suspend.service");
-        t.job_removed("/job/8", "systemd-suspend.service", "done");
-        assert_eq!(t.state.borrow().operation.phase, "unknown");
-        assert!(t.state.borrow().operation.job.is_none());
-    }
 
     #[test]
     fn unrelated_or_old_jobs_never_complete_a_new_operation() {
-        let t = Tracker::default();
-        t.begin("suspend");
-        t.dispatching();
-        t.job_new("/job/1", "systemd-hibernate.service");
-        assert!(t.state.borrow().operation.job.is_none());
-        t.job_new("/job/2", "systemd-suspend.service");
-        t.begin("suspend");
-        t.dispatching();
-        t.accepted();
-        t.job_removed("/job/2", "systemd-suspend.service", "done");
-        assert_eq!(t.state.borrow().operation.phase, "accepted");
-        t.job_new("/job/3", "systemd-suspend.service");
-        t.lost_monitor("disconnected");
-        assert_eq!(t.state.borrow().operation.phase, "unknown");
-        t.job_removed("/job/3", "systemd-suspend.service", "done");
-        t.failed("lost reply".into(), true);
-        assert_eq!(t.state.borrow().operation.phase, "completed");
+        for tracked in [false, true] {
+            let t = Tracker::default();
+            t.begin("suspend");
+            t.dispatching();
+            t.job_new("/job/1", "systemd-hibernate.service");
+            assert!(t.state.borrow().operation.job.is_none());
+            t.job_new("/job/2", "systemd-suspend.service");
+            t.begin("suspend");
+            t.dispatching();
+            t.accepted();
+            t.job_removed("/job/2", "systemd-suspend.service", "done");
+            assert_eq!(t.state.borrow().operation.phase, "accepted");
+            if tracked {
+                t.job_new("/job/3", "systemd-suspend.service");
+            }
+            t.lost_monitor("disconnected");
+            t.prepared(true);
+            t.job_new("/job/8", "systemd-suspend.service");
+            t.job_removed("/job/8", "systemd-suspend.service", "done");
+            assert_eq!(t.state.borrow().operation.phase, "unknown");
+            assert_eq!(t.state.borrow().operation.job.is_some(), tracked);
+            t.job_removed("/job/3", "systemd-suspend.service", "done");
+            t.failed("lost reply".into(), true);
+            assert_eq!(
+                t.state.borrow().operation.phase,
+                if tracked { "completed" } else { "unknown" }
+            );
+        }
     }
 }

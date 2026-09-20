@@ -156,30 +156,12 @@ mod tests {
     }
 
     #[test]
-    fn alerts_once_per_discharge_cycle_without_startup_noise() {
-        let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&state(50, false), true), None);
-        assert_eq!(
-            tracker.observe(&state(25, false), true),
-            Some(BatteryAlert::Warning)
-        );
-        assert_eq!(tracker.observe(&state(20, false), true), None);
-        assert_eq!(
-            tracker.observe(&state(12, false), true),
-            Some(BatteryAlert::Critical)
-        );
-        assert_eq!(tracker.observe(&state(10, false), true), None);
-        assert_eq!(tracker.observe(&state(50, true), true), None);
-        assert_eq!(
-            tracker.observe(&state(25, false), true),
-            Some(BatteryAlert::Warning)
-        );
-    }
-
-    #[test]
     fn alerts_rearm_only_above_recovery_margin_and_disabled_alerts_stay_consumed() {
         let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&state(50, false), true), None);
+        assert_eq!(tracker.observe(&BatteryState::default(), true), None);
+        assert_eq!(tracker.observe(&state(10, false), true), None);
+        assert_eq!(tracker.observe(&state(9, false), true), None);
+        assert_eq!(tracker.observe(&state(50, true), true), None);
         let mut disabled = state(25, false);
         disabled.policy.notify_warning = false;
         assert_eq!(tracker.observe(&disabled, true), None);
@@ -203,15 +185,12 @@ mod tests {
             tracker.observe(&state(12, false), true),
             Some(BatteryAlert::Critical)
         );
-    }
-
-    #[test]
-    fn startup_waits_for_real_telemetry_and_skips_duplicate_alerts() {
-        let mut tracker = AlertTracker::default();
-        assert_eq!(tracker.observe(&BatteryState::default(), true), None);
         assert_eq!(tracker.observe(&state(10, false), true), None);
-        assert_eq!(tracker.observe(&state(9, false), true), None);
         assert_eq!(tracker.observe(&state(50, true), true), None);
+        assert_eq!(
+            tracker.observe(&state(25, false), true),
+            Some(BatteryAlert::Warning)
+        );
         let mut critical = state(10, false);
         critical.policy.notify_critical = false;
         assert_eq!(tracker.observe(&critical, true), None);

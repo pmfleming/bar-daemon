@@ -306,16 +306,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn activity_inhibition_and_replaced_episodes_cancel_pending_idle_sleep() {
-        assert!(super::validate_episode("42-1", 7, "42-1", 7, true).is_ok());
-        for (generation, episode, idle) in
-            [("42-1", 7, false), ("42-1", 8, true), ("43-1", 7, true)]
-        {
-            assert!(super::validate_episode("42-1", 7, generation, episode, idle).is_err());
-        }
-    }
-
     #[tokio::test]
     async fn live_timeout_updates_preserve_process_and_skip_unchanged_timeout() {
         let state = std::sync::Arc::new(std::sync::Mutex::new((30, 0)));
@@ -335,7 +325,16 @@ mod tests {
         assert_eq!(*state.lock().unwrap(), (45, 1));
         super::set_timeout_on(&client, 0).await.unwrap();
         assert_eq!(*state.lock().unwrap(), (0, 2));
-        assert_eq!(super::live_state_on(&client).await.unwrap().0, 42);
+        let (pid, generation, _, episode, idle) = super::live_state_on(&client).await.unwrap();
+        assert_eq!(pid, 42);
+        assert!(super::validate_episode(&generation, episode, &generation, episode, idle).is_ok());
+        for (current, token, active) in [
+            (generation.as_str(), episode, false),
+            (generation.as_str(), episode + 1, true),
+            ("replacement", episode, true),
+        ] {
+            assert!(super::validate_episode(&generation, episode, current, token, active).is_err());
+        }
     }
 
     #[test]
@@ -377,10 +376,6 @@ mod tests {
         .unwrap();
         assert!(!never.contains("idle-sleep"));
         assert!(never.contains("timeout=300"));
-    }
-
-    #[test]
-    fn refuses_ambiguous_competing_sleep_configuration() {
         for base in [
             "source = more.conf",
             "listener { timeout=30 }",
@@ -392,13 +387,7 @@ mod tests {
             "listener {\n timeout=30\n",
         ] {
             assert!(
-                render(
-                    base,
-                    &SleepProfile::default(),
-                    Path::new("/test/bar-daemon"),
-                    "test-3",
-                )
-                .is_err(),
+                render(base, &profile, Path::new("/test/bar-daemon"), "test-3").is_err(),
                 "{base}"
             );
         }

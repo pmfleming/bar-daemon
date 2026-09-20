@@ -38,12 +38,11 @@ fn failed_start(executable: &Path) {
 
 #[test]
 fn missing_executable_does_not_announce_readiness() {
-    failed_start(Path::new("/nonexistent-shelllist-hypridle"));
-}
-
-#[test]
-fn immediate_replacement_process_exit_does_not_announce_readiness() {
-    // The test harness executable rejects --config and exits immediately. It is
-    // guaranteed to exist even in the Nix sandbox, unlike /bin/false or /bin/sh.
-    failed_start(&std::env::current_exe().unwrap());
+    // The harness exists in the Nix sandbox and rejects hypridle's --config.
+    for executable in [
+        Path::new("/nonexistent-shelllist-hypridle").to_path_buf(),
+        std::env::current_exe().unwrap(),
+    ] {
+        failed_start(&executable);
+    }
 }

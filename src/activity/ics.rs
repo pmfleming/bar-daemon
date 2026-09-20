@@ -328,7 +328,7 @@ fn decode_text(value: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{parse_calendar, unfold_lines};
+    use super::parse_calendar;
     use crate::activity::config::CalendarSourceConfig;
 
     fn source() -> CalendarSourceConfig {
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn nested_alarm_does_not_overwrite_event_properties() {
         let events = parse_calendar(&source(), Path::new("test.ics"),
-            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team\n  meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].title, "Team meeting");
         assert!(events[0].id.contains(":meeting:"));
@@ -374,14 +374,6 @@ mod tests {
             )
             .unwrap()
             .is_empty()
-        );
-    }
-
-    #[test]
-    fn unfolds_continuation_lines() {
-        assert_eq!(
-            unfold_lines("SUMMARY:Long\n title\nUID:1"),
-            vec!["SUMMARY:Longtitle", "UID:1"]
         );
     }
 }

@@ -277,7 +277,13 @@ async fn failed_manual_selection_restores_automation_and_external_selection_paus
         restarted.status.status, "paused",
         "restart preserves the recovery margin"
     );
-    restarted.reconcile(&battery(10)).await.unwrap();
-    assert_eq!(restarted.status.status, "paused");
-    assert_eq!(state.lock().unwrap().profile(), "balanced");
+    for percent in [10, 15, 26, 28] {
+        restarted.reconcile(&battery(percent)).await.unwrap();
+        assert_eq!(restarted.status.status, "paused");
+        assert_eq!(state.lock().unwrap().profile(), "balanced");
+    }
+    restarted.reconcile(&battery(29)).await.unwrap();
+    assert_eq!(restarted.status.status, "waiting");
+    restarted.reconcile(&battery(25)).await.unwrap();
+    assert_eq!(restarted.status.status, "active");
 }

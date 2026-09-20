@@ -671,6 +671,7 @@ mod tests {
         assert!(engine.set_dnd(true, None).await.is_err());
         assert!(engine.toggle_dnd().await.is_err());
         assert!(engine.invoke_action(id, "default", None).await.is_err());
+        assert!(engine.history(None, 10).await.is_err());
         assert_eq!(engine.active().await, before);
         let snapshot = state.snapshot().await;
         assert_eq!(snapshot.notifications.count, 1);
@@ -679,24 +680,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allocates_replaces_and_updates_summary() {
-        let state = StateStore::default();
-        let engine = NotificationEngine::new(state.clone()).await;
-        let first = engine.notify(0, notification("first", 0)).await.unwrap();
-        let replaced = engine
-            .notify(first, notification("replacement", 0))
-            .await
-            .unwrap();
-        assert_eq!(first, replaced);
-        assert_eq!(engine.active().await[0].summary, "replacement");
-        assert_eq!(state.snapshot().await.notifications.count, 1);
-    }
-
-    #[tokio::test]
     async fn snoozes_restores_and_clears_groups() {
         let state = StateStore::default();
         let engine = NotificationEngine::new(state.clone()).await;
         let first = engine.notify(0, notification("first", 0)).await.unwrap();
+        assert_eq!(
+            engine
+                .notify(first, notification("replacement", 0))
+                .await
+                .unwrap(),
+            first
+        );
+        assert_eq!(engine.active().await[0].summary, "replacement");
+        assert_eq!(state.snapshot().await.notifications.count, 1);
         engine.notify(0, notification("second", 0)).await.unwrap();
         assert!(
             engine
@@ -722,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timed_dnd_expires() {
+    async fn expires_and_emits_close_reason() {
         let state = StateStore::default();
         let engine = NotificationEngine::new(state.clone()).await;
         let response = engine
@@ -730,25 +726,7 @@ mod tests {
             .await
             .unwrap();
         assert!(response.dnd);
-        assert_eq!(
-            response,
-            state.read(|snapshot| snapshot.notifications.clone()).await
-        );
-        let task = tokio::spawn(Arc::clone(&engine).run_expiry());
-        timeout(Duration::from_secs(1), async {
-            while state.snapshot().await.notifications.dnd {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(state.snapshot().await.notifications.dnd_until_unix_ms, None);
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn expires_and_emits_close_reason() {
-        let engine = NotificationEngine::new(StateStore::default()).await;
+        assert_eq!(response, state.read(|s| s.notifications.clone()).await);
         let mut signals = engine.subscribe_signals();
         engine.notify(0, notification("short", 5)).await.unwrap();
         let task = tokio::spawn(Arc::clone(&engine).run_expiry());
@@ -763,6 +741,14 @@ mod tests {
                 reason: close_reason::EXPIRED
             }
         );
+        timeout(Duration::from_secs(1), async {
+            while state.snapshot().await.notifications.dnd {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state.snapshot().await.notifications.dnd_until_unix_ms, None);
         task.abort();
     }
 }
