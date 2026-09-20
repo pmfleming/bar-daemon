@@ -216,14 +216,35 @@ async fn act(
             } else {
                 "hibernate"
             };
-            power_sleep::perform_with_setup(action, || confirm_trigger(manager, session)).await?
+            power_sleep::perform_with_validation(
+                action,
+                || std::future::ready(Ok(())),
+                || confirm_trigger(manager, session),
+            )
+            .await?
         }
         LidAction::Profile => {
             let profile = policy.profile(plugged().await?);
-            perform_profile(profile, || confirm_trigger(manager, session)).await?
+            perform_profile(profile, || async {
+                let current = load().await?;
+                validate_lid_selection(profile.hibernate_minutes, &current, plugged().await?)?;
+                confirm_trigger(manager, session).await
+            })
+            .await?
         }
     };
     Ok(Some(state))
+}
+
+fn validate_lid_selection(selected_delay: u32, policy: &SleepPolicy, plugged: bool) -> Result<()> {
+    if policy.lid_action != LidAction::Profile
+        || policy.profile(plugged).hibernate_minutes != selected_delay
+    {
+        bail!(
+            "lid power profile changed while preparing sleep; close the lid again to use the new profile"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -284,6 +305,32 @@ mod tests {
         assert!(!edge.observe(true, true)); // undock/reactivate with lid closed
         assert!(!edge.observe(false, true));
         assert!(edge.observe(true, true));
+    }
+
+    #[test]
+    fn lid_profile_changes_cancel_but_equivalent_profiles_remain_valid() {
+        let mut policy = SleepPolicy {
+            lid_action: LidAction::Profile,
+            same_profile: false,
+            battery: super::super::SleepProfile {
+                sleep_minutes: 0,
+                hibernate_minutes: 15,
+            },
+            plugged: super::super::SleepProfile {
+                sleep_minutes: 60,
+                hibernate_minutes: 120,
+            },
+        };
+        assert!(validate_lid_selection(120, &policy, true).is_ok());
+        assert!(validate_lid_selection(120, &policy, false).is_err());
+        assert!(validate_lid_selection(15, &policy, true).is_err());
+        policy.same_profile = true;
+        assert!(validate_lid_selection(15, &policy, true).is_ok());
+        policy.same_profile = false;
+        policy.plugged.hibernate_minutes = 15;
+        assert!(validate_lid_selection(15, &policy, true).is_ok());
+        policy.lid_action = LidAction::System;
+        assert!(validate_lid_selection(15, &policy, true).is_err());
     }
 
     #[test]

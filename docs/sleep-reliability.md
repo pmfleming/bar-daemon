@@ -60,3 +60,14 @@ probe; restrictions do not prevent saving otherwise supported profiles.
 
 Validation: capability matrix and isolated logind tests prove denial occurs
 before Lock, plus frontend action/description checks and updated API fixtures.
+
+## 5. Lid profile revalidation
+
+Lid profile actions re-read power source and effective hibernate delay after
+locking, after privileged setup, and after final logind preflight. A changed
+selection cancels that close, without automatic retries. Shared/equivalent
+hibernate profiles remain valid (idle timeout is irrelevant to lid close).
+Direct lid suspend/hibernate also rechecks the trigger at the final barrier.
+
+Validation: AC removal/insertion, policy changes and equivalent/shared profiles
+are covered by unit tests, alongside the existing final-trigger failure test.
