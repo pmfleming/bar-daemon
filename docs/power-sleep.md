@@ -40,8 +40,8 @@ can therefore increase battery drain; do not rely on it as battery protection.
 
 With Home Manager's `programs.shelllist.displays.enable = true`, the resident
 bar-daemon owns laptop-panel switching. Nix only opts into ownership through
-`BAR_DAEMON_DISPLAY_CONTROL=1`; the **Use only the external display** preference
-in Battery & Power is persisted in `$XDG_CONFIG_HOME/bar-daemon/displays.json`.
+`BAR_DAEMON_DISPLAY_CONTROL=1`; the **Prefer external** preference
+in Shelllist's dedicated Displays callout is persisted in `$XDG_CONFIG_HOME/bar-daemon/displays.json`.
 `displayPolicy.set` accepts only `{"prefer_external": true|false}`. The additive
 `display_policy` snapshot and `display-policy.changed` stream expose the saved
 preference, integration availability, recovery status and errors. The preference

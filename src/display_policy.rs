@@ -62,6 +62,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
         bail!("Enable programs.shelllist.displays.enable to manage laptop displays");
     }
     let _guard = POLICY_WRITE.lock().await;
+    layout::ensure_policy_change_allowed().await?;
     save_json_atomic(&policy_path(), &policy).await?;
     let state = DisplayPolicyState {
         available: true,

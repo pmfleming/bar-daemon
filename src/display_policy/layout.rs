@@ -209,6 +209,25 @@ static RUNTIME: Mutex<Runtime> = Mutex::const_new(Runtime {
 fn path() -> PathBuf {
     data_file(XdgRoot::Config, "display-layout.json")
 }
+
+// Called under POLICY_WRITE: a policy change must not outlive a reverted layout
+// or disable the preview's fallback through a competing client.
+pub(super) async fn ensure_policy_change_allowed() -> Result<()> {
+    ensure_policy_change_allowed_at(&path()).await
+}
+async fn ensure_policy_change_allowed_at(path: &Path) -> Result<()> {
+    let doc: Document = load_json_or_default(path, "display layout").await?;
+    ensure!(
+        doc.trial.is_none(),
+        "Confirm or revert the display layout before changing docking policy"
+    );
+    Ok(())
+}
+fn topology(outputs: &[Output]) -> Vec<(String, i64)> {
+    let mut keys: Vec<_> = outputs.iter().map(|o| (o.name.clone(), o.id)).collect();
+    keys.sort();
+    keys
+}
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -305,8 +324,7 @@ async fn preview_at<B: Backend>(
     save_json_atomic(path, &doc).await?;
     runtime.trial = Some(id);
     runtime.deadline = Some(Instant::now() + Duration::from_secs(PREVIEW_SECONDS));
-    runtime.topology = outputs.iter().map(|o| (o.name.clone(), o.id)).collect();
-    runtime.topology.sort();
+    runtime.topology = topology(&outputs);
     runtime.applied = true;
     runtime.error = None;
     runtime.resume = store.snapshot().await.power_sleep.resume_generation;
@@ -362,6 +380,10 @@ async fn finish_at<B: Backend>(
             "Sleep interrupted the preview"
         );
         let outputs = backend.outputs().await?;
+        ensure!(
+            topology(&outputs) == runtime.topology,
+            "Display topology changed during the preview"
+        );
         trial.proposed.validate(&outputs, true)?;
         ensure!(
             trial.proposed.outputs.iter().all(|s| outputs
@@ -423,6 +445,7 @@ async fn tick_at<B: Backend>(
             && now < trial.expires_at
             && runtime.deadline.is_some_and(|deadline| instant < deadline)
             && runtime.resume == sleep.resume_generation
+            && topology(&backend.outputs().await?) == runtime.topology
         {
             return Ok((doc, true));
         }
@@ -434,10 +457,9 @@ async fn tick_at<B: Backend>(
         return Ok((doc, false));
     }
     let outputs = backend.outputs().await?;
-    let mut topology: Vec<_> = outputs.iter().map(|o| (o.name.clone(), o.id)).collect();
-    topology.sort();
-    if topology != runtime.topology || runtime.resume != sleep.resume_generation {
-        runtime.topology = topology;
+    let current_topology = topology(&outputs);
+    if current_topology != runtime.topology || runtime.resume != sleep.resume_generation {
+        runtime.topology = current_topology;
         runtime.resume = sleep.resume_generation;
         runtime.since = Some(instant);
         runtime.applied = false;

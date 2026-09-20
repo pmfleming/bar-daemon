@@ -10,6 +10,8 @@ const MAX_OBSERVATION_GAP: Duration = Duration::from_secs(6);
 pub(crate) struct Output {
     pub id: i64,
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     pub width: u32,
     pub height: u32,
     pub disabled: bool,

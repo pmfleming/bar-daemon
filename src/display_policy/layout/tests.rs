@@ -52,6 +52,127 @@ fn fake() -> Fake {
     }
 }
 
+#[tokio::test]
+async fn policy_changes_are_blocked_by_durable_trials_including_after_restart() {
+    let backend = fake();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout.json");
+    let store = StateStore::default();
+    let mut runtime = Runtime::default();
+    ensure_policy_change_allowed_at(&path).await.unwrap();
+    let proposed = Layout::observed(&backend.outputs.borrow());
+    let doc = preview_at(&backend, proposed, &store, &path, &mut runtime)
+        .await
+        .unwrap();
+    assert!(ensure_policy_change_allowed_at(&path).await.is_err());
+    // The durable document, not runtime state or a connected frontend, gates policy.
+    runtime = Runtime::default();
+    assert!(ensure_policy_change_allowed_at(&path).await.is_err());
+    finish_at(
+        &backend,
+        &doc.trial.unwrap().id,
+        false,
+        &store,
+        &path,
+        &mut runtime,
+    )
+    .await
+    .unwrap();
+    ensure_policy_change_allowed_at(&path).await.unwrap();
+}
+
+#[tokio::test]
+async fn replacement_with_same_connector_cannot_be_confirmed_and_rolls_back_early() {
+    let backend = fake();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout.json");
+    let store = StateStore::default();
+    let mut runtime = Runtime::default();
+    let mut proposed = Layout::observed(&backend.outputs.borrow());
+    proposed.outputs[0].scale = 1.5;
+    let doc = preview_at(&backend, proposed, &store, &path, &mut runtime)
+        .await
+        .unwrap();
+    let trial = doc.trial.unwrap();
+    backend.outputs.borrow_mut()[0].id += 1;
+    let error = finish_at(&backend, &trial.id, true, &store, &path, &mut runtime)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("topology changed"));
+    let (doc, paused) = tick_at(
+        &backend,
+        &store,
+        &path,
+        &mut runtime,
+        trial.expires_at - 19,
+        Instant::now(),
+    )
+    .await
+    .unwrap();
+    assert!(!paused);
+    assert!(doc.trial.is_none());
+    assert_eq!(backend.outputs.borrow()[0].scale, 1.25);
+}
+
+#[tokio::test]
+async fn monotonic_timeout_and_failed_rollback_keep_recovery_intent() {
+    let backend = fake();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout.json");
+    let store = StateStore::default();
+    let mut runtime = Runtime::default();
+    let mut proposed = Layout::observed(&backend.outputs.borrow());
+    proposed.outputs[0].scale = 1.5;
+    preview_at(&backend, proposed, &store, &path, &mut runtime)
+        .await
+        .unwrap();
+    let expired = Instant::now() + Duration::from_secs(21);
+    backend.fail.set(true);
+    assert!(
+        tick_at(&backend, &store, &path, &mut runtime, 0, expired)
+            .await
+            .is_err()
+    );
+    assert!(ensure_policy_change_allowed_at(&path).await.is_err());
+    backend.fail.set(false);
+    let (doc, _) = tick_at(&backend, &store, &path, &mut runtime, 0, expired)
+        .await
+        .unwrap();
+    assert!(doc.trial.is_none());
+    assert_eq!(backend.outputs.borrow()[0].scale, 1.25);
+}
+
+#[tokio::test]
+async fn replacements_are_enabled_before_disabling_and_failure_keeps_the_old_output() {
+    for fail in [false, true] {
+        let backend = fake();
+        let mut old = backend.outputs.borrow()[0].clone();
+        old.name = "DP-1".into();
+        let mut replacement = old.clone();
+        replacement.id = 1;
+        replacement.name = "DP-2".into();
+        replacement.disabled = true;
+        *backend.outputs.borrow_mut() = vec![old, replacement];
+        let mut proposed = Layout::observed(&backend.outputs.borrow());
+        proposed.outputs[0].enabled = false;
+        proposed.outputs[1].enabled = true;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("layout.json");
+        let store = StateStore::default();
+        backend.fail.set(fail);
+        let result = preview_at(&backend, proposed, &store, &path, &mut Runtime::default()).await;
+        assert_eq!(result.is_err(), fail);
+        assert!(backend.calls.borrow()[0].contains("DP-2"));
+        if fail {
+            assert_eq!(backend.calls.borrow().len(), 1);
+            assert!(!backend.outputs.borrow()[0].disabled);
+        } else {
+            assert!(backend.outputs.borrow()[0].disabled);
+            assert!(!backend.outputs.borrow()[1].disabled);
+        }
+    }
+}
+
 #[test]
 fn validates_names_modes_bounds_topology_and_fallback() {
     let backend = fake();
