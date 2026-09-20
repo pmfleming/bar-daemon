@@ -178,6 +178,25 @@ impl DesktopEffects {
         }
     }
 
+    pub(super) async fn set_critical_battery(&self, params: Value) -> Value {
+        let policy = request!(
+            params,
+            crate::sleep_policy::critical::Policy,
+            "powerSleep.setCriticalPolicy"
+        );
+        match crate::sleep_policy::critical::set_policy(policy, &self.state).await {
+            Ok(state) => success(json!({"sleep_policy": state})),
+            Err(error) => super::error("critical-battery-policy-failed", format!("{error:#}")),
+        }
+    }
+
+    pub(super) async fn cancel_critical_battery(&self) -> Value {
+        match crate::sleep_policy::critical::cancel(&self.state).await {
+            Ok(_) => success(json!({"sleep_policy": self.state.snapshot().await.sleep_policy})),
+            Err(error) => super::error("critical-battery-cancel-failed", format!("{error:#}")),
+        }
+    }
+
     pub(super) async fn idle_sleep(&self, params: Value) -> Value {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

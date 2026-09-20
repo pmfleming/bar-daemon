@@ -116,6 +116,8 @@ impl ApiService {
             "powerSleep.setKeepAwake" => self.effects.set_keep_awake(params).await,
             "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
             "powerSleep.idle" => self.effects.idle_sleep(params).await,
+            "powerSleep.cancelCritical" => self.effects.cancel_critical_battery().await,
+            "powerSleep.setCriticalPolicy" => self.effects.set_critical_battery(params).await,
             "displayPolicy.set" => self.effects.display_policy_set(params).await,
             "displayLayout.preview" | "displayLayout.confirm" | "displayLayout.revert" => {
                 self.effects.display_layout(method, params).await

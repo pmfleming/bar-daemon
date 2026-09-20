@@ -184,7 +184,7 @@ async fn connected(store: &StateStore) -> Result<()> {
     }
 }
 
-async fn active_local_graphical(session: &zbus::Proxy<'_>) -> Result<bool> {
+pub(super) async fn active_local_graphical(session: &zbus::Proxy<'_>) -> Result<bool> {
     let active: bool = session.get_property("Active").await?;
     let remote: bool = session.get_property("Remote").await?;
     let kind: String = session.get_property("Type").await?;
@@ -310,6 +310,7 @@ mod tests {
     #[test]
     fn lid_profile_changes_cancel_but_equivalent_profiles_remain_valid() {
         let mut policy = SleepPolicy {
+            critical_battery: Default::default(),
             lid_action: LidAction::Profile,
             same_profile: false,
             battery: super::super::SleepProfile {
@@ -336,6 +337,7 @@ mod tests {
     #[test]
     fn lid_profile_uses_ac_delay_even_when_idle_sleep_is_never() {
         let policy = SleepPolicy {
+            critical_battery: Default::default(),
             lid_action: LidAction::Profile,
             same_profile: false,
             battery: super::super::SleepProfile {

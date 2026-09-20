@@ -92,6 +92,17 @@ impl StateStore {
     ) {
         let mut snapshot = self.snapshot.write().await;
         value.lid = snapshot.sleep_policy.lid.clone();
+        value.critical_battery = snapshot.sleep_policy.critical_battery.clone();
+        self.publish_sleep_policy(&mut snapshot, value);
+    }
+
+    pub(crate) async fn update_critical_battery(
+        &self,
+        state: crate::sleep_policy::critical::State,
+    ) {
+        let mut snapshot = self.snapshot.write().await;
+        let mut value = snapshot.sleep_policy.clone();
+        value.critical_battery = state;
         self.publish_sleep_policy(&mut snapshot, value);
     }
 

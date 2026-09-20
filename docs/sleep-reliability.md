@@ -111,3 +111,35 @@ readback barrier. There is no claim of a per-request systemd configuration API.
 
 Validation: temporary-directory ownership/compare-before-delete tests and
 readback precedence/reset tests pass. No live /run settings were written.
+
+## 8. Opt-in awake critical-battery protection
+
+`policy.critical_battery` defaults to `{enabled:false, percent:5,
+grace_seconds:60}`. Thresholds are 1–20% and warning periods 30–300 seconds.
+The dedicated `powerSleep.setCriticalPolicy` API and UI controls work even when
+managed idle is unavailable; `powerSleep.cancelCritical` cancels the pending
+battery episode without taking the policy mutex. Cancellation cannot undo an
+already dispatched logind request.
+
+Fresh aggregate UPower battery/AC evidence drives a monotonic awake countdown.
+A critical notification must be delivered before the full grace period starts.
+After that there is at most one Hibernate attempt, through normal authorization,
+confirmed locking, active-local-session and inhibitor preflight. Policy, AC,
+percentage and cancellation are rechecked after locking and just before dispatch.
+Known competing desktop power managers and UPower's action-level emergency state
+prevent takeover. There is no shutdown fallback, inhibitor bypass or automatic
+retry. Hardware that cannot hibernate remains visibly blocked.
+
+Attempts/cancellations are durably recorded in the XDG state directory before
+dispatch and survive daemon restart. AC or recovery at least three percentage
+points above the threshold rearms an episode; explicit policy changes start a
+new policy episode. Unreadable battery evidence cancels pending deadlines and
+requires a fresh full warning. Unreadable recovery state fails closed. Do not
+enable another desktop's critical-battery policy alongside this one; detection
+of known bus names is a safeguard, not a guarantee against arbitrary scripts.
+This protects while awake, not ordinary suspended RAM; use systemd's combined
+sleep policy for asleep battery protection.
+
+Validation: pure countdown/cancellation/AC/unknown-data/hysteresis/restart tests,
+frontend bounds/dispatch checks, API fixture checks and the offscreen BatterySleep
+QML suite (10 passed). No live battery policy or power action was exercised.

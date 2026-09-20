@@ -43,6 +43,10 @@ impl MonitorTasks {
         tasks.spawn("sleep-policy", crate::sleep_policy::monitor(state.clone()));
         tasks.spawn("lid", crate::sleep_policy::lid::monitor(state.clone()));
         tasks.spawn(
+            "critical-battery",
+            crate::sleep_policy::critical::monitor(state.clone(), notifications.sink()),
+        );
+        tasks.spawn(
             "display-policy",
             crate::display_policy::monitor(state.clone()),
         );

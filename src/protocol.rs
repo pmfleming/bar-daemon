@@ -73,6 +73,8 @@ pub const METHODS: &[&str] = &[
     "powerSleep.setKeepAwake",
     "powerSleep.setPolicy",
     "powerSleep.idle",
+    "powerSleep.cancelCritical",
+    "powerSleep.setCriticalPolicy",
     "displayPolicy.set",
     "displayLayout.preview",
     "displayLayout.confirm",
@@ -146,6 +148,8 @@ pub fn registry() -> Value {
             { "name": "powerSleep.setKeepAwake", "params": { "enabled": true }, "result": "power_sleep" },
             { "name": "powerSleep.setPolicy", "params": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
             { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678", "episode": 1 }, "result": "power_sleep" },
+            { "name": "powerSleep.cancelCritical", "params": {}, "result": "sleep_policy" },
+            { "name": "powerSleep.setCriticalPolicy", "params": { "enabled": false, "percent": 5, "grace_seconds": 60 }, "result": "sleep_policy" },
             { "name": "displayPolicy.set", "params": { "prefer_external": true }, "result": "display_policy" },
             { "name": "displayLayout.preview", "params": { "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true }] }, "result": "display_policy" },
             { "name": "displayLayout.confirm", "params": { "id": "preview-id" }, "result": "display_policy" },
@@ -336,7 +340,8 @@ fn generated_contract_fixture() -> Value {
                 "available": true, "active_profile": "shared",
                 "hibernate_available": true, "hibernate_ready": true, "hibernate_error": null, "last_error": null,
                 "lid": { "available": true, "managed": true, "error": null },
-                "policy": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } },
+                "policy": { "lid_action": "profile", "same_profile": true, "critical_battery": { "enabled": false, "percent": 5, "grace_seconds": 60 }, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } },
+                "critical_battery": { "phase": "disabled", "remaining_seconds": 0, "error": null },
                 "error": null
             },
             "osd_hardware": {

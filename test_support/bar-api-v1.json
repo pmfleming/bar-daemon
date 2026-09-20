@@ -238,6 +238,20 @@
         "result": "power_sleep"
       },
       {
+        "name": "powerSleep.cancelCritical",
+        "params": {},
+        "result": "sleep_policy"
+      },
+      {
+        "name": "powerSleep.setCriticalPolicy",
+        "params": {
+          "enabled": false,
+          "grace_seconds": 60,
+          "percent": 5
+        },
+        "result": "sleep_policy"
+      },
+      {
         "name": "displayPolicy.set",
         "params": {
           "prefer_external": true
@@ -1003,6 +1017,11 @@
     "sleep_policy": {
       "active_profile": "shared",
       "available": true,
+      "critical_battery": {
+        "error": null,
+        "phase": "disabled",
+        "remaining_seconds": 0
+      },
       "error": null,
       "hibernate_available": true,
       "hibernate_error": null,
@@ -1017,6 +1036,11 @@
         "battery": {
           "hibernate_minutes": 120,
           "sleep_minutes": 30
+        },
+        "critical_battery": {
+          "enabled": false,
+          "grace_seconds": 60,
+          "percent": 5
         },
         "lid_action": "profile",
         "plugged": {

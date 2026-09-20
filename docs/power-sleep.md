@@ -77,6 +77,24 @@ check; the next reconciliation restores the laptop fallback when Hyprland can
 control it. No forced GPU resets, DPMS wake loops, or sleep-inhibitor bypasses
 are attempted.
 
+## Reliability and critical-battery protection
+
+See [Sleep reliability follow-up](sleep-reliability.md) for bounded action/lid
+coordination, live idle-episode cancellation, operation outcome tracking, and
+runtime override ownership/cleanup. `power_sleep.operation` distinguishes
+accepted requests from completed or failed systemd jobs and unknown outcomes.
+
+Optional awake critical-battery protection is **disabled by default**. Configure
+it in Battery & Power or through `powerSleep.setCriticalPolicy` with
+`{"enabled":true,"percent":5,"grace_seconds":60}`. A delivered warning precedes
+one cancellable, locked, inhibitor-respecting Hibernate attempt. AC/recovery
+cancels the countdown; `powerSleep.cancelCritical` cancels the episode. Attempts
+are durably latched across daemon restarts, with no automatic retry or shutdown
+fallback. Settings/cancellation remain usable when idle integration is unavailable.
+Use only with working hibernation and no competing critical-battery power manager.
+This does not wake ordinary suspended RAM to save it; combined systemd sleep
+remains the owner of asleep battery protection.
+
 ## Automatic sleep, then hibernate
 
 The `sleep_policy` snapshot domain and `sleep-policy.changed` stream expose the persisted policy, active profile (`shared`, `battery`, or `plugged`), integration availability, hibernation availability/reason, and last automatic-action failure. `powerSleep.setPolicy` accepts the complete policy:

@@ -14,6 +14,7 @@ use crate::{
     state::StateStore,
 };
 
+pub(crate) mod critical;
 mod hypridle;
 pub(crate) mod lid;
 pub(crate) mod runtime;
@@ -47,6 +48,8 @@ pub(crate) struct SleepPolicy {
     /// Older policies retain logind's declarative lid behavior.
     #[serde(default)]
     pub lid_action: lid::LidAction,
+    #[serde(default)]
+    pub critical_battery: critical::Policy,
     pub same_profile: bool,
     pub battery: SleepProfile,
     pub plugged: SleepProfile,
@@ -56,6 +59,7 @@ impl Default for SleepPolicy {
     fn default() -> Self {
         Self {
             lid_action: lid::LidAction::System,
+            critical_battery: critical::Policy::default(),
             same_profile: true,
             battery: SleepProfile::default(),
             plugged: SleepProfile::default(),
@@ -65,6 +69,7 @@ impl Default for SleepPolicy {
 
 impl SleepPolicy {
     pub(crate) fn validate(&self) -> Result<()> {
+        self.critical_battery.validate()?;
         for profile in [&self.battery, &self.plugged] {
             if profile.sleep_minutes > MAX_MINUTES || profile.hibernate_minutes > MAX_MINUTES {
                 bail!("sleep and hibernate delays must be 0 (Never) or 1–10080 minutes");
@@ -111,6 +116,8 @@ pub(crate) struct SleepPolicyState {
     pub hibernate_ready: bool,
     pub hibernate_error: Option<String>,
     pub lid: lid::LidState,
+    #[serde(default)]
+    pub critical_battery: critical::State,
     pub last_error: Option<String>,
     pub error: Option<String>,
 }
@@ -254,6 +261,17 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         }
     }
     let previous = load().await?;
+    if policy.critical_battery.enabled && !previous.critical_battery.enabled {
+        let connection = crate::sleep::system_bus().await?;
+        let capability: String = crate::sleep::manager(&connection)
+            .await?
+            .call("CanHibernate", &())
+            .await?;
+        anyhow::ensure!(
+            crate::sleep::capability::configurable(&capability),
+            "critical battery protection requires hibernation support: {capability}"
+        );
+    }
     persist_and_restart(&policy_path(), &policy, &previous, apply_idle).await?;
     if [policy.profile(false), policy.profile(true)]
         .iter()
@@ -284,6 +302,7 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         hibernate_ready: matches!(&support, Ok(None)),
         hibernate_error: support.unwrap_or_else(|error| Some(format!("{error:#}"))),
         lid: store.snapshot().await.sleep_policy.lid,
+        critical_battery: store.snapshot().await.sleep_policy.critical_battery,
         last_error: None,
         error: None,
     };
@@ -529,6 +548,7 @@ mod tests {
     #[test]
     fn shared_and_separate_profiles_preserve_both_values() {
         let mut policy = SleepPolicy {
+            critical_battery: Default::default(),
             lid_action: lid::LidAction::System,
             same_profile: false,
             battery: SleepProfile {
@@ -564,6 +584,7 @@ mod tests {
     #[test]
     fn stale_idle_callbacks_cannot_sleep_early_after_ac_changes_or_never() {
         let policy = SleepPolicy {
+            critical_battery: Default::default(),
             lid_action: lid::LidAction::System,
             same_profile: false,
             battery: SleepProfile {
