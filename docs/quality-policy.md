@@ -35,12 +35,14 @@ policy/layouts, work-area observation, and nested power/update modules. `StateSt
 may reference state types owned by policy/work-area modules; it must not invoke
 system effects.
 
-Architecture CI enforcement is still pending: the current checker reports seven
-unresolved macro-generated Wayland references in `sleep/wayland_lock.rs` and
-`sleep/wayland_lock_tests.rs`. Measurement reports no violations but partial
+Architecture CI enforcement is still pending: the current checker reports 14
+unresolved macro-generated Wayland references in `sleep/wayland_lock.rs`,
+`sleep/wayland_lock_tests.rs`, and `tests/native_idle.rs`. Measurement reports no violations but partial
 evidence, so `rqlens check` correctly fails. Resolve that analysis limitation
 before adding a hard CI gate; do not disable identity resolution or count a
 partial measurement as a pass. Existing fan-out baselines have not been raised.
+See [the sleep follow-up review](sleep-quality-review.md) for the latest measured
+changes, including aggregate complexity/leverage trade-offs.
 
 The `webpki-roots` CA-root data uses CDLA-Permissive-2.0, accepted in `deny.toml`.
 Its license text is retained in `packaging/licenses/` and installed with Nix binary
