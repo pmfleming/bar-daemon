@@ -82,8 +82,11 @@ impl NotificationServer {
     }
 
     async fn close_notification(&self, id: u32) -> fdo::Result<()> {
-        self.engine.close(id, close_reason::CLOSED_BY_CALL).await;
-        Ok(())
+        self.engine
+            .close(id, close_reason::CLOSED_BY_CALL)
+            .await
+            .map(|_| ())
+            .map_err(|error| fdo::Error::Failed(error.to_string()))
     }
 
     async fn get_server_information(&self) -> (String, String, String, String) {

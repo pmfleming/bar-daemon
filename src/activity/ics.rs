@@ -66,7 +66,9 @@ fn load_source_blocking(source: &CalendarSourceConfig) -> Result<Vec<ActivityEve
             .with_context(|| format!("read iCalendar file {}", path.display()))?;
         events.extend(parse_calendar(source, &path, &contents)?);
     }
-    events.sort_by_key(|event| (event.start_unix_ms, event.end_unix_ms, event.id.clone()));
+    events.sort_by(|a, b| {
+        (a.start_unix_ms, a.end_unix_ms, &a.id).cmp(&(b.start_unix_ms, b.end_unix_ms, &b.id))
+    });
     Ok(events)
 }
 

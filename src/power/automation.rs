@@ -131,38 +131,8 @@ impl PowerEnvelope {
             self.status.status = "unavailable".into();
             return Ok(());
         };
-        if connection.is_bus() {
-            let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
-            let owner = dbus.get_name_owner(BUS.try_into()?).await?.to_string();
-            if self.owner != owner {
-                // Service restarts destroy holds; they are not manual overrides.
-                self.owner = owner;
-                self.cookie = None;
-                self.held_profile = None;
-            }
-        }
-        let current = read_raw_state(&connection).await?;
-        // An external manual selection releases PPD holds. Respect it rather
-        // than acquiring the same hold again on the next battery sample.
-        if self.cookie.is_some() && !has_own_hold(&current) {
-            self.cookie = None;
-            self.held_profile = None;
-            if self.level != BatteryLevel::Normal {
-                self.runtime.manual_override = true;
-                self.persist().await?;
-                self.observe(battery);
-            }
-        }
-        // Balanced was replaced externally (not merely masked by a hold).
-        if self.runtime.balanced_restore_profile.is_some()
-            && current.profile != "balanced"
-            && current.active_holds.is_empty()
-        {
-            self.runtime.balanced_restore_profile = None;
-            self.runtime.manual_override = self.level != BatteryLevel::Normal;
-            self.persist().await?;
-            self.observe(battery);
-        }
+        self.observe_external_selection(&connection, battery)
+            .await?;
         let desired = if self.runtime.manual_override {
             None
         } else {
@@ -175,47 +145,100 @@ impl PowerEnvelope {
             self.status.status = "blocked".into();
             return Ok(());
         }
-        let Some(profile) = desired else {
-            return Ok(());
-        };
-        let current = read_raw_state(&connection).await?;
+        if let Some(profile) = desired {
+            self.apply_profile(&connection, profile).await?;
+        }
+        Ok(())
+    }
+
+    async fn observe_external_selection(
+        &mut self,
+        connection: &zbus::Connection,
+        battery: &BatteryState,
+    ) -> Result<()> {
+        if connection.is_bus() {
+            let dbus = zbus::fdo::DBusProxy::new(connection).await?;
+            let owner = dbus.get_name_owner(BUS.try_into()?).await?.to_string();
+            if self.owner != owner {
+                // Service restarts destroy holds; they are not manual overrides.
+                self.owner = owner;
+                self.cookie = None;
+                self.held_profile = None;
+            }
+        }
+        let current = read_raw_state(connection).await?;
+        let lost_hold = self.cookie.is_some() && !has_own_hold(&current);
+        let replaced_balanced = self.runtime.balanced_restore_profile.is_some()
+            && current.profile != "balanced"
+            && current.active_holds.is_empty();
+        if lost_hold {
+            self.cookie = None;
+            self.held_profile = None;
+        }
+        if replaced_balanced {
+            self.runtime.balanced_restore_profile = None;
+        }
+        if lost_hold || replaced_balanced {
+            // Persist one coherent observation; never reacquire a hold released
+            // by a user's external selection during a low-battery episode.
+            self.runtime.manual_override = self.level != BatteryLevel::Normal;
+            self.persist().await?;
+            self.observe(battery);
+        }
+        Ok(())
+    }
+
+    async fn apply_profile(&mut self, connection: &zbus::Connection, profile: &str) -> Result<()> {
+        let current = read_raw_state(connection).await?;
         if !current.profiles.iter().any(|item| item.name == profile) {
             self.status.status = "unavailable".into();
             return Ok(());
         }
         if profile == "balanced" {
-            if !current.active_holds.is_empty() {
+            if !self.apply_balanced(connection, current).await? {
                 self.status.status = "blocked".into();
                 return Ok(());
             }
-            if self.runtime.balanced_restore_profile.is_none() && current.profile != "balanced" {
-                self.runtime.balanced_restore_profile = Some(current.profile.clone());
-                if let Err(error) = self.persist().await {
-                    self.runtime.balanced_restore_profile = None;
-                    return Err(error);
-                }
-                let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE).await?;
-                if let Err(error) = proxy.set_property("ActiveProfile", &"balanced").await {
-                    self.runtime.balanced_restore_profile = None;
-                    self.persist().await?;
-                    return Err(error).context("apply balanced battery profile");
-                }
-            }
         } else if self.cookie.is_none() {
-            let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE).await?;
+            let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE).await?;
             let reason = format!("Battery level is {}", self.level.as_str());
-            let cookie: u32 = proxy
-                .call("HoldProfile", &(profile, reason, HOLD_APPLICATION_ID))
-                .await
-                .context("hold battery-level power profile")?;
-            self.cookie = Some(cookie);
+            self.cookie = Some(
+                proxy
+                    .call("HoldProfile", &(profile, reason, HOLD_APPLICATION_ID))
+                    .await
+                    .context("hold battery-level power profile")?,
+            );
             self.held_profile = Some(profile.into());
         }
-        let effective = read_raw_state(&connection).await?;
-        if effective.profile != profile {
+        if read_raw_state(connection).await?.profile != profile {
             self.status.status = "blocked".into();
         }
         Ok(())
+    }
+
+    async fn apply_balanced(
+        &mut self,
+        connection: &zbus::Connection,
+        current: PowerProfileState,
+    ) -> Result<bool> {
+        if !current.active_holds.is_empty() {
+            return Ok(false);
+        }
+        if self.runtime.balanced_restore_profile.is_some() || current.profile == "balanced" {
+            return Ok(true);
+        }
+        self.runtime.balanced_restore_profile = Some(current.profile);
+        if let Err(error) = self.persist().await {
+            self.runtime.balanced_restore_profile = None;
+            return Err(error);
+        }
+        let proxy = zbus::Proxy::new(connection, BUS, PATH, INTERFACE).await?;
+        if let Err(error) = proxy.set_property("ActiveProfile", &"balanced").await {
+            self.runtime.balanced_restore_profile = None;
+            self.persist().await?;
+            return Err(error).context("apply balanced battery profile");
+        }
+        Ok(true)
     }
 
     async fn release(&mut self, connection: &zbus::Connection) -> Result<()> {
@@ -235,7 +258,7 @@ impl PowerEnvelope {
     }
 
     async fn restore_balanced(&mut self, connection: &zbus::Connection) -> Result<bool> {
-        let Some(previous) = self.runtime.balanced_restore_profile.clone() else {
+        let Some(previous) = self.runtime.balanced_restore_profile.as_deref() else {
             return Ok(true);
         };
         let current = read_raw_state(connection).await?;
@@ -322,8 +345,11 @@ fn runtime_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::model::BatteryProfileAction;
+    use super::{PowerEnvelope, Runtime};
+    use crate::{
+        battery::levels::BatteryLevel,
+        model::{BatteryProfileAction, BatteryState},
+    };
 
     fn battery(percentage: u8) -> BatteryState {
         BatteryState {

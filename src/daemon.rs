@@ -35,7 +35,7 @@ pub(crate) async fn run() -> Result<()> {
         Some(engine) => notifications::service::NotificationService::native(Arc::clone(engine)),
         None => notifications::service::NotificationService::swaync(),
     };
-    let activity = ActivityService::new(state.clone(), notification_service.sink()).await;
+    let activity = ActivityService::new(state.clone()).await;
     let media = MediaService::default();
     let brightness = crate::brightness::BrightnessService::new(state.clone());
     let api = ApiService::new(
@@ -73,7 +73,6 @@ pub(crate) async fn run() -> Result<()> {
         state,
         activity,
         notification_service,
-        notification_engine,
         media,
         brightness,
         connection,

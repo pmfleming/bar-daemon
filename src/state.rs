@@ -47,6 +47,12 @@ macro_rules! state_updates {
 }
 
 impl StateStore {
+    /// Read a projection under the snapshot lock without cloning unrelated domains.
+    pub(crate) async fn read<T>(&self, project: impl FnOnce(&BarSnapshot) -> T) -> T {
+        let snapshot = self.snapshot.read().await;
+        project(&snapshot)
+    }
+
     pub(crate) async fn snapshot(&self) -> BarSnapshot {
         self.snapshot.read().await.clone()
     }
@@ -299,6 +305,7 @@ mod tests {
         let store = StateStore::default();
         let (snapshot, mut events) = store.snapshot_and_subscribe().await;
         assert!(!snapshot.workspaces.available);
+        assert!(!store.read(|snapshot| snapshot.workspaces.available).await);
         store
             .update_workspaces(WorkspaceState {
                 available: true,
@@ -306,5 +313,6 @@ mod tests {
             })
             .await;
         assert_eq!(events.recv().await.unwrap().data["available"], true);
+        assert!(store.read(|snapshot| snapshot.workspaces.available).await);
     }
 }

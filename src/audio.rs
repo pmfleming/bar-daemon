@@ -103,25 +103,15 @@ pub(crate) async fn monitor(store: StateStore) {
 }
 
 async fn refresh(store: &StateStore) {
-    match tokio::task::spawn_blocking(probe).await {
-        Ok(Ok(value)) => store.update_audio(value).await,
-        Ok(Err(error)) => {
-            store
-                .update_audio(AudioState {
-                    error: Some(error.to_string()),
-                    ..AudioState::default()
-                })
-                .await
-        }
-        Err(error) => {
-            store
-                .update_audio(AudioState {
-                    error: Some(error.to_string()),
-                    ..AudioState::default()
-                })
-                .await
-        }
-    }
+    let result = tokio::task::spawn_blocking(probe)
+        .await
+        .unwrap_or_else(|error| Err(error.into()));
+    store
+        .update_audio(result.unwrap_or_else(|error| AudioState {
+            error: Some(error.to_string()),
+            ..AudioState::default()
+        }))
+        .await;
 }
 
 /// Owned by the dedicated control thread: PipeWire objects are not Send.
@@ -650,7 +640,7 @@ fn set_node(
     muted: Option<bool>,
     node_kind: &str,
 ) -> Result<()> {
-    use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
+    use pw::spa::pod::{Object, Property, Value, ValueArray};
     if let Some(route) = &node_probe.route {
         return set_route(connection, route, volume, muted, node_kind);
     }
@@ -675,6 +665,27 @@ fn set_node(
         id: pw::spa::sys::SPA_PARAM_Props,
         properties,
     });
+    set_parameter(
+        connection,
+        node_probe.id,
+        value,
+        node_kind,
+        |node: &Node, pod| {
+            node.set_param(pw::spa::param::ParamType::Props, 0, pod);
+        },
+    )
+}
+
+// Node and device-route writes share proxy lifetime, acknowledgement, and
+// disappearance handling. Retain the bound object until the second roundtrip.
+fn set_parameter<P: ProxyT + 'static>(
+    connection: &AudioConnection,
+    requested_id: u32,
+    value: pw::spa::pod::Value,
+    node_kind: &str,
+    apply: impl Fn(&P, &pw::spa::pod::Pod) + 'static,
+) -> Result<()> {
+    use pw::spa::pod::serialize::PodSerializer;
     let bytes = PodSerializer::serialize(Cursor::new(Vec::new()), &value)?
         .0
         .into_inner();
@@ -683,25 +694,24 @@ fn set_node(
     let registry = core.get_registry_rc()?;
     let applied = Rc::new(Cell::new(false));
     let applied_for_listener = Rc::clone(&applied);
-    let requested_id = node_probe.id;
     let registry_weak = registry.downgrade();
-    let retained = Rc::new(RefCell::new(None::<Node>));
+    let retained = Rc::new(RefCell::new(None::<P>));
     let retained_for_listener = Rc::clone(&retained);
     let _listener = registry
         .add_listener_local()
         .global(move |global| {
-            if global.id != requested_id || global.type_ != ObjectType::Node {
+            if global.id != requested_id || global.type_ != P::type_() {
                 return;
             }
             let Some(registry) = registry_weak.upgrade() else {
                 return;
             };
-            if let Ok(node) = registry.bind::<Node, _>(global) {
+            if let Ok(proxy) = registry.bind::<P, _>(global) {
                 let Some(pod) = pw::spa::pod::Pod::from_bytes(&bytes) else {
                     return;
                 };
-                node.set_param(pw::spa::param::ParamType::Props, 0, pod);
-                *retained_for_listener.borrow_mut() = Some(node);
+                apply(&proxy, pod);
+                *retained_for_listener.borrow_mut() = Some(proxy);
                 applied_for_listener.set(true);
             }
         })
@@ -722,7 +732,7 @@ fn set_route(
     muted: Option<bool>,
     node_kind: &str,
 ) -> Result<()> {
-    use pw::spa::pod::{Object, Property, Value, ValueArray, serialize::PodSerializer};
+    use pw::spa::pod::{Object, Property, Value, ValueArray};
     let volume = linear_to_raw(volume.unwrap_or(route.volume));
     let muted = muted.unwrap_or(route.muted);
     let props = Value::Object(Object {
@@ -749,42 +759,15 @@ fn set_route(
             Property::new(pw::spa::sys::SPA_PARAM_ROUTE_save, Value::Bool(true)),
         ],
     });
-    let bytes = PodSerializer::serialize(Cursor::new(Vec::new()), &value)?
-        .0
-        .into_inner();
-    let main_loop = &connection.main_loop;
-    let core = &connection.core;
-    let registry = core.get_registry_rc()?;
-    let applied = Rc::new(Cell::new(false));
-    let applied_for_listener = Rc::clone(&applied);
-    let requested_id = route.device_id;
-    let registry_weak = registry.downgrade();
-    let retained = Rc::new(RefCell::new(None::<Device>));
-    let retained_for_listener = Rc::clone(&retained);
-    let _listener = registry
-        .add_listener_local()
-        .global(move |global| {
-            if global.id != requested_id || global.type_ != ObjectType::Device {
-                return;
-            }
-            let Some(registry) = registry_weak.upgrade() else {
-                return;
-            };
-            if let Ok(device) = registry.bind::<Device, _>(global) {
-                let Some(pod) = pw::spa::pod::Pod::from_bytes(&bytes) else {
-                    return;
-                };
-                device.set_param(pw::spa::param::ParamType::Route, 0, pod);
-                *retained_for_listener.borrow_mut() = Some(device);
-                applied_for_listener.set(true);
-            }
-        })
-        .register();
-    pipewire_roundtrip(main_loop, core)?;
-    if !applied.get() {
-        bail!("default PipeWire {node_kind} route disappeared");
-    }
-    pipewire_roundtrip(main_loop, core)
+    set_parameter(
+        connection,
+        route.device_id,
+        value,
+        &format!("{node_kind} route"),
+        |device: &Device, pod| {
+            device.set_param(pw::spa::param::ParamType::Route, 0, pod);
+        },
+    )
 }
 
 fn default_node_name(value: &str) -> Option<String> {
@@ -940,6 +923,18 @@ mod tests {
         };
         let connection = connect();
         let external = connect();
+        // Both generic transaction targets must reject vanished objects rather
+        // than reporting a write that never happened.
+        let missing = super::SinkProbe {
+            id: u32::MAX,
+            ..Default::default()
+        };
+        assert!(super::set_node(&connection, &missing, None, Some(true), "sink").is_err());
+        let missing = super::RouteProbe {
+            device_id: u32::MAX,
+            ..Default::default()
+        };
+        assert!(super::set_route(&connection, &missing, None, Some(true), "sink").is_err());
         assert_eq!(connection.snapshot().unwrap().sink_name, "osd-test-output");
         assert!(connection.set_muted(Some(true)).unwrap().muted);
         assert!(!connection.set_muted(None).unwrap().muted);

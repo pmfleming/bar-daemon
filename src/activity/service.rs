@@ -13,10 +13,7 @@ use chrono::{Local, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::{
-    activity::notifications::service::NotificationSink, state::StateStore,
-    time::unix_ms_i64 as unix_ms,
-};
+use crate::{state::StateStore, time::unix_ms_i64 as unix_ms};
 
 use super::{
     config::{self, ActivityConfig},
@@ -34,6 +31,8 @@ struct ActivityData {
     events_by_source: HashMap<String, Vec<ActivityEvent>>,
     source_states: HashMap<String, ActivitySourceState>,
     todos: Vec<TodoItem>,
+    // A failed load must never turn into an empty, writable store.
+    todo_error: Option<String>,
     weather: WeatherState,
     weather_locations: Vec<WeatherState>,
 }
@@ -47,32 +46,61 @@ pub(crate) struct ActivityService {
     refresh_guard: Mutex<()>,
     todo_guard: Mutex<()>,
     todo_sequence: AtomicU64,
-    _notifications: NotificationSink,
 }
 
 impl ActivityService {
-    pub(crate) async fn new(state: StateStore, notifications: NotificationSink) -> Arc<Self> {
-        let todo_path = config::todo_path();
-        let todos = config::load_todos(&todo_path)
-            .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "local todo store could not be loaded");
-                Vec::new()
-            });
-        Arc::new(Self {
+    pub(crate) async fn new(state: StateStore) -> Arc<Self> {
+        Self::with_paths(state, config::config_path(), config::todo_path()).await
+    }
+
+    async fn with_paths(state: StateStore, config_path: PathBuf, todo_path: PathBuf) -> Arc<Self> {
+        let (todos, todo_error) = match config::load_todos(&todo_path).await {
+            Ok(todos) => (todos, None),
+            Err(error) => (
+                Vec::new(),
+                Some(format!("Local todo store is unavailable: {error:#}")),
+            ),
+        };
+        let service = Arc::new(Self {
             data: RwLock::new(ActivityData {
                 todos,
+                todo_error,
                 ..ActivityData::default()
             }),
             state,
-            config_path: config::config_path(),
+            config_path,
             todo_path,
             providers: ProviderRegistry::builtins(),
             refresh_guard: Mutex::new(()),
             todo_guard: Mutex::new(()),
             todo_sequence: AtomicU64::new(1),
-            _notifications: notifications,
-        })
+        });
+        service.publish_state(None, false).await;
+        service
+    }
+
+    // Caller holds todo_guard so recovery cannot replace an in-flight mutation.
+    // Retry only failed loads; successful in-memory state remains authoritative.
+    async fn writable_todos(&self) -> Result<Vec<TodoItem>> {
+        let data = self.data.read().await;
+        if data.todo_error.is_none() {
+            return Ok(data.todos.clone());
+        }
+        drop(data);
+        match config::load_todos(&self.todo_path).await {
+            Ok(todos) => {
+                let mut data = self.data.write().await;
+                data.todos = todos.clone();
+                data.todo_error = None;
+                Ok(todos)
+            }
+            Err(error) => {
+                let message = format!("Local todo store is unavailable: {error:#}");
+                self.data.write().await.todo_error = Some(message.clone());
+                self.publish_state(None, false).await;
+                bail!(message)
+            }
+        }
     }
 
     pub(crate) async fn monitor(self: Arc<Self>) {
@@ -86,7 +114,7 @@ impl ActivityService {
     }
 
     pub(crate) async fn request_refresh(self: &Arc<Self>) {
-        let current = self.state.snapshot().await.activity;
+        let current = self.state.read(|snapshot| snapshot.activity.clone()).await;
         self.state
             .update_activity(ActivityState {
                 available: true,
@@ -102,7 +130,7 @@ impl ActivityService {
         let Ok(_guard) = self.refresh_guard.try_lock() else {
             return;
         };
-        let current = self.state.snapshot().await.activity;
+        let current = self.state.read(|snapshot| snapshot.activity.clone()).await;
         self.state
             .update_activity(ActivityState {
                 available: true,
@@ -110,6 +138,14 @@ impl ActivityService {
                 ..current
             })
             .await;
+
+        {
+            let _guard = self.todo_guard.lock().await;
+            let needs_recovery = self.data.read().await.todo_error.is_some();
+            if needs_recovery && let Err(error) = self.writable_todos().await {
+                tracing::warn!(%error, "local todo store recovery failed");
+            }
+        }
 
         let config = match config::load(&self.config_path).await {
             Ok(config) if config::validate(&config).is_ok() => config,
@@ -151,43 +187,31 @@ impl ActivityService {
         .await;
         for (source, result) in calendar_results {
             let mut data = self.data.write().await;
-            match result {
+            let error = match result {
                 Ok(events) => {
-                    data.source_states.insert(
-                        source.id.clone(),
-                        ActivitySourceState {
-                            id: source.id.clone(),
-                            name: source_name(source),
-                            kind: source.kind.clone(),
-                            available: true,
-                            item_count: events.len().try_into().unwrap_or(u32::MAX),
-                            error: None,
-                        },
-                    );
                     data.events_by_source.insert(source.id.clone(), events);
+                    None
                 }
-                Err(error) => {
-                    let message = error.to_string();
-                    first_error.get_or_insert_with(|| message.clone());
-                    let retained_count = data
-                        .events_by_source
-                        .get(&source.id)
-                        .map_or(0, Vec::len)
-                        .try_into()
-                        .unwrap_or(u32::MAX);
-                    data.source_states.insert(
-                        source.id.clone(),
-                        ActivitySourceState {
-                            id: source.id.clone(),
-                            name: source_name(source),
-                            kind: source.kind.clone(),
-                            available: false,
-                            item_count: retained_count,
-                            error: Some(message),
-                        },
-                    );
-                }
-            }
+                Err(error) => Some(error.to_string()),
+            };
+            first_error = first_error.or_else(|| error.clone());
+            let item_count = data
+                .events_by_source
+                .get(&source.id)
+                .map_or(0, Vec::len)
+                .try_into()
+                .unwrap_or(u32::MAX);
+            data.source_states.insert(
+                source.id.clone(),
+                ActivitySourceState {
+                    id: source.id.clone(),
+                    name: source_name(source),
+                    kind: source.kind.clone(),
+                    available: error.is_none(),
+                    item_count,
+                    error,
+                },
+            );
         }
         self.refresh_weather(&config).await;
         self.publish_state(first_error, false).await;
@@ -249,6 +273,16 @@ impl ActivityService {
         from_unix_ms: i64,
         to_unix_ms: i64,
     ) -> Result<ActivityRange> {
+        self.query_range_in_timezone(from_unix_ms, to_unix_ms, Local)
+            .await
+    }
+
+    async fn query_range_in_timezone<T: TimeZone>(
+        &self,
+        from_unix_ms: i64,
+        to_unix_ms: i64,
+        timezone: T,
+    ) -> Result<ActivityRange> {
         if to_unix_ms <= from_unix_ms {
             bail!("to_unix_ms must be greater than from_unix_ms");
         }
@@ -267,24 +301,29 @@ impl ActivityService {
             .filter(|event| event.end_unix_ms > from_unix_ms && event.start_unix_ms < to_unix_ms)
             .cloned()
             .collect::<Vec<_>>();
-        events.sort_by_key(|event| (event.start_unix_ms, event.end_unix_ms, event.id.clone()));
-        let from_date = Utc
+        events.sort_by(|a, b| {
+            (a.start_unix_ms, a.end_unix_ms, &a.id).cmp(&(b.start_unix_ms, b.end_unix_ms, &b.id))
+        });
+        // Date-only todos occupy a local calendar day. Include every local date
+        // touched by the half-open interval, including partial days and DST.
+        let from_date = timezone
             .timestamp_millis_opt(from_unix_ms)
             .single()
-            .map(|value| value.format("%Y-%m-%d").to_string());
-        let to_date = Utc
-            .timestamp_millis_opt(to_unix_ms)
+            .context("activity range start is outside supported dates")?
+            .date_naive()
+            .to_string();
+        let last_date = timezone
+            .timestamp_millis_opt(to_unix_ms - 1)
             .single()
-            .map(|value| value.format("%Y-%m-%d").to_string());
+            .context("activity range end is outside supported dates")?
+            .date_naive()
+            .to_string();
         let mut todos = data
             .todos
             .iter()
             .filter(|todo| match (todo.due_unix_ms, todo.due_date.as_deref()) {
                 (Some(due), _) => due >= from_unix_ms && due < to_unix_ms,
-                (None, Some(date)) => {
-                    from_date.as_deref().is_none_or(|from| date >= from)
-                        && to_date.as_deref().is_none_or(|to| date < to)
-                }
+                (None, Some(date)) => date >= from_date.as_str() && date <= last_date.as_str(),
                 (None, None) => true,
             })
             .cloned()
@@ -333,6 +372,7 @@ impl ActivityService {
         }
         let now = unix_ms();
         let _guard = self.todo_guard.lock().await;
+        let mut todos = self.writable_todos().await?;
         let todo = TodoItem {
             id: format!(
                 "local-{now}-{}",
@@ -347,7 +387,6 @@ impl ActivityService {
             created_unix_ms: now,
             completed_unix_ms: None,
         };
-        let mut todos = self.data.read().await.todos.clone();
         todos.push(todo.clone());
         config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
@@ -357,7 +396,7 @@ impl ActivityService {
 
     pub(crate) async fn complete_todo(&self, id: &str, completed: bool) -> Result<TodoItem> {
         let _guard = self.todo_guard.lock().await;
-        let mut todos = self.data.read().await.todos.clone();
+        let mut todos = self.writable_todos().await?;
         let todo = todos
             .iter_mut()
             .find(|todo| todo.id == id)
@@ -373,7 +412,7 @@ impl ActivityService {
 
     pub(crate) async fn delete_todo(&self, id: &str) -> Result<()> {
         let _guard = self.todo_guard.lock().await;
-        let mut todos = self.data.read().await.todos.clone();
+        let mut todos = self.writable_todos().await?;
         let previous = todos.len();
         todos.retain(|todo| todo.id != id);
         if todos.len() == previous {
@@ -388,16 +427,11 @@ impl ActivityService {
     async fn publish_state(&self, error: Option<String>, syncing: bool) {
         let data = self.data.read().await;
         let now = unix_ms();
-        let mut events = data
-            .events_by_source
-            .values()
-            .flatten()
-            .cloned()
-            .collect::<Vec<_>>();
-        events.sort_by_key(|event| event.start_unix_ms);
+        let events = data.events_by_source.values().flatten();
         let next_event = events
-            .iter()
-            .find(|event| event.end_unix_ms >= now)
+            .clone()
+            .filter(|event| event.end_unix_ms >= now)
+            .min_by_key(|event| event.start_unix_ms)
             .cloned();
         let sources: Vec<ActivitySourceState> = data
             .config
@@ -421,7 +455,7 @@ impl ActivityService {
             .iter()
             .filter_map(|clock| world_clock(&clock.timezone, &clock.label).ok())
             .collect();
-        let error = error.or_else(|| {
+        let error = data.todo_error.clone().or(error).or_else(|| {
             sources
                 .iter()
                 .find_map(|source: &ActivitySourceState| source.error.clone())
@@ -429,7 +463,7 @@ impl ActivityService {
         let state = ActivityState {
             available: true,
             syncing,
-            event_count: events.len().try_into().unwrap_or(u32::MAX),
+            event_count: events.count().try_into().unwrap_or(u32::MAX),
             incomplete_todo_count: data
                 .todos
                 .iter()
@@ -502,28 +536,174 @@ fn event_date(event: &ActivityEvent) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicU64;
-
     use tempfile::tempdir;
 
-    use crate::{activity::notifications::service::NotificationSink, state::StateStore};
+    use crate::state::StateStore;
 
-    use super::{ActivityService, ProviderRegistry};
+    use super::ActivityService;
+
+    #[tokio::test]
+    async fn failed_todo_load_blocks_all_mutations_and_recovers_without_data_loss() {
+        for unreadable in [false, true] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("todos.json");
+            let original = b"[{\"id\":\"recoverable-task\",\"title\":\"Important\"}";
+            if unreadable {
+                // A directory gives a deterministic read error even as root.
+                std::fs::create_dir(&path).unwrap();
+            } else {
+                std::fs::write(&path, original).unwrap();
+            }
+            let state = StateStore::default();
+            let service = ActivityService::with_paths(
+                state.clone(),
+                directory.path().join("activity.json"),
+                path.clone(),
+            )
+            .await;
+            assert!(state.snapshot().await.activity.error.is_some());
+            assert!(
+                service
+                    .create_todo("New".into(), None, None, 0)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .complete_todo("recoverable-task", true)
+                    .await
+                    .is_err()
+            );
+            assert!(service.delete_todo("recoverable-task").await.is_err());
+            service.refresh().await;
+            assert!(state.snapshot().await.activity.error.is_some());
+            if unreadable {
+                assert!(path.is_dir());
+                std::fs::remove_dir(&path).unwrap();
+            } else {
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+            }
+
+            let recovered = serde_json::json!([{
+                "id": "recoverable-task", "source_id": "local", "title": "Important",
+                "completed": false, "priority": 0, "due_unix_ms": null, "due_date": null,
+                "created_unix_ms": 1, "completed_unix_ms": null
+            }]);
+            std::fs::write(&path, recovered.to_string()).unwrap();
+            if unreadable {
+                service.refresh().await; // Automatic recovery, without restart.
+                assert!(state.snapshot().await.activity.error.is_none());
+            }
+            // Mutation also retries a failed load and preserves recovered data.
+            service
+                .create_todo("New".into(), None, None, 0)
+                .await
+                .unwrap();
+            let stored = super::config::load_todos(&path).await.unwrap();
+            assert_eq!(stored.len(), 2);
+            assert_eq!(stored[0].id, "recoverable-task");
+            assert!(state.snapshot().await.activity.error.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_todo_store_can_be_created_and_reloaded() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("new/todos.json");
+        let config = directory.path().join("activity.json");
+        let service =
+            ActivityService::with_paths(StateStore::default(), config.clone(), path.clone()).await;
+        let todo = service
+            .create_todo("Keep me".into(), None, None, 0)
+            .await
+            .unwrap();
+        let restarted = ActivityService::with_paths(StateStore::default(), config, path).await;
+        assert_eq!(restarted.query_range(0, 1).await.unwrap().todos, vec![todo]);
+    }
+
+    #[tokio::test]
+    async fn date_only_queries_use_local_half_open_days_including_dst_and_partial_days() {
+        use chrono::{DateTime, TimeZone};
+        let directory = tempdir().unwrap();
+        let service = ActivityService::with_paths(
+            StateStore::default(),
+            directory.path().join("activity.json"),
+            directory.path().join("todos.json"),
+        )
+        .await;
+        for (zone, from, to, date) in [
+            (
+                chrono_tz::Africa::Johannesburg,
+                "2026-01-20T00:00:00+02:00",
+                "2026-01-21T00:00:00+02:00",
+                "2026-01-20",
+            ),
+            (
+                chrono_tz::America::New_York,
+                "2026-01-20T00:00:00-05:00",
+                "2026-01-21T00:00:00-05:00",
+                "2026-01-20",
+            ),
+            (
+                chrono_tz::UTC,
+                "2026-01-20T09:00:00Z",
+                "2026-01-20T10:00:00Z",
+                "2026-01-20",
+            ),
+            (
+                chrono_tz::Europe::Berlin,
+                "2026-03-29T00:00:00+01:00",
+                "2026-03-30T00:00:00+02:00",
+                "2026-03-29",
+            ),
+            (
+                chrono_tz::Europe::Berlin,
+                "2026-10-25T00:00:00+02:00",
+                "2026-10-26T00:00:00+01:00",
+                "2026-10-25",
+            ),
+        ] {
+            let from = DateTime::parse_from_rfc3339(from)
+                .unwrap()
+                .timestamp_millis();
+            let to = DateTime::parse_from_rfc3339(to).unwrap().timestamp_millis();
+            let first = zone.timestamp_millis_opt(from).unwrap().date_naive();
+            let last = zone.timestamp_millis_opt(to - 1).unwrap().date_naive();
+            let mut ids = Vec::new();
+            for day in [
+                first.pred_opt().unwrap().to_string(),
+                date.into(),
+                last.succ_opt().unwrap().to_string(),
+            ] {
+                ids.push(
+                    service
+                        .create_todo(day.clone(), None, Some(day), 0)
+                        .await
+                        .unwrap()
+                        .id,
+                );
+            }
+            let range = service
+                .query_range_in_timezone(from, to, zone)
+                .await
+                .unwrap();
+            assert_eq!(range.todos.len(), 1, "{zone}: {date}");
+            assert_eq!(range.todos[0].id, ids[1]);
+            for id in ids {
+                service.delete_todo(&id).await.unwrap();
+            }
+        }
+    }
 
     #[tokio::test]
     async fn local_todos_round_trip_and_query() {
         let directory = tempdir().unwrap();
-        let service = ActivityService {
-            data: Default::default(),
-            state: StateStore::default(),
-            config_path: directory.path().join("activity.json"),
-            todo_path: directory.path().join("todos.json"),
-            providers: ProviderRegistry::builtins(),
-            refresh_guard: Default::default(),
-            todo_guard: Default::default(),
-            todo_sequence: AtomicU64::new(1),
-            _notifications: NotificationSink::unavailable(),
-        };
+        let service = ActivityService::with_paths(
+            StateStore::default(),
+            directory.path().join("activity.json"),
+            directory.path().join("todos.json"),
+        )
+        .await;
         assert!(service.query_range(10, 10).await.is_err());
         assert!(service.query_range(i64::MIN, i64::MAX).await.is_err());
         assert!(service.query_range(i64::MIN, 0).await.is_err());
@@ -548,6 +728,42 @@ mod tests {
                 .todos
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn summary_selects_earliest_unfinished_event_without_reordering_sources() {
+        let directory = tempdir().unwrap();
+        let service = ActivityService::with_paths(
+            StateStore::default(),
+            directory.path().join("activity.json"),
+            directory.path().join("todos.json"),
+        )
+        .await;
+        let now = super::unix_ms();
+        let events: Vec<_> = [
+            ("future", 60_000, 120_000),
+            ("expired", -120_000, -60_000),
+            ("ongoing", -60_000, 60_000),
+        ]
+        .into_iter()
+        .map(|(id, start, end)| super::ActivityEvent {
+            id: id.into(),
+            start_unix_ms: now + start,
+            end_unix_ms: now + end,
+            ..Default::default()
+        })
+        .collect();
+        service
+            .data
+            .write()
+            .await
+            .events_by_source
+            .insert("test".into(), events.clone());
+        service.publish_state(None, false).await;
+        let summary = service.state.snapshot().await.activity;
+        assert_eq!(summary.event_count, 3);
+        assert_eq!(summary.next_event, Some(events[2].clone()));
+        assert_eq!(service.data.read().await.events_by_source["test"], events);
     }
 
     #[tokio::test]
@@ -579,17 +795,12 @@ mod tests {
         .await
         .unwrap();
         let state = StateStore::default();
-        let service = ActivityService {
-            data: Default::default(),
-            state: state.clone(),
+        let service = ActivityService::with_paths(
+            state.clone(),
             config_path,
-            todo_path: directory.path().join("todos.json"),
-            providers: ProviderRegistry::builtins(),
-            refresh_guard: Default::default(),
-            todo_guard: Default::default(),
-            todo_sequence: AtomicU64::new(1),
-            _notifications: NotificationSink::unavailable(),
-        };
+            directory.path().join("todos.json"),
+        )
+        .await;
         service.refresh().await;
         let snapshot = state.snapshot().await.activity;
         assert_eq!(snapshot.event_count, 2);

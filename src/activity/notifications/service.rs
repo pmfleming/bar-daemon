@@ -33,6 +33,24 @@ impl NotificationService {
         })
     }
 
+    // The backend owns its lifetime: cancelling this future stops both native
+    // expiry and signal delivery, or the fallback subscription.
+    pub(crate) async fn monitor(
+        self: Arc<Self>,
+        state: crate::state::StateStore,
+        connection: zbus::Connection,
+    ) {
+        match &self.backend {
+            NotificationBackend::Native(engine) => {
+                tokio::join!(
+                    Arc::clone(engine).run_expiry(),
+                    super::server::forward_signals(Arc::clone(engine), connection)
+                );
+            }
+            NotificationBackend::SwayNc => swaync::monitor(state).await,
+        }
+    }
+
     pub(crate) fn native_engine(&self) -> Option<Arc<NotificationEngine>> {
         match &self.backend {
             NotificationBackend::Native(engine) => Some(Arc::clone(engine)),
@@ -53,7 +71,7 @@ impl NotificationService {
 
     pub(crate) async fn toggle_dnd(&self) -> Result<bool> {
         match &self.backend {
-            NotificationBackend::Native(engine) => Ok(engine.toggle_dnd().await),
+            NotificationBackend::Native(engine) => engine.toggle_dnd().await,
             NotificationBackend::SwayNc => {
                 swaync::toggle_dnd().await?;
                 Ok(false)
@@ -78,24 +96,13 @@ pub(crate) struct NotificationSink {
 enum SinkBackend {
     Native(Arc<NotificationEngine>),
     Freedesktop,
-    #[cfg(test)]
-    Unavailable,
 }
 
 impl NotificationSink {
-    #[cfg(test)]
-    pub(crate) fn unavailable() -> Self {
-        Self {
-            backend: SinkBackend::Unavailable,
-        }
-    }
-
     pub(crate) async fn send(&self, notification: IncomingNotification) -> Result<u32> {
         match &self.backend {
             SinkBackend::Native(engine) => engine.notify(0, notification).await,
             SinkBackend::Freedesktop => send_freedesktop(notification).await,
-            #[cfg(test)]
-            SinkBackend::Unavailable => anyhow::bail!("notification sink is unavailable"),
         }
     }
 }

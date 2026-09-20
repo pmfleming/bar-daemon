@@ -85,27 +85,16 @@ pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
 }
 
 async fn refresh_path(store: &StateStore, directory: PathBuf) {
-    match tokio::task::spawn_blocking(move || read_state(&directory)).await {
-        Ok(Ok(state)) => store.update_updates(state).await,
-        Ok(Err(error)) => {
-            store
-                .update_updates(UpdateState {
-                    state_directory: directory_display(&state_dir()),
-                    error: Some(error.to_string()),
-                    ..UpdateState::default()
-                })
-                .await
-        }
-        Err(error) => {
-            store
-                .update_updates(UpdateState {
-                    state_directory: directory_display(&state_dir()),
-                    error: Some(error.to_string()),
-                    ..UpdateState::default()
-                })
-                .await
-        }
-    }
+    let result = tokio::task::spawn_blocking(move || read_state(&directory))
+        .await
+        .unwrap_or_else(|error| Err(error.into()));
+    store
+        .update_updates(result.unwrap_or_else(|error| UpdateState {
+            state_directory: directory_display(&state_dir()),
+            error: Some(error.to_string()),
+            ..UpdateState::default()
+        }))
+        .await;
 }
 
 fn read_state(directory: &Path) -> Result<UpdateState> {

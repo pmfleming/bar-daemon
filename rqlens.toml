@@ -50,11 +50,21 @@ from = [
   "bar-daemon::shared::audio",
   "bar-daemon::shared::battery::**",
   "bar-daemon::shared::brightness",
+  "bar-daemon::shared::display_policy",
+  "bar-daemon::shared::display_policy::**",
   "bar-daemon::shared::hyprland",
   "bar-daemon::shared::media",
+  "bar-daemon::shared::osd_hardware",
   "bar-daemon::shared::power",
+  "bar-daemon::shared::power::**",
+  "bar-daemon::shared::sleep",
+  "bar-daemon::shared::sleep::**",
+  "bar-daemon::shared::sleep_policy",
+  "bar-daemon::shared::sleep_policy::**",
   "bar-daemon::shared::timezone",
   "bar-daemon::shared::updates",
+  "bar-daemon::shared::updates::**",
+  "bar-daemon::shared::work_area",
 ]
 deny = [
   "bar-daemon::shared::api",
@@ -75,7 +85,11 @@ deny = [
   "bar-daemon::shared::hyprland",
   "bar-daemon::shared::media",
   "bar-daemon::shared::power",
+  "bar-daemon::shared::power::**",
+  "bar-daemon::shared::sleep",
+  "bar-daemon::shared::sleep::**",
   "bar-daemon::shared::updates",
+  "bar-daemon::shared::updates::**",
 ]
 level = "error"
 

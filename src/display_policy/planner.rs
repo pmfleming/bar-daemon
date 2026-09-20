@@ -127,14 +127,14 @@ impl Planner {
             self.candidate = None;
             (false, "internal")
         } else {
-            if self
+            let (previous, since) = self
                 .candidate
-                .as_ref()
-                .is_none_or(|(previous, _)| previous != &external)
-            {
-                self.candidate = Some((external.clone(), now));
+                .get_or_insert_with(|| (external.clone(), now));
+            if *previous != external {
+                previous.clone_from(&external);
+                *since = now;
             }
-            if now.duration_since(self.candidate.as_ref().unwrap().1) >= SETTLE {
+            if now.duration_since(*since) >= SETTLE {
                 (true, "external")
             } else {
                 (false, "settling")

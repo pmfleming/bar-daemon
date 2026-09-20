@@ -72,7 +72,7 @@ impl ApiService {
             activity: ActivityApi::new(state.clone(), activity),
             battery: BatteryApi::new(state.clone()),
             effects: DesktopEffects::new(state.clone(), media, brightness),
-            notifications: NotificationApi::new(state.clone(), notifications),
+            notifications: NotificationApi::new(notifications),
             state,
         }
     }
@@ -153,7 +153,7 @@ mod tests {
     async fn api() -> ApiService {
         let state = StateStore::default();
         let notifications = NotificationService::swaync();
-        let activity = ActivityService::new(state.clone(), notifications.sink()).await;
+        let activity = ActivityService::new(state.clone()).await;
         let brightness = crate::brightness::BrightnessService::new(state.clone());
         ApiService::new(
             state,

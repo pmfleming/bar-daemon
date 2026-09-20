@@ -42,8 +42,10 @@ jobs:
           python3 ../daemon-framework/tools/local-build.py develop . --command cargo audit
           python3 ../daemon-framework/tools/local-build.py develop . --command cargo deny check
           python3 ../daemon-framework/tools/local-build.py develop . --command cargo shear
-      - name: Test and collect coverage
-        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml
+      # The dev shell supplies PipeWire; its ignored integration test uses an
+      # explicit private socket and virtual devices, never host audio.
+      - name: Test and collect coverage (including isolated PipeWire)
+        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml -- --include-ignored
       - name: Check changed-line coverage
         if: github.event_name == 'pull_request'
         run: python3 ../daemon-framework/tools/local-build.py develop . --command diff-cover cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80

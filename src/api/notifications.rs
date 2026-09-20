@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{error, success};
-use crate::{activity::notifications::service::NotificationService, state::StateStore};
+use crate::activity::notifications::service::NotificationService;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -54,16 +54,12 @@ const fn default_history_limit() -> usize {
 
 #[derive(Clone)]
 pub(super) struct NotificationApi {
-    state: StateStore,
     notifications: Arc<NotificationService>,
 }
 
 impl NotificationApi {
-    pub(super) fn new(state: StateStore, notifications: Arc<NotificationService>) -> Self {
-        Self {
-            state,
-            notifications,
-        }
+    pub(super) fn new(notifications: Arc<NotificationService>) -> Self {
+        Self { notifications }
     }
 
     pub(super) async fn notification_action(&self, dnd: bool) -> Value {
@@ -88,8 +84,10 @@ impl NotificationApi {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        engine.set_dnd(request.enabled, request.until_unix_ms).await;
-        success(json!({"notifications": self.state.snapshot().await.notifications}))
+        match engine.set_dnd(request.enabled, request.until_unix_ms).await {
+            Ok(state) => success(json!({"notifications": state})),
+            Err(value) => error("notification-operation-failed", value.to_string()),
+        }
     }
     pub(super) async fn notification_list(&self, params: Value) -> Value {
         let Some(engine) = self.notifications.native_engine() else {
@@ -118,20 +116,23 @@ impl NotificationApi {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        if engine.dismiss(id).await {
-            success(json!({"operation":"dismiss","id":id}))
-        } else {
-            error(
+        match engine.dismiss(id).await {
+            Ok(true) => success(json!({"operation":"dismiss","id":id})),
+            Ok(false) => error(
                 "notification-not-found",
                 format!("notification {id} is not active"),
-            )
+            ),
+            Err(value) => error("notification-operation-failed", value.to_string()),
         }
     }
     pub(super) async fn notification_clear(&self) -> Value {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        success(json!({"operation":"clear","closed":engine.clear().await}))
+        match engine.clear().await {
+            Ok(closed) => success(json!({"operation":"clear","closed":closed})),
+            Err(value) => error("notification-operation-failed", value.to_string()),
+        }
     }
     pub(super) async fn notification_clear_group(&self, params: Value) -> Value {
         let request = request!(params, GroupRequest, "notifications.clearGroup");
@@ -141,11 +142,12 @@ impl NotificationApi {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        success(json!({
-            "operation":"clear-group",
-            "group_key":request.group_key,
-            "closed":engine.clear_group(&request.group_key).await
-        }))
+        match engine.clear_group(&request.group_key).await {
+            Ok(closed) => success(
+                json!({"operation":"clear-group", "group_key":request.group_key, "closed":closed}),
+            ),
+            Err(value) => error("notification-operation-failed", value.to_string()),
+        }
     }
     pub(super) async fn notification_snooze(&self, params: Value) -> Value {
         let request = request!(params, SnoozeRequest, "notifications.snooze");
@@ -155,17 +157,15 @@ impl NotificationApi {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        if engine.snooze(id, request.until_unix_ms).await {
-            success(json!({
-                "operation":"snooze",
-                "id":id,
-                "until_unix_ms":request.until_unix_ms
-            }))
-        } else {
-            error(
+        match engine.snooze(id, request.until_unix_ms).await {
+            Ok(true) => success(
+                json!({"operation":"snooze", "id":id, "until_unix_ms":request.until_unix_ms}),
+            ),
+            Ok(false) => error(
                 "notification-snooze-failed",
                 "notification is unavailable or duration has elapsed",
-            )
+            ),
+            Err(value) => error("notification-operation-failed", value.to_string()),
         }
     }
     pub(super) async fn notification_invoke_action(&self, params: Value) -> Value {
@@ -176,16 +176,18 @@ impl NotificationApi {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();
         };
-        if engine
+        match engine
             .invoke_action(id, &request.action_key, request.activation_token)
             .await
         {
-            success(json!({"operation":"invoke-action","id":id,"action_key":request.action_key}))
-        } else {
-            error(
+            Ok(true) => success(
+                json!({"operation":"invoke-action","id":id,"action_key":request.action_key}),
+            ),
+            Ok(false) => error(
                 "notification-action-not-found",
                 "notification or action is unavailable",
-            )
+            ),
+            Err(value) => error("notification-operation-failed", value.to_string()),
         }
     }
     pub(super) async fn notification_reply(&self, params: Value) -> Value {

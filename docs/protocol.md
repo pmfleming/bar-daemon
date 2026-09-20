@@ -56,7 +56,9 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.reply`
 - `updates.refresh`
 
-`activity.queryRange` requires integer `from_unix_ms` and `to_unix_ms` values and is bounded to 370 days. Todo creation accepts `title`, optional `due_unix_ms`, optional local `due_date` (`YYYY-MM-DD`), and priority 0–9.
+`activity.queryRange` requires integer `from_unix_ms` and `to_unix_ms` values and is bounded to 370 days. Todo creation accepts `title`, optional `due_unix_ms`, optional local `due_date` (`YYYY-MM-DD`), and priority 0–9. Date-only todos are included when their date overlaps the half-open query interval in the daemon's local timezone; partial days and daylight-saving transitions are supported. Timestamped todos retain instant-based filtering.
+
+A todo-store read or parse failure is exposed in `activity.error` and blocks todo mutations without overwriting the file. Repair or restore the file to recover: refresh and subsequent mutations retry loading it. An initially missing file is a valid empty store; intentionally moving a damaged file aside also permits a fresh store.
 
 `battery.history` returns seven-day samples with both wall-clock `timestamp_ms` and compact `active_time_ms`. Graphs should use `active_time_ms` on the x axis and begin a new path whenever `continuous` is false; this removes suspend, shutdown, and daemon downtime from the displayed timescale. Point `mode` is `charging`, `discharging`, or `holding`, and `active_duration_ms` reports the complete compact range.
 

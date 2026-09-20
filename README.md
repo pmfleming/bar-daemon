@@ -78,6 +78,7 @@ python3 ../daemon-framework/tools/local-build.py develop .
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml
+# The dev shell includes PipeWire for the isolated, hardware-free audio test.
+cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml -- --include-ignored
 python3 ../daemon-framework/tools/local-build.py check .
 ```

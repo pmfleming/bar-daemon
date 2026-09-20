@@ -40,6 +40,8 @@
             postInstall = ''
               install -Dm644 protocols/hyprland-lock-notify-v1.xml \
                 $out/share/licenses/bar-daemon/hyprland-lock-notify-v1.xml
+              install -Dm644 packaging/licenses/CDLA-Permissive-2.0.txt \
+                $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service

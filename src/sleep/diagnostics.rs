@@ -31,50 +31,44 @@ fn inspect(root: &Path) -> SleepDiagnostics {
     let model = text(root, "sys/class/dmi/id/product_version")
         .or_else(|| text(root, "sys/class/dmi/id/product_name"));
     let mut result = SleepDiagnostics {
-        hardware: match (&vendor, &model) {
-            (Some(vendor), Some(model)) => Some(format!("{vendor} {model}")),
-            _ => model.clone().or_else(|| vendor.clone()),
-        },
+        disk_swap_available: text(root, "proc/swaps")
+            .as_deref()
+            .and_then(disk_swap_available),
+        resume_device_configured: text(root, "sys/power/resume")
+            .as_deref()
+            .and_then(resume_device_configured),
         ..Default::default()
     };
-    if let Some(modes) = text(root, "sys/power/mem_sleep") {
-        for mode in modes.split_whitespace() {
-            let name = mode.trim_matches(['[', ']']).to_owned();
-            if mode.starts_with('[') && mode.ends_with(']') {
-                result.suspend_mode = Some(name.clone());
-            }
-            result.supported_suspend_modes.push(name);
+    for mode in text(root, "sys/power/mem_sleep")
+        .as_deref()
+        .unwrap_or_default()
+        .split_whitespace()
+    {
+        let name = mode.trim_matches(['[', ']']).to_owned();
+        if mode.starts_with('[') && mode.ends_with(']') {
+            result.suspend_mode = Some(name.clone());
         }
+        result.supported_suspend_modes.push(name);
     }
-    if let Some(states) = text(root, "sys/power/state") {
-        if !states.split_whitespace().any(|state| state == "disk") {
-            result
-                .hibernate_issues
-                .push("The running kernel does not expose disk hibernation.".into());
-        }
+    if text(root, "sys/power/state")
+        .is_some_and(|states| !states.split_whitespace().any(|state| state == "disk"))
+    {
+        result
+            .hibernate_issues
+            .push("The running kernel does not expose disk hibernation.".into());
     }
-    if let Some(swaps) = text(root, "proc/swaps") {
-        result.disk_swap_available = disk_swap_available(&swaps);
-        if result.disk_swap_available == Some(false) {
-            result.hibernate_issues.push("No active disk-backed swap; zram alone cannot store a hibernation image. Configure persistent swap and resume support.".into());
-        }
+    if result.disk_swap_available == Some(false) {
+        result.hibernate_issues.push("No active disk-backed swap; zram alone cannot store a hibernation image. Configure persistent swap and resume support.".into());
     }
-    if let Some(resume) = text(root, "sys/power/resume") {
-        if let Some((major, minor)) = resume.split_once(':').and_then(|(major, minor)| {
-            Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
-        }) {
-            result.resume_device_configured = Some(major != 0 || minor != 0);
-            if major == 0 && minor == 0 {
-                // Modern systemd may select swap and record the resume target in
-                // EFI at sleep entry. 0:0 alone is NOT proof of unsupported sleep.
-                result.guidance.push("No kernel resume device is set. Verify initrd resume support or systemd EFI resume discovery; swapfiles also need a correct resume offset.".into());
-            }
-        }
+    if result.resume_device_configured == Some(false) {
+        // systemd can select swap and record the resume target in EFI at sleep
+        // entry. 0:0 alone is NOT proof of unsupported sleep.
+        result.guidance.push("No kernel resume device is set. Verify initrd resume support or systemd EFI resume discovery; swapfiles also need a correct resume offset.".into());
     }
-    if let Some(lockdown) = text(root, "sys/kernel/security/lockdown") {
-        if lockdown.contains("[integrity]") || lockdown.contains("[confidentiality]") {
-            result.hibernate_issues.push("Kernel lockdown is enabled and may prohibit hibernation. Check the kernel's Secure Boot/hibernation policy; do not disable security automatically.".into());
-        }
+    if text(root, "sys/kernel/security/lockdown").is_some_and(|lockdown| {
+        lockdown.contains("[integrity]") || lockdown.contains("[confidentiality]")
+    }) {
+        result.hibernate_issues.push("Kernel lockdown is enabled and may prohibit hibernation. Check the kernel's Secure Boot/hibernation policy; do not disable security automatically.".into());
     }
     let thinkpad = vendor
         .as_deref()
@@ -91,7 +85,17 @@ fn inspect(root: &Path) -> SleepDiagnostics {
             result.guidance.push("For AMD ThinkPad sleep drain, inspect amd_pmc S0ix residency and wake sources after a controlled suspend/resume test. Do not blindly disable ACPI or USB wake devices.".into());
         }
     }
+    result.hardware = match (vendor, model) {
+        (Some(vendor), Some(model)) => Some(format!("{vendor} {model}")),
+        (vendor, model) => model.or(vendor),
+    };
     result
+}
+
+fn resume_device_configured(resume: &str) -> Option<bool> {
+    let (major, minor) = resume.split_once(':')?;
+    let (major, minor) = (major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?);
+    Some(major != 0 || minor != 0)
 }
 
 fn disk_swap_available(swaps: &str) -> Option<bool> {
@@ -118,7 +122,8 @@ fn disk_swap_available(swaps: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::inspect;
+    use std::{fs, path::Path};
 
     fn put(root: &Path, path: &str, value: &str) {
         let path = root.join(path);

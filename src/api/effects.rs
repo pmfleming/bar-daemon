@@ -387,10 +387,10 @@ fn execute_audio(
     command: AudioCommand,
 ) -> Result<crate::model::AudioState, String> {
     let result = (|| {
-        if connection.is_none() {
-            *connection = Some(audio::AudioConnection::new()?);
-        }
-        let connection = connection.as_ref().expect("connection initialized");
+        let connection = match &mut *connection {
+            Some(connection) => connection,
+            empty => empty.insert(audio::AudioConnection::new()?),
+        };
         match command {
             AudioCommand::Adjust(delta) => connection.adjust(delta),
             AudioCommand::SetMuted(muted) => connection.set_muted(muted),
@@ -437,12 +437,8 @@ async fn publish_audio_result(
         state.update_audio(audio.clone()).await;
     }
     for (_, reply) in commands {
-        let value = match &result {
-            Ok(audio) => Ok(audio.clone()),
-            Err(error) => Err(error.clone()),
-        };
         if let Some(reply) = reply.take() {
-            let _ = reply.send(value);
+            let _ = reply.send(result.clone());
         }
     }
 }

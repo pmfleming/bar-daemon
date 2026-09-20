@@ -32,25 +32,17 @@ fn power_envelope() -> &'static Mutex<PowerEnvelope> {
 
 pub(crate) async fn monitor(store: StateStore) {
     loop {
-        match zbus::Connection::system().await {
-            Ok(connection) => {
-                if let Err(error) = monitor_connection(&connection, &store).await {
-                    store
-                        .update_power_profile(PowerProfileState {
-                            error: Some(error.to_string()),
-                            ..PowerProfileState::default()
-                        })
-                        .await;
-                }
-            }
-            Err(error) => {
-                store
-                    .update_power_profile(PowerProfileState {
-                        error: Some(error.to_string()),
-                        ..PowerProfileState::default()
-                    })
-                    .await
-            }
+        let result = match zbus::Connection::system().await {
+            Ok(connection) => monitor_connection(&connection, &store).await,
+            Err(error) => Err(error.into()),
+        };
+        if let Err(error) = result {
+            store
+                .update_power_profile(PowerProfileState {
+                    error: Some(error.to_string()),
+                    ..PowerProfileState::default()
+                })
+                .await;
         }
         sleep(Duration::from_secs(3)).await;
     }
@@ -78,7 +70,7 @@ async fn monitor_attached_connection(
     let mut events = store.subscribe();
     let mut fallback = interval(Duration::from_secs(60));
     fallback.tick().await;
-    reconcile_battery_profile(&store.snapshot().await.battery).await;
+    reconcile_battery_profile(&store.read(|snapshot| snapshot.battery.clone()).await).await;
     refresh(connection, store).await;
     loop {
         tokio::select! {
@@ -87,33 +79,21 @@ async fn monitor_attached_connection(
                 if signal.args()?.name().as_str() == BUS {
                     bail!("Power Profiles service owner changed");
                 }
+                continue;
             }
             signal = changes.next() => {
                 if signal.is_none() { bail!("power-profiles-daemon property stream ended"); }
-                reconcile_battery_profile(&store.snapshot().await.battery).await;
-                refresh(connection, store).await;
             }
-            event = events.recv() => {
-                match event {
-                    Ok(event) if event.stream == protocol::stream::BATTERY => {
-                        reconcile_battery_profile(&store.snapshot().await.battery).await;
-                        refresh(connection, store).await;
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        reconcile_battery_profile(&store.snapshot().await.battery).await;
-                        refresh(connection, store).await;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        bail!("state event stream ended");
-                    }
-                }
-            }
-            _ = fallback.tick() => {
-                reconcile_battery_profile(&store.snapshot().await.battery).await;
-                refresh(connection, store).await;
+            event = events.recv() => match event {
+                Ok(event) if event.stream == protocol::stream::BATTERY => {},
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("state event stream ended"),
             },
+            _ = fallback.tick() => {},
         }
+        reconcile_battery_profile(&store.read(|snapshot| snapshot.battery.clone()).await).await;
+        refresh(connection, store).await;
     }
 }
 
@@ -127,17 +107,13 @@ async fn reconcile_battery_profile(battery: &BatteryState) {
 }
 
 async fn refresh(connection: &zbus::Connection, store: &StateStore) {
-    match read_state(connection).await {
-        Ok(state) => store.update_power_profile(state).await,
-        Err(error) => {
-            store
-                .update_power_profile(PowerProfileState {
-                    error: Some(error.to_string()),
-                    ..PowerProfileState::default()
-                })
-                .await
-        }
-    }
+    let state = read_state(connection)
+        .await
+        .unwrap_or_else(|error| PowerProfileState {
+            error: Some(error.to_string()),
+            ..PowerProfileState::default()
+        });
+    store.update_power_profile(state).await;
 }
 
 async fn read_state(connection: &zbus::Connection) -> Result<PowerProfileState> {

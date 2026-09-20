@@ -3,12 +3,7 @@ use std::sync::Arc;
 use shelllist_daemon_tokio::TaskGroup;
 
 use crate::{
-    activity::{
-        ActivityService,
-        notifications::{
-            engine::NotificationEngine, server::forward_signals, service::NotificationService,
-        },
-    },
+    activity::{ActivityService, notifications::service::NotificationService},
     audio, battery,
     brightness::BrightnessService,
     hyprland,
@@ -27,7 +22,6 @@ impl MonitorTasks {
         state: StateStore,
         activity: Arc<ActivityService>,
         notifications: Arc<NotificationService>,
-        notification_engine: Option<Arc<NotificationEngine>>,
         media: MediaService,
         brightness: BrightnessService,
         connection: zbus::Connection,
@@ -54,15 +48,7 @@ impl MonitorTasks {
         );
         tasks.spawn("updates", updates::monitor(state.clone()));
         tasks.spawn("timezone", timezone::monitor(state.clone()));
-        if let Some(engine) = notification_engine {
-            tasks.spawn("notification-expiry", Arc::clone(&engine).run_expiry());
-            tasks.spawn("notification-signals", forward_signals(engine, connection));
-        } else {
-            tasks.spawn(
-                "notifications",
-                crate::activity::notifications::monitor(state),
-            );
-        }
+        tasks.spawn("notifications", notifications.monitor(state, connection));
         Self { tasks }
     }
 

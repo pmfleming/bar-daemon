@@ -14,7 +14,20 @@ The daemon exports one session D-Bus object and starts one monitor per domain. M
 
 Unavailable integrations produce a typed domain state rather than terminating the daemon. Monitors reconnect with bounded delays or periodic recovery checks.
 
-The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NOTIFICATION_BACKEND=swaync` only for the temporary compatibility adapter. Native notification state is initialized before Activity and other providers. Internal producers receive a `NotificationSink`, so battery alerts and future reminders enter the native engine directly rather than calling back through D-Bus.
+The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NOTIFICATION_BACKEND=swaync` only for the temporary compatibility adapter. Native notification state is initialized before Activity and other providers. Active internal producers receive a `NotificationSink`, so battery alerts enter the native engine directly rather than calling back through D-Bus. Activity does not retain an unused sink; reminder integration can request one when implemented. `NotificationService` owns the native expiry/signal tasks or the SwayNC subscription as one cancellable backend lifetime.
+
+### Notification persistence backpressure
+
+The native engine reserves a slot in its bounded SQLite worker queue before
+mutating memory. Saturation waits asynchronously rather than dropping saves,
+dismissals, or DND changes. Each engine operation batches its writes in order;
+a cancelled operation still enqueues already-applied mutations. A stopped
+worker rejects new mutations through the API. History queries wait for queue
+space and serve as a barrier for earlier completed operations.
+
+Enqueueing is not a SQLite durability acknowledgement: abrupt process termination
+can still lose queued work, and database write errors are logged. The queue
+protocol prevents overload-induced loss, not disk-failure or crash recovery.
 
 ## Domain integrations
 
@@ -48,11 +61,11 @@ The independent monitor remains responsible for changes originating elsewhere.
 `cargo test --lib private_pipewire_control -- --ignored --nocapture` launches an
 isolated PipeWire server with virtual sink/source devices to check repeated
 adjustments, mute, external changes, and disconnection without touching live
-audio. It requires the `pipewire` executable (included in the dev shell).
+audio. It requires the `pipewire` executable (included in the dev shell). CI coverage includes this isolated test with `--include-ignored`.
 
 ## Enforced boundaries
 
-`rqlens.toml` enforces Cargo-qualified dependency rules. Protocol metadata cannot depend on API handlers, domain integrations cannot depend on API/daemon/client transport modules, and `StateStore` cannot invoke system-effect modules. Run `rqlens measure architecture-rules --config rqlens.toml` after changing module dependencies.
+`rqlens.toml` enforces Cargo-qualified dependency rules. Protocol metadata cannot depend on API handlers, domain integrations cannot depend on API/daemon/client transport modules, and `StateStore` cannot invoke system-effect modules. Run `rqlens measure architecture-rules --config rqlens.toml` followed by `rqlens check --config rqlens.toml` after changing module dependencies. Measurement alone does not enforce violations. A hard CI gate is pending resolution of generated Wayland references; see [`quality-policy.md`](quality-policy.md).
 
 `api`, `daemon`, and `daemon::tasks` are explicit composition roots. Their fan-out is reviewed against the documented baseline rather than hidden behind metric-only facades. See [`quality-policy.md`](quality-policy.md).
 

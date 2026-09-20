@@ -15,25 +15,17 @@ const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 
 pub(crate) async fn monitor(store: StateStore) {
     loop {
-        match zbus::Connection::system().await {
-            Ok(connection) => {
-                if let Err(error) = monitor_connection(&connection, &store).await {
-                    store
-                        .update_timezone(TimezoneState {
-                            error: Some(error.to_string()),
-                            ..TimezoneState::default()
-                        })
-                        .await;
-                }
-            }
-            Err(error) => {
-                store
-                    .update_timezone(TimezoneState {
-                        error: Some(error.to_string()),
-                        ..TimezoneState::default()
-                    })
-                    .await
-            }
+        let result = match zbus::Connection::system().await {
+            Ok(connection) => monitor_connection(&connection, &store).await,
+            Err(error) => Err(error.into()),
+        };
+        if let Err(error) = result {
+            store
+                .update_timezone(TimezoneState {
+                    error: Some(error.to_string()),
+                    ..TimezoneState::default()
+                })
+                .await;
         }
         sleep(Duration::from_secs(3)).await;
     }
@@ -57,17 +49,13 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
 }
 
 async fn refresh(connection: &zbus::Connection, store: &StateStore) {
-    match read_state(connection).await {
-        Ok(state) => store.update_timezone(state).await,
-        Err(error) => {
-            store
-                .update_timezone(TimezoneState {
-                    error: Some(error.to_string()),
-                    ..TimezoneState::default()
-                })
-                .await
-        }
-    }
+    let state = read_state(connection)
+        .await
+        .unwrap_or_else(|error| TimezoneState {
+            error: Some(error.to_string()),
+            ..TimezoneState::default()
+        });
+    store.update_timezone(state).await;
 }
 
 async fn read_state(connection: &zbus::Connection) -> Result<TimezoneState> {

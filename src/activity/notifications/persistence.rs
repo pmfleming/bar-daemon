@@ -1,19 +1,19 @@
 use std::{
     fs,
     path::Path,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use super::model::{ActiveNotification, HistoryNotification};
 
 const QUEUE_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
-enum PersistenceCommand {
+enum Mutation {
     Save(Box<ActiveNotification>),
     Close {
         id: u32,
@@ -28,6 +28,11 @@ enum PersistenceCommand {
         enabled: bool,
         until_unix_ms: Option<u64>,
     },
+}
+
+#[derive(Debug)]
+enum PersistenceCommand {
+    Mutate(Vec<Mutation>),
     List {
         before_history_id: Option<i64>,
         limit: usize,
@@ -37,15 +42,22 @@ enum PersistenceCommand {
 
 #[derive(Clone)]
 pub(crate) struct NotificationPersistence {
-    commands: mpsc::SyncSender<PersistenceCommand>,
+    commands: mpsc::Sender<PersistenceCommand>,
 }
 
 impl NotificationPersistence {
+    #[cfg(test)]
+    pub(super) fn stopped_for_test() -> Self {
+        let (commands, receiver) = mpsc::channel(1);
+        drop(receiver);
+        Self { commands }
+    }
+
     pub(crate) fn open(path: &Path) -> Result<(Self, Vec<ActiveNotification>, bool, Option<u64>)> {
         let store = Arc::new(NotificationStore::open(path)?);
         let active = store.load_active()?;
         let (dnd, dnd_until_unix_ms) = store.load_dnd()?;
-        let (commands, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let (commands, receiver) = mpsc::channel(QUEUE_CAPACITY);
         let worker_store = Arc::clone(&store);
         std::thread::Builder::new()
             .name("notification-history".into())
@@ -54,30 +66,18 @@ impl NotificationPersistence {
         Ok((Self { commands }, active, dnd, dnd_until_unix_ms))
     }
 
-    pub(crate) fn save(&self, notification: ActiveNotification) {
-        self.enqueue(PersistenceCommand::Save(Box::new(notification)));
-    }
-
-    pub(crate) fn close(&self, id: u32, closed_unix_ms: u64, reason: u32) {
-        self.enqueue(PersistenceCommand::Close {
-            id,
-            closed_unix_ms,
-            reason,
-        });
-    }
-
-    pub(crate) fn clear(&self, closed_unix_ms: u64, reason: u32) {
-        self.enqueue(PersistenceCommand::Clear {
-            closed_unix_ms,
-            reason,
-        });
-    }
-
-    pub(crate) fn set_dnd(&self, enabled: bool, until_unix_ms: Option<u64>) {
-        self.enqueue(PersistenceCommand::SetDnd {
-            enabled,
-            until_unix_ms,
-        });
+    // Reserve before changing engine state. A full queue applies async
+    // backpressure, and cancellation while waiting has no side effects.
+    pub(crate) async fn reserve(&self) -> Result<PendingWrites<'_>> {
+        Ok(PendingWrites {
+            permit: Some(
+                self.commands
+                    .reserve()
+                    .await
+                    .context("notification persistence worker stopped")?,
+            ),
+            mutations: Vec::new(),
+        })
     }
 
     pub(crate) async fn list(
@@ -87,42 +87,97 @@ impl NotificationPersistence {
     ) -> Result<Vec<HistoryNotification>> {
         let (response, receiver) = oneshot::channel();
         self.commands
-            .try_send(PersistenceCommand::List {
+            .send(PersistenceCommand::List {
                 before_history_id,
                 limit,
                 response,
             })
-            .context("notification persistence queue is full")?;
+            .await
+            .context("notification persistence worker stopped")?;
         receiver
             .await
             .context("notification persistence worker stopped")?
             .map_err(|error| anyhow!(error))
     }
+}
 
-    fn enqueue(&self, command: PersistenceCommand) {
-        if let Err(error) = self.commands.try_send(command) {
-            tracing::warn!(%error, "notification persistence queue is full");
+// One reserved slot covers a whole engine mutation (including eviction or
+// expiry). Drop enqueues synchronously, even if publication is cancelled after
+// the in-memory change. The engine mutation lock preserves batch ordering.
+pub(crate) struct PendingWrites<'a> {
+    permit: Option<mpsc::Permit<'a, PersistenceCommand>>,
+    mutations: Vec<Mutation>,
+}
+
+impl PendingWrites<'_> {
+    pub(crate) fn save(&mut self, notification: ActiveNotification) {
+        self.mutations.push(Mutation::Save(Box::new(notification)));
+    }
+
+    pub(crate) fn close(&mut self, id: u32, closed_unix_ms: u64, reason: u32) {
+        self.mutations.push(Mutation::Close {
+            id,
+            closed_unix_ms,
+            reason,
+        });
+    }
+
+    pub(crate) fn clear(&mut self, closed_unix_ms: u64, reason: u32) {
+        self.mutations.push(Mutation::Clear {
+            closed_unix_ms,
+            reason,
+        });
+    }
+
+    pub(crate) fn set_dnd(&mut self, enabled: bool, until_unix_ms: Option<u64>) {
+        self.mutations.push(Mutation::SetDnd {
+            enabled,
+            until_unix_ms,
+        });
+    }
+}
+
+impl Drop for PendingWrites<'_> {
+    fn drop(&mut self) {
+        if !self.mutations.is_empty()
+            && let Some(permit) = self.permit.take()
+        {
+            permit.send(PersistenceCommand::Mutate(std::mem::take(
+                &mut self.mutations,
+            )));
         }
     }
 }
 
-fn persistence_worker(store: Arc<NotificationStore>, receiver: mpsc::Receiver<PersistenceCommand>) {
-    while let Ok(command) = receiver.recv() {
-        let result = match command {
-            PersistenceCommand::Save(notification) => store.save(&notification),
-            PersistenceCommand::Close {
-                id,
-                closed_unix_ms,
-                reason,
-            } => store.close(id, closed_unix_ms, reason),
-            PersistenceCommand::Clear {
-                closed_unix_ms,
-                reason,
-            } => store.clear(closed_unix_ms, reason),
-            PersistenceCommand::SetDnd {
-                enabled,
-                until_unix_ms,
-            } => store.set_dnd(enabled, until_unix_ms),
+fn persistence_worker(
+    store: Arc<NotificationStore>,
+    mut receiver: mpsc::Receiver<PersistenceCommand>,
+) {
+    while let Some(command) = receiver.blocking_recv() {
+        match command {
+            PersistenceCommand::Mutate(mutations) => {
+                for mutation in mutations {
+                    let result = match mutation {
+                        Mutation::Save(notification) => store.save(&notification),
+                        Mutation::Close {
+                            id,
+                            closed_unix_ms,
+                            reason,
+                        } => store.close(id, closed_unix_ms, reason),
+                        Mutation::Clear {
+                            closed_unix_ms,
+                            reason,
+                        } => store.clear(closed_unix_ms, reason),
+                        Mutation::SetDnd {
+                            enabled,
+                            until_unix_ms,
+                        } => store.set_dnd(enabled, until_unix_ms),
+                    };
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "notification history update failed");
+                    }
+                }
+            }
             PersistenceCommand::List {
                 before_history_id,
                 limit,
@@ -132,11 +187,7 @@ fn persistence_worker(store: Arc<NotificationStore>, receiver: mpsc::Receiver<Pe
                     .list(before_history_id, limit)
                     .map_err(|error| error.to_string());
                 let _ = response.send(result);
-                Ok(())
             }
-        };
-        if let Err(error) = result {
-            tracing::warn!(%error, "notification history update failed");
         }
     }
 }
@@ -338,10 +389,12 @@ impl NotificationStore {
 mod tests {
     use tempfile::tempdir;
 
-    use super::NotificationStore;
+    use super::{NotificationPersistence, NotificationStore, persistence_worker};
     use crate::activity::notifications::model::{
         ActiveNotification, IncomingNotification, NotificationHints,
     };
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
 
     fn notification(id: u32, transient: bool) -> ActiveNotification {
         ActiveNotification::from_incoming(
@@ -360,6 +413,105 @@ mod tests {
             },
             100,
         )
+    }
+
+    #[tokio::test]
+    async fn saturated_queue_preserves_ordered_mutations_and_restart_state() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("notifications.sqlite3");
+        let store = Arc::new(NotificationStore::open(&path).unwrap());
+        let (commands, receiver) = mpsc::channel(1);
+        let persistence = NotificationPersistence { commands };
+        persistence
+            .reserve()
+            .await
+            .unwrap()
+            .save(notification(1, false));
+
+        // No worker is running: reservation must wait rather than lose a write.
+        let worker = {
+            let reserve = persistence.reserve();
+            tokio::pin!(reserve);
+            assert!(futures::poll!(&mut reserve).is_pending());
+            let worker = std::thread::spawn(move || persistence_worker(store, receiver));
+            let mut writes = reserve.await.unwrap();
+            writes.close(1, 200, 2);
+            writes.save(notification(2, false));
+            writes.set_dnd(true, Some(1234));
+            worker
+        };
+        let history = persistence.list(None, 10).await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].notification.id, 2);
+        assert_eq!(history[1].close_reason, Some(2));
+        assert_eq!(
+            NotificationStore::open(&path)
+                .unwrap()
+                .load_active()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        persistence.reserve().await.unwrap().clear(300, 2);
+        let history = persistence.list(None, 10).await.unwrap();
+        assert!(history.iter().all(|item| item.closed_unix_ms.is_some()));
+        drop(persistence);
+        worker.join().unwrap();
+        let restarted = NotificationStore::open(&path).unwrap();
+        assert!(restarted.load_active().unwrap().is_empty());
+        assert_eq!(restarted.load_dnd().unwrap(), (true, Some(1234)));
+    }
+
+    #[tokio::test]
+    async fn cancelled_reservations_and_mutations_do_not_lose_accepted_writes() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("notifications.sqlite3");
+        let store = Arc::new(NotificationStore::open(&path).unwrap());
+        let (commands, receiver) = mpsc::channel(1);
+        let persistence = NotificationPersistence { commands };
+        persistence
+            .reserve()
+            .await
+            .unwrap()
+            .save(notification(1, false));
+        {
+            let reserve = persistence.reserve();
+            tokio::pin!(reserve);
+            assert!(futures::poll!(&mut reserve).is_pending());
+            // Dropping a waiter must leave the accepted save untouched.
+        }
+        let worker = std::thread::spawn(move || persistence_worker(store, receiver));
+        let (changed, received) = tokio::sync::oneshot::channel();
+        let pending = persistence.clone();
+        let mutation = tokio::spawn(async move {
+            let mut writes = pending.reserve().await.unwrap();
+            writes.close(1, 200, 2);
+            writes.set_dnd(true, None);
+            changed.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        received.await.unwrap();
+        mutation.abort();
+        assert!(mutation.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            persistence.list(None, 10).await.unwrap()[0].close_reason,
+            Some(2)
+        );
+        drop(persistence);
+        worker.join().unwrap();
+        let restarted = NotificationStore::open(&path).unwrap();
+        assert!(restarted.load_active().unwrap().is_empty());
+        assert_eq!(restarted.load_dnd().unwrap(), (true, None));
+    }
+
+    #[tokio::test]
+    async fn stopped_worker_rejects_reservations_and_queries() {
+        let (commands, receiver) = mpsc::channel(1);
+        let persistence = NotificationPersistence { commands };
+        drop(receiver);
+        assert!(persistence.reserve().await.is_err());
+        assert!(persistence.list(None, 10).await.is_err());
     }
 
     #[test]
