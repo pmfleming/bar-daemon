@@ -320,10 +320,13 @@ async fn helper_proxy(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> 
 pub(crate) async fn idle_sleep(
     expected_minutes: u32,
     generation: &str,
+    episode: u64,
     store: &StateStore,
 ) -> Result<crate::model::PowerSleepState> {
-    let _guard = POLICY_WRITE.lock().await;
-    let result = perform_idle(expected_minutes, generation).await;
+    let _guard = tokio::time::timeout(Duration::from_secs(3), POLICY_WRITE.lock())
+        .await
+        .context("idle policy is busy; this callback was cancelled")?;
+    let result = perform_idle(expected_minutes, generation, episode).await;
     let mut state = store.snapshot().await.sleep_policy;
     state.last_error = result.as_ref().err().map(|error| format!("{error:#}"));
     store.update_sleep_policy(state).await;
@@ -333,22 +336,30 @@ pub(crate) async fn idle_sleep(
 async fn perform_idle(
     expected_minutes: u32,
     generation: &str,
+    episode: u64,
 ) -> Result<crate::model::PowerSleepState> {
     base_config()?;
-    hypridle::verify_generation(generation).await?;
+    hypridle::verify_episode(generation, episode).await?;
     let policy = load().await?;
     let profile = policy.idle_profile(plugged().await?, expected_minutes)?;
-    perform_profile(profile, || validate_idle_trigger(generation, profile)).await
+    perform_profile(profile, || {
+        validate_idle_trigger(generation, episode, profile)
+    })
+    .await
 }
 
-async fn validate_idle_trigger(generation: &str, selected: &SleepProfile) -> Result<()> {
+async fn validate_idle_trigger(
+    generation: &str,
+    episode: u64,
+    selected: &SleepProfile,
+) -> Result<()> {
     base_config()?;
     let policy = load().await?;
     let plugged = plugged().await?;
     // Check the generation after the potentially slow AC lookup as well as at
     // entry. An external hypridle restart is not serialized by POLICY_WRITE.
-    let active_generation = hypridle::active_generation().await?;
-    validate_idle_selection(generation, selected, &active_generation, &policy, plugged)
+    hypridle::verify_episode(generation, episode).await?;
+    validate_idle_selection(generation, selected, generation, &policy, plugged)
 }
 
 fn validate_idle_selection(
@@ -384,19 +395,23 @@ where
     } else {
         "suspend-then-hibernate"
     };
-    crate::sleep::perform_with_setup(action, || {
-        validated_setup(&validate_trigger, || async {
-            if profile.hibernate_minutes > 0 {
-                let connection = crate::sleep::system_bus().await?;
-                let proxy = helper_proxy(&connection).await?;
-                let _: () = proxy
-                    .call("SetHibernateDelay", &(profile.hibernate_minutes,))
-                    .await
-                    .context("configure systemd's time asleep before hibernation")?;
-            }
-            Ok(())
-        })
-    })
+    crate::sleep::perform_with_validation(
+        action,
+        || {
+            validated_setup(&validate_trigger, || async {
+                if profile.hibernate_minutes > 0 {
+                    let connection = crate::sleep::system_bus().await?;
+                    let proxy = helper_proxy(&connection).await?;
+                    let _: () = proxy
+                        .call("SetHibernateDelay", &(profile.hibernate_minutes,))
+                        .await
+                        .context("configure systemd's time asleep before hibernation")?;
+                }
+                Ok(())
+            })
+        },
+        &validate_trigger,
+    )
     .await
 }
 

@@ -145,7 +145,7 @@ pub fn registry() -> Value {
             { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.setKeepAwake", "params": { "enabled": true }, "result": "power_sleep" },
             { "name": "powerSleep.setPolicy", "params": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } }, "result": "sleep_policy" },
-            { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678" }, "result": "power_sleep" },
+            { "name": "powerSleep.idle", "params": { "sleep_minutes": 30, "generation": "1234-5678", "episode": 1 }, "result": "power_sleep" },
             { "name": "displayPolicy.set", "params": { "prefer_external": true }, "result": "display_policy" },
             { "name": "displayLayout.preview", "params": { "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true }] }, "result": "display_policy" },
             { "name": "displayLayout.confirm", "params": { "id": "preview-id" }, "result": "display_policy" },

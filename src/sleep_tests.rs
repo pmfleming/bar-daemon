@@ -10,6 +10,29 @@ use zbus::{Connection, connection::Builder};
 use super::*;
 
 #[tokio::test]
+async fn final_trigger_validation_cancels_after_setup_and_preflight_queries() {
+    let state = Arc::new(SessionState::default());
+    state.locked.store(true, Ordering::SeqCst);
+    let (_server, client) = fake_logind(state.clone()).await;
+    let result = perform_connected_with_validation(
+        &client,
+        "suspend",
+        Duration::from_secs(1),
+        false,
+        || std::future::ready(Ok(())),
+        || std::future::ready(Err(anyhow::anyhow!("idle episode ended"))),
+    )
+    .await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("idle episode ended")
+    );
+    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn dependency_deadline_cancels_pending_work() {
     struct Dropped(Arc<AtomicBool>);
     impl Drop for Dropped {

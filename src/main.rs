@@ -31,6 +31,8 @@ enum Command {
         sleep_minutes: u32,
         #[arg(long)]
         generation: String,
+        #[arg(long)]
+        episode: u64,
     },
     /// Print stable protocol metadata or a contract fixture.
     Debug {
@@ -66,7 +68,8 @@ async fn main() -> Result<()> {
         Command::IdleSleep {
             sleep_minutes,
             generation,
-        } => bar_daemon::run_idle_sleep(sleep_minutes, &generation).await,
+            episode,
+        } => bar_daemon::run_idle_sleep(sleep_minutes, &generation, episode).await,
         Command::Debug { command } => {
             let value = match command {
                 DebugCommand::ProtocolRegistry => protocol::registry(),

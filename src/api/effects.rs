@@ -184,11 +184,13 @@ impl DesktopEffects {
         struct IdleRequest {
             sleep_minutes: u32,
             generation: String,
+            episode: u64,
         }
         let request = request!(params, IdleRequest, "powerSleep.idle");
         match crate::sleep_policy::idle_sleep(
             request.sleep_minutes,
             &request.generation,
+            request.episode,
             &self.state,
         )
         .await

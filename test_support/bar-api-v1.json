@@ -231,6 +231,7 @@
       {
         "name": "powerSleep.idle",
         "params": {
+          "episode": 1,
           "generation": "1234-5678",
           "sleep_minutes": 30
         },

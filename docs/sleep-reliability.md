@@ -35,3 +35,16 @@ packages together; old native integrations are reported unavailable.
 Validation: patched Hypridle 0.1.7 built successfully; isolated D-Bus tests cover
 unchanged, changed and Never timeouts with the same PID. Configuration rendering
 retains lock/DPMS listeners without adding a competing sleep timer.
+
+## 3. Activity-cancellable idle episodes
+
+The native listener now supplies an episode token as well as a process/countdown
+generation. Input reported by any listener, new inhibition, or timeout changes
+invalidate that token synchronously in Hypridle, independently of daemon policy
+transactions. GetState synchronizes with the compositor before reporting a live
+idle episode. Missing/dead processes fail closed. The daemon checks the episode
+at entry, around privileged setup, and once more after its final logind queries.
+Callbacks waiting more than three seconds for the policy mutex are discarded.
+
+Validation: 49 sleep-filtered Rust tests pass, including activity/inhibition,
+replacement-episode and final-preflight cancellation; patched Hypridle builds.

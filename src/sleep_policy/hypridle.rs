@@ -151,13 +151,13 @@ async fn control(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
     .await?)
 }
 
-pub(super) async fn live_state() -> Result<(u32, String, u32)> {
+pub(super) async fn live_state() -> Result<(u32, String, u32, u64, bool)> {
     let connection = super::user_systemd().await?;
     live_state_on(&connection).await
 }
 
-async fn live_state_on(connection: &zbus::Connection) -> Result<(u32, String, u32)> {
-    let (state,): ((u32, String, u32),) = control(connection)
+async fn live_state_on(connection: &zbus::Connection) -> Result<(u32, String, u32, u64, bool)> {
+    let (state,): ((u32, String, u32, u64, bool),) = control(connection)
         .await?
         .call("GetState", &())
         .await
@@ -178,7 +178,7 @@ pub(super) async fn set_timeout(minutes: u32) -> Result<()> {
 }
 
 async fn set_timeout_on(connection: &zbus::Connection, minutes: u32) -> Result<()> {
-    let (pid, generation, previous) = live_state_on(connection).await?;
+    let (pid, generation, previous, _, _) = live_state_on(connection).await?;
     if previous == minutes {
         return Ok(());
     }
@@ -187,7 +187,7 @@ async fn set_timeout_on(connection: &zbus::Connection, minutes: u32) -> Result<(
         .call("SetTimeout", &(generation, minutes))
         .await
         .context("update only the managed sleep listener")?;
-    let (current_pid, _, applied) = live_state_on(connection).await?;
+    let (current_pid, _, applied, _, _) = live_state_on(connection).await?;
     anyhow::ensure!(
         pid == current_pid && applied == minutes,
         "idle process changed or timeout update was not confirmed"
@@ -195,10 +195,22 @@ async fn set_timeout_on(connection: &zbus::Connection, minutes: u32) -> Result<(
     Ok(())
 }
 
-pub(super) async fn verify_generation(generation: &str) -> Result<()> {
-    if active_generation().await? != generation {
-        bail!("idle countdown restarted; ignoring a stale sleep callback");
-    }
+pub(super) async fn verify_episode(generation: &str, episode: u64) -> Result<()> {
+    let (_, current, _, current_episode, idle) = live_state().await?;
+    validate_episode(generation, episode, &current, current_episode, idle)
+}
+
+fn validate_episode(
+    generation: &str,
+    episode: u64,
+    current: &str,
+    current_episode: u64,
+    idle: bool,
+) -> Result<()> {
+    anyhow::ensure!(
+        generation == current && episode == current_episode && idle,
+        "idle episode ended, was inhibited, or its process/countdown changed; sleep cancelled"
+    );
     Ok(())
 }
 
@@ -282,15 +294,25 @@ mod tests {
     struct FakeControl(std::sync::Arc<std::sync::Mutex<(u32, u32)>>);
     #[zbus::interface(name = "org.laufan.Hypridle1")]
     impl FakeControl {
-        fn get_state(&self) -> ((u32, String, u32),) {
+        fn get_state(&self) -> ((u32, String, u32, u64, bool),) {
             let state = self.0.lock().unwrap();
-            ((42, format!("42-{}", state.1), state.0),)
+            ((42, format!("42-{}", state.1), state.0, 7, true),)
         }
         fn set_timeout(&self, expected: &str, minutes: u32) {
             let mut state = self.0.lock().unwrap();
             assert_eq!(expected, format!("42-{}", state.1));
             state.0 = minutes;
             state.1 += 1;
+        }
+    }
+
+    #[test]
+    fn activity_inhibition_and_replaced_episodes_cancel_pending_idle_sleep() {
+        assert!(super::validate_episode("42-1", 7, "42-1", 7, true).is_ok());
+        for (generation, episode, idle) in
+            [("42-1", 7, false), ("42-1", 8, true), ("43-1", 7, true)]
+        {
+            assert!(super::validate_episode("42-1", 7, generation, episode, idle).is_err());
         }
     }
 

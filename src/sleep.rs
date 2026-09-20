@@ -163,17 +163,32 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    perform_with_validation(action, setup, || std::future::ready(Ok(()))).await
+}
+
+pub(crate) async fn perform_with_validation<F, Fut, V, Check>(
+    action: &str,
+    setup: F,
+    validate: V,
+) -> Result<PowerSleepState>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+    V: FnOnce() -> Check,
+    Check: std::future::Future<Output = Result<()>>,
+{
     Action::parse(action)?;
     let _guard = SLEEP_ACTION
         .try_lock()
         .context("a lock or sleep request is already in progress")?;
     let connection = system_bus().await?;
-    perform_connected_with_setup(
+    perform_connected_with_validation(
         &connection,
         action,
         LOCK_TIMEOUT,
         is_hyprland_session(),
         setup,
+        validate,
     )
     .await
 }
@@ -190,6 +205,7 @@ async fn perform_connected(
     .await
 }
 
+#[cfg(test)]
 async fn perform_connected_with_setup<F, Fut>(
     connection: &zbus::Connection,
     action: &str,
@@ -200,6 +216,26 @@ async fn perform_connected_with_setup<F, Fut>(
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
+{
+    perform_connected_with_validation(connection, action, lock_timeout, use_wayland, setup, || {
+        std::future::ready(Ok(()))
+    })
+    .await
+}
+
+async fn perform_connected_with_validation<F, Fut, V, Check>(
+    connection: &zbus::Connection,
+    action: &str,
+    lock_timeout: Duration,
+    use_wayland: bool,
+    setup: F,
+    validate: V,
+) -> Result<PowerSleepState>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+    V: FnOnce() -> Check,
+    Check: std::future::Future<Output = Result<()>>,
 {
     let action = Action::parse(action)?;
     let (mut current, _observer) = bounded(
@@ -247,6 +283,8 @@ where
                     bail!("session unlocked before the sleep request; refusing to sleep");
                 }
                 ensure_not_preparing(connection).await?;
+                // Last check, after potentially slow status/session queries.
+                validate().await?;
             }
             Ok((current, observer))
         },
