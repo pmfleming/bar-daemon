@@ -105,6 +105,9 @@ pub(crate) struct SleepPolicyState {
     pub policy: SleepPolicy,
     pub active_profile: String,
     pub hibernate_available: bool,
+    /// Supported and currently authorized/uninhibited, including helper policy.
+    #[serde(default)]
+    pub hibernate_ready: bool,
     pub hibernate_error: Option<String>,
     pub lid: lid::LidState,
     pub last_error: Option<String>,
@@ -256,7 +259,8 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         active_profile: policy.profile_name(plugged).into(),
         policy,
         hibernate_available: support.is_ok(),
-        hibernate_error: support.err().map(|error| format!("{error:#}")),
+        hibernate_ready: matches!(&support, Ok(None)),
+        hibernate_error: support.unwrap_or_else(|error| Some(format!("{error:#}"))),
         lid: store.snapshot().await.sleep_policy.lid,
         last_error: None,
         error: None,
@@ -265,9 +269,18 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
     Ok(state)
 }
 
-async fn hibernate_support() -> Result<()> {
-    crate::sleep::check_suspend_then_hibernate().await?;
-    helper_available().await
+async fn hibernate_support() -> Result<Option<String>> {
+    let capability = crate::sleep::combined_capability().await?;
+    anyhow::ensure!(
+        crate::sleep::capability::configurable(&capability),
+        "suspend-then-hibernate cannot be configured: {capability}"
+    );
+    let helper_authorized = helper_available().await?;
+    Ok(if !helper_authorized {
+        Some("Hibernate delay helper requires system-policy authorization; automatic sleep cannot prompt.".into())
+    } else {
+        crate::sleep::capability::limitation(&capability).map(str::to_owned)
+    })
 }
 
 async fn persist_and_restart<F, Fut>(
@@ -291,7 +304,7 @@ where
     Ok(())
 }
 
-async fn helper_available() -> Result<()> {
+async fn helper_available() -> Result<bool> {
     let connection = crate::sleep::system_bus().await?;
     let proxy = helper_proxy(&connection).await?;
     let available: bool = proxy
@@ -301,7 +314,10 @@ async fn helper_available() -> Result<()> {
     if !available {
         bail!("system hibernate settings are unavailable");
     }
-    Ok(())
+    proxy
+        .call("CanSetHibernateDelay", &())
+        .await
+        .context("Install the updated helper authorization probe")
 }
 
 async fn helper_proxy(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
@@ -473,7 +489,8 @@ pub(crate) async fn monitor(store: StateStore) {
             }
             let support = hibernate_support().await;
             state.hibernate_available = support.is_ok();
-            state.hibernate_error = support.err().map(|error| format!("{error:#}"));
+            state.hibernate_ready = matches!(&support, Ok(None));
+            state.hibernate_error = support.unwrap_or_else(|error| Some(format!("{error:#}")));
             state.available = true;
             Ok(())
         }

@@ -10,6 +10,32 @@ use zbus::{Connection, connection::Builder};
 use super::*;
 
 #[tokio::test]
+async fn authorization_and_inhibition_fail_before_locking() {
+    for capability in [
+        "challenge",
+        "inhibited",
+        "inhibitor-blocked",
+        "challenge-inhibitor-blocked",
+        "unknown",
+    ] {
+        let state = Arc::new(SessionState {
+            capability: Some(capability),
+            ..Default::default()
+        });
+        let (_server, client) = fake_logind(state.clone()).await;
+        for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
+            assert!(
+                perform_connected(&client, action, Duration::from_secs(1))
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
 async fn final_trigger_validation_cancels_after_setup_and_preflight_queries() {
     let state = Arc::new(SessionState::default());
     state.locked.store(true, Ordering::SeqCst);
@@ -69,6 +95,7 @@ pub(super) struct SessionState {
     pub(super) telemetry_started: Notify,
     pub(super) telemetry_release: Notify,
     pub(super) telemetry_queries: AtomicUsize,
+    capability: Option<&'static str>,
     lock_calls: AtomicUsize,
     requested: Notify,
     sleep_calls: AtomicUsize,
@@ -138,13 +165,13 @@ impl FakeManager {
             self.0.telemetry_started.notify_one();
             self.0.telemetry_release.notified().await;
         }
-        "yes"
+        self.0.capability.unwrap_or("yes")
     }
     fn can_hibernate(&self) -> &str {
-        "yes"
+        self.0.capability.unwrap_or("yes")
     }
     fn can_suspend_then_hibernate(&self) -> &str {
-        "yes"
+        self.0.capability.unwrap_or("yes")
     }
     fn suspend_then_hibernate(&self, _interactive: bool) {
         self.0.sleep_calls.fetch_add(1, Ordering::SeqCst);

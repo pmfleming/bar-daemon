@@ -48,3 +48,15 @@ Callbacks waiting more than three seconds for the policy mutex are discarded.
 
 Validation: 49 sleep-filtered Rust tests pass, including activity/inhibition,
 replacement-episode and final-preflight cancellation; patched Hypridle builds.
+
+## 4. Support, authorization and inhibition
+
+All seven logind capability values are classified explicitly. Only `yes` may
+execute; authorization-required actions are disabled/explained rather than
+locking and failing. Unknown values fail closed. Configuration support includes
+transiently inhibited and authorization-required states. `hibernate_ready`
+separately reports current action readiness and a non-interactive helper polkit
+probe; restrictions do not prevent saving otherwise supported profiles.
+
+Validation: capability matrix and isolated logind tests prove denial occurs
+before Lock, plus frontend action/description checks and updated API fixtures.

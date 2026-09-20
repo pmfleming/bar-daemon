@@ -333,7 +333,7 @@ fn generated_contract_fixture() -> Value {
             "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null, "outputs": [], "layout": { "saved": { "outputs": [] }, "trial": null } },
             "sleep_policy": {
                 "available": true, "active_profile": "shared",
-                "hibernate_available": true, "hibernate_error": null, "last_error": null,
+                "hibernate_available": true, "hibernate_ready": true, "hibernate_error": null, "last_error": null,
                 "lid": { "available": true, "managed": true, "error": null },
                 "policy": { "lid_action": "profile", "same_profile": true, "battery": { "sleep_minutes": 30, "hibernate_minutes": 120 }, "plugged": { "sleep_minutes": 60, "hibernate_minutes": 180 } },
                 "error": null

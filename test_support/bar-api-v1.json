@@ -999,6 +999,7 @@
       "error": null,
       "hibernate_available": true,
       "hibernate_error": null,
+      "hibernate_ready": true,
       "last_error": null,
       "lid": {
         "available": true,

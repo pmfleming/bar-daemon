@@ -38,6 +38,21 @@ impl BatteryHelper {
         true
     }
 
+    async fn can_set_hibernate_delay(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> bool {
+        authorize(
+            connection,
+            &header,
+            "org.laufan.bar-daemon.set-hibernate-delay",
+            0,
+        )
+        .await
+        .is_ok()
+    }
+
     async fn set_hibernate_delay(
         &self,
         minutes: u32,

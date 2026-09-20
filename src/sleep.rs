@@ -5,6 +5,7 @@ use tokio::{sync::Mutex, time::sleep};
 
 use crate::model::{PowerSleepState, SleepInhibitor};
 
+pub(crate) mod capability;
 pub(crate) mod diagnostics;
 mod keep_awake;
 mod monitoring;
@@ -247,15 +248,13 @@ where
                 ensure_not_preparing(connection).await?;
                 ensure_sleep_allowed(&current)?;
             }
-            if action == Action::Suspend && !capability_available(&current.can_suspend) {
-                bail!("suspend is unavailable: {}", current.can_suspend);
+            if action == Action::Suspend {
+                capability::require_authorized(&current.can_suspend)
+                    .context("suspend is unavailable")?;
             }
-            if action == Action::Hibernate && !capability_available(&current.can_hibernate) {
-                bail!(
-                    "hibernate is unavailable: {}. {}",
-                    current.can_hibernate,
-                    current.diagnostics.hibernate_issues.join(" ")
-                );
+            if action == Action::Hibernate {
+                capability::require_authorized(&current.can_hibernate)
+                    .context("hibernate is unavailable")?;
             }
             if action == Action::SuspendThenHibernate {
                 check_combined_capability(connection).await?;
@@ -421,26 +420,18 @@ async fn lock_session<'a>(
     .context("session lock was not confirmed before the deadline; refusing to sleep")?
 }
 
-pub(crate) async fn check_suspend_then_hibernate() -> Result<()> {
+pub(crate) async fn combined_capability() -> Result<String> {
     let connection = system_bus().await?;
-    check_combined_capability(&connection).await
+    Ok(manager(&connection)
+        .await?
+        .call("CanSuspendThenHibernate", &())
+        .await?)
 }
 
 async fn check_combined_capability(connection: &zbus::Connection) -> Result<()> {
-    let capability: String = manager(connection)
+    let value: String = manager(connection)
         .await?
         .call("CanSuspendThenHibernate", &())
-        .await
-        .context("read suspend-then-hibernate capability")?;
-    if !capability_available(&capability) {
-        bail!(
-            "suspend-then-hibernate is unavailable: {capability}. {}",
-            diagnostics::system().hibernate_issues.join(" ")
-        );
-    }
-    Ok(())
-}
-
-fn capability_available(value: &str) -> bool {
-    matches!(value, "yes" | "challenge")
+        .await?;
+    capability::require_authorized(&value).context("suspend-then-hibernate is unavailable")
 }
