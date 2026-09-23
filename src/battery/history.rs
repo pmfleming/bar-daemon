@@ -28,12 +28,13 @@ const CLOCK_TOLERANCE_MILLISECONDS: u64 = 1_000;
 
 static HISTORY: OnceLock<Mutex<HistoryStore>> = OnceLock::new();
 
+// Deserialize owned points; persist a borrowed deque without copying its samples.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-struct HistoryFile {
+struct HistoryFile<P = Vec<BatteryHistoryPoint>> {
     version: u8,
     last_charge_timestamp_ms: u64,
-    points: Vec<BatteryHistoryPoint>,
+    points: P,
 }
 
 #[derive(Debug)]
@@ -128,14 +129,14 @@ impl HistoryStore {
             charging: state.charging,
             plugged: state.plugged,
         };
-        self.current_point = Some(point.clone());
-        if observation_continuous && !bucket_changed && !power_transition {
-            return false;
+        let sampled = !observation_continuous || bucket_changed || power_transition;
+        if sampled {
+            self.energy.take();
+            self.points.push_back(point.clone());
+            self.prune(now_ms);
         }
-        self.energy.take();
-        self.points.push_back(point);
-        self.prune(now_ms);
-        true
+        self.current_point = Some(point);
+        sampled
     }
 
     fn state(&self, include_points: bool) -> BatteryHistoryState {
@@ -205,7 +206,7 @@ impl HistoryStore {
         let file = HistoryFile {
             version: FILE_VERSION,
             last_charge_timestamp_ms: self.last_charge_timestamp_ms,
-            points: self.points.iter().cloned().collect(),
+            points: &self.points,
         };
         let temporary = temporary_path(path);
         fs::write(&temporary, serde_json::to_vec(&file)?)?;

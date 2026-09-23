@@ -175,16 +175,13 @@ impl LockObserver {
                     continue;
                 };
                 let mut ready = self.socket.readable().await?;
-                match ready.try_io(|_| {
+                if let Ok(result) = ready.try_io(|_| {
                     read.read().map_err(|error| match error {
                         WaylandError::Io(error) => error,
                         error => io::Error::other(error),
                     })
                 }) {
-                    Ok(result) => {
-                        result?;
-                    }
-                    Err(_) => continue,
+                    result?;
                 }
             }
         })

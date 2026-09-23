@@ -1,0 +1,107 @@
+--- a/src/core/Hypridle.hpp
++++ b/src/core/Hypridle.hpp
+@@ -51,6 +51,18 @@
+     void               uninhibitSleep();
+ 
+   private:
++    void    setupShelllistControl();
++    void    setShelllistTimeout(uint32_t minutes);
++    void    resetShelllistListener();
++    std::unique_ptr<sdbus::IConnection> m_shelllistConnection;
++    std::unique_ptr<sdbus::IObject> m_shelllistObject;
++    SIdleListener m_shelllistListener;
++    std::string m_shelllistBaseGeneration, m_shelllistGeneration, m_shelllistCommand;
++    uint32_t m_shelllistMinutes = 0;
++    uint64_t m_shelllistRevision = 0;
++    uint64_t m_shelllistEpisode = 0;
++    bool m_shelllistIdle = false;
++
+     void    setupDBUS();
+     void    enterEventLoop();
+ 
+--- a/src/core/Hypridle.cpp
++++ b/src/core/Hypridle.cpp
+@@ -137,6 +137,7 @@
+     }
+ 
+     setupDBUS();
++    setupShelllistControl();
+     if (m_inhibitSleepBehavior != SLEEP_INHIBIT_NONE)
+         inhibitSleep();
+     enterEventLoop();
+@@ -144,9 +145,9 @@
+ 
+ void CHypridle::enterEventLoop() {
+ 
+-    nfds_t pollfdsCount = m_sDBUSState.screenSaverServiceConnection ? 3 : 2;
++    nfds_t pollfdsCount = 4;
+ 
+-    pollfd pollfds[] = {
++    pollfd pollfds[4] = {
+         {
+             .fd     = m_sDBUSState.connection->getEventLoopPollData().fd,
+             .events = POLLIN,
+@@ -156,11 +157,13 @@
+             .events = POLLIN,
+         },
+         {
+-            .fd     = m_sDBUSState.screenSaverServiceConnection ? m_sDBUSState.screenSaverServiceConnection->getEventLoopPollData().fd : 0,
++            .fd     = m_sDBUSState.screenSaverServiceConnection ? m_sDBUSState.screenSaverServiceConnection->getEventLoopPollData().fd : -1,
+             .events = POLLIN,
+         },
+     };
+ 
++    pollfds[3] = { .fd = m_shelllistConnection ? m_shelllistConnection->getEventLoopPollData().fd : -1, .events = POLLIN };
++
+     std::thread pollThr([this, &pollfds, &pollfdsCount]() {
+         while (1) {
+             int ret = poll(pollfds, pollfdsCount, 5000 /* 5 seconds, reasonable. It's because we might need to terminate */);
+@@ -232,6 +235,10 @@
+             }
+         }
+ 
++        if (m_shelllistConnection && (pollfds[3].revents & POLLIN)) {
++            while (m_shelllistConnection->processPendingEvent()) {}
++        }
++
+         // finalize wayland dispatching. Dispatch pending on the queue
+         int ret = 0;
+         do {
+@@ -268,11 +275,21 @@
+         return;
+     }
+ 
++    if (pListener == &m_shelllistListener) {
++        m_shelllistIdle = true;
++        ++m_shelllistEpisode;
++        spawn(pListener->onTimeout + " --episode " + std::to_string(m_shelllistEpisode));
++        return;
++    }
+     Debug::log(LOG, "Running {}", pListener->onTimeout);
+     spawn(pListener->onTimeout);
+ }
+ 
+ void CHypridle::onResumed(SIdleListener* pListener) {
++    // Any activity invalidates a pending suspend, even if a different listener
++    // supplied the resume event or inhibition suppresses its on-resume command.
++    m_shelllistIdle = false;
++    ++m_shelllistEpisode;
+     Debug::log(LOG, "Resumed: rule {:x}", (uintptr_t)pListener);
+     isIdled = false;
+     if (g_pHypridle->m_iInhibitLocks > 0 && !pListener->ignoreInhibit) {
+@@ -290,6 +307,7 @@
+ }
+ 
+ void CHypridle::onInhibit(bool lock) {
++    if (lock) { m_shelllistIdle = false; ++m_shelllistEpisode; }
+     m_iInhibitLocks += lock ? 1 : -1;
+ 
+     if (m_iInhibitLocks < 0) {
+@@ -298,6 +316,7 @@
+     }
+ 
+     if (m_iInhibitLocks == 0 && isIdled) {
++        resetShelllistListener();
+         static const auto IGNOREWAYLANDINHIBIT = g_pConfigManager->getValue<Hyprlang::INT>("general:ignore_wayland_inhibit");
+ 
+         const auto        RULES = g_pConfigManager->getRules();

@@ -40,41 +40,53 @@ pub(crate) fn forecast(battery: &BatteryState) -> ChargeForecast {
     });
     let discharging = !battery.plugged && !battery.charging;
     let target = if discharging { 0 } else { limit.unwrap_or(100) };
-    let valid = battery.available
-        && if discharging {
-            battery.percentage > 0
-        } else {
-            battery.charging && battery.percentage < target
-        };
-    let seconds = if valid && discharging && (1..=604800).contains(&battery.time_to_empty_seconds) {
-        battery.time_to_empty_seconds as f64
-    } else if valid && !discharging && (1..=86400).contains(&battery.time_to_full_seconds) {
-        battery.time_to_full_seconds as f64 * (target - battery.percentage) as f64
-            / (100 - battery.percentage) as f64
-    } else {
-        0.0
-    };
-    let status = if seconds > 0.0 {
-        "valid"
-    } else if valid {
-        "estimating"
-    } else if battery.available && !discharging && limit.is_some() && battery.percentage >= target {
-        "limit-reached"
-    } else if battery.available && battery.plugged && battery.percentage == 100 {
-        "full"
-    } else {
-        "unavailable"
+    let estimate = forecast_seconds(battery, target);
+    let at_limit = battery.available && limit == Some(target) && battery.percentage >= target;
+    let status = match estimate {
+        Some(seconds) if seconds > 0.0 => "valid",
+        Some(_) => "estimating",
+        None if at_limit => "limit-reached",
+        None if battery.available && battery.plugged && battery.percentage == 100 => "full",
+        None => "unavailable",
     };
     ChargeForecast {
         limit,
         target,
         percentage: battery.percentage,
-        seconds,
-        estimating: valid && seconds == 0.0,
+        seconds: estimate.unwrap_or(0.0),
+        estimating: status == "estimating",
         status: status.into(),
-        approximate: seconds > 0.0,
+        approximate: status == "valid",
         scope: "aggregate".into(),
     }
+}
+
+// None means no active forecast; zero means an active forecast awaiting telemetry.
+fn forecast_seconds(battery: &BatteryState, target: u8) -> Option<f64> {
+    if !battery.available {
+        return None;
+    }
+    let (remaining, maximum, distance, full_distance) = if target == 0 {
+        if battery.percentage == 0 {
+            return None;
+        }
+        (battery.time_to_empty_seconds, 604800, 1, 1)
+    } else {
+        if !battery.charging || battery.percentage >= target {
+            return None;
+        }
+        (
+            battery.time_to_full_seconds,
+            86400,
+            target - battery.percentage,
+            100 - battery.percentage,
+        )
+    };
+    Some(if (1..=maximum).contains(&remaining) {
+        remaining as f64 * f64::from(distance) / f64::from(full_distance)
+    } else {
+        0.0
+    })
 }
 
 fn power_available(point: &BatteryHistoryPoint) -> bool {
@@ -155,7 +167,8 @@ pub(crate) fn energy(points: &[BatteryHistoryPoint]) -> EnergyHistory {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{energy, forecast};
+    use crate::model::{BatteryHistoryPoint, BatteryState};
     fn point(wall: u64, active: u64, watts: f64, continuous: bool) -> BatteryHistoryPoint {
         BatteryHistoryPoint {
             timestamp_ms: 1000 + wall,
@@ -232,10 +245,12 @@ mod tests {
         battery.protection.enabled = true;
         battery.protection.end_percent = Some(80);
         assert_eq!(forecast(&battery).seconds, 1800.0);
-        for seconds in [0, 86401, 234972] {
+        for seconds in [0, 86401, 234972, u64::MAX] {
             battery.time_to_full_seconds = seconds;
             assert!(forecast(&battery).estimating);
         }
+        battery.time_to_full_seconds = 86400;
+        assert_eq!(forecast(&battery).seconds, 43200.0);
         battery.protection.charge_once_active = true;
         assert_eq!(forecast(&battery).limit, None);
         battery.protection.charge_once_active = false;
@@ -264,6 +279,10 @@ mod tests {
         battery.percentage = 100;
         assert_eq!(forecast(&battery).status, "full");
         battery.available = false;
+        assert_eq!(forecast(&battery).status, "unavailable");
+        battery.available = true;
+        battery.plugged = false;
+        battery.percentage = 0;
         assert_eq!(forecast(&battery).status, "unavailable");
     }
 }

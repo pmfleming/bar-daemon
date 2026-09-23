@@ -186,7 +186,9 @@ fn coordinate(value: f64, range: std::ops::RangeInclusive<f64>, label: &str) -> 
 }
 
 pub(crate) async fn load(path: &Path) -> Result<ActivityConfig> {
-    load_json_or_default(path, "activity configuration").await
+    let config = load_json_or_default(path, "activity configuration").await?;
+    validate(&config)?;
+    Ok(config)
 }
 
 pub(crate) async fn load_todos(path: &Path) -> Result<Vec<TodoItem>> {

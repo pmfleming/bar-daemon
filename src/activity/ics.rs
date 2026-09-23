@@ -98,7 +98,7 @@ fn parse_calendar(
     contents: &str,
 ) -> Result<Vec<ActivityEvent>> {
     let mut events = Vec::new();
-    let mut current: Option<EventBuilder> = None;
+    let mut current = EventBuilder::default();
     let mut components = Vec::<String>::new();
     let mut saw_calendar = false;
     for line in unfold_lines(contents) {
@@ -108,47 +108,30 @@ fn parse_calendar(
         let (key_and_params, raw_value) = line
             .split_once(':')
             .with_context(|| format!("invalid iCalendar content line in {}", path.display()))?;
-        let key = key_and_params.to_ascii_uppercase();
-        if key == "BEGIN" {
-            let component = raw_value.to_ascii_uppercase();
-            if components.is_empty() {
-                anyhow::ensure!(component == "VCALENDAR", "expected BEGIN:VCALENDAR");
+        match key_and_params.to_ascii_uppercase().as_str() {
+            "BEGIN" => {
+                begin_component(&mut components, raw_value)?;
                 saw_calendar = true;
-            } else {
-                anyhow::ensure!(component != "VCALENDAR", "nested VCALENDAR is invalid");
             }
-            if component == "VEVENT" {
+            "END" => {
+                let component = raw_value.to_ascii_uppercase();
                 anyhow::ensure!(
-                    components.last().map(String::as_str) == Some("VCALENDAR"),
-                    "VEVENT must belong directly to VCALENDAR"
+                    components.pop().as_deref() == Some(component.as_str()),
+                    "mismatched END:{component} in {}",
+                    path.display()
                 );
-                current = Some(EventBuilder::default());
-            }
-            anyhow::ensure!(!component.is_empty(), "empty iCalendar component");
-            components.push(component);
-            continue;
-        }
-        if key == "END" {
-            let component = raw_value.to_ascii_uppercase();
-            anyhow::ensure!(
-                components.pop().as_deref() == Some(component.as_str()),
-                "mismatched END:{component} in {}",
-                path.display()
-            );
-            if component == "VEVENT" {
-                let builder = current.take().context("VEVENT has no matching start")?;
-                if let Some(event) = finish_event(source, path, builder)? {
-                    events.push(event);
+                if component == "VEVENT" {
+                    events.extend(finish_event(source, path, std::mem::take(&mut current))?);
                 }
             }
-            continue;
-        }
-        anyhow::ensure!(!components.is_empty(), "property outside VCALENDAR");
-        // Nested components (notably VALARM) own their own properties.
-        if components.last().map(String::as_str) == Some("VEVENT") {
-            let builder = current.as_mut().context("property outside VEVENT")?;
-            parse_event_property(builder, key_and_params, raw_value)
-                .with_context(|| format!("parse event in {}", path.display()))?;
+            _ => {
+                anyhow::ensure!(!components.is_empty(), "property outside VCALENDAR");
+                // Nested components (notably VALARM) own their own properties.
+                if components.last().map(String::as_str) == Some("VEVENT") {
+                    parse_event_property(&mut current, key_and_params, raw_value)
+                        .with_context(|| format!("parse event in {}", path.display()))?;
+                }
+            }
         }
     }
     anyhow::ensure!(saw_calendar, "missing VCALENDAR in {}", path.display());
@@ -158,6 +141,23 @@ fn parse_calendar(
         path.display()
     );
     Ok(events)
+}
+
+fn begin_component(components: &mut Vec<String>, value: &str) -> Result<()> {
+    let component = value.to_ascii_uppercase();
+    match components.last().map(String::as_str) {
+        None => anyhow::ensure!(component == "VCALENDAR", "expected BEGIN:VCALENDAR"),
+        Some(parent) => {
+            anyhow::ensure!(component != "VCALENDAR", "nested VCALENDAR is invalid");
+            anyhow::ensure!(
+                component != "VEVENT" || parent == "VCALENDAR",
+                "VEVENT must belong directly to VCALENDAR"
+            );
+        }
+    }
+    anyhow::ensure!(!component.is_empty(), "empty iCalendar component");
+    components.push(component);
+    Ok(())
 }
 
 fn parse_event_property(
@@ -202,7 +202,7 @@ fn finish_event(
                 .map(|date| date.format("%Y-%m-%d").to_string())
         }),
         all_day: start.all_day,
-        timezone: start.timezone.clone(),
+        timezone: None, // Only DTSTART's timezone is published.
     });
     let uid = if builder.uid.is_empty() {
         format!("{}-{}", path.display(), start.unix_ms)
@@ -226,7 +226,7 @@ fn finish_event(
         color: source.color.clone(),
         title,
         start_unix_ms: start.unix_ms,
-        end_unix_ms: end.unix_ms.max(start.unix_ms),
+        end_unix_ms: end.unix_ms,
         all_day: start.all_day,
         start_date: start.date,
         end_date: end.date,
@@ -241,16 +241,14 @@ fn parse_time(key_and_params: &str, value: &str) -> Result<ParsedTime> {
         .split(';')
         .skip(1)
         .filter_map(|part| part.split_once('='))
-        .map(|(key, value)| (key.to_ascii_uppercase(), value.to_string()))
         .collect::<Vec<_>>();
     let timezone = params
         .iter()
-        .find(|(key, _)| key == "TZID")
+        .find(|(key, _)| key.eq_ignore_ascii_case("TZID"))
         .map(|(_, value)| value.trim_matches('"').to_string());
-    let is_date = params
-        .iter()
-        .any(|(key, value)| key == "VALUE" && value.eq_ignore_ascii_case("DATE"))
-        || (!value.contains('T') && value.len() == 8);
+    let is_date = params.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("VALUE") && value.eq_ignore_ascii_case("DATE")
+    }) || (!value.contains('T') && value.len() == 8);
     if is_date {
         let date = NaiveDate::parse_from_str(value, "%Y%m%d")
             .with_context(|| format!("parse iCalendar date {value}"))?;
@@ -341,12 +339,17 @@ mod tests {
     }
 
     #[test]
-    fn nested_alarm_does_not_overwrite_event_properties() {
+    fn nested_alarm_and_adjacent_events_keep_their_own_properties() {
         let events = parse_calendar(&source(), Path::new("test.ics"),
-            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team\n  meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
-        assert_eq!(events.len(), 1);
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team\n  meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nBEGIN:VEVENT\nSTATUS:CANCELLED\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260116\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].title, "Team meeting");
         assert!(events[0].id.contains(":meeting:"));
+        assert_eq!(events[1].title, "Untitled event");
+        assert_eq!(events[1].start_date.as_deref(), Some("2026-01-16"));
+        assert_eq!(events[1].end_date.as_deref(), Some("2026-01-17"));
+        assert_eq!(events[1].end_unix_ms - events[1].start_unix_ms, 86_400_000);
+        assert_eq!(events[1].timezone, None);
     }
 
     #[test]
@@ -354,6 +357,11 @@ mod tests {
         for contents in [
             "",
             "not a calendar",
+            "BEGIN:VEVENT\nEND:VEVENT\n",
+            "BEGIN:VCALENDAR\nBEGIN:VCALENDAR\nEND:VCALENDAR\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nBEGIN:VEVENT\nEND:VEVENT\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:\nEND:\nEND:VCALENDAR\n",
+            "SUMMARY:outside\nBEGIN:VCALENDAR\nEND:VCALENDAR\n",
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\n",
             "BEGIN:VCALENDAR\nEND:VEVENT\nEND:VCALENDAR\n",
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Missing start\nEND:VEVENT\nEND:VCALENDAR\n",

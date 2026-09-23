@@ -35,7 +35,7 @@ struct InhibitionRequest {
     enabled: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, PartialEq, Deserialize)]
 struct AlertPolicyRequest {
     warning_percent: Option<u8>,
     critical_percent: Option<u8>,
@@ -50,25 +50,12 @@ struct AlertPolicyRequest {
 impl AlertPolicyRequest {
     fn apply_to(self, config: &mut config::BatteryConfig) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.warning_percent.is_some()
-                || self.critical_percent.is_some()
-                || self.notify_when_full.is_some()
-                || self.auto_power_saver.is_some()
-                || self.notify_warning.is_some()
-                || self.notify_critical.is_some()
-                || self.warning_profile.is_some()
-                || self.critical_profile.is_some(),
+            self != Self::default(),
             "battery.setAlertPolicy requires at least one policy field"
         );
-        if let Some(value) = self.warning_percent {
-            config.warning_percent = value;
-        }
-        if let Some(value) = self.critical_percent {
-            config.critical_percent = value;
-        }
-        if let Some(value) = self.notify_when_full {
-            config.notify_when_full = value;
-        }
+        config.warning_percent = self.warning_percent.unwrap_or(config.warning_percent);
+        config.critical_percent = self.critical_percent.unwrap_or(config.critical_percent);
+        config.notify_when_full = self.notify_when_full.unwrap_or(config.notify_when_full);
         // Resolve legacy defaults before applying partial updates.
         let mut warning = config.warning_profile();
         let mut critical = config.critical_profile();
@@ -85,12 +72,8 @@ impl AlertPolicyRequest {
         config.critical_profile = Some(self.critical_profile.unwrap_or(critical));
         config.auto_power_saver = config.warning_profile().profile().is_some()
             || config.critical_profile().profile().is_some();
-        if let Some(value) = self.notify_warning {
-            config.notify_warning = value;
-        }
-        if let Some(value) = self.notify_critical {
-            config.notify_critical = value;
-        }
+        config.notify_warning = self.notify_warning.unwrap_or(config.notify_warning);
+        config.notify_critical = self.notify_critical.unwrap_or(config.notify_critical);
         config.validate()
     }
 }

@@ -77,8 +77,15 @@ daemons must share one framework; do not vendor or revision-pin it.
 python3 ../daemon-framework/tools/local-build.py develop .
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
-# The dev shell includes PipeWire for the isolated, hardware-free audio test.
+cargo test --locked --all-targets -- --include-ignored
+# The dev shell supplies PipeWire and HYPRIDLE_TEST_BIN for private fixtures.
 cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml -- --include-ignored
 python3 ../daemon-framework/tools/local-build.py check .
 ```
+
+Nix package checks and CI run all tests, including the ignored PipeWire and native
+idle fixtures. The native test uses a private Wayland display, test-owned D-Bus
+configuration, mock logind, and an isolated home; it cannot suspend the host.
+The patched Hypridle package is shared with Shelllist, not separately vendored:
+see [`packaging/hypridle/README.md`](packaging/hypridle/README.md).
+The local-build helper requires new source files to be tracked before snapshotting.

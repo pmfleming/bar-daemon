@@ -2,6 +2,9 @@
 
 Quality measurements guide design review; they are not targets to game by adding forwarding modules.
 The verified gates in `rqlens.toml` and CI remain authoritative.
+See the [committed-RQLens quality pass](quality-pass-64a587d.md) for current
+measurements and verification, and the [domain simplification review](quality-review.md)
+for the preceding refactor and fixture/resolver fixes.
 
 ## Composition-root baseline
 
@@ -35,12 +38,16 @@ policy/layouts, work-area observation, and nested power/update modules. `StateSt
 may reference state types owned by policy/work-area modules; it must not invoke
 system effects.
 
-Architecture CI enforcement is still pending: the current checker reports 14
-unresolved macro-generated Wayland references in `sleep/wayland_lock.rs`,
-`sleep/wayland_lock_tests.rs`, and `tests/native_idle.rs`. Measurement reports no violations but partial
-evidence, so `rqlens check` correctly fails. Resolve that analysis limitation
-before adding a hard CI gate; do not disable identity resolution or count a
-partial measurement as a pass. Existing fan-out baselines have not been raised.
+Architecture CI now runs `measure architecture-rules` and `check` with the local
+RustQualityLens implementation's generated-symbol fix. All **774 references**
+resolve locally; the three configured rules have **zero violations**, complete
+evidence, and a passing policy check. The previous 14 unresolved Wayland references
+were analyzer limitations, not exemptions. `rust.identity_build_macros = true`
+explicitly trusts this checkout and dependencies to execute build-time code;
+protocol XML and test fixtures participate in content fingerprints. Keep this
+opt-in restricted to trusted projects. Existing fan-out baselines have not been
+raised; incomplete/stale architecture evidence still fails the configured gate.
+CI must use a RustQualityLens revision containing this option and resolver fix.
 See [the sleep follow-up review](sleep-quality-review.md) for the latest measured
 changes, including aggregate complexity/leverage trade-offs.
 

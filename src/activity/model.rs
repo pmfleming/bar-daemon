@@ -1,3 +1,6 @@
+use anyhow::{Context, Result};
+use chrono::{Offset, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -63,6 +66,37 @@ pub(crate) struct WorldClockState {
     pub abbreviation: String,
     pub utc_offset_seconds: i32,
     pub timezone_region_ids: Vec<String>,
+}
+
+impl WorldClockState {
+    pub(super) fn new(timezone: &str, label: &str) -> Result<Self> {
+        let zone: Tz = timezone
+            .parse()
+            .with_context(|| format!("parse world-clock timezone {timezone}"))?;
+        let instant = Utc::now();
+        let now = instant.with_timezone(&zone);
+        let city = timezone
+            .rsplit('/')
+            .next()
+            .unwrap_or(timezone)
+            .replace('_', " ");
+        let utc_offset_seconds = now.offset().fix().local_minus_utc();
+        Ok(Self {
+            timezone: timezone.into(),
+            label: if label.is_empty() {
+                city.clone()
+            } else {
+                label.into()
+            },
+            city,
+            abbreviation: now.format("%Z").to_string(),
+            utc_offset_seconds,
+            timezone_region_ids: crate::timezone_regions::ids_for_offset(
+                utc_offset_seconds,
+                instant,
+            ),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

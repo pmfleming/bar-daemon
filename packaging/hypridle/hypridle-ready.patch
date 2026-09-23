@@ -1,0 +1,64 @@
+--- a/src/core/Hypridle.cpp
++++ b/src/core/Hypridle.cpp
+@@ -1,5 +1,6 @@
+ 
+ #include "Hypridle.hpp"
++#include "../helpers/ShelllistReady.hpp"
+ #include "../helpers/Log.hpp"
+ #include "../config/ConfigManager.hpp"
+ #include "csignal"
+@@ -139,6 +140,20 @@
+     setupDBUS();
+     if (m_inhibitSleepBehavior != SLEEP_INHIBIT_NONE)
+         inhibitSleep();
++
++    // Synchronize the listener/lock-notifier requests before acknowledging the
++    // notify-type unit. Invalid managed configs are rejected by ConfigManager.
++    if (wl_display_roundtrip(m_sWaylandState.display) < 0 || !m_sDBUSState.login ||
++        (shelllistManagedConfig() && m_inhibitSleepBehavior != SLEEP_INHIBIT_NONE &&
++         !(m_inhibitSleepBehavior == SLEEP_INHIBIT_LOCK_NOTIFY && m_isLocked) &&
++         !m_sDBUSState.sleepInhibitFd.isValid())) {
++        Debug::log(CRIT, "Managed idle initialization failed; not announcing readiness");
++        exit(1);
++    }
++    if (!shelllistNotifyReady()) {
++        Debug::log(CRIT, "Could not notify systemd of idle readiness");
++        exit(1);
++    }
+     enterEventLoop();
+ }
+ 
+--- a/src/config/ConfigManager.cpp
++++ b/src/config/ConfigManager.cpp
+@@ -1,4 +1,5 @@
+ #include "ConfigManager.hpp"
++#include "../helpers/ShelllistReady.hpp"
+ #include "../helpers/Log.hpp"
+ #include "../helpers/MiscFunctions.hpp"
+ #include <hyprutils/path/Path.hpp>
+@@ -51,8 +52,7 @@
+     m_config.addConfigValue("general:inhibit_sleep", Hyprlang::INT{2});
+ 
+     // track the file in the circular dependency chain
+-    const auto mainConfigPath = getMainConfigPath();
+-    alreadyIncludedSourceFiles.insert(std::filesystem::canonical(mainConfigPath));
++    alreadyIncludedSourceFiles.insert(std::filesystem::canonical(configCurrentPath));
+ 
+     m_config.registerHandler(&::handleSource, "source", {.allowFlags = false});
+ 
+@@ -62,11 +62,15 @@
+ 
+     if (result.error)
+         Debug::log(ERR, "Config has errors:\n{}\nProceeding ignoring faulty entries", result.getError());
++    if (result.error && shelllistManagedConfig())
++        throw "Managed hypridle configuration contains errors";
+ 
+     result = postParse();
+ 
+     if (result.error)
+         Debug::log(ERR, "Config has errors:\n{}\nProceeding ignoring faulty entries", result.getError());
++    if (result.error && shelllistManagedConfig())
++        throw "Managed hypridle listeners contain errors";
+ }
+ 
+ Hyprlang::CParseResult CConfigManager::postParse() {

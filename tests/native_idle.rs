@@ -139,9 +139,16 @@ fn notification(listeners: &Listeners, timeout: u32) -> Notification {
 async fn native_control_preserves_cookies_and_base_listeners_and_cancels_activity() {
     let executable = std::env::var("HYPRIDLE_TEST_BIN").expect("patched native binary is required");
     let dir = tempfile::tempdir().unwrap();
+    let bus_config = dir.path().join("bus.conf");
+    std::fs::write(
+        &bus_config,
+        include_str!("../test_support/dbus-session.conf"),
+    )
+    .unwrap();
     let mut bus = Child(
         std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!("--config-file={}", bus_config.display()))
+            .args(["--nofork", "--print-address=1"])
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap(),
@@ -205,12 +212,18 @@ async fn native_control_preserves_cookies_and_base_listeners_and_cancels_activit
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&callback, std::fs::Permissions::from_mode(0o700)).unwrap();
     let ready = tokio::net::UnixDatagram::bind(dir.path().join("notify")).unwrap();
-    let _idle = Child(
+    let log_path = dir.path().join("hypridle.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut idle_process = Child(
         std::process::Command::new(executable)
             .arg("--config")
             .arg(config)
             .env("DBUS_SYSTEM_BUS_ADDRESS", address)
             .env("DBUS_SESSION_BUS_ADDRESS", address)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("XDG_CONFIG_DIRS", dir.path())
+            .env("XDG_CACHE_HOME", dir.path())
             .env("XDG_RUNTIME_DIR", dir.path())
             .env("WAYLAND_DISPLAY", "wayland-test")
             .env_remove("WAYLAND_SOCKET")
@@ -219,16 +232,20 @@ async fn native_control_preserves_cookies_and_base_listeners_and_cancels_activit
             .env("BAR_DAEMON_IDLE_GENERATION", "42-test")
             .env("BAR_DAEMON_IDLE_MINUTES", "30")
             .env("BAR_DAEMON_IDLE_COMMAND", callback)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
             .spawn()
             .unwrap(),
     );
     let mut buf = [0; 256];
-    tokio::time::timeout(Duration::from_secs(5), ready.recv(&mut buf))
-        .await
-        .unwrap()
-        .unwrap();
+    match tokio::time::timeout(Duration::from_secs(5), ready.recv(&mut buf)).await {
+        Ok(Ok(length)) => assert!(buf[..length].starts_with(b"READY=1\n")),
+        result => panic!(
+            "native idle did not become ready: {result:?}; exit={:?}\n{}",
+            idle_process.0.try_wait(),
+            std::fs::read_to_string(&log_path).unwrap()
+        ),
+    }
     let control = zbus::Proxy::new(
         &client,
         "org.laufan.Hypridle",

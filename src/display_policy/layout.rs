@@ -61,13 +61,27 @@ impl Setting {
             self.transform
         ))
     }
+    fn observed_mode(output: &Output) -> String {
+        format!(
+            "{}x{}@{:.2}",
+            output.width, output.height, output.refresh_rate
+        )
+    }
+    // Disabled outputs need no geometry match; enabled outputs must agree with
+    // the compositor before skipping IPC or accepting a preview confirmation.
+    fn matches(&self, output: &Output) -> bool {
+        self.enabled != output.disabled
+            && (!self.enabled
+                || (same_mode(&self.mode, &Self::observed_mode(output))
+                    && self.x == output.x
+                    && self.y == output.y
+                    && self.scale == output.scale
+                    && self.transform == output.transform))
+    }
     fn observed(output: &Output) -> Self {
         Self {
             name: output.name.clone(),
-            mode: format!(
-                "{}x{}@{:.2}",
-                output.width, output.height, output.refresh_rate
-            ),
+            mode: Self::observed_mode(output),
             x: output.x,
             y: output.y,
             scale: output.scale,
@@ -143,7 +157,7 @@ impl Layout {
                         .available_modes
                         .iter()
                         .any(|m| same_mode(&setting.mode, m))
-                        || same_mode(&setting.mode, &Setting::observed(output).mode),
+                        || same_mode(&setting.mode, &Setting::observed_mode(output)),
                     "Mode is not advertised by this display"
                 );
             }
@@ -236,7 +250,7 @@ fn now() -> u64 {
 }
 
 async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> Result<()> {
-    let generation = store.snapshot().await.power_sleep.resume_generation;
+    let generation = store.read(|s| s.power_sleep.resume_generation).await;
     // Enable replacements/fallback first, disable external outputs last.
     let mut ordered = layout.outputs.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|s| !s.enabled);
@@ -257,17 +271,7 @@ async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> 
                 "No replacement display is usable; keeping fallback"
             );
         }
-        if setting.enabled && !output.disabled {
-            let actual = Setting::observed(output);
-            if same_mode(&actual.mode, &setting.mode)
-                && actual.x == setting.x
-                && actual.y == setting.y
-                && actual.scale == setting.scale
-                && actual.transform == setting.transform
-            {
-                continue;
-            }
-        } else if !setting.enabled && output.disabled {
+        if setting.matches(output) {
             continue;
         }
         backend.configure(setting).await?;
@@ -298,7 +302,7 @@ async fn preview_at<B: Backend>(
 ) -> Result<Document> {
     backend.eligible().await?;
     ensure!(
-        !store.snapshot().await.power_sleep.preparing_for_sleep,
+        !store.read(|s| s.power_sleep.preparing_for_sleep).await,
         "Cannot preview displays during sleep preparation"
     );
     let mut doc: Document = load_json_or_default(path, "display layout").await?;
@@ -327,7 +331,7 @@ async fn preview_at<B: Backend>(
     runtime.topology = topology(&outputs);
     runtime.applied = true;
     runtime.error = None;
-    runtime.resume = store.snapshot().await.power_sleep.resume_generation;
+    runtime.resume = store.read(|s| s.power_sleep.resume_generation).await;
     if let Err(error) = apply(backend, &proposed, store).await {
         // Leave durable rollback intent even if immediate recovery fails.
         runtime.trial = None;
@@ -362,7 +366,7 @@ async fn finish_at<B: Backend>(
     runtime: &mut Runtime,
 ) -> Result<Document> {
     let mut doc: Document = load_json_or_default(path, "display layout").await?;
-    let trial = doc.trial.as_ref().context("No layout preview is pending")?;
+    let trial = doc.trial.take().context("No layout preview is pending")?;
     ensure!(trial.id == id, "This layout preview is stale");
     backend.eligible().await?;
     if confirm {
@@ -389,25 +393,13 @@ async fn finish_at<B: Backend>(
             trial.proposed.outputs.iter().all(|s| outputs
                 .iter()
                 .find(|o| o.name == s.name)
-                .is_some_and(|o| {
-                    if !s.enabled {
-                        return o.disabled;
-                    }
-                    let actual = Setting::observed(o);
-                    !o.disabled
-                        && same_mode(&actual.mode, &s.mode)
-                        && actual.x == s.x
-                        && actual.y == s.y
-                        && actual.scale == s.scale
-                        && actual.transform == s.transform
-                })),
+                .is_some_and(|o| s.matches(o))),
             "Compositor has not applied the requested layout"
         );
-        doc.saved = trial.proposed.clone();
+        doc.saved = trial.proposed;
     } else {
         apply(backend, &trial.previous, store).await?;
     }
-    doc.trial = None;
     save_json_atomic(path, &doc).await?;
     runtime.trial = None;
     runtime.applied = true;
@@ -465,41 +457,55 @@ async fn tick_at<B: Backend>(
         runtime.applied = false;
         runtime.error = None;
     }
-    if !runtime.applied && !doc.saved.outputs.is_empty() {
-        if runtime
-            .since
-            .is_some_and(|since| instant.duration_since(since) < Duration::from_secs(5))
-        {
-            return Ok((doc, true));
-        }
-        // One attempt per stable topology/resume, not repeated destructive mode sets.
-        runtime.applied = true;
-        let present = Layout {
-            outputs: doc
-                .saved
-                .outputs
-                .iter()
-                .filter(|s| outputs.iter().any(|o| o.name == s.name))
-                .cloned()
-                .collect(),
-        };
-        if !present.outputs.is_empty() {
-            let result = async {
-                present.validate(&outputs, false)?;
-                apply(backend, &present, store).await
+    let paused = runtime
+        .apply_saved(backend, &doc.saved, &outputs, store, instant)
+        .await?;
+    Ok((doc, paused))
+}
+
+impl Runtime {
+    // A saved layout gets one attempt per stable topology/resume. Failure stays
+    // visible without repeatedly issuing destructive mode changes.
+    async fn apply_saved<B: Backend>(
+        &mut self,
+        backend: &B,
+        saved: &Layout,
+        outputs: &[Output],
+        store: &StateStore,
+        instant: Instant,
+    ) -> Result<bool> {
+        if !self.applied && !saved.outputs.is_empty() {
+            if self
+                .since
+                .is_some_and(|since| instant.duration_since(since) < Duration::from_secs(5))
+            {
+                return Ok(true);
             }
-            .await;
-            runtime.error = result.err().map(|error| {
-                format!(
+            self.applied = true;
+            let present = Layout {
+                outputs: saved
+                    .outputs
+                    .iter()
+                    .filter(|s| outputs.iter().any(|o| o.name == s.name))
+                    .cloned()
+                    .collect(),
+            };
+            if !present.outputs.is_empty() {
+                let result = async {
+                    present.validate(outputs, false)?;
+                    apply(backend, &present, store).await
+                }
+                .await;
+                self.error = result.err().map(|error| format!(
                     "Saved layout was not applied: {error:#}. Preview a corrected layout to retry."
-                )
-            });
+                ));
+            }
         }
+        if let Some(error) = &self.error {
+            bail!(error.clone())
+        }
+        Ok(false)
     }
-    if let Some(error) = &runtime.error {
-        bail!(error.clone())
-    }
-    Ok((doc, false))
 }
 
 pub(super) async fn saved_internal(name: &str) -> Result<Option<Setting>> {

@@ -1,13 +1,16 @@
 project_name = "bar-daemon"
 project_root = "."
+fingerprint_inputs = ["protocols", "test_support", "docs/activity.example.json"]
 # source_roots is optional; Cargo workspace and local path packages are discovered automatically.
 output_dir = "target/analysis"
 
 [rust]
 identity_resolution = "auto"
 rust_analyzer = "rust-analyzer"
-identity_timeout_seconds = 60
+identity_timeout_seconds = 180
 identity_offline = true
+# This checkout and its Cargo dependencies are trusted to execute build-time code.
+identity_build_macros = true
 
 [verification]
 timeout_seconds = 600

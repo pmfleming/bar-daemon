@@ -9,8 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use chrono::{Local, Offset, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono::{Local, TimeZone};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{state::StateStore, time::unix_ms_i64 as unix_ms};
@@ -75,7 +74,7 @@ impl ActivityService {
             todo_guard: Mutex::new(()),
             todo_sequence: AtomicU64::new(1),
         });
-        service.publish_state(None, false).await;
+        service.publish_state(None).await;
         service
     }
 
@@ -97,7 +96,7 @@ impl ActivityService {
             Err(error) => {
                 let message = format!("Local todo store is unavailable: {error:#}");
                 self.data.write().await.todo_error = Some(message.clone());
-                self.publish_state(None, false).await;
+                self.publish_state(None).await;
                 bail!(message)
             }
         }
@@ -113,15 +112,15 @@ impl ActivityService {
         }
     }
 
+    async fn publish_syncing(&self) {
+        let mut current = self.state.read(|s| s.activity.clone()).await;
+        current.available = true;
+        current.syncing = true;
+        self.state.update_activity(current).await;
+    }
+
     pub(crate) async fn request_refresh(self: &Arc<Self>) {
-        let current = self.state.read(|snapshot| snapshot.activity.clone()).await;
-        self.state
-            .update_activity(ActivityState {
-                available: true,
-                syncing: true,
-                ..current
-            })
-            .await;
+        self.publish_syncing().await;
         let service = Arc::clone(self);
         tokio::spawn(async move { service.refresh().await });
     }
@@ -130,14 +129,7 @@ impl ActivityService {
         let Ok(_guard) = self.refresh_guard.try_lock() else {
             return;
         };
-        let current = self.state.read(|snapshot| snapshot.activity.clone()).await;
-        self.state
-            .update_activity(ActivityState {
-                available: true,
-                syncing: true,
-                ..current
-            })
-            .await;
+        self.publish_syncing().await;
 
         {
             let _guard = self.todo_guard.lock().await;
@@ -148,14 +140,9 @@ impl ActivityService {
         }
 
         let config = match config::load(&self.config_path).await {
-            Ok(config) if config::validate(&config).is_ok() => config,
-            Ok(config) => {
-                let error = config::validate(&config).unwrap_err();
-                self.publish_state(Some(error.to_string()), false).await;
-                return;
-            }
+            Ok(config) => config,
             Err(error) => {
-                self.publish_state(Some(error.to_string()), false).await;
+                self.publish_state(Some(error.to_string())).await;
                 return;
             }
         };
@@ -163,7 +150,7 @@ impl ActivityService {
         let configured_ids = config
             .calendar_sources
             .iter()
-            .map(|source| source.id.clone())
+            .map(|source| source.id.as_str())
             .collect::<BTreeSet<_>>();
         {
             let mut data = self.data.write().await;
@@ -172,9 +159,9 @@ impl ActivityService {
             }
             data.config = config.clone();
             data.events_by_source
-                .retain(|source_id, _| configured_ids.contains(source_id));
+                .retain(|source_id, _| configured_ids.contains(source_id.as_str()));
             data.source_states
-                .retain(|source_id, _| configured_ids.contains(source_id));
+                .retain(|source_id, _| configured_ids.contains(source_id.as_str()));
         }
 
         let mut first_error = None;
@@ -214,7 +201,7 @@ impl ActivityService {
             );
         }
         self.refresh_weather(&config).await;
-        self.publish_state(first_error, false).await;
+        self.publish_state(first_error).await;
     }
 
     async fn refresh_weather(&self, config: &ActivityConfig) {
@@ -232,12 +219,9 @@ impl ActivityService {
         let cached = self.data.read().await.weather_locations.clone();
         let now = unix_ms();
         let forecasts = futures::future::join_all(locations.iter().map(|location| {
-            let previous = cached
-                .iter()
-                .find(|weather| weather.id == location.id)
-                .cloned();
+            let previous = cached.iter().find(|weather| weather.id == location.id);
             async move {
-                if let Some(weather) = &previous
+                if let Some(weather) = previous
                     && weather.available
                     && now.saturating_sub(weather.updated_unix_ms) < 15 * 60 * 1_000
                 {
@@ -251,7 +235,7 @@ impl ActivityService {
                         home: location.home,
                         timezone: location.timezone.clone(),
                         error: Some(error.to_string()),
-                        ..previous.unwrap_or_default()
+                        ..previous.cloned().unwrap_or_default()
                     },
                 }
             }
@@ -390,7 +374,7 @@ impl ActivityService {
         todos.push(todo.clone());
         config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
-        self.publish_state(None, false).await;
+        self.publish_state(None).await;
         Ok(todo)
     }
 
@@ -406,7 +390,7 @@ impl ActivityService {
         let result = todo.clone();
         config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
-        self.publish_state(None, false).await;
+        self.publish_state(None).await;
         Ok(result)
     }
 
@@ -420,11 +404,11 @@ impl ActivityService {
         }
         config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
-        self.publish_state(None, false).await;
+        self.publish_state(None).await;
         Ok(())
     }
 
-    async fn publish_state(&self, error: Option<String>, syncing: bool) {
+    async fn publish_state(&self, error: Option<String>) {
         let data = self.data.read().await;
         let now = unix_ms();
         let events = data.events_by_source.values().flatten();
@@ -453,7 +437,7 @@ impl ActivityService {
             .config
             .world_clocks
             .iter()
-            .filter_map(|clock| world_clock(&clock.timezone, &clock.label).ok())
+            .filter_map(|clock| WorldClockState::new(&clock.timezone, &clock.label).ok())
             .collect();
         let error = data.todo_error.clone().or(error).or_else(|| {
             sources
@@ -462,7 +446,7 @@ impl ActivityService {
         });
         let state = ActivityState {
             available: true,
-            syncing,
+            syncing: false,
             event_count: events.count().try_into().unwrap_or(u32::MAX),
             incomplete_todo_count: data
                 .todos
@@ -495,34 +479,6 @@ fn source_name(source: &super::config::CalendarSourceConfig) -> String {
     } else {
         source.name.clone()
     }
-}
-
-fn world_clock(timezone: &str, label: &str) -> Result<WorldClockState> {
-    let zone: Tz = timezone
-        .parse()
-        .with_context(|| format!("parse world-clock timezone {timezone}"))?;
-    let instant = Utc::now();
-    let now = instant.with_timezone(&zone);
-    let city = timezone
-        .rsplit('/')
-        .next()
-        .unwrap_or(timezone)
-        .replace('_', " ");
-    Ok(WorldClockState {
-        timezone: timezone.into(),
-        label: if label.is_empty() {
-            city.clone()
-        } else {
-            label.into()
-        },
-        city,
-        abbreviation: now.format("%Z").to_string(),
-        utc_offset_seconds: now.offset().fix().local_minus_utc(),
-        timezone_region_ids: crate::timezone_regions::ids_for_offset(
-            now.offset().fix().local_minus_utc(),
-            instant,
-        ),
-    })
 }
 
 fn event_date(event: &ActivityEvent) -> Option<String> {
@@ -740,7 +696,7 @@ mod tests {
         tokio::fs::write(
             &config_path,
             format!(
-                r##"{{"calendar_sources":[{{"id":"one","kind":"ics-file","path":"{}"}},{{"id":"two","kind":"ics-file","path":"{}"}}]}}"##,
+                r##"{{"calendar_sources":[{{"id":"one","kind":"ics-file","path":"{}"}},{{"id":"two","kind":"ics-file","path":"{}"}}],"world_clocks":[{{"timezone":"Etc/UTC"}},{{"timezone":"Etc/UTC","label":"Home"}}]}}"##,
                 first.display(),
                 second.display()
             ),
@@ -757,6 +713,12 @@ mod tests {
         service.refresh().await;
         let snapshot = state.snapshot().await.activity;
         assert_eq!(snapshot.event_count, 4);
+        assert_eq!(snapshot.world_clocks.len(), 2);
+        assert_eq!(snapshot.world_clocks[0].city, "UTC");
+        assert_eq!(snapshot.world_clocks[0].label, "UTC");
+        assert_eq!(snapshot.world_clocks[0].abbreviation, "UTC");
+        assert_eq!(snapshot.world_clocks[0].utc_offset_seconds, 0);
+        assert_eq!(snapshot.world_clocks[1].label, "Home");
         assert_eq!(snapshot.next_event.as_ref().unwrap().title, "Ongoing");
         assert!(
             snapshot.lunar.is_some(),

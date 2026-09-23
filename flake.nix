@@ -18,8 +18,12 @@
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in {
+      # Shared with Shelllist's Home Manager module: one patch set for runtime and tests.
+      lib.mkManagedHypridle = import ./packaging/hypridle;
+
       packages = forAllSystems (system: pkgs:
         let
+          managedHypridle = self.lib.mkManagedHypridle pkgs.hypridle;
           barDaemon = pkgs.rustPlatform.buildRustPackage {
             pname = "bar-daemon";
             version = "0.1.0";
@@ -31,6 +35,10 @@
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config pkgs.llvmPackages.libclang ];
             buildInputs = [ pkgs.pipewire pkgs.systemd ];
+            nativeCheckInputs = [ pkgs.dbus pkgs.pipewire ];
+            HYPRIDLE_TEST_BIN = "${managedHypridle}/bin/hypridle";
+            cargoTestFlags = [ "--all-targets" ];
+            checkFlags = [ "--include-ignored" ];
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
@@ -72,7 +80,7 @@
               platforms = pkgs.lib.platforms.linux;
             };
           };
-        in { default = barDaemon; });
+        in { default = barDaemon; inherit managedHypridle; });
 
       apps = forAllSystems (system: pkgs: {
         default = {
@@ -123,6 +131,7 @@
           LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
           LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
           BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
+          HYPRIDLE_TEST_BIN = "${self.packages.${system}.managedHypridle}/bin/hypridle";
           RUST_BACKTRACE = "1";
           RUST_LOG = "bar_daemon=debug";
         };

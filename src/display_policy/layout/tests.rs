@@ -151,7 +151,8 @@ async fn replacements_are_enabled_before_disabling_and_failure_keeps_the_old_out
         proposed.outputs[0].enabled = false;
         proposed.outputs[1].enabled = true;
         f.backend.fail.set(fail);
-        assert_eq!(f.preview(proposed).await.is_err(), fail);
+        let preview = f.preview(proposed).await;
+        assert_eq!(preview.is_err(), fail);
         assert!(f.backend.calls.borrow()[0].contains("DP-2"));
         if fail {
             assert_eq!(f.backend.calls.borrow().len(), 1);
@@ -159,6 +160,11 @@ async fn replacements_are_enabled_before_disabling_and_failure_keeps_the_old_out
         } else {
             assert!(f.backend.outputs.borrow()[0].disabled);
             assert!(!f.backend.outputs.borrow()[1].disabled);
+            // Disabled geometry is irrelevant when confirming the active replacement.
+            f.backend.outputs.borrow_mut()[0].width = 0;
+            f.finish(&preview.unwrap().trial.unwrap().id, true)
+                .await
+                .unwrap();
         }
     }
 }
@@ -236,9 +242,22 @@ async fn confirmation_is_token_bound_verified_and_persistent() {
     proposed.outputs[0].scale = 1.5;
     let id = f.preview(proposed.clone()).await.unwrap().trial.unwrap().id;
     assert!(f.finish("stale", true).await.is_err());
-    f.backend.outputs.borrow_mut()[0].scale = 1.25;
-    assert!(f.finish(&id, true).await.is_err());
-    f.backend.outputs.borrow_mut()[0].scale = 1.5;
+    let actual = f.backend.outputs.borrow()[0].clone();
+    let changes: [fn(&mut Output); 8] = [
+        |o| o.width += 1,
+        |o| o.height += 1,
+        |o| o.refresh_rate += 0.2,
+        |o| o.x += 1,
+        |o| o.y += 1,
+        |o| o.scale += 0.25,
+        |o| o.transform = 1,
+        |o| o.disabled = true,
+    ];
+    for change in changes {
+        change(&mut f.backend.outputs.borrow_mut()[0]);
+        assert!(f.finish(&id, true).await.is_err());
+        f.backend.outputs.borrow_mut()[0] = actual.clone();
+    }
     let doc = f.finish(&id, true).await.unwrap();
     assert_eq!(doc.saved, proposed);
     assert!(doc.trial.is_none());
@@ -292,4 +311,25 @@ async fn saved_layout_waits_for_topology_and_does_not_reapply_working_modes() {
     assert_eq!(f.backend.calls.borrow().len(), 1);
     f.tick(10, start + Duration::from_secs(10)).await.unwrap();
     assert_eq!(f.backend.calls.borrow().len(), 1);
+
+    // A failed saved-layout attempt remains visible, without destructive retries.
+    f.backend.outputs.borrow_mut()[0].scale = 1.25;
+    f.backend.fail.set(true);
+    f.store.record_resume().await;
+    assert!(f.tick(15, start + Duration::from_secs(15)).await.unwrap().1);
+    for seconds in [20, 25] {
+        let error = f
+            .tick(seconds, start + Duration::from_secs(seconds))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Saved layout was not applied"));
+        assert_eq!(f.backend.calls.borrow().len(), 2);
+    }
+    // A new resume resets both the failure and its one-attempt guard.
+    f.backend.fail.set(false);
+    f.store.record_resume().await;
+    assert!(f.tick(30, start + Duration::from_secs(30)).await.unwrap().1);
+    assert!(!f.tick(35, start + Duration::from_secs(35)).await.unwrap().1);
+    assert_eq!(f.backend.calls.borrow().len(), 3);
+    assert_eq!(f.backend.outputs.borrow()[0].scale, 1.5);
 }

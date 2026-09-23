@@ -63,7 +63,7 @@ impl MediaService {
 
     pub(crate) async fn cycle(&self, store: &StateStore) -> Result<MediaState> {
         let mut selected = self.selected_player.write().await;
-        let mut state = store.snapshot().await.media;
+        let mut state = store.read(|s| s.media.clone()).await;
         let next = next_player_id(&state.players, state.active_player.as_deref())
             .context("no alternate MPRIS player is available")?;
         *selected = Some(next.clone());
