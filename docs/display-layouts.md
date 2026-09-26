@@ -4,8 +4,9 @@ With `BAR_DAEMON_DISPLAY_CONTROL=1`, the daemon owns both docking policy and
 saved layouts. Open Shelllist's dedicated Displays callout from the monitor bar
 control, `SUPER+P`, or `shelllist open displays`. Its compact diagram expands into
 a keyboard/mouse layout workspace with advertised modes, scale, position,
-rotation/reflection and external-output enablement. Laptop enablement remains
-owned by the external-only preference; previews always retain its fallback.
+rotation/reflection and enablement of any output, including the laptop panel.
+At least one display must remain enabled; another output must actually be usable
+before each disable command. The UI blocks disabling the last enabled display.
 Workspace rules remain ordinary declarative Hyprland configuration. This editor
 does not provide nwg-displays' mirroring, bit-depth or workspace-rule UI.
 
@@ -19,6 +20,13 @@ Snapshot `display_policy.outputs` contains current compositor outputs and
 advertised modes. Optional nonempty `description` supplies the compositor's human
 readable monitor name; connectors remain request identity. `display_policy.layout` contains `saved` and an optional
 `trial` with its opaque confirmation ID and `expires_at` Unix timestamp.
+The additive `manual_enablement` flag defaults to false for older saved documents.
+Confirming enable/disable changes sets it: manual choices then override automatic
+docking policy until `displayPolicy.set` is used again. Geometry-only edits do not
+change this ownership. Previews preserve their requested enablement, and rollback
+restores the actual previous enablement rather than forcing the laptop on.
+If no usable output remains (for example after unplugging the only active external
+monitor), the daemon still restores the laptop panel.
 Requests must cover all supported connected outputs. Numeric bounds, connector
 names, advertised modes and final active/local-session checks are enforced by
 the daemon, not trusted to QML. Compositor commands are fixed native Lua calls;
@@ -37,7 +45,7 @@ resume. Lost clients cannot leave a permanently unconfirmed layout. Failed
 rollback retains the journal for retry; automatic policy keeps the internal
 fallback rather than disabling it on a layout error.
 
-Enable replacements before disabling external outputs, and recheck that another
+Enable replacements before disabling any outputs, and recheck that another
 output is usable immediately before each disable. Saved layouts are tried once
 per stable topology/resume, after five seconds, rather than repeatedly resetting
 working external modes. Unsupported saved modes surface an error and can be

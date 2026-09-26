@@ -138,10 +138,15 @@ async fn replacement_with_same_connector_cannot_be_confirmed_and_rolls_back_earl
 
 #[tokio::test]
 async fn replacements_are_enabled_before_disabling_and_failure_keeps_the_old_output() {
-    for fail in [false, true] {
+    for (name, fail) in [
+        ("eDP-1", false),
+        ("eDP-1", true),
+        ("DP-1", false),
+        ("DP-1", true),
+    ] {
         let mut f = Fixture::new();
         let mut old = f.backend.outputs.borrow()[0].clone();
-        old.name = "DP-1".into();
+        old.name = name.into();
         let mut replacement = old.clone();
         replacement.id = 1;
         replacement.name = "DP-2".into();
@@ -166,6 +171,109 @@ async fn replacements_are_enabled_before_disabling_and_failure_keeps_the_old_out
                 .await
                 .unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn any_output_can_be_disabled_but_not_the_last_and_rollback_preserves_enablement() {
+    for disabled in [0, 1] {
+        let mut f = Fixture::new();
+        let mut external = f.backend.outputs.borrow()[0].clone();
+        external.name = "DP-1".into();
+        external.id = 1;
+        f.backend.outputs.borrow_mut().push(external);
+        let mut proposed = Layout::observed(&f.backend.outputs.borrow());
+        proposed.outputs[disabled].enabled = false;
+        let trial = f.preview(proposed.clone()).await.unwrap().trial.unwrap();
+        assert!(f.backend.outputs.borrow()[disabled].disabled);
+        let doc = f.finish(&trial.id, true).await.unwrap();
+        assert!(doc.manual_enablement);
+        assert_eq!(doc.saved, proposed);
+        // Disabled panels may report no current geometry. Use an advertised
+        // mode for recovery without silently turning them on in the snapshot.
+        f.backend.outputs.borrow_mut()[disabled].width = 0;
+        let previous = Layout::observed(&f.backend.outputs.borrow());
+        assert!(!previous.outputs[disabled].enabled);
+        assert!(previous.validate(&f.backend.outputs.borrow(), true).is_ok());
+        let mut all_off = previous.clone();
+        all_off.outputs[1 - disabled].enabled = false;
+        f.backend.calls.borrow_mut().clear();
+        assert!(
+            f.preview(all_off)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Cannot disable every")
+        );
+        assert!(f.backend.calls.borrow().is_empty());
+        let mut replacement = previous.clone();
+        replacement.outputs[disabled].enabled = true;
+        let trial = f.preview(replacement).await.unwrap().trial.unwrap();
+        assert_eq!(trial.previous, previous);
+        f.finish(&trial.id, false).await.unwrap();
+        assert!(f.backend.outputs.borrow()[disabled].disabled);
+        assert!(!f.backend.outputs.borrow()[1 - disabled].disabled);
+        // Returning to docking policy preserves saved geometry but relinquishes
+        // the explicit enablement override durably.
+        super::use_docking_policy_at(&f.path).await.unwrap();
+        let resumed = f.document().await;
+        assert!(!resumed.manual_enablement);
+        assert_eq!(resumed.saved, doc.saved);
+    }
+}
+
+#[tokio::test]
+async fn external_only_saved_layout_defers_to_fallback_when_undocked() {
+    let mut f = Fixture::new();
+    f.backend.outputs.borrow_mut()[0].disabled = true;
+    let mut saved = Layout::observed(&f.backend.outputs.borrow());
+    let mut external = saved.outputs[0].clone();
+    external.name = "DP-1".into();
+    external.enabled = true;
+    saved.outputs.push(external);
+    save_json_atomic(
+        &f.path,
+        &Document {
+            saved,
+            manual_enablement: true,
+            trial: None,
+        },
+    )
+    .await
+    .unwrap();
+    let start = Instant::now();
+    f.tick(0, start).await.unwrap();
+    let (doc, paused) = f.tick(5, start + Duration::from_secs(5)).await.unwrap();
+    assert!(!paused);
+    assert!(doc.manual_enablement);
+    assert!(f.backend.calls.borrow().is_empty());
+    // Reconciliation owns the emergency fallback; no saved-layout error blocks it.
+    let old: Document = serde_json::from_str(r#"{"saved":{"outputs":[]},"trial":null}"#).unwrap();
+    assert!(!old.manual_enablement);
+}
+
+#[tokio::test]
+async fn disable_rechecks_that_a_replacement_is_actually_usable() {
+    for unusable in ["disabled", "zero-size", "disconnected"] {
+        let f = Fixture::new();
+        let mut external = f.backend.outputs.borrow()[0].clone();
+        external.name = "DP-1".into();
+        f.backend.outputs.borrow_mut().push(external);
+        let mut proposed = Layout::observed(&f.backend.outputs.borrow());
+        proposed.outputs[0].enabled = false;
+        // Model a replacement disappearing after layout validation and before
+        // the disable command (only the disable remains to be applied).
+        proposed.outputs.remove(1);
+        match unusable {
+            "disabled" => f.backend.outputs.borrow_mut()[1].disabled = true,
+            "zero-size" => f.backend.outputs.borrow_mut()[1].width = 0,
+            _ => {
+                f.backend.outputs.borrow_mut().pop();
+            }
+        }
+        assert!(super::apply(&f.backend, &proposed, &f.store).await.is_err());
+        assert!(f.backend.calls.borrow().is_empty());
+        assert!(!f.backend.outputs.borrow()[0].disabled);
     }
 }
 
@@ -301,9 +409,15 @@ async fn saved_layout_waits_for_topology_and_does_not_reapply_working_modes() {
     let mut f = Fixture::new();
     let mut saved = Layout::observed(&f.backend.outputs.borrow());
     saved.outputs[0].scale = 1.5;
-    save_json_atomic(&f.path, &Document { saved, trial: None })
-        .await
-        .unwrap();
+    save_json_atomic(
+        &f.path,
+        &Document {
+            saved,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let start = Instant::now();
     assert!(f.tick(0, start).await.unwrap().1);
     assert!(f.backend.calls.borrow().is_empty());

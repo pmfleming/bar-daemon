@@ -49,8 +49,11 @@ defaults to true when the integration is enabled; without the opt-in, the daemon
 never changes displays. Turning the preference off enables the internal panel
 alongside external displays. Settings can be saved even while the compositor is
 unavailable; the daemon reconciles them when the active session returns.
+Confirmed manual enable/disable changes in the [layout editor](display-layouts.md)
+override this automatic preference until it is set again. Previews also preserve
+the requested enablement. The laptop still returns if no usable output remains.
 
-On startup, wake, output loss or replacement, an internal eDP/LVDS/DSI panel is
+When automatic policy owns enablement, on startup, wake, output loss or replacement, an internal eDP/LVDS/DSI panel is
 kept as a fallback until the same enabled, nonzero-size external output topology
 has been observed for five seconds. Polling every two seconds is independent of
 compositor event traffic. Resume generation resets stability; sleep preparation

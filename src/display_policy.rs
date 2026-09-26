@@ -64,6 +64,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
     let _guard = POLICY_WRITE.lock().await;
     layout::ensure_policy_change_allowed().await?;
     save_json_atomic(&policy_path(), &policy).await?;
+    layout::use_docking_policy().await?;
     let state = DisplayPolicyState {
         available: true,
         policy,
@@ -209,6 +210,7 @@ async fn reconcile<B: Backend>(
     backend: &B,
     planner: &mut Planner,
     policy: &DisplayPolicy,
+    preserve_enablement: bool,
     store: &StateStore,
     now: Instant,
 ) -> Result<&'static str> {
@@ -219,6 +221,12 @@ async fn reconcile<B: Backend>(
     }
     backend.eligible().await?;
     let outputs = backend.outputs().await?;
+    // Layout previews and explicit enablement choices must not be undone by
+    // docking policy. Still restore the laptop if the last usable output goes.
+    if preserve_enablement && outputs.iter().any(Output::usable) {
+        planner.reset();
+        return Ok("layout");
+    }
     let plan = planner.plan(policy.prefer_external, &outputs, now);
     for target in &plan.targets {
         if plan.disable_internal {
@@ -299,8 +307,18 @@ pub(crate) async fn monitor(store: StateStore) {
                 if paused {
                     policy.prefer_external = false;
                 }
-                let status =
-                    reconcile(&backend, &mut planner, &policy, &store, Instant::now()).await?;
+                let preserve_enablement = layout_result
+                    .as_ref()
+                    .is_ok_and(|(doc, _)| doc.trial.is_some() || doc.manual_enablement);
+                let status = reconcile(
+                    &backend,
+                    &mut planner,
+                    &policy,
+                    preserve_enablement,
+                    &store,
+                    Instant::now(),
+                )
+                .await?;
                 state.outputs = backend.outputs().await?;
                 let (layout, _) = layout_result?;
                 state.layout = layout;

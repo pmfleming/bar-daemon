@@ -207,6 +207,7 @@ async fn final_hotplug_and_sleep_checks_prevent_disabling_the_only_display() {
                 &backend,
                 &mut planner,
                 &DisplayPolicy::default(),
+                false,
                 &store,
                 start + Duration::from_secs(5)
             )
@@ -231,6 +232,7 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
             &backend,
             &mut planner,
             &DisplayPolicy::default(),
+            false,
             &store,
             Instant::now()
         )
@@ -245,6 +247,7 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
             &backend,
             &mut planner,
             &DisplayPolicy::default(),
+            false,
             &store,
             Instant::now()
         )
@@ -260,6 +263,7 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
             &backend,
             &mut planner,
             &DisplayPolicy::default(),
+            false,
             &store,
             Instant::now()
         )
@@ -272,6 +276,7 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
             &backend,
             &mut planner,
             &DisplayPolicy::default(),
+            false,
             &store,
             Instant::now()
         )
@@ -283,6 +288,53 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
         *backend.calls.borrow(),
         vec![("eDP-1".into(), false), ("eDP-1".into(), false)]
     );
+}
+
+#[tokio::test]
+async fn manual_enablement_survives_policy_ticks_but_unplug_restores_fallback() {
+    for prefer_external in [false, true] {
+        for laptop_disabled in [false, true] {
+            let backend = FakeBackend {
+                snapshots: RefCell::new(VecDeque::from([vec![
+                    internal(laptop_disabled),
+                    external(),
+                ]])),
+                ..Default::default()
+            };
+            let store = StateStore::default();
+            let mut planner = Planner::default();
+            let policy = DisplayPolicy { prefer_external };
+            let start = Instant::now();
+            for seconds in [0, 5, 10] {
+                assert_eq!(
+                    reconcile(
+                        &backend,
+                        &mut planner,
+                        &policy,
+                        true,
+                        &store,
+                        start + Duration::from_secs(seconds)
+                    )
+                    .await
+                    .unwrap(),
+                    "layout"
+                );
+            }
+            assert!(backend.calls.borrow().is_empty());
+            *backend.snapshots.borrow_mut() = VecDeque::from([vec![internal(true)]]);
+            reconcile(
+                &backend,
+                &mut planner,
+                &policy,
+                true,
+                &store,
+                start + Duration::from_secs(12),
+            )
+            .await
+            .unwrap();
+            assert_eq!(*backend.calls.borrow(), vec![("eDP-1".into(), false)]);
+        }
+    }
 }
 
 #[tokio::test]

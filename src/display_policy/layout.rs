@@ -81,12 +81,21 @@ impl Setting {
     fn observed(output: &Output) -> Self {
         Self {
             name: output.name.clone(),
-            mode: Self::observed_mode(output),
+            mode: if output.disabled && mode(&Self::observed_mode(output)).is_none() {
+                output
+                    .available_modes
+                    .iter()
+                    .find(|m| mode(m).is_some())
+                    .cloned()
+                    .unwrap_or_else(|| Self::observed_mode(output))
+            } else {
+                Self::observed_mode(output)
+            },
             x: output.x,
             y: output.y,
             scale: output.scale,
             transform: output.transform,
-            enabled: !output.disabled || output.internal(),
+            enabled: !output.disabled,
         }
     }
 }
@@ -147,10 +156,6 @@ impl Layout {
                 .iter()
                 .find(|o| o.name == setting.name)
                 .context("Display disconnected; refresh the layout")?;
-            ensure!(
-                !output.internal() || setting.enabled,
-                "Laptop fallback is managed by the external-only preference"
-            );
             if setting.enabled {
                 ensure!(
                     output
@@ -198,6 +203,10 @@ pub(crate) struct Trial {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Document {
+    // Explicit enablement edits override docking policy until it is changed.
+    // Old saved layouts retain their existing automatic-policy behaviour.
+    #[serde(default)]
+    pub manual_enablement: bool,
     pub saved: Layout,
     pub trial: Option<Trial>,
 }
@@ -237,6 +246,18 @@ async fn ensure_policy_change_allowed_at(path: &Path) -> Result<()> {
     );
     Ok(())
 }
+pub(super) async fn use_docking_policy() -> Result<()> {
+    use_docking_policy_at(&path()).await
+}
+async fn use_docking_policy_at(path: &Path) -> Result<()> {
+    let mut doc: Document = load_json_or_default(path, "display layout").await?;
+    if doc.manual_enablement {
+        doc.manual_enablement = false;
+        save_json_atomic(path, &doc).await?;
+    }
+    Ok(())
+}
+
 fn topology(outputs: &[Output]) -> Vec<(String, i64)> {
     let mut keys: Vec<_> = outputs.iter().map(|o| (o.name.clone(), o.id)).collect();
     keys.sort();
@@ -251,7 +272,7 @@ fn now() -> u64 {
 
 async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> Result<()> {
     let generation = store.read(|s| s.power_sleep.resume_generation).await;
-    // Enable replacements/fallback first, disable external outputs last.
+    // Enable replacements first, disable any outputs last.
     let mut ordered = layout.outputs.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|s| !s.enabled);
     for setting in ordered {
@@ -265,14 +286,14 @@ async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> 
         let Some(output) = outputs.iter().find(|o| o.name == setting.name) else {
             continue;
         };
+        if setting.matches(output) {
+            continue;
+        }
         if !setting.enabled {
             ensure!(
                 outputs.iter().any(|o| o.name != setting.name && o.usable()),
                 "No replacement display is usable; keeping fallback"
             );
-        }
-        if setting.matches(output) {
-            continue;
         }
         backend.configure(setting).await?;
     }
@@ -396,6 +417,11 @@ async fn finish_at<B: Backend>(
                 .is_some_and(|o| s.matches(o))),
             "Compositor has not applied the requested layout"
         );
+        doc.manual_enablement |= trial.proposed.outputs.iter().any(|setting| {
+            trial.previous.outputs.iter().any(|previous| {
+                previous.name == setting.name && previous.enabled != setting.enabled
+            })
+        });
         doc.saved = trial.proposed;
     } else {
         apply(backend, &trial.previous, store).await?;
@@ -490,7 +516,9 @@ impl Runtime {
                     .cloned()
                     .collect(),
             };
-            if !present.outputs.is_empty() {
+            // A saved external-only layout cannot be applied while its enabled
+            // outputs are unplugged. Let reconciliation restore the laptop.
+            if present.outputs.iter().any(|s| s.enabled) {
                 let result = async {
                     present.validate(outputs, false)?;
                     apply(backend, &present, store).await
