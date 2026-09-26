@@ -8,11 +8,12 @@ rotation/reflection and enablement of any output, including the laptop panel.
 At least one display must remain enabled; another output must actually be usable
 before each disable command. The UI blocks disabling the last enabled display.
 Workspace rules remain ordinary declarative Hyprland configuration. This editor
-does not provide nwg-displays' mirroring, bit-depth or workspace-rule UI.
+supports extended and mirrored content, but does not provide bit-depth or
+workspace-rule UI.
 
 API additions (bar-api v1, existing `display-policy.changed` stream):
 
-- `displayLayout.preview {outputs: [{name, mode, x, y, scale, transform, enabled}]}`
+- `displayLayout.preview {outputs: [{name, mode, x, y, scale, transform, enabled, mirror_of}]}`
 - `displayLayout.confirm {id}`
 - `displayLayout.revert {id}`
 
@@ -21,7 +22,7 @@ advertised modes. Optional nonempty `description` supplies the compositor's huma
 readable monitor name; connectors remain request identity. `display_policy.layout` contains `saved` and an optional
 `trial` with its opaque confirmation ID and `expires_at` Unix timestamp.
 The additive `manual_enablement` flag defaults to false for older saved documents.
-Confirming enable/disable changes sets it: manual choices then override automatic
+Confirming enable/disable or mirror/extend changes sets it: manual choices then override automatic
 docking policy until `displayPolicy.set` is used again. Geometry-only edits do not
 change this ownership. Previews preserve their requested enablement, and rollback
 restores the actual previous enablement rather than forcing the laptop on.
@@ -45,12 +46,47 @@ resume. Lost clients cannot leave a permanently unconfirmed layout. Failed
 rollback retains the journal for retry; automatic policy keeps the internal
 fallback rather than disabling it on a layout error.
 
-Enable replacements before disabling any outputs, and recheck that another
-output is usable immediately before each disable. Saved layouts are tried once
+Enable independent replacements before attaching mirrors or disabling outputs,
+and recheck that another independent output is usable immediately before each
+disable. A mirror is not an independent fallback for its own source. Saved layouts are tried once
 per stable topology/resume, after five seconds, rather than repeatedly resetting
 working external modes. Unsupported saved modes surface an error and can be
 replaced by a new preview. Automatic fallback restoration uses the saved internal
 mode when possible and falls back to the compositor's preferred mode on failure.
+
+## Mirror or extend
+
+In **Settings → Display content**, choose **Extend desktop** or **Mirror <source>**
+for each enabled screen, then Preview and Keep the whole layout. Mixed layouts
+are supported: multiple mirrors can share one source while other screens extend.
+Position controls are unavailable for mirrors; the arrangement canvas represents
+one desktop tile per independent source and labels its copies. Returning to
+Extend places the screen beside the other independent screens.
+
+`mirror_of` is an optional connector string; missing/empty means extended, so old
+saved documents and API clients keep their meaning. A mirror must reference a
+connected, enabled, independent source in the proposal. Self-mirrors, missing or
+disabled sources, chains and cycles are rejected before mutation. Each physical
+screen retains its own advertised mode, scale and rotation. Hyprland scales the
+source image to fit, with black bars when aspect ratios differ; identical
+resolutions are not required. Position belongs to the source, not the mirror.
+
+Native `mirrorOf` telemetry is normalized from numeric/string IDs and resolved to
+connector names for drafts and recovery. Extended commands explicitly clear the
+mirror rule. Confirmation checks the observed source relationship, not merely
+command acceptance or overlapping geometry. Changing mirrors are first detached
+so source handoffs do not create transient chains, then independent sources are
+enabled before mirrors are attached. Automatic docking never disables a source
+that still feeds active mirrors, and never counts a mirror as a standalone
+replacement desktop.
+
+Disabling a source in the UI promotes its copies to extended displays before the
+source is disabled. During rollback or saved-layout recovery, an unplugged source
+also causes surviving mirrors to become independent. Saved relationships are
+retained for reconnect. Emergency laptop recovery always clears mirroring, so an
+orphaned copy cannot masquerade as a usable desktop. Unconfirmed mirror/extend
+changes use the same durable trial, expiry, sleep/restart and hotplug recovery as
+mode/geometry changes. No live hardware switching is performed by the tests.
 
 Keep the existing `monitors.lua` module, its Home Manager link and
 `require("monitors")` intact as a startup/compatibility baseline. Existing

@@ -259,11 +259,26 @@
         "result": "display_policy"
       },
       {
+        "name": "displayFocus.set",
+        "params": {
+          "values": {
+            "misc:mouse_move_focuses_monitor": false
+          }
+        },
+        "result": "display_policy"
+      },
+      {
+        "name": "displayFocus.reset",
+        "params": {},
+        "result": "display_policy"
+      },
+      {
         "name": "displayLayout.preview",
         "params": {
           "outputs": [
             {
               "enabled": true,
+              "mirror_of": "",
               "mode": "1920x1200@60",
               "name": "eDP-1",
               "scale": 1.25,
@@ -842,6 +857,15 @@
     "display_policy": {
       "available": true,
       "error": null,
+      "focus": {
+        "available": true,
+        "error": null,
+        "saved": {},
+        "values": {
+          "input:follow_mouse": 1,
+          "misc:mouse_move_focuses_monitor": true
+        }
+      },
       "layout": {
         "saved": {
           "outputs": []

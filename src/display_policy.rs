@@ -17,6 +17,7 @@ use crate::{
 };
 use planner::{Output, Planner, external_signature};
 
+pub(crate) mod focus;
 pub(crate) mod layout;
 mod planner;
 #[cfg(test)]
@@ -45,6 +46,8 @@ pub(crate) struct DisplayPolicyState {
     pub error: Option<String>,
     pub outputs: Vec<Output>,
     pub layout: layout::Document,
+    #[serde(default)]
+    pub focus: focus::State,
 }
 
 fn enabled() -> bool {
@@ -238,6 +241,11 @@ async fn reconcile<B: Backend>(
                 || !current
                     .iter()
                     .any(|o| o.name == target.name && o.id == target.id)
+                || current.iter().any(|o| {
+                    o.active()
+                        && o.mirror_source(&current)
+                            .is_some_and(|source| source.name == target.name)
+                })
             {
                 bail!(
                     "display topology changed before disabling the laptop screen; keeping the fallback"
@@ -335,6 +343,10 @@ pub(crate) async fn monitor(store: StateStore) {
                 state.status = "error".into();
                 state.error = Some(format!("{error:#}"));
             }
+        }
+        if state.layout.trial.is_none() && !store.read(|s| s.power_sleep.preparing_for_sleep).await
+        {
+            state.focus = focus::tick(&backend, &store).await;
         }
         let previous = store.snapshot().await.display_policy;
         if state.status != previous.status || state.error != previous.error {

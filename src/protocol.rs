@@ -76,6 +76,8 @@ pub const METHODS: &[&str] = &[
     "powerSleep.cancelCritical",
     "powerSleep.setCriticalPolicy",
     "displayPolicy.set",
+    "displayFocus.set",
+    "displayFocus.reset",
     "displayLayout.preview",
     "displayLayout.confirm",
     "displayLayout.revert",
@@ -151,7 +153,9 @@ pub fn registry() -> Value {
             { "name": "powerSleep.cancelCritical", "params": {}, "result": "sleep_policy" },
             { "name": "powerSleep.setCriticalPolicy", "params": { "enabled": false, "percent": 5, "grace_seconds": 60 }, "result": "sleep_policy" },
             { "name": "displayPolicy.set", "params": { "prefer_external": true }, "result": "display_policy" },
-            { "name": "displayLayout.preview", "params": { "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true }] }, "result": "display_policy" },
+            { "name": "displayFocus.set", "params": { "values": { "misc:mouse_move_focuses_monitor": false } }, "result": "display_policy" },
+            { "name": "displayFocus.reset", "params": {}, "result": "display_policy" },
+            { "name": "displayLayout.preview", "params": { "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true, "mirror_of": "" }] }, "result": "display_policy" },
             { "name": "displayLayout.confirm", "params": { "id": "preview-id" }, "result": "display_policy" },
             { "name": "displayLayout.revert", "params": { "id": "preview-id" }, "result": "display_policy" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },
@@ -335,7 +339,7 @@ fn generated_contract_fixture() -> Value {
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null
             },
-            "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null, "outputs": [], "layout": { "saved": { "outputs": [] }, "trial": null } },
+            "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null, "outputs": [], "layout": { "saved": { "outputs": [] }, "trial": null }, "focus": { "available": true, "values": { "input:follow_mouse": 1, "misc:mouse_move_focuses_monitor": true }, "saved": {}, "error": null } },
             "sleep_policy": {
                 "available": true, "active_profile": "shared",
                 "hibernate_available": true, "hibernate_ready": true, "hibernate_error": null, "last_error": null,

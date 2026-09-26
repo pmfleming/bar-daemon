@@ -15,6 +15,8 @@ pub(crate) struct Output {
     pub width: u32,
     pub height: u32,
     pub disabled: bool,
+    #[serde(default)]
+    pub focused: bool,
     pub scale: f64,
     #[serde(rename = "refreshRate")]
     pub refresh_rate: f64,
@@ -26,8 +28,32 @@ pub(crate) struct Output {
     pub transform: u8,
     #[serde(default, rename = "availableModes")]
     pub available_modes: Vec<String>,
+    #[serde(default, rename = "mirrorOf", deserialize_with = "mirror_reference")]
+    pub mirror_of: String,
     // DPMS intentionally does not participate in eligibility: idle blanking
     // must not turn another display on.
+}
+
+fn mirror_reference<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Reference {
+        Name(String),
+        Id(i64),
+        None(()),
+    }
+    let value = match Reference::deserialize(deserializer)? {
+        Reference::Name(value) => value,
+        Reference::Id(value) => value.to_string(),
+        Reference::None(()) => String::new(),
+    };
+    Ok(if value == "none" || value == "-1" {
+        String::new()
+    } else {
+        value
+    })
 }
 
 impl Output {
@@ -41,8 +67,24 @@ impl Output {
             .iter()
             .any(|prefix| self.name.starts_with(prefix))
     }
-    pub(super) fn usable(&self) -> bool {
+    pub(super) fn active(&self) -> bool {
         !self.disabled && self.width > 0 && self.height > 0
+    }
+    pub(super) fn mirrored(&self) -> bool {
+        !self.mirror_of.is_empty() && self.mirror_of != "none" && self.mirror_of != "-1"
+    }
+    pub(super) fn mirror_source<'a>(&self, outputs: &'a [Output]) -> Option<&'a Output> {
+        self.mirrored()
+            .then(|| {
+                outputs
+                    .iter()
+                    .find(|o| o.name == self.mirror_of || o.id.to_string() == self.mirror_of)
+            })
+            .flatten()
+    }
+    // A mirror cannot keep a desktop alive after its source is disabled.
+    pub(super) fn usable(&self) -> bool {
+        self.active() && !self.mirrored()
     }
     pub fn command(&self, disable: bool) -> Result<String> {
         // Only compositor-reported internal connectors can be mutated. No
@@ -65,7 +107,7 @@ impl Output {
                 bail!("invalid internal display scale");
             }
             Ok(format!(
-                "eval hl.monitor({{ output = \"{}\", mode = \"preferred\", position = \"auto\", scale = {} }})",
+                "eval hl.monitor({{ output = \"{}\", mode = \"preferred\", position = \"auto\", scale = {}, mirror = \"\" }})",
                 self.name, self.scale
             ))
         }
@@ -148,8 +190,13 @@ impl Planner {
                 o.internal()
                     && if disable_internal {
                         o.usable()
+                            && !outputs.iter().any(|m| {
+                                m.active()
+                                    && m.mirror_source(outputs)
+                                        .is_some_and(|source| source.name == o.name)
+                            })
                     } else {
-                        !o.usable()
+                        !o.active() || (o.mirrored() && !outputs.iter().any(Output::usable))
                     }
             })
             .cloned()

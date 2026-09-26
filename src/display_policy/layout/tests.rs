@@ -6,17 +6,20 @@ use crate::{
     paths::{load_json_or_default, save_json_atomic},
     state::StateStore,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     time::{Duration, Instant},
 };
 
+mod mirroring;
+
 struct Fake {
     outputs: RefCell<Vec<Output>>,
     calls: RefCell<Vec<String>>,
     fail: Cell<bool>,
+    ignore_mirror: Cell<bool>,
 }
 impl Backend for Fake {
     async fn eligible(&self) -> Result<()> {
@@ -34,14 +37,34 @@ impl Backend for Fake {
             bail!("compositor failure")
         }
         let mut outputs = self.outputs.borrow_mut();
+        let source = if setting.enabled && !setting.mirror_of.is_empty() {
+            let source = outputs
+                .iter()
+                .find(|o| o.name == setting.mirror_of && o.usable())
+                .context("mirror source unavailable")?
+                .clone();
+            if outputs.iter().any(|o| {
+                o.active()
+                    && o.mirror_source(&outputs)
+                        .is_some_and(|parent| parent.name == setting.name)
+            }) {
+                bail!("cannot create a transient mirror chain");
+            }
+            Some(source)
+        } else {
+            None
+        };
         let output = outputs.iter_mut().find(|o| o.name == setting.name).unwrap();
         output.disabled = !setting.enabled;
         let (width, height, refresh) = mode(&setting.mode).unwrap();
         output.width = width;
         output.height = height;
         output.refresh_rate = refresh;
-        output.x = setting.x;
-        output.y = setting.y;
+        output.x = source.as_ref().map_or(setting.x, |s| s.x);
+        output.y = source.as_ref().map_or(setting.y, |s| s.y);
+        if !self.ignore_mirror.get() {
+            output.mirror_of = source.map_or_else(String::new, |s| s.id.to_string());
+        }
         output.scale = setting.scale;
         output.transform = setting.transform;
         Ok(())
@@ -61,6 +84,7 @@ fn fake() -> Fake {
         }]),
         calls: RefCell::new(vec![]),
         fail: Cell::new(false),
+        ignore_mirror: Cell::new(false),
     }
 }
 

@@ -27,6 +27,9 @@ pub(crate) struct Setting {
     pub scale: f64,
     pub transform: u8,
     pub enabled: bool,
+    /// Empty means an independent (extended) desktop; otherwise a connector.
+    #[serde(default)]
+    pub mirror_of: String,
 }
 impl Setting {
     fn validate(&self) -> Result<()> {
@@ -41,6 +44,11 @@ impl Setting {
             "Display scale must be between 0.5 and 4"
         );
         ensure!(self.transform <= 7, "Invalid display rotation");
+        ensure!(
+            self.mirror_of.is_empty()
+                || (connector(&self.mirror_of) && self.mirror_of != self.name),
+            "Invalid mirror source"
+        );
         Ok(())
     }
     pub(super) fn command(&self) -> Result<String> {
@@ -52,13 +60,14 @@ impl Setting {
             ));
         }
         Ok(format!(
-            "eval hl.monitor({{ output = \"{}\", mode = \"{}\", position = \"{}x{}\", scale = {}, transform = {} }})",
+            "eval hl.monitor({{ output = \"{}\", mode = \"{}\", position = \"{}x{}\", scale = {}, transform = {}, mirror = \"{}\" }})",
             self.name,
             self.mode.trim_end_matches("Hz"),
             self.x,
             self.y,
             self.scale,
-            self.transform
+            self.transform,
+            self.mirror_of
         ))
     }
     fn observed_mode(output: &Output) -> String {
@@ -69,16 +78,24 @@ impl Setting {
     }
     // Disabled outputs need no geometry match; enabled outputs must agree with
     // the compositor before skipping IPC or accepting a preview confirmation.
-    fn matches(&self, output: &Output) -> bool {
+    fn matches(&self, output: &Output, outputs: &[Output]) -> bool {
+        let mirror_matches = if self.mirror_of.is_empty() {
+            !output.mirrored()
+        } else {
+            output
+                .mirror_source(outputs)
+                .is_some_and(|source| source.name == self.mirror_of && source.usable())
+        };
         self.enabled != output.disabled
             && (!self.enabled
-                || (same_mode(&self.mode, &Self::observed_mode(output))
-                    && self.x == output.x
-                    && self.y == output.y
+                || (mirror_matches && same_mode(&self.mode, &Self::observed_mode(output))
+                    // Hyprland places mirrors at the source's position. Their
+                    // own mode/scale/rotation still describe the physical output.
+                    && (!self.mirror_of.is_empty() || (self.x == output.x && self.y == output.y))
                     && self.scale == output.scale
                     && self.transform == output.transform))
     }
-    fn observed(output: &Output) -> Self {
+    fn observed(output: &Output, outputs: &[Output]) -> Self {
         Self {
             name: output.name.clone(),
             mode: if output.disabled && mode(&Self::observed_mode(output)).is_none() {
@@ -96,6 +113,14 @@ impl Setting {
             scale: output.scale,
             transform: output.transform,
             enabled: !output.disabled,
+            mirror_of: if !output.disabled && output.mirrored() {
+                output
+                    .mirror_source(outputs)
+                    .map(|source| source.name.clone())
+                    .unwrap_or_else(|| output.mirror_of.clone())
+            } else {
+                String::new()
+            },
         }
     }
 }
@@ -157,6 +182,16 @@ impl Layout {
                 .find(|o| o.name == setting.name)
                 .context("Display disconnected; refresh the layout")?;
             if setting.enabled {
+                if !setting.mirror_of.is_empty() {
+                    ensure!(
+                        self.outputs
+                            .iter()
+                            .any(|source| source.name == setting.mirror_of
+                                && source.enabled
+                                && source.mirror_of.is_empty()),
+                        "Mirror source must be an enabled independent display (no chains or cycles)"
+                    );
+                }
                 ensure!(
                     output
                         .available_modes
@@ -168,7 +203,9 @@ impl Layout {
             }
         }
         ensure!(
-            self.outputs.iter().any(|o| o.enabled),
+            self.outputs
+                .iter()
+                .any(|o| o.enabled && o.mirror_of.is_empty()),
             "Cannot disable every display"
         );
         if complete {
@@ -187,9 +224,28 @@ impl Layout {
             outputs: outputs
                 .iter()
                 .filter(|o| connector(&o.name))
-                .map(Setting::observed)
+                .map(|output| Setting::observed(output, outputs))
                 .collect(),
         }
+    }
+    // Recovery/hotplug only: promote a surviving mirror when its source is gone.
+    // Keep the saved document intact so reconnecting restores the chosen group.
+    fn connected(&self, outputs: &[Output]) -> Self {
+        let mut present = Self {
+            outputs: self
+                .outputs
+                .iter()
+                .filter(|s| outputs.iter().any(|o| o.name == s.name))
+                .cloned()
+                .collect(),
+        };
+        for setting in &mut present.outputs {
+            if !setting.mirror_of.is_empty() && !outputs.iter().any(|o| o.name == setting.mirror_of)
+            {
+                setting.mirror_of.clear();
+            }
+        }
+        present
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,7 +259,7 @@ pub(crate) struct Trial {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Document {
-    // Explicit enablement edits override docking policy until it is changed.
+    // Explicit enablement/content edits override docking policy until it is changed.
     // Old saved layouts retain their existing automatic-policy behaviour.
     #[serde(default)]
     pub manual_enablement: bool,
@@ -272,31 +328,76 @@ fn now() -> u64 {
 
 async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> Result<()> {
     let generation = store.read(|s| s.power_sleep.resume_generation).await;
-    // Enable replacements first, disable any outputs last.
-    let mut ordered = layout.outputs.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|s| !s.enabled);
-    for setting in ordered {
-        backend.eligible().await?;
-        let sleep = store.snapshot().await.power_sleep;
-        ensure!(
-            !sleep.preparing_for_sleep && sleep.resume_generation == generation,
-            "Sleep interrupted display changes"
-        );
-        let outputs = backend.outputs().await?;
-        let Some(output) = outputs.iter().find(|o| o.name == setting.name) else {
-            continue;
-        };
-        if setting.matches(output) {
-            continue;
+    // Detach changing mirrors before converting their old source into a mirror.
+    // This also supports reversing source/target without transient mirror chains.
+    let current = backend.outputs().await?;
+    for output in current.iter().filter(|o| o.active() && o.mirrored()) {
+        if let Some(setting) = layout.outputs.iter().find(|s| s.name == output.name) {
+            let old_source = output.mirror_source(&current).map(|s| s.name.as_str());
+            if !setting.enabled || old_source != Some(setting.mirror_of.as_str()) {
+                let mut independent = Setting::observed(output, &current);
+                independent.mirror_of.clear();
+                apply_setting(backend, &independent, store, generation).await?;
+            }
         }
-        if !setting.enabled {
-            ensure!(
-                outputs.iter().any(|o| o.name != setting.name && o.usable()),
-                "No replacement display is usable; keeping fallback"
-            );
-        }
-        backend.configure(setting).await?;
     }
+    // Enable independent sources first, attach mirrors second, disable last.
+    let mut ordered = layout.outputs.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|s| {
+        if !s.enabled {
+            2
+        } else {
+            u8::from(!s.mirror_of.is_empty())
+        }
+    });
+    for setting in ordered {
+        apply_setting(backend, setting, store, generation).await?;
+    }
+    Ok(())
+}
+
+async fn apply_setting<B: Backend>(
+    backend: &B,
+    setting: &Setting,
+    store: &StateStore,
+    generation: u64,
+) -> Result<()> {
+    backend.eligible().await?;
+    let sleep = store.snapshot().await.power_sleep;
+    ensure!(
+        !sleep.preparing_for_sleep && sleep.resume_generation == generation,
+        "Sleep interrupted display changes"
+    );
+    let outputs = backend.outputs().await?;
+    let Some(output) = outputs.iter().find(|o| o.name == setting.name) else {
+        return Ok(());
+    };
+    if setting.matches(output, &outputs) {
+        return Ok(());
+    }
+    if !setting.enabled || !setting.mirror_of.is_empty() {
+        ensure!(
+            !outputs.iter().any(|o| o.active()
+                && o.mirror_source(&outputs)
+                    .is_some_and(|source| source.name == setting.name)),
+            "Detach mirrors before changing their source"
+        );
+    }
+    if setting.enabled && !setting.mirror_of.is_empty() {
+        ensure!(
+            outputs
+                .iter()
+                .any(|o| o.name == setting.mirror_of && o.usable()),
+            "Mirror source is not usable; keeping the current display"
+        );
+    }
+    if !setting.enabled {
+        ensure!(
+            outputs.iter().any(|o| o.name != setting.name && o.usable()),
+            "No replacement display is usable; keeping fallback"
+        );
+    }
+    backend.configure(setting).await?;
     Ok(())
 }
 
@@ -414,17 +515,24 @@ async fn finish_at<B: Backend>(
             trial.proposed.outputs.iter().all(|s| outputs
                 .iter()
                 .find(|o| o.name == s.name)
-                .is_some_and(|o| s.matches(o))),
+                .is_some_and(|o| s.matches(o, &outputs))),
             "Compositor has not applied the requested layout"
         );
         doc.manual_enablement |= trial.proposed.outputs.iter().any(|setting| {
             trial.previous.outputs.iter().any(|previous| {
-                previous.name == setting.name && previous.enabled != setting.enabled
+                previous.name == setting.name
+                    && (previous.enabled != setting.enabled
+                        || previous.mirror_of != setting.mirror_of)
             })
         });
         doc.saved = trial.proposed;
     } else {
-        apply(backend, &trial.previous, store).await?;
+        apply(
+            backend,
+            &trial.previous.connected(&backend.outputs().await?),
+            store,
+        )
+        .await?;
     }
     save_json_atomic(path, &doc).await?;
     runtime.trial = None;
@@ -467,7 +575,12 @@ async fn tick_at<B: Backend>(
         {
             return Ok((doc, true));
         }
-        apply(backend, &trial.previous, store).await?;
+        apply(
+            backend,
+            &trial.previous.connected(&backend.outputs().await?),
+            store,
+        )
+        .await?;
         doc.trial = None;
         save_json_atomic(path, &doc).await?;
         runtime.trial = None;
@@ -508,14 +621,7 @@ impl Runtime {
                 return Ok(true);
             }
             self.applied = true;
-            let present = Layout {
-                outputs: saved
-                    .outputs
-                    .iter()
-                    .filter(|s| outputs.iter().any(|o| o.name == s.name))
-                    .cloned()
-                    .collect(),
-            };
+            let present = saved.connected(outputs);
             // A saved external-only layout cannot be applied while its enabled
             // outputs are unplugged. Let reconciliation restore the laptop.
             if present.outputs.iter().any(|s| s.enabled) {
@@ -542,7 +648,11 @@ pub(super) async fn saved_internal(name: &str) -> Result<Option<Setting>> {
         .saved
         .outputs
         .into_iter()
-        .find(|s| s.name == name && s.enabled))
+        .find(|s| s.name == name && s.enabled)
+        .map(|mut setting| {
+            setting.mirror_of.clear();
+            setting
+        }))
 }
 
 #[cfg(test)]

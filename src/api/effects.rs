@@ -154,6 +154,13 @@ impl DesktopEffects {
         }
     }
 
+    pub(super) async fn display_focus(&self, method: &str, params: Value) -> Value {
+        match crate::display_policy::focus::action(method, params, &self.state).await {
+            Ok(state) => success(json!({"display_policy": state})),
+            Err(value) => error("display-focus-failed", format!("{value:#}")),
+        }
+    }
+
     pub(super) async fn display_policy_set(&self, params: Value) -> Value {
         let policy = request!(
             params,

@@ -143,6 +143,51 @@ fn dpms_off_is_not_output_loss_and_preference_off_restores_internal() {
     );
 }
 
+#[test]
+fn docking_preserves_mirror_sources_and_restores_only_independent_fallbacks() {
+    let start = Instant::now();
+    let mut copy = external();
+    copy.mirror_of = "0".into();
+    let mut third = external();
+    third.id = 2;
+    third.name = "DP-2".into();
+    for outputs in [
+        vec![internal(false), copy.clone()],
+        vec![internal(false), copy, third],
+    ] {
+        let mut planner = Planner::default();
+        planner.plan(true, &outputs, start);
+        assert!(
+            planner
+                .plan(true, &outputs, start + Duration::from_secs(5))
+                .targets
+                .is_empty()
+        );
+    }
+    let mut laptop_copy = internal(false);
+    laptop_copy.mirror_of = "1".into();
+    let mut planner = Planner::default();
+    assert!(
+        planner
+            .plan(false, &[laptop_copy.clone(), external()], start)
+            .targets
+            .is_empty()
+    );
+    assert_eq!(
+        planner
+            .plan(false, &[laptop_copy.clone()], start)
+            .targets
+            .len(),
+        1
+    );
+    assert!(
+        laptop_copy
+            .command(false)
+            .unwrap()
+            .contains("mirror = \"\"")
+    );
+}
+
 #[derive(Default)]
 struct FakeBackend {
     snapshots: RefCell<VecDeque<Vec<Output>>>,
@@ -216,6 +261,38 @@ async fn final_hotplug_and_sleep_checks_prevent_disabling_the_only_display() {
         );
         assert!(backend.calls.borrow().is_empty());
     }
+}
+
+#[tokio::test]
+async fn a_new_mirror_dependency_blocks_a_previously_planned_source_disable() {
+    let store = StateStore::default();
+    let start = Instant::now();
+    let docked = vec![internal(false), external()];
+    let mut current = docked.clone();
+    let mut mirror = external();
+    mirror.name = "DP-2".into();
+    mirror.id = 2;
+    mirror.mirror_of = "0".into();
+    current.push(mirror);
+    let backend = FakeBackend {
+        snapshots: RefCell::new(VecDeque::from([docked.clone(), current])),
+        ..Default::default()
+    };
+    let mut planner = Planner::default();
+    planner.plan(true, &docked, start);
+    assert!(
+        reconcile(
+            &backend,
+            &mut planner,
+            &DisplayPolicy::default(),
+            false,
+            &store,
+            start + Duration::from_secs(5)
+        )
+        .await
+        .is_err()
+    );
+    assert!(backend.calls.borrow().is_empty());
 }
 
 #[tokio::test]
