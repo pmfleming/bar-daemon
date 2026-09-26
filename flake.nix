@@ -8,12 +8,8 @@
     url = "git+file:../daemon-framework";
     inputs.nixpkgs.follows = "nixpkgs";
   };
-  inputs.hyprlandIpc = {
-    url = "git+file:../shelllist-hyprland";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
 
-  outputs = { self, nixpkgs, daemonFramework, hyprlandIpc }:
+  outputs = { self, nixpkgs, daemonFramework }:
     let
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
@@ -30,7 +26,6 @@
             src = ./.;
             postUnpack = ''
               cp -R --no-preserve=mode ${daemonFramework} "$(dirname "$sourceRoot")/daemon-framework"
-              cp -R --no-preserve=mode ${hyprlandIpc} "$(dirname "$sourceRoot")/shelllist-hyprland"
             '';
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config pkgs.llvmPackages.libclang ];

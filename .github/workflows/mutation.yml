@@ -25,12 +25,6 @@ jobs:
           repository: pmfleming/daemon-framework
           ref: main
           path: daemon-framework
-      - name: Check out Hyprland IPC
-        uses: actions/checkout@v7
-        with:
-          repository: pmfleming/shelllist-hyprland
-          ref: main
-          path: shelllist-hyprland
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: Test battery policy mutations
         run: |

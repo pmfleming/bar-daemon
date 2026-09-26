@@ -69,8 +69,9 @@ backlight files and fake helpers, never the host backlight.
 
 ## Development
 
-Keep `daemon-framework` and `shelllist-hyprland` beside this checkout. The helper
-uses their current tracked worktrees, not persistent local-project pins. All five
+Keep `daemon-framework` beside this checkout; its `crates/shelllist-hyprland`
+provides Hyprland IPC. No separate Hyprland checkout is needed. The helper uses
+the current tracked worktrees, not persistent local-project pins. All five
 daemons must share one framework; do not vendor or revision-pin it.
 
 ```sh
