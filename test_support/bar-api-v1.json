@@ -56,6 +56,7 @@
       {
         "name": "media.operation",
         "params": {
+          "mode": null,
           "offset_seconds": null,
           "operation": "play-pause",
           "player_id": null
@@ -882,6 +883,7 @@
       "active_player": "org.mpris.MediaPlayer2.spotify",
       "available": true,
       "error": null,
+      "pinned_player": null,
       "players": [
         {
           "album": "Album",
@@ -893,6 +895,8 @@
           "can_play": true,
           "can_previous": true,
           "can_seek": true,
+          "content_type": "music",
+          "control_mode": "automatic",
           "desktop_entry": "spotify",
           "id": "org.mpris.MediaPlayer2.spotify",
           "identity": "Spotify",

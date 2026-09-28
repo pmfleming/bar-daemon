@@ -68,7 +68,24 @@ Battery methods operate on the native ThinkPad threshold interface. `battery.set
 
 The `power-sleep.changed` domain exposes systemd-logind suspend/hibernate capability strings, `PrepareForSleep` state, and current inhibitors. `powerSleep.lock`, `powerSleep.suspend`, and `powerSleep.hibernate` target the current logind session; both sleep actions request a session lock first. See [`power-sleep.md`](power-sleep.md).
 
-Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, `previous`, `cycle`, and `seek`. `cycle` selects the next discovered MPRIS player without invoking playback. `seek` requires a nonzero `offset_seconds` between -86400 and 86400 and calls the MPRIS relative `Seek` method. Playback and seek operations target `player_id` when supplied and otherwise use the daemon's current active-player policy.
+Run `bar-daemon debug protocol-registry` for canonical parameter examples. `media.operation` accepts `play-pause`, `play`, `pause`, `stop`, `next`, `previous`, `cycle`, `seek`, `select`, `automatic`, and `set-mode`. `cycle` selects the next discovered MPRIS player without invoking playback. `seek` requires a nonzero `offset_seconds` between -86400 and 86400 and calls the MPRIS relative `Seek` method. Playback and seek operations target `player_id` when supplied and otherwise use the daemon's current active-player policy.
+
+`select` requires a currently discovered `player_id` and pins it without invoking
+playback. `automatic` clears the pin. `set-mode` requires a current `player_id`
+and `mode` of `automatic`, `tracks` or `seek`; it also invokes no playback.
+`media` state adds nullable `pinned_player`; players add `control_mode` and
+`content_type` (`unknown`, `music`, `podcast`, `video`). These are additive v1
+fields/operations. Unknown mode values and disappeared player IDs are rejected.
+
+Automatic selection tracks observed transitions into playing, not list order:
+newest currently playing first, then newest retained player, then deterministic
+initial fallback. It cannot infer playback starts preceding discovery. Pins last
+until Automatic or player exit. Overrides are per MPRIS ID, daemon-session-local,
+and removed on exit; they are not disk preferences. Explicit content metadata and
+Spotify track/episode URLs support conservative classification. Audio MIME type
+and player identity alone remain unknown; clients should use ±30-second seek for
+unknown/video/podcast content unless explicitly overridden. Capabilities remain
+independent of mode.
 
 ## Streams
 

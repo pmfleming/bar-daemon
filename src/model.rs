@@ -385,8 +385,29 @@ pub(crate) struct AudioState {
 pub(crate) struct MediaState {
     pub available: bool,
     pub active_player: Option<String>,
+    #[serde(default)]
+    pub pinned_player: Option<String>,
     pub players: Vec<MediaPlayer>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaControlMode {
+    #[default]
+    Automatic,
+    Tracks,
+    Seek,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaContentType {
+    #[default]
+    Unknown,
+    Music,
+    Podcast,
+    Video,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -394,6 +415,10 @@ pub(crate) struct MediaPlayer {
     pub id: String,
     pub identity: String,
     pub desktop_entry: String,
+    #[serde(default)]
+    pub content_type: MediaContentType,
+    #[serde(default)]
+    pub control_mode: MediaControlMode,
     pub playback_status: String,
     pub title: String,
     pub artist: String,

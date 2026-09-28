@@ -10,7 +10,7 @@ use tokio::{
 use zvariant::OwnedValue;
 
 use crate::{
-    model::{MediaPlayer, MediaState},
+    model::{MediaContentType, MediaControlMode, MediaPlayer, MediaState},
     state::StateStore,
     time::unix_ms as unix_time_ms,
 };
@@ -21,9 +21,73 @@ const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 const MPRIS_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 
+// Session-local policy, serialized with publication. No wall-clock guesses and
+// no player selection effects: pins and overrides never invoke MPRIS playback.
+#[derive(Default)]
+struct MediaSelection {
+    pinned: Option<String>,
+    previous: HashMap<String, bool>,
+    started: HashMap<String, u64>,
+    modes: HashMap<String, MediaControlMode>,
+    sequence: u64,
+    initialized: bool,
+}
+
+impl MediaSelection {
+    fn active(&self, players: &[MediaPlayer]) -> Option<String> {
+        if let Some(id) = &self.pinned {
+            return Some(id.clone());
+        }
+        let recent = |playing_only: bool| {
+            players
+                .iter()
+                .filter(|p| {
+                    self.started.contains_key(&p.id)
+                        && (!playing_only || p.playback_status == "playing")
+                })
+                .max_by_key(|p| self.started.get(&p.id).copied().unwrap_or_default())
+        };
+        recent(true)
+            .or_else(|| players.iter().find(|p| p.playback_status == "playing"))
+            .or_else(|| recent(false))
+            .or_else(|| select_active_player(players))
+            .map(|p| p.id.clone())
+    }
+
+    fn snapshot(&mut self, mut players: Vec<MediaPlayer>) -> MediaState {
+        let present = |id: &String| players.iter().any(|p| &p.id == id);
+        self.previous.retain(|id, _| present(id));
+        self.started.retain(|id, _| present(id));
+        self.modes.retain(|id, _| present(id));
+        if self.pinned.as_ref().is_some_and(|id| !present(id)) {
+            self.pinned = None;
+        }
+        for player in &mut players {
+            let playing = player.playback_status == "playing";
+            if self.initialized
+                && playing
+                && !self.previous.get(&player.id).copied().unwrap_or(false)
+            {
+                self.sequence = self.sequence.saturating_add(1);
+                self.started.insert(player.id.clone(), self.sequence);
+            }
+            self.previous.insert(player.id.clone(), playing);
+            player.control_mode = self.modes.get(&player.id).copied().unwrap_or_default();
+        }
+        self.initialized = !players.is_empty();
+        MediaState {
+            available: !players.is_empty(),
+            active_player: self.active(&players),
+            pinned_player: self.pinned.clone(),
+            players,
+            error: None,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct MediaService {
-    selected_player: Arc<RwLock<Option<String>>>,
+    selection: Arc<RwLock<MediaSelection>>,
     connection: Arc<RwLock<Option<zbus::Connection>>>,
 }
 
@@ -62,33 +126,53 @@ impl MediaService {
     }
 
     pub(crate) async fn cycle(&self, store: &StateStore) -> Result<MediaState> {
-        let mut selected = self.selected_player.write().await;
-        let mut state = store.read(|s| s.media.clone()).await;
-        let next = next_player_id(&state.players, state.active_player.as_deref())
-            .context("no alternate MPRIS player is available")?;
-        *selected = Some(next.clone());
-        state.active_player = Some(next);
+        let mut selection = self.selection.write().await;
+        let current = store.read(|s| s.media.clone()).await;
+        selection.pinned = Some(
+            next_player_id(&current.players, current.active_player.as_deref())
+                .context("no alternate MPRIS player is available")?,
+        );
+        let state = selection.snapshot(current.players);
+        store.update_media(state.clone()).await;
+        Ok(state)
+    }
+
+    pub(crate) async fn select(&self, store: &StateStore, id: Option<&str>) -> Result<MediaState> {
+        let mut selection = self.selection.write().await;
+        let players = store.read(|s| s.media.players.clone()).await;
+        if id.is_some_and(|id| !players.iter().any(|p| p.id == id)) {
+            bail!("requested media player is no longer available");
+        }
+        selection.pinned = id.map(str::to_owned);
+        let state = selection.snapshot(players);
+        store.update_media(state.clone()).await;
+        Ok(state)
+    }
+
+    pub(crate) async fn set_mode(
+        &self,
+        store: &StateStore,
+        id: &str,
+        mode: MediaControlMode,
+    ) -> Result<MediaState> {
+        let mut selection = self.selection.write().await;
+        let players = store.read(|s| s.media.players.clone()).await;
+        if !players.iter().any(|p| p.id == id) {
+            bail!("requested media player is no longer available");
+        }
+        if mode == MediaControlMode::Automatic {
+            selection.modes.remove(id);
+        } else {
+            selection.modes.insert(id.to_owned(), mode);
+        }
+        let state = selection.snapshot(players);
         store.update_media(state.clone()).await;
         Ok(state)
     }
 
     async fn publish(&self, store: &StateStore, players: Vec<MediaPlayer>) {
-        let mut selected = self.selected_player.write().await;
-        let active_player = match selected.as_ref() {
-            Some(id) if players.iter().any(|player| &player.id == id) => Some(id.clone()),
-            _ => {
-                *selected = None;
-                select_active_player(&players).map(|player| player.id.clone())
-            }
-        };
-        store
-            .update_media(MediaState {
-                available: !players.is_empty(),
-                active_player,
-                players,
-                error: None,
-            })
-            .await;
+        let mut selection = self.selection.write().await;
+        store.update_media(selection.snapshot(players)).await;
     }
 }
 
@@ -101,6 +185,7 @@ pub(crate) async fn monitor(store: StateStore, service: MediaService) {
                     tracing::warn!(%error, "MPRIS monitor disconnected");
                 }
                 *service.connection.write().await = None;
+                service.publish(&store, Vec::new()).await;
             }
             Err(error) => {
                 store
@@ -290,6 +375,11 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         id: name.to_string(),
         identity,
         desktop_entry,
+        content_type: classify_content(
+            property_string(&metadata, "xesam:contentType").as_deref(),
+            property_string(&metadata, "xesam:url").as_deref(),
+        ),
+        control_mode: MediaControlMode::Automatic,
         playback_status,
         title: property_string(&metadata, "xesam:title").unwrap_or_default(),
         artist: property_strings(&metadata, "xesam:artist").join(", "),
@@ -306,6 +396,27 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         can_next: player.get_property("CanGoNext").await.unwrap_or(false),
         can_previous: player.get_property("CanGoPrevious").await.unwrap_or(false),
     })
+}
+
+fn classify_content(content_type: Option<&str>, url: Option<&str>) -> MediaContentType {
+    let kind = content_type.unwrap_or("").to_lowercase();
+    let url = url.unwrap_or("");
+    if kind == "podcast"
+        || url.starts_with("spotify:episode:")
+        || url.starts_with("https://open.spotify.com/episode/")
+    {
+        MediaContentType::Podcast
+    } else if kind == "video" || kind.starts_with("video/") {
+        MediaContentType::Video
+    } else if kind == "music"
+        || url.starts_with("spotify:track:")
+        || url.starts_with("https://open.spotify.com/track/")
+    {
+        MediaContentType::Music
+    } else {
+        // Audio MIME types and player identity cannot distinguish songs from podcasts.
+        MediaContentType::Unknown
+    }
 }
 
 fn property_string(values: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
@@ -475,6 +586,117 @@ mod tests {
             assert_eq!(player.can_seek, can_seek);
             assert_eq!(serde_json::to_value(&player).unwrap()["can_seek"], can_seek);
         }
+    }
+
+    #[test]
+    fn classification_is_conservative_and_modes_are_closed() {
+        use crate::model::{MediaContentType as Content, MediaControlMode as Mode};
+        assert_eq!(
+            super::classify_content(Some("audio/mpeg"), None),
+            Content::Unknown
+        );
+        assert_eq!(
+            super::classify_content(Some("video/mp4"), None),
+            Content::Video
+        );
+        assert_eq!(
+            super::classify_content(None, Some("spotify:track:123")),
+            Content::Music
+        );
+        assert_eq!(
+            super::classify_content(None, Some("https://open.spotify.com/episode/123")),
+            Content::Podcast
+        );
+        assert!(serde_json::from_str::<Mode>("\"invented\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"automatic\"").unwrap(),
+            Mode::Automatic
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_playback_pin_automatic_and_exit_are_independent_of_order() {
+        let store = StateStore::default();
+        let service = MediaService::default();
+        let a = player("a", "paused", false, true);
+        let b = player("b", "paused", false, true);
+        service.publish(&store, vec![a.clone(), b.clone()]).await;
+        let mut a = a;
+        a.playback_status = "playing".into();
+        service.publish(&store, vec![a.clone(), b.clone()]).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("a")
+        );
+        let mut b = b;
+        b.playback_status = "playing".into();
+        service.publish(&store, vec![a.clone(), b.clone()]).await;
+        service.publish(&store, vec![b.clone(), a.clone()]).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("b")
+        );
+        service.select(&store, Some("a")).await.unwrap();
+        service.publish(&store, vec![b.clone(), a.clone()]).await;
+        assert_eq!(
+            store.snapshot().await.media.active_player.as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            service
+                .select(&store, None)
+                .await
+                .unwrap()
+                .active_player
+                .as_deref(),
+            Some("b")
+        );
+        service.select(&store, Some("b")).await.unwrap();
+        service.publish(&store, vec![a]).await;
+        let state = store.snapshot().await.media;
+        assert_eq!(state.active_player.as_deref(), Some("a"));
+        assert!(state.pinned_player.is_none());
+        assert!(service.select(&store, Some("b")).await.is_err());
+        assert!(
+            service.connection.read().await.is_none(),
+            "policy operations never open a playback connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn mode_overrides_are_per_player_and_expire_on_exit() {
+        use crate::model::MediaControlMode as Mode;
+        let store = StateStore::default();
+        let service = MediaService::default();
+        let players = vec![
+            player("a", "paused", false, true),
+            player("b", "paused", false, true),
+        ];
+        service.publish(&store, players.clone()).await;
+        let state = service.set_mode(&store, "a", Mode::Tracks).await.unwrap();
+        assert_eq!(state.players[0].control_mode, Mode::Tracks);
+        assert_eq!(state.players[1].control_mode, Mode::Automatic);
+        service.publish(&store, players.clone()).await;
+        assert_eq!(
+            store.snapshot().await.media.players[0].control_mode,
+            Mode::Tracks
+        );
+        service
+            .set_mode(&store, "a", Mode::Automatic)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.snapshot().await.media.players[0].control_mode,
+            Mode::Automatic
+        );
+        service.set_mode(&store, "a", Mode::Seek).await.unwrap();
+        service.publish(&store, players[1..].to_vec()).await;
+        assert!(service.set_mode(&store, "a", Mode::Tracks).await.is_err());
+        service.publish(&store, players).await;
+        assert_eq!(
+            store.snapshot().await.media.players[0].control_mode,
+            Mode::Automatic
+        );
     }
 
     #[tokio::test]

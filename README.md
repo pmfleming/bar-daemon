@@ -8,7 +8,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 
 - Activity summaries and bounded range queries across multiple local ICS files/directories, persistent local todos, and configured world clocks
 - Hyprland monitor/workspace snapshots, normalized active-window state, and Lua-aware workspace focus
-- MPRIS discovery, deterministic active-player selection, artwork and playback timing, seek correction, and playback actions
+- MPRIS discovery, observed-playback recency, explicit player pins, conservative content classification and session-local control-mode overrides, artwork/timing, seek correction and playback actions
 - Native PipeWire default-output volume/mute and default-input mute state, with bounded output adjustments
 - Backlight discovery, watched sysfs state, and permission-safe bounded adjustment
 - Native Linux power-supply monitoring, ThinkPad charge protection, recoverable charge-once, health/cycle telemetry, and configurable deduplicated alerts
@@ -38,7 +38,7 @@ JSONL example:
 {"op":"subscribe","id":"subscribe","streams":["workspaces.changed","media.changed"]}
 {"op":"call","id":"media","method":"media.operation","params":{"operation":"play-pause"}}
 {"op":"call","id":"media-cycle","method":"media.operation","params":{"operation":"cycle"}}
-{"op":"call","id":"media-rewind","method":"media.operation","params":{"operation":"seek","offset_seconds":-15}}
+{"op":"call","id":"media-rewind","method":"media.operation","params":{"operation":"seek","offset_seconds":-30}}
 {"op":"call","id":"focus","method":"workspace.focus","params":{"workspace_id":2,"on_current_monitor":true}}
 {"op":"call","id":"protect","method":"battery.setProtection","params":{"enabled":true}}
 {"op":"shutdown","id":"shutdown"}

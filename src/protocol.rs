@@ -126,7 +126,7 @@ pub fn registry() -> Value {
             { "name": "todos.complete", "params": { "id": "local-1", "completed": true }, "result": "todo" },
             { "name": "todos.delete", "params": { "id": "local-1" }, "result": "deleted" },
             { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
-            { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null, "offset_seconds": null }, "result": "operation" },
+            { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null, "offset_seconds": null, "mode": null }, "result": "operation" },
             { "name": "audio.adjust", "params": { "delta_percent": 5 }, "result": "audio" },
             { "name": "audio.setMuted", "params": { "muted": null }, "result": "audio" },
             { "name": "audio.setInputMuted", "params": { "muted": null }, "result": "audio" },
@@ -248,8 +248,10 @@ fn generated_contract_fixture() -> Value {
             "media": {
                 "available": true,
                 "active_player": "org.mpris.MediaPlayer2.spotify",
+                "pinned_player": null,
                 "players": [{
                     "id": "org.mpris.MediaPlayer2.spotify", "identity": "Spotify", "desktop_entry": "spotify",
+                    "content_type": "music", "control_mode": "automatic",
                     "playback_status": "playing", "title": "Track", "artist": "Artist", "album": "Album", "art_url": "",
                     "length_us": 240000000, "position_us": 60000000,
                     "position_observed_at_unix_ms": 1234567890000_u64, "playback_rate": 1.0,

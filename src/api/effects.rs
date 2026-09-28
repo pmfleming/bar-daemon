@@ -48,6 +48,8 @@ struct MediaRequest {
     player_id: Option<String>,
     #[serde(default)]
     offset_seconds: Option<i64>,
+    #[serde(default)]
+    mode: Option<crate::model::MediaControlMode>,
 }
 
 #[derive(Deserialize)]
@@ -316,8 +318,28 @@ impl DesktopEffects {
     }
     pub(super) async fn media_operation(&self, params: Value) -> Value {
         let request = request!(params, MediaRequest, "media.operation");
-        if request.operation == "cycle" {
-            return match self.media.cycle(&self.state).await {
+        let policy_result = match request.operation.as_str() {
+            "cycle" => Some(self.media.cycle(&self.state).await),
+            "automatic" => Some(self.media.select(&self.state, None).await),
+            "select" => {
+                let Some(id) = request.player_id.as_deref() else {
+                    return error("validation-error", "media.select requires player_id");
+                };
+                Some(self.media.select(&self.state, Some(id)).await)
+            }
+            "set-mode" => {
+                let (Some(id), Some(mode)) = (request.player_id.as_deref(), request.mode) else {
+                    return error(
+                        "validation-error",
+                        "media.set-mode requires player_id and mode",
+                    );
+                };
+                Some(self.media.set_mode(&self.state, id, mode).await)
+            }
+            _ => None,
+        };
+        if let Some(result) = policy_result {
+            return match result {
                 Ok(state) => success(json!({
                     "operation": request.operation,
                     "player_id": state.active_player,
