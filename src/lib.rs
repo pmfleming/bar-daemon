@@ -11,6 +11,7 @@ mod audio;
 mod battery;
 mod brightness;
 mod client;
+mod compositor;
 mod daemon;
 mod display_policy;
 mod hyprland;
@@ -29,7 +30,6 @@ mod timezone;
 mod timezone_regions;
 mod updates;
 mod work_area;
-mod compositor;
 
 /// Runs the session D-Bus daemon until it receives a termination signal.
 pub async fn run_daemon() -> anyhow::Result<()> {

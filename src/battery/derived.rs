@@ -1,37 +1,6 @@
 //! Authoritative aggregate-battery energy/forecast semantics, independent of QML.
-use crate::model::{BatteryHistoryPoint, BatteryState};
-use serde::{Deserialize, Serialize};
+use crate::model::{BatteryHistoryPoint, BatteryState, ChargeForecast, EnergyBin, EnergyHistory};
 use std::collections::BTreeMap;
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EnergyHistory {
-    pub bars: Vec<EnergyBin>,
-    pub maximum: f64,
-    pub total_wh: f64,
-    pub interval_ms: u64,
-    pub active_duration_ms: u64,
-    pub observed_ms: u64,
-}
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EnergyBin {
-    pub x0: f64,
-    pub x1: f64,
-    pub value: f64,
-    pub observed_ms: u64,
-}
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ChargeForecast {
-    pub limit: Option<u8>,
-    pub target: u8,
-    pub percentage: u8,
-    pub seconds: f64,
-    pub estimating: bool,
-    pub status: String,
-    pub approximate: bool,
-    pub scope: String,
-}
 
 pub(crate) fn forecast(battery: &BatteryState) -> ChargeForecast {
     let protection = &battery.protection;

@@ -30,7 +30,10 @@ impl MonitorTasks {
         tasks.spawn("activity", activity.monitor());
         tasks.spawn("hyprland", hyprland::monitor(state.clone()));
         tasks.spawn("work-area", crate::work_area::monitor(state.clone()));
-        tasks.spawn("compositor-preferences", crate::compositor::monitor(state.clone()));
+        tasks.spawn(
+            "compositor-preferences",
+            crate::compositor::monitor(state.clone()),
+        );
         tasks.spawn("media", media::monitor(state.clone(), media));
         tasks.spawn("audio", audio::monitor(state.clone()));
         tasks.spawn("brightness", brightness.monitor());

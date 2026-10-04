@@ -158,12 +158,11 @@ impl Backend for HyprlandClient {
         Ok(())
     }
     async fn apply(&self, output: &Output, disable: bool) -> Result<()> {
-        if !disable {
-            if let Ok(Some(setting)) = layout::saved_internal(&output.name).await {
-                if self.configure(&setting).await.is_ok() {
-                    return Ok(());
-                }
-            }
+        if !disable
+            && let Ok(Some(setting)) = layout::saved_internal(&output.name).await
+            && self.configure(&setting).await.is_ok()
+        {
+            return Ok(());
         }
         let response = self.request(&output.command(disable)?).await?;
         if response.trim() != "ok" {
@@ -276,6 +275,41 @@ async fn reconcile<B: Backend>(
     Ok(plan.status)
 }
 
+// Keep the layout fallback and docking decision in one transaction. Even when
+// layout recovery fails, reconciliation must try to restore a usable output.
+async fn refresh<B: Backend>(
+    backend: &B,
+    planner: &mut Planner,
+    state: &mut DisplayPolicyState,
+    store: &StateStore,
+) -> Result<&'static str> {
+    state.policy = load().await?;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let layout_result = layout::tick(backend, store).await;
+        let paused = layout_result.as_ref().map_or(true, |(_, paused)| *paused);
+        let policy = DisplayPolicy {
+            prefer_external: state.policy.prefer_external && !paused,
+        };
+        let preserve_enablement = layout_result
+            .as_ref()
+            .is_ok_and(|(doc, _)| doc.trial.is_some() || doc.manual_enablement);
+        let status = reconcile(
+            backend,
+            planner,
+            &policy,
+            preserve_enablement,
+            store,
+            Instant::now(),
+        )
+        .await?;
+        state.outputs = backend.outputs().await?;
+        state.layout = layout_result?.0;
+        Ok(if paused { "layout-preview" } else { status })
+    })
+    .await
+    .context("display reconciliation timed out")?
+}
+
 pub(crate) async fn monitor(store: StateStore) {
     if !enabled() {
         store
@@ -318,37 +352,7 @@ pub(crate) async fn monitor(store: StateStore) {
             error: None,
             ..store.read(|s| s.display_policy.clone()).await
         };
-        let result = async {
-            state.policy = load().await?;
-            tokio::time::timeout(Duration::from_secs(8), async {
-                let layout_result = layout::tick(&backend, &store).await;
-                let paused = layout_result.as_ref().map_or(true, |(_, paused)| *paused);
-                let mut policy = state.policy.clone();
-                if paused {
-                    policy.prefer_external = false;
-                }
-                let preserve_enablement = layout_result
-                    .as_ref()
-                    .is_ok_and(|(doc, _)| doc.trial.is_some() || doc.manual_enablement);
-                let status = reconcile(
-                    &backend,
-                    &mut planner,
-                    &policy,
-                    preserve_enablement,
-                    &store,
-                    Instant::now(),
-                )
-                .await?;
-                state.outputs = backend.outputs().await?;
-                let (layout, _) = layout_result?;
-                state.layout = layout;
-                Ok::<_, anyhow::Error>(if paused { "layout-preview" } else { status })
-            })
-            .await
-            .context("display reconciliation timed out")?
-        }
-        .await;
-        match result {
+        match refresh(&backend, &mut planner, &mut state, &store).await {
             Ok(status) => state.status = status.into(),
             Err(error) => {
                 planner.reset();

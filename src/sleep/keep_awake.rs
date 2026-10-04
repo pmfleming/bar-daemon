@@ -1,6 +1,10 @@
 //! A temporary, daemon-owned logind inhibitor. Never inhibit idle: automatic
 //! locking and DPMS must continue while sleep is blocked.
-use super::*;
+use anyhow::{Context, Result};
+use tokio::sync::Mutex;
+
+use super::{RawInhibitor, SLEEP_ACTION, ensure_not_preparing, manager, read_state, system_bus};
+use crate::model::PowerSleepState;
 
 const WHO: &str = "Shelllist Keep awake";
 const WHY: &str = "Keep awake enabled in Battery & Power";
@@ -87,7 +91,7 @@ async fn set_connected(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{WHAT, WHO, WHY, is_ours, read_state, set_connected};
     use crate::sleep::lock_tests::{SessionState, fake_logind};
     use std::sync::{Arc, atomic::Ordering};
 

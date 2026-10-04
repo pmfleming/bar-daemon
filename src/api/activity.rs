@@ -36,7 +36,6 @@ const fn default_true() -> bool {
     true
 }
 
-#[derive(Clone)]
 pub(super) struct ActivityApi {
     state: StateStore,
     activity: Arc<ActivityService>,
@@ -61,7 +60,7 @@ impl ActivityApi {
     pub(super) async fn activity_refresh(&self) -> Value {
         self.activity.request_refresh().await;
         success(json!({
-            "activity": self.state.snapshot().await.activity,
+            "activity": self.state.read(|s| json!(&s.activity)).await,
             "operation": { "state": "accepted" }
         }))
     }

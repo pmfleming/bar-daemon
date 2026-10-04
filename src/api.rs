@@ -51,7 +51,6 @@ fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T,
     })
 }
 
-#[derive(Clone)]
 pub(crate) struct ApiService {
     state: StateStore,
     activity: ActivityApi,

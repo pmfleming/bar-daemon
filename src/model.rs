@@ -209,7 +209,7 @@ pub(crate) struct BatteryState {
     pub devices: Vec<BatteryDeviceState>,
     pub history: BatteryHistoryState,
     #[serde(default)]
-    pub forecast: crate::battery::derived::ChargeForecast,
+    pub forecast: ChargeForecast,
     pub error: Option<String>,
 }
 
@@ -226,7 +226,37 @@ pub(crate) struct BatteryHistoryState {
     #[serde(default)]
     pub current_point: Option<BatteryHistoryPoint>,
     #[serde(default)]
-    pub energy: crate::battery::derived::EnergyHistory,
+    pub energy: EnergyHistory,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnergyHistory {
+    pub bars: Vec<EnergyBin>,
+    pub maximum: f64,
+    pub total_wh: f64,
+    pub interval_ms: u64,
+    pub active_duration_ms: u64,
+    pub observed_ms: u64,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnergyBin {
+    pub x0: f64,
+    pub x1: f64,
+    pub value: f64,
+    pub observed_ms: u64,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ChargeForecast {
+    pub limit: Option<u8>,
+    pub target: u8,
+    pub percentage: u8,
+    pub seconds: f64,
+    pub estimating: bool,
+    pub status: String,
+    pub approximate: bool,
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

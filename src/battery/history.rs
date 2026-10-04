@@ -45,7 +45,7 @@ struct HistoryStore {
     active_time_ms: u64,
     last_observation: Option<(u64, Instant)>,
     current_point: Option<BatteryHistoryPoint>,
-    energy: OnceLock<super::derived::EnergyHistory>,
+    energy: OnceLock<crate::model::EnergyHistory>,
 }
 
 impl HistoryStore {

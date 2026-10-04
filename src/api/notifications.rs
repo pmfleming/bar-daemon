@@ -52,7 +52,6 @@ const fn default_history_limit() -> usize {
     50
 }
 
-#[derive(Clone)]
 pub(super) struct NotificationApi {
     notifications: Arc<NotificationService>,
 }

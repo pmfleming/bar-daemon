@@ -2,9 +2,10 @@
 
 Quality measurements guide design review; they are not targets to game by adding forwarding modules.
 The verified gates in `rqlens.toml` and CI remain authoritative.
-See the [committed-RQLens quality pass](quality-pass-64a587d.md) for current
-measurements and verification, and the [domain simplification review](quality-review.md)
-for the preceding refactor and fixture/resolver fixes.
+See the [ownership and duplication review](quality-review-1e4e70b.md) for the latest
+measurements, trade-offs and the current analyzer's partial-evidence gate failure.
+Earlier evidence is recorded in the [committed-RQLens quality pass](quality-pass-64a587d.md)
+and the [domain simplification review](quality-review.md).
 
 ## Composition-root baseline
 
@@ -38,8 +39,8 @@ policy/layouts, work-area observation, and nested power/update modules. `StateSt
 may reference state types owned by policy/work-area modules; it must not invoke
 system effects.
 
-Architecture CI now runs `measure architecture-rules` and `check` with the local
-RustQualityLens implementation's generated-symbol fix. All **774 references**
+The earlier architecture CI baseline ran `measure architecture-rules` and `check`
+with RustQualityLens's generated-symbol fix. At that revision, all **774 references**
 resolve locally; the three configured rules have **zero violations**, complete
 evidence, and a passing policy check. The previous 14 unresolved Wayland references
 were analyzer limitations, not exemptions. `rust.identity_build_macros = true`

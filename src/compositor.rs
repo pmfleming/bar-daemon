@@ -41,7 +41,7 @@ where
                 animations_enabled: last_known,
                 error: Some(error.to_string()),
                 ..Default::default()
-            }
+            },
         };
         let failed = !state.available;
         store.update_compositor(state).await;
@@ -139,7 +139,10 @@ mod tests {
         );
         let state = store.snapshot().await.compositor;
         assert_eq!(state.animations_enabled, Some(false));
-        assert_eq!(state.revision, 4, "only changed observations advance revision");
+        assert_eq!(
+            state.revision, 4,
+            "only changed observations advance revision"
+        );
         task.abort();
     }
 

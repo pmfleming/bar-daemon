@@ -51,6 +51,7 @@ id = "domains-do-not-depend-on-transport"
 from = [
   "bar-daemon::shared::activity::**",
   "bar-daemon::shared::audio",
+  "bar-daemon::shared::audio::**",
   "bar-daemon::shared::battery::**",
   "bar-daemon::shared::brightness",
   "bar-daemon::shared::display_policy",
@@ -83,6 +84,7 @@ id = "state-does-not-depend-on-effects"
 from = ["bar-daemon::shared::state"]
 deny = [
   "bar-daemon::shared::audio",
+  "bar-daemon::shared::audio::**",
   "bar-daemon::shared::battery::**",
   "bar-daemon::shared::brightness",
   "bar-daemon::shared::hyprland",

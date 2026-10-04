@@ -35,45 +35,34 @@ pub(crate) async fn monitor(state: StateStore) {
             _ = poll.tick() => false,
         };
         // Sysfs reads may enter firmware; never perform them on a Tokio worker.
-        let result = tokio::task::spawn_blocking(move || {
-            let notifications = if rescan {
-                let (next, notifications) = LedReader::discover(Path::new(LED_ROOT));
-                reader = next;
-                notifications
-            } else {
-                Vec::new()
-            };
-            let value = reader.read_state();
-            (reader, notifications, value)
-        })
-        .await;
-        let (next, notifications, value) = match result {
-            Ok(value) => value,
-            Err(error) => {
-                reader = LedReader::default();
-                state
-                    .update_osd_hardware(OsdHardwareState {
-                        error: Some(format!("LED reader failed: {error}")),
-                        ..OsdHardwareState::default()
-                    })
-                    .await;
-                continue;
-            }
-        };
+        let result = tokio::task::spawn_blocking(move || reader.sample(rescan)).await;
+        let (next, notifications, value) = result.unwrap_or_else(|error| {
+            (
+                LedReader::default(),
+                None,
+                OsdHardwareState {
+                    error: Some(format!("LED reader failed: {error}")),
+                    ..OsdHardwareState::default()
+                },
+            )
+        });
         reader = next;
-        if rescan {
+        if let Some(files) = notifications {
             // Dropping the old set cancels readiness waits and closes old fds.
-            watchers = JoinSet::new();
-            for file in notifications {
-                if let Ok(file) = AsyncFd::with_interest(file, Interest::PRIORITY) {
-                    watchers.spawn(watch_hardware_changes(file, changes.clone()));
-                }
-            }
+            watchers = hardware_watchers(files, &changes);
         }
         // Reap failed watches; periodic discovery retries them after hotplug.
         while watchers.try_join_next().is_some() {}
         state.update_osd_hardware(value).await;
     }
+}
+
+fn hardware_watchers(files: Vec<File>, changes: &mpsc::Sender<()>) -> JoinSet<()> {
+    files
+        .into_iter()
+        .filter_map(|file| AsyncFd::with_interest(file, Interest::PRIORITY).ok())
+        .map(|file| watch_hardware_changes(file, changes.clone()))
+        .collect()
 }
 
 async fn watch_hardware_changes(file: AsyncFd<File>, changes: mpsc::Sender<()>) {
@@ -104,6 +93,16 @@ struct Led {
 }
 
 impl LedReader {
+    fn sample(mut self, rescan: bool) -> (Self, Option<Vec<File>>, OsdHardwareState) {
+        let notifications = rescan.then(|| {
+            let (next, files) = Self::discover(Path::new(LED_ROOT));
+            self = next;
+            files
+        });
+        let value = self.read_state();
+        (self, notifications, value)
+    }
+
     fn discover(root: &Path) -> (Self, Vec<File>) {
         let Ok(entries) = fs::read_dir(root) else {
             return (Self::default(), Vec::new());

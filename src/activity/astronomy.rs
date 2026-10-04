@@ -9,7 +9,7 @@ const DAY_MS: i64 = 86_400_000;
 const SYNODIC_DAYS: f64 = 29.530_588_853;
 const NEW_MOON_MS: i64 = 947_182_440_000; // 2000-01-06 18:14 UTC
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum LunarPhaseName {
     NewMoon,
@@ -55,18 +55,16 @@ pub(crate) fn lunar(now: i64) -> Option<LunarPhase> {
     let days = (now - NEW_MOON_MS) as f64 / DAY_MS as f64;
     let age_days = days.rem_euclid(SYNODIC_DAYS);
     let fraction = age_days / SYNODIC_DAYS;
-    use LunarPhaseName::*;
     let phase = [
-        NewMoon,
-        WaxingCrescent,
-        FirstQuarter,
-        WaxingGibbous,
-        FullMoon,
-        WaningGibbous,
-        LastQuarter,
-        WaningCrescent,
-    ][(fraction * 8.0).round() as usize % 8]
-        .clone();
+        LunarPhaseName::NewMoon,
+        LunarPhaseName::WaxingCrescent,
+        LunarPhaseName::FirstQuarter,
+        LunarPhaseName::WaxingGibbous,
+        LunarPhaseName::FullMoon,
+        LunarPhaseName::WaningGibbous,
+        LunarPhaseName::LastQuarter,
+        LunarPhaseName::WaningCrescent,
+    ][(fraction * 8.0).round() as usize % 8];
     Some(LunarPhase {
         phase,
         fraction,
@@ -122,7 +120,9 @@ pub(crate) fn weather(mut weather: WeatherState, now: i64) -> WeatherState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DAY_MS, LunarPhaseName, NEW_MOON_MS, SYNODIC_DAYS, lunar, solar_noon, weather};
+    use crate::activity::model::WeatherState;
+    use chrono::DateTime;
     fn ms(value: &str) -> i64 {
         DateTime::parse_from_rfc3339(value)
             .unwrap()

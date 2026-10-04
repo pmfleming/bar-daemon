@@ -20,6 +20,8 @@ use tokio::{sync::mpsc, time::sleep};
 
 use crate::{model::AudioState, state::StateStore};
 
+pub(crate) mod controller;
+
 type RetainedObject = (Box<dyn ProxyT>, Box<dyn Listener>);
 type ChangeCallback = Arc<dyn Fn() + Send + Sync>;
 
@@ -117,13 +119,13 @@ async fn refresh(store: &StateStore) {
 /// Owned by the dedicated control thread: PipeWire objects are not Send.
 /// Reuse the connection across keys, but query current defaults/routes for each
 /// operation so device switches and changes by other clients remain authoritative.
-pub(crate) struct AudioConnection {
+struct AudioConnection {
     core: pw::core::CoreRc,
     main_loop: pw::main_loop::MainLoopRc,
 }
 
 impl AudioConnection {
-    pub(crate) fn new() -> Result<Self> {
+    fn new() -> Result<Self> {
         initialize();
         let main_loop =
             pw::main_loop::MainLoopRc::new(None).context("create PipeWire control loop")?;
@@ -135,14 +137,14 @@ impl AudioConnection {
         Ok(Self { core, main_loop })
     }
 
-    pub(crate) fn adjust(&self, delta_percent: i16) -> Result<AudioState> {
+    fn adjust(&self, delta_percent: i16) -> Result<AudioState> {
         let (sink, _) = probe_default(self)?;
         let volume = adjusted_volume(sink.volume, delta_percent);
         set_node(self, &sink, Some(volume), Some(false), "sink")?;
         self.snapshot()
     }
 
-    pub(crate) fn set_muted(&self, muted: Option<bool>) -> Result<AudioState> {
+    fn set_muted(&self, muted: Option<bool>) -> Result<AudioState> {
         let (sink, _) = probe_default(self)?;
         set_node(
             self,
@@ -154,7 +156,7 @@ impl AudioConnection {
         self.snapshot()
     }
 
-    pub(crate) fn set_input_muted(&self, muted: Option<bool>) -> Result<AudioState> {
+    fn set_input_muted(&self, muted: Option<bool>) -> Result<AudioState> {
         let (_, source) = probe_default(self)?;
         let source = source.context("no PipeWire audio source is available")?;
         set_node(

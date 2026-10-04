@@ -13,7 +13,7 @@ use zvariant::OwnedObjectPath;
 
 use crate::{
     activity::notifications::service::NotificationSink,
-    model::{BatteryDeviceState, BatteryOperationState, BatteryPolicyState, BatteryState},
+    model::{BatteryOperationState, BatteryPolicyState, BatteryState},
     state::StateStore,
 };
 
@@ -35,30 +35,6 @@ static BATTERY_EFFECTS: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) const WARNING_PERCENT: u8 = 25;
 pub(crate) const CRITICAL_PERCENT: u8 = 12;
-
-pub(crate) enum DeviceSupportError {
-    Missing,
-    Unsupported,
-}
-
-pub(crate) fn require_device_behaviour<'a>(
-    state: &'a BatteryState,
-    battery_id: &str,
-    behaviour: &str,
-) -> std::result::Result<&'a BatteryDeviceState, DeviceSupportError> {
-    let device = state
-        .devices
-        .iter()
-        .find(|device| device.id == battery_id)
-        .ok_or(DeviceSupportError::Missing)?;
-    device
-        .protection
-        .available_behaviours
-        .iter()
-        .any(|value| value == behaviour)
-        .then_some(device)
-        .ok_or(DeviceSupportError::Unsupported)
-}
 
 pub(crate) async fn lock_effects() -> MutexGuard<'static, ()> {
     BATTERY_EFFECTS.get_or_init(|| Mutex::new(())).lock().await
