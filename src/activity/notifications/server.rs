@@ -234,3 +234,107 @@ fn hint_bool(hints: &HashMap<String, OwnedValue>, key: &str) -> bool {
 fn hint_u8(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<u8> {
     hints.get(key).and_then(|value| u8::try_from(value).ok())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use tokio::time::{Duration, timeout};
+
+    // A private peer connection exercises real D-Bus serialization/dispatch,
+    // without owning the user's session-bus name or touching their notifications.
+    #[tokio::test]
+    async fn client_receives_actions_tokens_replies_and_closure() {
+        let engine = NotificationEngine::new(crate::state::StateStore::default()).await;
+        let (server, client) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(server)
+            .server(zbus::Guid::generate())
+            .unwrap()
+            .p2p()
+            .serve_at(OBJECT_PATH, NotificationServer::new(Arc::clone(&engine)))
+            .unwrap()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client).p2p().build();
+        let (server, client) = tokio::try_join!(server, client).unwrap();
+        let forwarder = tokio::spawn(forward_signals(Arc::clone(&engine), server.clone()));
+        let proxy = zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, INTERFACE)
+            .await
+            .unwrap();
+        let mut invoked = proxy.receive_signal("ActionInvoked").await.unwrap();
+        let mut tokens = proxy.receive_signal("ActivationToken").await.unwrap();
+        let mut replies = proxy.receive_signal("NotificationReplied").await.unwrap();
+        let mut closed = proxy.receive_signal("NotificationClosed").await.unwrap();
+        let hints = HashMap::from([("resident", OwnedValue::from(true))]);
+        let id: u32 = proxy
+            .call(
+                "Notify",
+                &(
+                    "test",
+                    0_u32,
+                    "",
+                    "Message",
+                    "Body",
+                    vec![
+                        "default",
+                        "Open",
+                        "mail-reply-sender",
+                        "Reply in app",
+                        "inline-reply",
+                        "Reply here",
+                    ],
+                    hints,
+                    -1_i32,
+                ),
+            )
+            .await
+            .unwrap();
+        for key in ["default", "mail-reply-sender"] {
+            assert!(
+                engine
+                    .invoke_action(id, key, Some("test-token".into()))
+                    .await
+                    .unwrap()
+            );
+            let signal = timeout(Duration::from_secs(1), tokens.next())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                signal.body().deserialize::<(u32, String)>().unwrap(),
+                (id, "test-token".into())
+            );
+            let signal = timeout(Duration::from_secs(1), invoked.next())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                signal.body().deserialize::<(u32, String)>().unwrap(),
+                (id, key.into())
+            );
+        }
+        assert!(engine.reply(id, "Hello").await);
+        let signal = timeout(Duration::from_secs(1), replies.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            signal.body().deserialize::<(u32, String)>().unwrap(),
+            (id, "Hello".into())
+        );
+        proxy
+            .call::<_, _, ()>("CloseNotification", &(id,))
+            .await
+            .unwrap();
+        let signal = timeout(Duration::from_secs(1), closed.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            signal.body().deserialize::<(u32, u32)>().unwrap(),
+            (id, close_reason::CLOSED_BY_CALL)
+        );
+        assert!(!engine.invoke_action(id, "default", None).await.unwrap());
+        assert!(!engine.reply(id, "No longer live").await);
+        forwarder.abort();
+    }
+}
