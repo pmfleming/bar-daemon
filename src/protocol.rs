@@ -87,6 +87,7 @@ pub const METHODS: &[&str] = &[
     "notifications.toggleDnd",
     "notifications.setDnd",
     "notifications.list",
+    "notifications.queryHistory",
     "notifications.dismiss",
     "notifications.clear",
     "notifications.clearGroup",
@@ -165,6 +166,7 @@ pub fn registry() -> Value {
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true, "until_unix_ms": 1768467500000_u64 }, "result": "notifications" },
             { "name": "notifications.list", "params": { "before_history_id": null, "limit": 50 }, "result": "notification_history" },
+            { "name": "notifications.queryHistory", "params": { "query": "", "cursor": null, "anchor": null, "limit": 50 }, "result": "notification_page" },
             { "name": "notifications.dismiss", "params": { "id": 1 }, "result": "operation" },
             { "name": "notifications.clear", "params": {}, "result": "operation" },
             { "name": "notifications.clearGroup", "params": { "group_key": "calendar" }, "result": "operation" },
@@ -229,7 +231,7 @@ fn generated_contract_fixture() -> Value {
         "daily": [{ "date_unix_ms": 1766361600000_i64, "high_c": 21.0, "low_c": 13.0, "precipitation_probability": 5, "condition": "Clear", "condition_code": 0, "sunrise_unix_ms": 1766385120000_i64, "sunset_unix_ms": 1766436420000_i64 }],
         "error": null
     });
-    json!({
+    let mut fixture = json!({
         "protocol": NAME,
         "version": VERSION,
         "registry": registry(),
@@ -412,7 +414,27 @@ fn generated_contract_fixture() -> Value {
                 "timezone_region_ids": ["Africa-Johannesburg", "Europe-Paris"], "error": null
             }
         }
-    })
+    });
+    let active =
+        serde_json::from_value(fixture["snapshot"]["notification_active"]["notifications"].clone())
+            .expect("notification fixture");
+    let page = crate::activity::notifications::history::page(
+        Vec::new(),
+        active,
+        &crate::activity::notifications::history::HistoryQuery {
+            query: String::new(),
+            cursor: None,
+            anchor: None,
+            limit: 50,
+        },
+        None,
+        "contract-epoch",
+        1,
+        1768463900000,
+    )
+    .expect("native catalog projection");
+    fixture["notification_page"] = serde_json::to_value(page).expect("catalog wire projection");
+    fixture
 }
 
 /// Loads the checked protocol contract fixture shipped with the crate.

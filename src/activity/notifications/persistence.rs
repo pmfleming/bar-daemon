@@ -4,7 +4,10 @@ use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::{mpsc, oneshot};
 
-use super::model::{ActiveNotification, HistoryNotification};
+use super::{
+    history::{CatalogRecord, PAGE_BYTES, Position, SCOPE_LIMIT, search_text},
+    model::{ActiveNotification, HistoryNotification},
+};
 
 const QUEUE_CAPACITY: usize = 1024;
 
@@ -29,6 +32,13 @@ enum Mutation {
 #[derive(Debug)]
 enum PersistenceCommand {
     Mutate(Vec<Mutation>),
+    Query {
+        query: String,
+        before: Option<Position>,
+        limit: usize,
+        excluded: Vec<(u64, u32)>,
+        response: oneshot::Sender<Result<Vec<CatalogRecord>, String>>,
+    },
     List {
         before_history_id: Option<i64>,
         limit: usize,
@@ -79,6 +89,30 @@ impl NotificationPersistence {
             ),
             mutations: Vec::new(),
         })
+    }
+
+    pub(crate) async fn query(
+        &self,
+        query: String,
+        before: Option<Position>,
+        limit: usize,
+        excluded: Vec<(u64, u32)>,
+    ) -> Result<Vec<CatalogRecord>> {
+        let (response, receiver) = oneshot::channel();
+        self.commands
+            .send(PersistenceCommand::Query {
+                query,
+                before,
+                limit,
+                excluded,
+                response,
+            })
+            .await
+            .context("notification persistence worker stopped")?;
+        receiver
+            .await
+            .context("notification persistence worker stopped")?
+            .map_err(|error| anyhow!(error))
     }
 
     pub(crate) async fn list(
@@ -154,14 +188,36 @@ fn persistence_worker(
     mut store: NotificationStore,
     mut receiver: mpsc::Receiver<PersistenceCommand>,
 ) {
+    let mut history_error = None;
     while let Some(command) = receiver.blocking_recv() {
         match command {
             PersistenceCommand::Mutate(mutations) => {
                 for mutation in mutations {
                     if let Err(error) = store.apply(mutation) {
                         tracing::warn!(%error, "notification history update failed");
+                        // Never label stale storage with a newer engine revision.
+                        history_error = Some(error.to_string());
                     }
                 }
+            }
+            PersistenceCommand::Query {
+                query,
+                before,
+                limit,
+                excluded,
+                response,
+            } => {
+                if response.is_closed() {
+                    continue; // Superseded/cancelled reads need no SQLite work.
+                }
+                let result = if let Some(error) = &history_error {
+                    Err(error.clone())
+                } else {
+                    store
+                        .query(&query, before, limit, &excluded)
+                        .map_err(|error| error.to_string())
+                };
+                let _ = response.send(result);
             }
             PersistenceCommand::List {
                 before_history_id,
@@ -188,7 +244,7 @@ impl NotificationStore {
                 format!("create notification state directory {}", parent.display())
             })?;
         }
-        let connection = Connection::open(path)
+        let mut connection = Connection::open(path)
             .with_context(|| format!("open notification database {}", path.display()))?;
         connection
             .execute_batch(
@@ -198,6 +254,7 @@ impl NotificationStore {
                    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
                    session_id INTEGER NOT NULL,
                    payload_json TEXT NOT NULL,
+                   search_text TEXT NOT NULL DEFAULT '',
                    created_unix_ms INTEGER NOT NULL,
                    updated_unix_ms INTEGER NOT NULL,
                    closed_unix_ms INTEGER,
@@ -213,6 +270,50 @@ impl NotificationStore {
                  );",
             )
             .context("initialize notification database")?;
+        let has_search = connection
+            .prepare("PRAGMA table_info(notifications)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "search_text");
+        {
+            // Legacy writers omit the search column. An invalidation trigger
+            // and dirty-row index make rollback/re-upgrade safe without scanning
+            // or rewriting all retained payloads on every native startup.
+            let transaction = connection.transaction()?;
+            if !has_search {
+                transaction.execute(
+                    "ALTER TABLE notifications ADD COLUMN search_text TEXT NOT NULL DEFAULT ''",
+                    [],
+                )?;
+            }
+            transaction.execute_batch(
+                "CREATE TRIGGER IF NOT EXISTS notifications_search_invalidate
+                   AFTER UPDATE OF payload_json ON notifications BEGIN
+                     UPDATE notifications SET search_text = '' WHERE history_id = NEW.history_id;
+                   END;
+                 CREATE INDEX IF NOT EXISTS notifications_search_dirty ON notifications(history_id) WHERE search_text = '';"
+            )?;
+            let mut after = 0;
+            loop {
+                let rows = transaction.prepare(
+                    "SELECT history_id, payload_json FROM notifications WHERE search_text = '' AND history_id > ?1 ORDER BY history_id LIMIT 128")?
+                    .query_map([after], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                if rows.is_empty() {
+                    break;
+                }
+                for (id, payload) in rows {
+                    let notification: ActiveNotification = serde_json::from_str(&payload)?;
+                    transaction.execute(
+                        "UPDATE notifications SET search_text = ?2 WHERE history_id = ?1",
+                        params![id, search_text(&notification)],
+                    )?;
+                    after = id;
+                }
+            }
+            transaction.commit()?;
+        }
         Ok(Self { connection })
     }
 
@@ -302,14 +403,20 @@ impl NotificationStore {
         if changed == 0 {
             self.connection.execute(
                 "INSERT INTO notifications
-                 (session_id, payload_json, created_unix_ms, updated_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4)",
+                 (session_id, payload_json, created_unix_ms, updated_unix_ms, search_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     notification.id,
                     payload,
                     notification.created_unix_ms,
-                    notification.updated_unix_ms
+                    notification.updated_unix_ms,
+                    search_text(notification)
                 ],
+            )?;
+        } else {
+            self.connection.execute(
+                "UPDATE notifications SET search_text = ?2 WHERE session_id = ?1 AND closed_unix_ms IS NULL",
+                params![notification.id, search_text(notification)],
             )?;
         }
         Ok(())
@@ -354,6 +461,68 @@ impl NotificationStore {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    fn query(
+        &self,
+        query: &str,
+        before: Option<Position>,
+        limit: usize,
+        excluded: &[(u64, u32)],
+    ) -> Result<Vec<CatalogRecord>> {
+        let position = before.unwrap_or(Position {
+            created: i64::MAX as u64,
+            id: u32::MAX,
+        });
+        let mut statement = self.connection.prepare(
+            "WITH matched AS MATERIALIZED (
+               SELECT history_id, created_unix_ms, session_id FROM notifications
+               WHERE history_id IN (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)
+                 AND (created_unix_ms < ?2 OR (created_unix_ms = ?2 AND session_id < ?3))
+                 AND instr(search_text, ?4) > 0
+               ORDER BY created_unix_ms DESC, session_id DESC LIMIT ?5)
+             SELECT n.history_id, n.payload_json, n.closed_unix_ms, n.close_reason
+             FROM matched JOIN notifications n USING(history_id)
+             ORDER BY matched.created_unix_ms DESC, matched.session_id DESC")?;
+        let rows = statement.query_map(
+            params![
+                SCOPE_LIMIT,
+                position.created,
+                position.id,
+                query,
+                limit + 1 + excluded.len()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<u64>>(2)?,
+                    row.get::<_, Option<u32>>(3)?,
+                ))
+            },
+        )?;
+        let mut records = Vec::new();
+        for row in rows {
+            let (history_id, payload, closed_unix_ms, close_reason) = row?;
+            anyhow::ensure!(
+                payload.len() <= PAGE_BYTES,
+                "Notification exceeds history page byte limit"
+            );
+            let notification: ActiveNotification = serde_json::from_str(&payload)?;
+            if excluded.contains(&(notification.created_unix_ms, notification.id)) {
+                continue;
+            }
+            records.push(CatalogRecord {
+                history_id: Some(history_id),
+                notification,
+                closed_unix_ms,
+                close_reason,
+            });
+            if records.len() > limit {
+                break;
+            }
+        }
+        Ok(records)
     }
 
     fn list(

@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::{
+    history::{self, HistoryError, HistoryPage, HistoryQuery},
     model::{
         ActiveNotification, HistoryNotification, IncomingNotification, NotificationSignal,
         close_reason,
@@ -134,6 +135,8 @@ pub(crate) struct NotificationEngine {
     state: StateStore,
     policy: NotificationPolicy,
     persistence: Option<NotificationPersistence>,
+    history_epoch: String,
+    history_readers: Semaphore,
 }
 
 impl NotificationEngine {
@@ -174,6 +177,8 @@ impl NotificationEngine {
             state,
             policy: NotificationPolicy::default(),
             persistence,
+            history_epoch: history::new_epoch()?,
+            history_readers: Semaphore::new(2),
         });
         if dnd_expired && let Some(persistence) = &engine.persistence {
             persistence.reserve().await?.set_dnd(false, None);
@@ -424,6 +429,58 @@ impl NotificationEngine {
             return Ok(Vec::new());
         };
         persistence.list(before_history_id, limit).await
+    }
+
+    pub(crate) async fn query_history(
+        &self,
+        mut query: HistoryQuery,
+    ) -> Result<HistoryPage, HistoryError> {
+        query.normalize()?;
+        let _reader = self
+            .history_readers
+            .try_acquire()
+            .map_err(|_| HistoryError::Busy)?;
+        // The revision, active overlay and persisted rows are one read. This
+        // also waits for the preceding mutation's reserved writes to enqueue.
+        let _mutation = self.mutations.lock().await;
+        let (revision, active) = {
+            let data = self.data.lock().await;
+            (
+                data.history_revision,
+                data.active
+                    .values()
+                    .filter(|item| item.snoozed_until_unix_ms.is_none())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let now = unix_ms();
+        let before = query.position(&self.history_epoch, revision, now)?;
+        let persisted = if let Some(persistence) = &self.persistence {
+            persistence
+                .query(
+                    query.query.clone(),
+                    before,
+                    query.limit,
+                    active
+                        .iter()
+                        .map(|item| (item.created_unix_ms, item.id))
+                        .collect(),
+                )
+                .await
+                .map_err(HistoryError::Unavailable)?
+        } else {
+            Vec::new()
+        };
+        history::page(
+            persisted,
+            active,
+            &query,
+            before,
+            &self.history_epoch,
+            revision,
+            now,
+        )
     }
 
     pub(crate) async fn reply(&self, id: u32, text: &str) -> bool {
@@ -709,6 +766,60 @@ mod tests {
                 .await
                 .unwrap()
                 > last_id
+        );
+    }
+
+    #[tokio::test]
+    async fn history_admission_is_bounded_and_releases_after_cancellation() {
+        use super::history::{HistoryError, HistoryQuery};
+        let engine = NotificationEngine::new(StateStore::default()).await;
+        let mutation = engine.mutations.lock().await;
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..2 {
+            let engine = Arc::clone(&engine);
+            tasks.spawn(async move {
+                engine
+                    .query_history(HistoryQuery {
+                        query: String::new(),
+                        cursor: None,
+                        anchor: None,
+                        limit: 50,
+                    })
+                    .await
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while engine.history_readers.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            engine
+                .query_history(HistoryQuery {
+                    query: String::new(),
+                    cursor: None,
+                    anchor: None,
+                    limit: 50
+                })
+                .await,
+            Err(HistoryError::Busy)
+        ));
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        drop(mutation);
+        assert_eq!(engine.history_readers.available_permits(), 2);
+        assert!(
+            engine
+                .query_history(HistoryQuery {
+                    query: String::new(),
+                    cursor: None,
+                    anchor: None,
+                    limit: 50
+                })
+                .await
+                .is_ok()
         );
     }
 

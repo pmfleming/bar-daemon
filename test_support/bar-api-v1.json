@@ -1,4 +1,52 @@
 {
+  "notification_page": {
+    "anchor_reached": true,
+    "epoch": "contract-epoch",
+    "next_cursor": null,
+    "query": "",
+    "records": [
+      {
+        "close_reason": null,
+        "closed_unix_ms": null,
+        "history_id": null,
+        "notification": {
+          "actions": [
+            {
+              "key": "default",
+              "label": "Open"
+            }
+          ],
+          "app_icon": "calendar",
+          "app_name": "Calendar",
+          "body": "Meeting starts soon",
+          "created_unix_ms": 1768463900000,
+          "expires_unix_ms": null,
+          "group_key": "calendar",
+          "hints": {
+            "category": "calendar",
+            "desktop_entry": "calendar",
+            "image_data_present": false,
+            "image_path": "",
+            "resident": false,
+            "sound_file": "",
+            "sound_name": "",
+            "suppress_sound": false,
+            "transient": false,
+            "urgency": 1
+          },
+          "id": 1,
+          "snoozed_until_unix_ms": null,
+          "source_monitor": "eDP-1",
+          "summary": "Planning",
+          "toast_expires_unix_ms": null,
+          "toast_visible": false,
+          "updated_unix_ms": 1768463900000
+        }
+      }
+    ],
+    "revision": "1",
+    "scope_limit": 5000
+  },
   "protocol": "bar-api",
   "registry": {
     "methods": [
@@ -330,6 +378,16 @@
           "limit": 50
         },
         "result": "notification_history"
+      },
+      {
+        "name": "notifications.queryHistory",
+        "params": {
+          "anchor": null,
+          "cursor": null,
+          "limit": 50,
+          "query": ""
+        },
+        "result": "notification_page"
       },
       {
         "name": "notifications.dismiss",
@@ -1017,8 +1075,6 @@
           "body": "Meeting starts soon",
           "created_unix_ms": 1768463900000,
           "expires_unix_ms": null,
-          "toast_visible": true,
-          "toast_expires_unix_ms": 1768463905000,
           "group_key": "calendar",
           "hints": {
             "category": "calendar",
@@ -1036,6 +1092,8 @@
           "snoozed_until_unix_ms": null,
           "source_monitor": "eDP-1",
           "summary": "Planning",
+          "toast_expires_unix_ms": 1768463905000,
+          "toast_visible": true,
           "updated_unix_ms": 1768463900000
         }
       ],

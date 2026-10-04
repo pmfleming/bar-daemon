@@ -4,6 +4,9 @@
 //! retained as an optional compatibility backend.
 
 pub(crate) mod engine;
+pub(crate) mod history;
+#[cfg(test)]
+mod history_tests;
 pub(crate) mod model;
 pub(crate) mod persistence;
 pub(crate) mod policy;

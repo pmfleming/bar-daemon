@@ -47,7 +47,8 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.togglePanel`
 - `notifications.toggleDnd`
 - `notifications.setDnd`
-- `notifications.list`
+- `notifications.list` (legacy)
+- `notifications.queryHistory`
 - `notifications.dismiss`
 - `notifications.clear`
 - `notifications.clearGroup`
@@ -135,7 +136,15 @@ In native mode, `notifications.changed` carries compact count, DND (including an
 
 Group dismissal and expiry publish only the final summary/collection per batch (individual D-Bus close signals are retained). Popup hiding and timed-DND expiry do not increment `history_revision`. History reads wait for the mutation/persistence-enqueue boundary, so a subscriber querying a newly published revision cannot overtake its pending write batch.
 
-History is paginated with `notifications.list` using an optional `before_history_id` cursor and a maximum limit of 200. `notifications.clearGroup` dismisses one application/group stack, while `notifications.snooze` suppresses a record until its requested wake time.
+`notifications.queryHistory` is the authoritative center catalog. Request parameters are `{query: "", cursor: null, anchor: null, limit: 50}`. It merges unsnoozed live records with the newest **5,000 persisted records**, deduplicates by `(id, created_unix_ms)`, sorts descending by creation time then ID, and applies Unicode-lowercase literal substring search across app name, summary and body. `%`/`_` are literal, not SQL wildcards. This query scope does not delete older persisted history. Live transient records are included; closed transients and persisted records replaced by transients are absent.
+
+The result `notification_page` contains `epoch`, exact string `revision`, normalized `query`, `records`, nullable `next_cursor`, `scope_limit`, and `anchor_reached`. Each record has `notification`, nullable `history_id`, `closed_unix_ms`, and `close_reason`. Live records use a null history ID; view identity remains notification ID plus creation time. Popup fields are normalized away from live toast changes. A page holds 1–100 requested records (default 50), with at most 512 KiB of serialized record content; byte truncation still returns a progressing cursor. A record exceeding that budget fails explicitly. Queries are limited to 1,024 UTF-8 bytes before and after normalization, and two concurrent reads. The scan covers at most the recent persisted scope plus the existing 200-live-record cap. Only candidate IDs are sorted in SQL before loading bounded payloads.
+
+Cursors are opaque, stateless read positions bound to epoch, content revision and normalized query, expiring after 120 seconds. They grant no authority and retain no snapshots/leases; concurrent clients can page independently. Each read holds the engine mutation boundary through persistence retrieval, so pages cannot carry a revision newer than their stored content. Mutation write failures make new catalog reads fail closed for that worker lifetime. `history-cursor-stale` requires restarting the read; `history-query-invalid`, `history-busy`, and `history-unavailable` are explicit failures. Daemon replacement changes epoch even when the revision resets. No mutation may be replayed as cursor recovery.
+
+For refresh, optionally send the oldest visible notification as `anchor: {created: <created_unix_ms>, id: <id>}` on each page. `anchor_reached` becomes true when the page reaches or passes that position, or exhausts the query—even if that record was deleted. Clients can stage the requested window and atomically replace it without reconstructing a full catalog, losing their viewport, or preserving omitted/deleted records. A new query normally requests only its first page.
+
+The additive API leaves `notifications.list` available for legacy clients: optional `before_history_id` and maximum limit 200, without the new consistency/search guarantees. Storage adds/backfills a Unicode-normalized search column transactionally; legacy payloads and history IDs remain intact. Payload-update invalidation and a dirty-row index repair legacy writes after rollback/re-upgrade, without rescanning unchanged retained payloads on every startup. Deploy matching daemon and frontend builds; do not implement a frontend catalog fallback. `notifications.clearGroup` still dismisses a group, and `notifications.snooze` suppresses a record until wake.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 
