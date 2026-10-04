@@ -91,7 +91,7 @@ impl EngineData {
             {
                 notification.toast_visible = false;
                 notification.toast_expires_unix_ms = None;
-                dirty = true;
+                // Popup-only changes do not invalidate persisted history.
             }
             if dirty {
                 changed.push(notification.clone());
@@ -111,7 +111,7 @@ impl EngineData {
             self.dnd = false;
             self.dnd_until_unix_ms = None;
         }
-        if !changed.is_empty() || dnd_expired {
+        if !changed.is_empty() {
             self.history_revision = self.history_revision.wrapping_add(1);
         }
         ExpiryBatch {
@@ -245,7 +245,11 @@ impl NotificationEngine {
     pub(crate) async fn close(&self, id: u32, reason: u32) -> Result<bool> {
         let _mutation = self.mutations.lock().await;
         let mut writes = self.reserve_persistence().await?;
-        Ok(self.close_locked(id, reason, &mut writes).await)
+        let removed = self.close_locked(id, reason, &mut writes).await;
+        if removed {
+            self.publish_summary().await;
+        }
+        Ok(removed)
     }
 
     // Caller holds mutations and a reserved batch, including expiry/actions.
@@ -269,7 +273,6 @@ impl NotificationEngine {
             }
             self.emit(NotificationSignal::Closed { id, reason });
             self.expiry_wakeup.notify_one();
-            self.publish_summary().await;
         }
         removed
     }
@@ -397,6 +400,9 @@ impl NotificationEngine {
             self.close_locked(*id, close_reason::DISMISSED, &mut writes)
                 .await;
         }
+        if !ids.is_empty() {
+            self.publish_summary().await;
+        }
         Ok(ids.len())
     }
 
@@ -410,6 +416,10 @@ impl NotificationEngine {
         before_history_id: Option<i64>,
         limit: usize,
     ) -> Result<Vec<HistoryNotification>> {
+        // A subscriber can query immediately after publication, before the
+        // mutation's reserved write batch is dropped/enqueued. Wait for that
+        // boundary so the published revision never leads its history data.
+        let _mutation = self.mutations.lock().await;
         let Some(persistence) = &self.persistence else {
             return Ok(Vec::new());
         };
@@ -476,6 +486,7 @@ impl NotificationEngine {
         if !resident {
             self.close_locked(id, close_reason::DISMISSED, &mut writes)
                 .await;
+            self.publish_summary().await;
         }
         Ok(true)
     }
@@ -771,6 +782,48 @@ mod tests {
         .unwrap();
         assert_eq!(engine.clear_group("test").await.unwrap(), 2);
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn batches_publish_only_final_state_and_popup_changes_do_not_dirty_history() {
+        let state = StateStore::default();
+        let engine = NotificationEngine::new(state.clone()).await;
+        engine.notify(0, notification("first", -1)).await.unwrap();
+        engine.notify(0, notification("second", -1)).await.unwrap();
+        let revision = state.snapshot().await.notifications.history_revision;
+        for item in engine.data.lock().await.active.values_mut() {
+            item.toast_expires_unix_ms = Some(0);
+        }
+        engine.expire_due().await;
+        assert_eq!(
+            state.snapshot().await.notifications.history_revision,
+            revision
+        );
+        let mut events = state.subscribe();
+        assert_eq!(engine.clear_group("test").await.unwrap(), 2);
+        let mut updates = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            updates.push(event);
+        }
+        assert_eq!(
+            updates.len(),
+            2,
+            "one summary and one collection, not per-record states"
+        );
+        assert_eq!(updates[0].data["count"], 0);
+        assert_eq!(
+            updates[1].data["notifications"].as_array().unwrap().len(),
+            0
+        );
+        let boundary = engine.mutations.lock().await;
+        let history = engine.history(None, 50);
+        tokio::pin!(history);
+        assert!(
+            futures::poll!(&mut history).is_pending(),
+            "history must wait for the mutation's write-enqueue boundary"
+        );
+        drop(boundary);
+        assert!(history.await.unwrap().is_empty());
     }
 
     #[tokio::test]
