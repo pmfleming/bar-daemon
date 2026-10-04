@@ -18,7 +18,21 @@ API additions (bar-api v1, existing `display-policy.changed` stream):
 - `displayLayout.revert {id}`
 
 Snapshot `display_policy.outputs` contains current compositor outputs and
-advertised modes. Optional nonempty `description` supplies the compositor's human
+advertised modes. Each output also publishes `supported`, `internal`,
+`current_mode`, `modes: [{id, width, height, rate, size}]`, and `mirror_of`.
+Mode IDs preserve exact advertised strings; the closest matching refresh within
+0.1 Hz wins. A valid unadvertised observed mode is included in the catalog;
+disabled outputs without geometry select the first valid advertised mode.
+Missing/invalid modes produce an empty ID/catalog rather than invented geometry.
+Mirror IDs resolve against the same snapshot; unresolved nonempty references
+stay nonempty so they cannot masquerade as independent outputs. Disabled outputs
+publish an empty mirror source. Raw compositor fields remain for older clients,
+but new frontends must not reparse them. Normalization shares the mutation
+validator's mode and connector rules and is applied to snapshots, events and
+mutation acknowledgements alike. Rendering, local drafts and snapping stay in
+Shelllist; preview/confirm validation and rollback remain authoritative here.
+
+Optional nonempty `description` supplies the compositor's human
 readable monitor name; connectors remain request identity. `display_policy.layout` contains `saved` and an optional
 `trial` with its opaque confirmation ID and `expires_at` Unix timestamp.
 The additive `manual_enablement` flag defaults to false for older saved documents.

@@ -44,6 +44,7 @@ pub(crate) struct DisplayPolicyState {
     pub policy: DisplayPolicy,
     pub status: String,
     pub error: Option<String>,
+    #[serde(serialize_with = "layout::serialize_outputs")]
     pub outputs: Vec<Output>,
     pub layout: layout::Document,
     #[serde(default)]

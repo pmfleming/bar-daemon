@@ -868,12 +868,90 @@
         }
       },
       "layout": {
+        "manual_enablement": false,
         "saved": {
           "outputs": []
         },
         "trial": null
       },
-      "outputs": [],
+      "outputs": [
+        {
+          "availableModes": [
+            "1920x1200@60.00Hz"
+          ],
+          "current_mode": "1920x1200@60.00Hz",
+          "disabled": true,
+          "focused": false,
+          "height": 1200,
+          "id": 0,
+          "internal": true,
+          "mirrorOf": "",
+          "mirror_of": "",
+          "modes": [
+            {
+              "height": 1200,
+              "id": "1920x1200@60.00Hz",
+              "rate": 60.0,
+              "size": "1920x1200",
+              "width": 1920
+            }
+          ],
+          "name": "eDP-1",
+          "refreshRate": 60.0,
+          "scale": 1.25,
+          "supported": true,
+          "transform": 0,
+          "width": 1920,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "availableModes": [
+            "3840x2160@59.940Hz",
+            "3840x2160@60.00Hz",
+            "2560x1440@120.00Hz"
+          ],
+          "current_mode": "3840x2160@59.940Hz",
+          "disabled": false,
+          "focused": false,
+          "height": 2160,
+          "id": 1,
+          "internal": false,
+          "mirrorOf": "",
+          "mirror_of": "",
+          "modes": [
+            {
+              "height": 2160,
+              "id": "3840x2160@59.940Hz",
+              "rate": 59.94,
+              "size": "3840x2160",
+              "width": 3840
+            },
+            {
+              "height": 2160,
+              "id": "3840x2160@60.00Hz",
+              "rate": 60.0,
+              "size": "3840x2160",
+              "width": 3840
+            },
+            {
+              "height": 1440,
+              "id": "2560x1440@120.00Hz",
+              "rate": 120.0,
+              "size": "2560x1440",
+              "width": 2560
+            }
+          ],
+          "name": "DP-1",
+          "refreshRate": 59.94,
+          "scale": 1.5,
+          "supported": true,
+          "transform": 0,
+          "width": 3840,
+          "x": 1536,
+          "y": 0
+        }
+      ],
       "policy": {
         "prefer_external": true
       },

@@ -12,6 +12,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Normalize display mode catalogs, exact current modes, connector capabilities and
+  mirror sources in Rust for all bar-api display snapshots and events.
+
 - Split API, daemon orchestration, and battery integration into focused modules.
 - Removed avoidable production panic paths and expanded policy tests.
 

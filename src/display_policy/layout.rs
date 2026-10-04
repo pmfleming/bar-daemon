@@ -15,6 +15,9 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+mod outputs;
+pub(super) use outputs::serialize_outputs;
+
 const PREVIEW_SECONDS: u64 = 20;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,16 +101,7 @@ impl Setting {
     fn observed(output: &Output, outputs: &[Output]) -> Self {
         Self {
             name: output.name.clone(),
-            mode: if output.disabled && mode(&Self::observed_mode(output)).is_none() {
-                output
-                    .available_modes
-                    .iter()
-                    .find(|m| mode(m).is_some())
-                    .cloned()
-                    .unwrap_or_else(|| Self::observed_mode(output))
-            } else {
-                Self::observed_mode(output)
-            },
+            mode: outputs::current_mode(output),
             x: output.x,
             y: output.y,
             scale: output.scale,
@@ -128,7 +122,7 @@ impl Setting {
 fn connector(value: &str) -> bool {
     ["eDP-", "LVDS-", "DSI-", "DP-", "HDMI-A-"]
         .iter()
-        .any(|prefix| value.starts_with(prefix))
+        .any(|prefix| value.starts_with(prefix) && value.len() > prefix.len())
         && value.len() <= 64
         && value
             .bytes()

@@ -193,6 +193,21 @@ pub fn registry() -> Value {
 
 #[cfg(test)]
 fn generated_contract_fixture() -> Value {
+    // Exercise the real wire projection rather than maintaining a JS-shaped
+    // duplicate of the compositor normalization in a hand-written fixture.
+    let displays: crate::display_policy::DisplayPolicyState = serde_json::from_value(json!({
+        "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null,
+        "outputs": [
+            { "id": 0, "name": "eDP-1", "width": 1920, "height": 1200, "refreshRate": 60,
+              "x": 0, "y": 0, "scale": 1.25, "transform": 0, "disabled": true,
+              "availableModes": ["1920x1200@60.00Hz"] },
+            { "id": 1, "name": "DP-1", "width": 3840, "height": 2160, "refreshRate": 59.94,
+              "x": 1536, "y": 0, "scale": 1.5, "transform": 0, "disabled": false,
+              "availableModes": ["3840x2160@59.940Hz", "3840x2160@60.00Hz", "2560x1440@120.00Hz"] }
+        ],
+        "layout": { "saved": { "outputs": [] }, "trial": null },
+        "focus": { "available": true, "values": { "input:follow_mouse": 1, "misc:mouse_move_focuses_monitor": true }, "saved": {}, "error": null }
+    })).expect("valid display fixture");
     let weather = json!({
         "available": true, "id": "home", "location": "Amsterdam", "home": true,
         "timezone": "Europe/Amsterdam", "utc_offset_seconds": 3600,
@@ -341,7 +356,7 @@ fn generated_contract_fixture() -> Value {
                 "inhibitors": [{ "what": "sleep", "who": "Backup", "why": "Writing snapshot", "mode": "delay", "uid": 1000, "pid": 4242 }],
                 "error": null
             },
-            "display_policy": { "available": true, "policy": { "prefer_external": true }, "status": "external", "error": null, "outputs": [], "layout": { "saved": { "outputs": [] }, "trial": null }, "focus": { "available": true, "values": { "input:follow_mouse": 1, "misc:mouse_move_focuses_monitor": true }, "saved": {}, "error": null } },
+            "display_policy": displays,
             "sleep_policy": {
                 "available": true, "active_profile": "shared",
                 "hibernate_available": true, "hibernate_ready": true, "hibernate_error": null, "last_error": null,
