@@ -363,9 +363,8 @@ async fn apply_setting<B: Backend>(
     generation: u64,
 ) -> Result<()> {
     backend.eligible().await?;
-    let sleep = store.snapshot().await.power_sleep;
     ensure!(
-        !sleep.preparing_for_sleep && sleep.resume_generation == generation,
+        !super::sleep_interrupted(store, generation).await,
         "Sleep interrupted display changes"
     );
     let outputs = backend.outputs().await?;
@@ -500,9 +499,8 @@ async fn finish_at<B: Backend>(
                     .is_some_and(|deadline| Instant::now() < deadline),
             "Layout confirmation expired"
         );
-        let sleep = store.snapshot().await.power_sleep;
         ensure!(
-            !sleep.preparing_for_sleep && sleep.resume_generation == runtime.resume,
+            !super::sleep_interrupted(store, runtime.resume).await,
             "Sleep interrupted the preview"
         );
         let outputs = backend.outputs().await?;
@@ -561,8 +559,15 @@ async fn tick_at<B: Backend>(
     instant: Instant,
 ) -> Result<(Document, bool)> {
     let mut doc: Document = load_json_or_default(path, "display layout").await?;
-    let sleep = store.snapshot().await.power_sleep;
-    if sleep.preparing_for_sleep {
+    let (preparing, generation) = store
+        .read(|s| {
+            (
+                s.power_sleep.preparing_for_sleep,
+                s.power_sleep.resume_generation,
+            )
+        })
+        .await;
+    if preparing {
         runtime.trial = None;
         return Ok((doc, true));
     }
@@ -570,7 +575,7 @@ async fn tick_at<B: Backend>(
         if runtime.trial.as_deref() == Some(&trial.id)
             && now < trial.expires_at
             && runtime.deadline.is_some_and(|deadline| instant < deadline)
-            && runtime.resume == sleep.resume_generation
+            && runtime.resume == generation
             && topology(&backend.outputs().await?) == runtime.topology
         {
             return Ok((doc, true));
@@ -589,9 +594,9 @@ async fn tick_at<B: Backend>(
     }
     let outputs = backend.outputs().await?;
     let current_topology = topology(&outputs);
-    if current_topology != runtime.topology || runtime.resume != sleep.resume_generation {
+    if current_topology != runtime.topology || runtime.resume != generation {
         runtime.topology = current_topology;
-        runtime.resume = sleep.resume_generation;
+        runtime.resume = generation;
         runtime.since = Some(instant);
         runtime.applied = false;
         runtime.error = None;

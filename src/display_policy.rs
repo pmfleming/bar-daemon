@@ -73,7 +73,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
         policy,
         status: "pending".into(),
         error: None,
-        ..store.snapshot().await.display_policy
+        ..store.read(|s| s.display_policy.clone()).await
     };
     store.update_display_policy(state.clone()).await;
     Ok(state)
@@ -108,7 +108,7 @@ pub(crate) async fn layout_action(
     })
     .await
     .context("Display layout request timed out; unconfirmed changes will revert")??;
-    let mut state = store.snapshot().await.display_policy;
+    let mut state = store.read(|s| s.display_policy.clone()).await;
     state.layout = document;
     state.outputs = backend.outputs().await?;
     state.error = None;
@@ -209,6 +209,14 @@ async fn ensure_no_legacy_owner() -> Result<()> {
     Ok(())
 }
 
+async fn sleep_interrupted(store: &StateStore, generation: u64) -> bool {
+    store
+        .read(|s| {
+            s.power_sleep.preparing_for_sleep || s.power_sleep.resume_generation != generation
+        })
+        .await
+}
+
 async fn reconcile<B: Backend>(
     backend: &B,
     planner: &mut Planner,
@@ -217,8 +225,15 @@ async fn reconcile<B: Backend>(
     store: &StateStore,
     now: Instant,
 ) -> Result<&'static str> {
-    let sleep = store.snapshot().await.power_sleep;
-    if sleep.preparing_for_sleep {
+    let (preparing, generation) = store
+        .read(|s| {
+            (
+                s.power_sleep.preparing_for_sleep,
+                s.power_sleep.resume_generation,
+            )
+        })
+        .await;
+    if preparing {
         planner.reset();
         return Ok("sleeping");
     }
@@ -252,10 +267,7 @@ async fn reconcile<B: Backend>(
                 );
             }
         }
-        let current_sleep = store.snapshot().await.power_sleep;
-        if current_sleep.preparing_for_sleep
-            || current_sleep.resume_generation != sleep.resume_generation
-        {
+        if sleep_interrupted(store, generation).await {
             bail!("sleep transition interrupted display reconciliation");
         }
         backend.apply(target, plan.disable_internal).await?;
@@ -287,8 +299,7 @@ pub(crate) async fn monitor(store: StateStore) {
             _ = timer.tick() => {},
             event = events.recv() => match event {
                 Ok(event) if event.stream == crate::protocol::stream::POWER_SLEEP => {
-                    let power = store.snapshot().await.power_sleep;
-                    if power.resume_generation == last_resume && !power.preparing_for_sleep { continue; }
+                    if !sleep_interrupted(&store, last_resume).await { continue; }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -296,7 +307,7 @@ pub(crate) async fn monitor(store: StateStore) {
             }
         }
         let _guard = POLICY_WRITE.lock().await;
-        let resume = store.snapshot().await.power_sleep.resume_generation;
+        let resume = store.read(|s| s.power_sleep.resume_generation).await;
         if resume != last_resume {
             planner.reset();
             last_resume = resume;
@@ -304,7 +315,7 @@ pub(crate) async fn monitor(store: StateStore) {
         let mut state = DisplayPolicyState {
             available: true,
             error: None,
-            ..store.snapshot().await.display_policy
+            ..store.read(|s| s.display_policy.clone()).await
         };
         let result = async {
             state.policy = load().await?;
@@ -348,8 +359,12 @@ pub(crate) async fn monitor(store: StateStore) {
         {
             state.focus = focus::tick(&backend, &store).await;
         }
-        let previous = store.snapshot().await.display_policy;
-        if state.status != previous.status || state.error != previous.error {
+        if store
+            .read(|s| {
+                state.status != s.display_policy.status || state.error != s.display_policy.error
+            })
+            .await
+        {
             tracing::info!(status = %state.status, error = ?state.error, "laptop display policy");
         }
         store.update_display_policy(state).await;

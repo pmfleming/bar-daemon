@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use shelllist_daemon_tokio::{OwnedTaskRegistry, directed_emitter};
+use shelllist_daemon_tokio::{
+    BroadcastEvent, OwnedTaskRegistry, directed_emitter, forward_broadcast,
+};
 use zbus::{message::Header, object_server::SignalEmitter};
 
 use crate::{
@@ -104,89 +106,75 @@ async fn forward_events(
         .iter()
         .any(|stream| stream == protocol::stream::WORKAREA)
         .then(|| state.work_area_interest());
-    let (snapshot, mut events) = state.snapshot_and_subscribe().await;
-    for stream in &streams {
-        let data = initial_stream_data(stream, &snapshot);
+    let (initial, events) = state
+        .snapshot_and_subscribe(|snapshot| {
+            streams
+                .iter()
+                .map(|stream| initial_stream_data(stream, snapshot))
+                .collect::<Vec<_>>()
+        })
+        .await;
+    for (stream, data) in streams.iter().zip(initial) {
         emit_event(&emitter, stream, "subscribed", &subscription_id, data).await;
     }
-    loop {
-        match events.recv().await {
-            Ok(event) if stream_selected(&streams, &event.stream) => {
-                emit_event(
-                    &emitter,
-                    &event.stream,
-                    "changed",
-                    &subscription_id,
-                    event.data,
-                )
-                .await;
-            }
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                for stream in &streams {
+    forward_broadcast(events, |update| {
+        let (emitter, subscription_id, streams) = (&emitter, &subscription_id, &streams);
+        async move {
+            match update {
+                BroadcastEvent::Item(event)
+                    if streams.iter().any(|stream| stream == &event.stream) =>
+                {
                     emit_event(
-                        &emitter,
-                        stream,
-                        "lagged",
-                        &subscription_id,
-                        json!({ "missed": count }),
+                        emitter,
+                        &event.stream,
+                        "changed",
+                        subscription_id,
+                        event.data,
                     )
                     .await;
                 }
+                BroadcastEvent::Item(_) => {}
+                BroadcastEvent::Lagged(count) => {
+                    for stream in streams {
+                        emit_event(
+                            emitter,
+                            stream,
+                            "lagged",
+                            subscription_id,
+                            json!({ "missed": count }),
+                        )
+                        .await;
+                    }
+                }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }
-    }
-}
-
-fn stream_selected(streams: &[String], event_stream: &str) -> bool {
-    streams.iter().any(|stream| stream == event_stream)
+    })
+    .await;
 }
 
 fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
     match stream {
-        protocol::stream::ACTIVITY => {
-            serde_json::to_value(&snapshot.activity).unwrap_or(Value::Null)
-        }
-        protocol::stream::WORKAREA => {
-            serde_json::to_value(&snapshot.workarea).unwrap_or(Value::Null)
-        }
-        protocol::stream::WORKSPACES => {
-            serde_json::to_value(&snapshot.workspaces).unwrap_or(Value::Null)
-        }
-        protocol::stream::MEDIA => serde_json::to_value(&snapshot.media).unwrap_or(Value::Null),
-        protocol::stream::AUDIO => serde_json::to_value(&snapshot.audio).unwrap_or(Value::Null),
-        protocol::stream::BRIGHTNESS => {
-            serde_json::to_value(&snapshot.brightness).unwrap_or(Value::Null)
-        }
-        protocol::stream::BATTERY => serde_json::to_value(&snapshot.battery).unwrap_or(Value::Null),
-        protocol::stream::POWER_PROFILE => {
-            serde_json::to_value(&snapshot.power_profile).unwrap_or(Value::Null)
-        }
-        protocol::stream::POWER_SLEEP => {
-            serde_json::to_value(&snapshot.power_sleep).unwrap_or(Value::Null)
-        }
-        protocol::stream::SLEEP_POLICY => {
-            serde_json::to_value(&snapshot.sleep_policy).unwrap_or(Value::Null)
-        }
-        protocol::stream::DISPLAY_POLICY => {
-            serde_json::to_value(&snapshot.display_policy).unwrap_or(Value::Null)
-        }
-        protocol::stream::OSD_HARDWARE => {
-            serde_json::to_value(&snapshot.osd_hardware).unwrap_or(Value::Null)
-        }
-        protocol::stream::NOTIFICATIONS => {
-            serde_json::to_value(&snapshot.notifications).unwrap_or(Value::Null)
-        }
+        protocol::stream::ACTIVITY => serde_json::to_value(&snapshot.activity),
+        protocol::stream::WORKAREA => serde_json::to_value(&snapshot.workarea),
+        protocol::stream::WORKSPACES => serde_json::to_value(&snapshot.workspaces),
+        protocol::stream::MEDIA => serde_json::to_value(&snapshot.media),
+        protocol::stream::AUDIO => serde_json::to_value(&snapshot.audio),
+        protocol::stream::BRIGHTNESS => serde_json::to_value(&snapshot.brightness),
+        protocol::stream::BATTERY => serde_json::to_value(&snapshot.battery),
+        protocol::stream::POWER_PROFILE => serde_json::to_value(&snapshot.power_profile),
+        protocol::stream::POWER_SLEEP => serde_json::to_value(&snapshot.power_sleep),
+        protocol::stream::SLEEP_POLICY => serde_json::to_value(&snapshot.sleep_policy),
+        protocol::stream::DISPLAY_POLICY => serde_json::to_value(&snapshot.display_policy),
+        protocol::stream::OSD_HARDWARE => serde_json::to_value(&snapshot.osd_hardware),
+        protocol::stream::NOTIFICATIONS => serde_json::to_value(&snapshot.notifications),
         protocol::stream::NOTIFICATION_ACTIVE => {
-            serde_json::to_value(&snapshot.notification_active).unwrap_or(Value::Null)
+            serde_json::to_value(&snapshot.notification_active)
         }
-        protocol::stream::UPDATES => serde_json::to_value(&snapshot.updates).unwrap_or(Value::Null),
-        protocol::stream::TIMEZONE => {
-            serde_json::to_value(&snapshot.timezone).unwrap_or(Value::Null)
-        }
-        _ => Value::Null,
+        protocol::stream::UPDATES => serde_json::to_value(&snapshot.updates),
+        protocol::stream::TIMEZONE => serde_json::to_value(&snapshot.timezone),
+        _ => return Value::Null,
     }
+    .unwrap_or(Value::Null)
 }
 
 async fn emit_event(

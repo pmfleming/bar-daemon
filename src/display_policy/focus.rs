@@ -187,9 +187,8 @@ impl Backend for HyprlandClient {
 }
 async fn guard<B: Backend>(backend: &B, store: &StateStore, generation: u64) -> Result<()> {
     backend.eligible().await?;
-    let sleep = store.snapshot().await.power_sleep;
     ensure!(
-        !sleep.preparing_for_sleep && sleep.resume_generation == generation,
+        !super::sleep_interrupted(store, generation).await,
         "Sleep interrupted focus settings"
     );
     Ok(())
@@ -268,12 +267,11 @@ async fn change<B: Backend>(
         })
     }
     .await;
-    if let Err(failure) = &result {
-        if !rollback.is_empty() {
-            if let Err(error) = apply(backend, &rollback, store, generation).await {
-                bail!("{failure:#}; restoring previous focus settings also failed: {error:#}");
-            }
-        }
+    if let Err(failure) = &result
+        && !rollback.is_empty()
+        && let Err(error) = apply(backend, &rollback, store, generation).await
+    {
+        bail!("{failure:#}; restoring previous focus settings also failed: {error:#}");
     }
     result
 }
@@ -305,7 +303,7 @@ pub(crate) async fn action(
     )
     .await
     .context("Focus settings request timed out")??;
-    let mut state = store.snapshot().await.display_policy;
+    let mut state = store.read(|s| s.display_policy.clone()).await;
     state.focus = focus;
     store.update_display_policy(state.clone()).await;
     Ok(state)
