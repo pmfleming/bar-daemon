@@ -9,12 +9,10 @@ use super::{
     swaync,
 };
 
-#[derive(Clone)]
 pub(crate) struct NotificationService {
     backend: NotificationBackend,
 }
 
-#[derive(Clone)]
 enum NotificationBackend {
     Native(Arc<NotificationEngine>),
     SwayNc,
@@ -51,9 +49,9 @@ impl NotificationService {
         }
     }
 
-    pub(crate) fn native_engine(&self) -> Option<Arc<NotificationEngine>> {
+    pub(crate) fn native_engine(&self) -> Option<&NotificationEngine> {
         match &self.backend {
-            NotificationBackend::Native(engine) => Some(Arc::clone(engine)),
+            NotificationBackend::Native(engine) => Some(engine),
             NotificationBackend::SwayNc => None,
         }
     }
@@ -122,7 +120,7 @@ async fn send_freedesktop(notification: IncomingNotification) -> Result<u32> {
     let actions = notification
         .actions
         .iter()
-        .flat_map(|action| [action.key.clone(), action.label.clone()])
+        .flat_map(|action| [action.key.as_str(), action.label.as_str()])
         .collect::<Vec<_>>();
     let mut hints = HashMap::<String, OwnedValue>::new();
     hints.insert(
