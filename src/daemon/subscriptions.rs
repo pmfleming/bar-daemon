@@ -106,15 +106,9 @@ async fn forward_events(
         .iter()
         .any(|stream| stream == protocol::stream::WORKAREA)
         .then(|| state.work_area_interest());
-    let (initial, events) = state
-        .snapshot_and_subscribe(|snapshot| {
-            streams
-                .iter()
-                .map(|stream| initial_stream_data(stream, snapshot))
-                .collect::<Vec<_>>()
-        })
-        .await;
-    for (stream, data) in streams.iter().zip(initial) {
+    let (snapshot, events) = state.snapshot_and_subscribe().await;
+    for stream in &streams {
+        let data = initial_stream_data(stream, &snapshot);
         emit_event(&emitter, stream, "subscribed", &subscription_id, data).await;
     }
     forward_broadcast(events, |update| {

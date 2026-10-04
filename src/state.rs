@@ -57,14 +57,13 @@ impl StateStore {
         self.snapshot.read().await.clone()
     }
 
-    /// Project only requested domains while preserving snapshot/event commit order.
-    pub(crate) async fn snapshot_and_subscribe<T>(
+    /// Keep caller-controlled stream serialization outside the snapshot lock.
+    pub(crate) async fn snapshot_and_subscribe(
         &self,
-        project: impl FnOnce(&BarSnapshot) -> T,
-    ) -> (T, broadcast::Receiver<DomainEvent>) {
+    ) -> (BarSnapshot, broadcast::Receiver<DomainEvent>) {
         let snapshot = self.snapshot.read().await;
         let events = self.events.subscribe();
-        (project(&snapshot), events)
+        (snapshot.clone(), events)
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<DomainEvent> {
@@ -241,10 +240,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let store = StateStore::default();
-        let (initial, mut events) = store
-            .snapshot_and_subscribe(|s| s.notifications.count)
-            .await;
-        assert_eq!(initial, 0);
+        let (initial, mut events) = store.snapshot_and_subscribe().await;
+        assert_eq!(initial.notifications.count, 0);
         for round in 0..1_000 {
             let committed = Arc::new(Mutex::new(Vec::new()));
             let mut tasks = tokio::task::JoinSet::new();
@@ -273,12 +270,12 @@ mod tests {
                 emitted.last(),
                 Some(&store.snapshot().await.notifications.count)
             );
-            let (count, mut new_events) = store
-                .snapshot_and_subscribe(|s| s.notifications.count)
-                .await;
-            assert_eq!(count, *emitted.last().unwrap());
+            let (snapshot, mut new_events) = store.snapshot_and_subscribe().await;
+            assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
             store
-                .update(count, "test", |s| &mut s.notifications.count)
+                .update(snapshot.notifications.count, "test", |s| {
+                    &mut s.notifications.count
+                })
                 .await;
             assert!(
                 new_events.try_recv().is_err(),
