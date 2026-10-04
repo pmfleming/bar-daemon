@@ -413,6 +413,14 @@
           "changed",
           "lagged"
         ],
+        "name": "compositor.changed"
+      },
+      {
+        "events": [
+          "subscribed",
+          "changed",
+          "lagged"
+        ],
         "name": "media.changed"
       },
       {
@@ -854,6 +862,12 @@
       "error": null,
       "max_brightness": 1000,
       "percent": 50
+    },
+    "compositor": {
+      "animations_enabled": false,
+      "available": true,
+      "error": null,
+      "revision": 1
     },
     "display_policy": {
       "available": true,

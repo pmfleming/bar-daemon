@@ -12,6 +12,8 @@ pub mod stream {
     /// Workspace state changed.
     pub const WORKSPACES: &str = "workspaces.changed";
     pub const WORKAREA: &str = "workarea.changed";
+    /// Observed compositor preferences or their availability changed.
+    pub const COMPOSITOR: &str = "compositor.changed";
     /// Media player state changed.
     pub const MEDIA: &str = "media.changed";
     /// Audio state changed.
@@ -98,6 +100,7 @@ pub const STREAMS: &[&str] = &[
     stream::ACTIVITY,
     stream::WORKSPACES,
     stream::WORKAREA,
+    stream::COMPOSITOR,
     stream::MEDIA,
     stream::AUDIO,
     stream::BRIGHTNESS,
@@ -174,6 +177,7 @@ pub fn registry() -> Value {
             { "name": stream::ACTIVITY, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::WORKAREA, "events": ["subscribed", "changed", "lagged"] },
+            { "name": stream::COMPOSITOR, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
@@ -249,6 +253,9 @@ fn generated_contract_fixture() -> Value {
                 "error": null
             },
             "workarea": { "available": false, "revision": 0, "monitors": {}, "error": null },
+            "compositor": crate::compositor::CompositorState {
+                available: true, revision: 1, animations_enabled: Some(false), error: None,
+            },
             "workspaces": {
                 "available": true,
                 "focused_monitor": "eDP-1",

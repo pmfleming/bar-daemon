@@ -150,6 +150,7 @@ fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
     match stream {
         protocol::stream::ACTIVITY => serde_json::to_value(&snapshot.activity),
         protocol::stream::WORKAREA => serde_json::to_value(&snapshot.workarea),
+        protocol::stream::COMPOSITOR => serde_json::to_value(&snapshot.compositor),
         protocol::stream::WORKSPACES => serde_json::to_value(&snapshot.workspaces),
         protocol::stream::MEDIA => serde_json::to_value(&snapshot.media),
         protocol::stream::AUDIO => serde_json::to_value(&snapshot.audio),
@@ -203,5 +204,11 @@ mod tests {
     fn initial_subscription_includes_current_domain_state() {
         let data = initial_stream_data(protocol::stream::WORKSPACES, &BarSnapshot::default());
         assert_eq!(data["available"], false);
+        let mut snapshot = BarSnapshot::default();
+        snapshot.compositor.available = true;
+        snapshot.compositor.animations_enabled = Some(false);
+        let data = initial_stream_data(protocol::stream::COMPOSITOR, &snapshot);
+        assert_eq!(data["available"], true);
+        assert_eq!(data["animations_enabled"], false);
     }
 }

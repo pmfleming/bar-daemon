@@ -188,7 +188,11 @@ pub(crate) async fn monitor(store: StateStore) {
     let client = HyprlandClient::default();
     loop {
         match client.event_socket().await {
-            Ok(stream) => monitor_events(&client, &store, stream).await,
+            Ok(stream) => {
+                store.compositor_changed.notify_one();
+                monitor_events(&client, &store, stream).await;
+                store.compositor_changed.notify_one();
+            }
             Err(error) => {
                 tracing::debug!(%error, "Hyprland event socket unavailable");
                 refresh(&client, &store).await;
@@ -205,6 +209,9 @@ async fn monitor_events(client: &HyprlandClient, store: &StateStore, stream: Uni
     loop {
         match lines.next_line().await {
             Ok(Some(event)) => {
+                if shelllist_hyprland::preferences::preference_event(&event) {
+                    store.compositor_changed.notify_one();
+                }
                 if shelllist_hyprland::work_area::geometry_event(&event) {
                     store.work_area_changed.notify_one();
                 }

@@ -10,6 +10,8 @@ pub(crate) struct BarSnapshot {
     pub workspaces: WorkspaceState,
     #[serde(default)]
     pub workarea: crate::work_area::WorkAreaState,
+    #[serde(default)]
+    pub compositor: crate::compositor::CompositorState,
     pub media: MediaState,
     pub audio: AudioState,
     pub brightness: BrightnessState,

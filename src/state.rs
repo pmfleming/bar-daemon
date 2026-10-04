@@ -22,6 +22,7 @@ pub(crate) struct StateStore {
     events: broadcast::Sender<DomainEvent>,
     work_area_demand: tokio::sync::watch::Sender<usize>,
     pub(crate) work_area_changed: Arc<tokio::sync::Notify>,
+    pub(crate) compositor_changed: Arc<tokio::sync::Notify>,
 }
 
 impl Default for StateStore {
@@ -32,6 +33,7 @@ impl Default for StateStore {
             events,
             work_area_demand: tokio::sync::watch::channel(0).0,
             work_area_changed: Arc::new(tokio::sync::Notify::new()),
+            compositor_changed: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -146,6 +148,17 @@ impl StateStore {
         value.revision = value.revision.saturating_add(1);
         snapshot.workarea = value;
         self.publish(crate::protocol::stream::WORKAREA, &snapshot.workarea);
+    }
+
+    pub(crate) async fn update_compositor(&self, mut value: crate::compositor::CompositorState) {
+        let mut snapshot = self.snapshot.write().await;
+        value.revision = snapshot.compositor.revision;
+        if value == snapshot.compositor {
+            return;
+        }
+        value.revision = value.revision.saturating_add(1);
+        snapshot.compositor = value;
+        self.publish(crate::protocol::stream::COMPOSITOR, &snapshot.compositor);
     }
 
     pub(crate) async fn update_power_sleep(&self, value: PowerSleepState) {

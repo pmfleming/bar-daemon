@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Shared event-driven compositor preference cache and `compositor.changed` stream,
+  using native framework IPC with last-known-value retention and bounded retries.
+
 - Native notification server, policy, history, persistence, actions, and D-Bus activation.
 - Activity calendar, todo, and world-clock state.
 - Local Rust quality measurement configuration.

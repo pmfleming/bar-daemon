@@ -87,7 +87,27 @@ and player identity alone remain unknown; clients should use ±30-second seek fo
 unknown/video/podcast content unless explicitly overridden. Capabilities remain
 independent of mode.
 
+## Compositor preferences
+
+`bar.snapshot` includes `compositor: {available, revision, animations_enabled, error}`;
+`compositor.changed` publishes the same state on subscription and changes.
+`revision` increases only on changes within the daemon lifetime; clients reject
+older snapshot replies and reset their revision fence after transport loss.
+`animations_enabled` is null until a successful native Hyprland observation.
+Errors mark the state unavailable and retain the last known boolean rather than
+silently enabling motion. One shared worker refreshes on startup, config reloads
+and event-socket reconnect/disconnect, using the existing Hyprland event listener.
+Healthy values are not polled; failed reads retry after five seconds or the next
+invalidation. Requests use the framework's bounded native socket transport, never
+`hyprctl` subprocesses. This is independent of display-control permissions.
+
+UI environment overrides, animation choice and scoped layer-window rules remain
+frontend-owned. Deploy the framework, daemon and frontend together for the new
+additive stream; clients must not fall back to their own compositor-option parser.
+
 ## Streams
+
+- `compositor.changed`
 
 - `activity.changed`
 - `workspaces.changed`
