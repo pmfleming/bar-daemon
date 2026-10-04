@@ -394,7 +394,8 @@ fn generated_contract_fixture() -> Value {
                         "suppress_sound": false, "image_data_present": false
                     },
                     "created_unix_ms": 1768463900000_u64, "updated_unix_ms": 1768463900000_u64,
-                    "expires_unix_ms": 1768463905000_u64, "group_key": "calendar",
+                    "expires_unix_ms": null, "toast_visible": true,
+                    "toast_expires_unix_ms": 1768463905000_u64, "group_key": "calendar",
                     "source_monitor": "eDP-1", "snoozed_until_unix_ms": null
                 }],
                 "error": null

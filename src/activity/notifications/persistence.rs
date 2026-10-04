@@ -49,16 +49,22 @@ impl NotificationPersistence {
         Self { commands }
     }
 
-    pub(crate) fn open(path: &Path) -> Result<(Self, Vec<ActiveNotification>, bool, Option<u64>)> {
+    pub(crate) fn open(path: &Path) -> Result<(Self, u32, bool, Option<u64>)> {
         let store = NotificationStore::open(path)?;
-        let active = store.load_active()?;
+        let last_id = store.last_id()?;
+        // Persisted content is history, not a surviving D-Bus conversation.
+        // Do not replay old popups/actions after the server session restarts.
+        store.clear(
+            crate::time::unix_ms(),
+            super::model::close_reason::UNDEFINED,
+        )?;
         let (dnd, dnd_until_unix_ms) = store.load_dnd()?;
         let (commands, receiver) = mpsc::channel(QUEUE_CAPACITY);
         std::thread::Builder::new()
             .name("notification-history".into())
             .spawn(move || persistence_worker(store, receiver))
             .context("start notification persistence worker")?;
-        Ok((Self { commands }, active, dnd, dnd_until_unix_ms))
+        Ok((Self { commands }, last_id, dnd, dnd_until_unix_ms))
     }
 
     // Reserve before changing engine state. A full queue applies async
@@ -229,6 +235,17 @@ impl NotificationStore {
         }
     }
 
+    fn last_id(&self) -> Result<u32> {
+        // Include closed legacy rows on migration and transient IDs (metadata).
+        Ok(self.connection.query_row(
+            "SELECT MAX(id) FROM (SELECT COALESCE(MAX(session_id), 0) AS id FROM notifications
+             UNION ALL SELECT CAST(value AS INTEGER) FROM notification_meta WHERE key = 'last_notification_id')",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    #[cfg(test)]
     fn load_active(&self) -> Result<Vec<ActiveNotification>> {
         let mut statement = self.connection.prepare(
             "SELECT payload_json FROM notifications
@@ -263,6 +280,11 @@ impl NotificationStore {
     }
 
     fn save(&self, notification: &ActiveNotification) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO notification_meta (key, value) VALUES ('last_notification_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))",
+            [notification.id],
+        )?;
         if notification.hints.transient {
             self.connection.execute(
                 "DELETE FROM notifications WHERE session_id = ?1 AND closed_unix_ms IS NULL",

@@ -35,7 +35,7 @@ struct EngineData {
 
 struct ExpiryBatch {
     expired_ids: Vec<u32>,
-    awakened: Vec<ActiveNotification>,
+    changed: Vec<ActiveNotification>,
     dnd_expired: bool,
 }
 
@@ -74,14 +74,27 @@ impl EngineData {
     }
 
     fn expire(&mut self, now: u64) -> ExpiryBatch {
-        let mut awakened = Vec::new();
+        let mut changed = Vec::new();
         for notification in self.active.values_mut() {
+            let mut dirty = false;
             if notification
                 .snoozed_until_unix_ms
                 .is_some_and(|until| until <= now)
             {
                 notification.snoozed_until_unix_ms = None;
-                awakened.push(notification.clone());
+                dirty = true;
+            }
+            if notification.snoozed_until_unix_ms.is_none()
+                && notification
+                    .toast_expires_unix_ms
+                    .is_some_and(|until| until <= now)
+            {
+                notification.toast_visible = false;
+                notification.toast_expires_unix_ms = None;
+                dirty = true;
+            }
+            if dirty {
+                changed.push(notification.clone());
             }
         }
         let expired_ids = self
@@ -98,12 +111,12 @@ impl EngineData {
             self.dnd = false;
             self.dnd_until_unix_ms = None;
         }
-        if !awakened.is_empty() || dnd_expired {
+        if !changed.is_empty() || dnd_expired {
             self.history_revision = self.history_revision.wrapping_add(1);
         }
         ExpiryBatch {
             expired_ids,
-            awakened,
+            changed,
             dnd_expired,
         }
     }
@@ -126,39 +139,35 @@ pub(crate) struct NotificationEngine {
 impl NotificationEngine {
     #[cfg(test)]
     pub(crate) async fn new(state: StateStore) -> Arc<Self> {
-        Self::build(state, None, Vec::new(), false, None)
-            .await
-            .unwrap()
+        Self::build(state, None, 0, false, None).await.unwrap()
     }
 
     pub(crate) async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
-        let (persistence, active, dnd, dnd_until_unix_ms) =
+        let (persistence, last_id, dnd, dnd_until_unix_ms) =
             tokio::task::spawn_blocking(move || NotificationPersistence::open(&path))
                 .await
                 .context("join notification database initialization")??;
-        Self::build(state, Some(persistence), active, dnd, dnd_until_unix_ms).await
+        Self::build(state, Some(persistence), last_id, dnd, dnd_until_unix_ms).await
     }
 
     async fn build(
         state: StateStore,
         persistence: Option<NotificationPersistence>,
-        active: Vec<ActiveNotification>,
+        last_id: u32,
         dnd: bool,
         dnd_until_unix_ms: Option<u64>,
     ) -> Result<Arc<Self>> {
-        let next_id = active.iter().map(|item| item.id).max().unwrap_or(0);
-        let active = active.into_iter().map(|item| (item.id, item)).collect();
         let dnd_expired = dnd_until_unix_ms.is_some_and(|until| until <= unix_ms());
         let (signals, _) = broadcast::channel(256);
         let engine = Arc::new(Self {
             mutations: Mutex::new(()),
             data: Mutex::new(EngineData {
-                active,
+                active: BTreeMap::new(),
                 dnd: dnd && !dnd_expired,
                 dnd_until_unix_ms: (!dnd_expired).then_some(dnd_until_unix_ms).flatten(),
                 history_revision: 0,
             }),
-            next_id: AtomicU32::new(next_id),
+            next_id: AtomicU32::new(last_id),
             ingress: Arc::new(Semaphore::new(256)),
             expiry_wakeup: Notify::new(),
             signals,
@@ -356,6 +365,8 @@ impl NotificationEngine {
             };
             notification.snoozed_until_unix_ms = Some(until_unix_ms);
             notification.updated_unix_ms = now;
+            notification.toast_visible = true;
+            notification.toast_expires_unix_ms = Some(until_unix_ms.saturating_add(5_000));
             if notification.expires_unix_ms.is_some() {
                 notification.expires_unix_ms = Some(until_unix_ms.saturating_add(5_000));
             }
@@ -406,7 +417,24 @@ impl NotificationEngine {
     }
 
     pub(crate) async fn reply(&self, id: u32, text: &str) -> bool {
-        if text.is_empty() || !self.data.lock().await.active.contains_key(&id) {
+        // Serialize capability validation and signal emission with close/action.
+        let _mutation = self.mutations.lock().await;
+        if text.trim().is_empty() || text.len() > 4096 {
+            return false;
+        }
+        if !self
+            .data
+            .lock()
+            .await
+            .active
+            .get(&id)
+            .is_some_and(|notification| {
+                notification
+                    .actions
+                    .iter()
+                    .any(|action| action.key == "inline-reply")
+            })
+        {
             return false;
         }
         self.emit(NotificationSignal::Replied {
@@ -469,10 +497,14 @@ impl NotificationEngine {
 
     async fn next_expiry_delay(&self) -> Option<Duration> {
         let data = self.data.lock().await;
-        let notification_wakeup = data
-            .active
-            .values()
-            .filter_map(|item| item.snoozed_until_unix_ms.or(item.expires_unix_ms));
+        let notification_wakeup = data.active.values().filter_map(|item| {
+            item.snoozed_until_unix_ms.or_else(|| {
+                item.expires_unix_ms
+                    .into_iter()
+                    .chain(item.toast_expires_unix_ms)
+                    .min()
+            })
+        });
         let next = notification_wakeup.chain(data.dnd_until_unix_ms).min()?;
         Some(Duration::from_millis(next.saturating_sub(unix_ms())))
     }
@@ -490,7 +522,7 @@ impl NotificationEngine {
         };
         let batch = self.data.lock().await.expire(unix_ms());
         if let Some(persistence) = &mut writes {
-            for notification in batch.awakened {
+            for notification in batch.changed {
                 persistence.save(notification);
             }
             if batch.dnd_expired {
@@ -637,12 +669,36 @@ mod tests {
             assert_eq!(snapshot.notifications.count as usize, active.len());
             assert_eq!(snapshot.notification_active.notifications, active);
         }
-        let expected = engine.active().await;
+        let last_id = engine
+            .active()
+            .await
+            .iter()
+            .map(|item| item.id)
+            .max()
+            .unwrap_or(0);
         drop(engine);
         let restarted = NotificationEngine::persistent(StateStore::default(), path)
             .await
             .unwrap();
-        assert_eq!(restarted.active().await, expected);
+        assert!(
+            restarted.active().await.is_empty(),
+            "a new server session must not revive old actions"
+        );
+        assert!(
+            restarted
+                .history(None, 100)
+                .await
+                .unwrap()
+                .iter()
+                .all(|item| item.closed_unix_ms.is_some())
+        );
+        assert!(
+            restarted
+                .notify(0, notification("new session", 0))
+                .await
+                .unwrap()
+                > last_id
+        );
     }
 
     #[tokio::test]
@@ -715,6 +771,145 @@ mod tests {
         .unwrap();
         assert_eq!(engine.clear_group("test").await.unwrap(), 2);
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn popup_expiry_keeps_default_notifications_actionable_even_in_dnd() {
+        use super::super::model::{NotificationAction, NotificationSignal};
+        let state = StateStore::default();
+        let engine = NotificationEngine::new(state.clone()).await;
+        engine.set_dnd(true, None).await.unwrap();
+        let mut incoming = notification("Retained", -1);
+        incoming.actions = vec![NotificationAction {
+            key: "default".into(),
+            label: "Open".into(),
+        }];
+        let id = engine.notify(0, incoming).await.unwrap();
+        let mut signals = engine.subscribe_signals();
+        {
+            let mut data = engine.data.lock().await;
+            let record = data.active.get_mut(&id).unwrap();
+            assert!(record.expires_unix_ms.is_none());
+            record.toast_expires_unix_ms = Some(0);
+        }
+        engine.expire_due().await;
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.notifications.count, 1);
+        assert!(!snapshot.notification_active.notifications[0].toast_visible);
+        assert!(
+            signals.try_recv().is_err(),
+            "hiding a popup must not emit NotificationClosed"
+        );
+        assert!(
+            engine
+                .invoke_action(id, "default", Some("token".into()))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            signals.recv().await.unwrap(),
+            NotificationSignal::ActivationToken {
+                id,
+                token: "token".into()
+            }
+        );
+        assert_eq!(
+            signals.recv().await.unwrap(),
+            NotificationSignal::ActionInvoked {
+                id,
+                action_key: "default".into()
+            }
+        );
+        assert_eq!(
+            signals.recv().await.unwrap(),
+            NotificationSignal::Closed {
+                id,
+                reason: close_reason::DISMISSED
+            }
+        );
+        assert!(!engine.invoke_action(id, "default", None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn timeout_policy_and_inline_reply_capabilities() {
+        use super::super::model::{ActiveNotification, NotificationAction, NotificationSignal};
+        for (requested, transient, urgency, closes, toast_times_out) in [
+            (-1, false, 1, false, true),
+            (-1, true, 1, true, true),
+            (-1, false, 2, false, false),
+            (0, false, 1, false, false),
+            (10, false, 2, true, true),
+            (10, true, 1, true, true),
+        ] {
+            let mut incoming = notification("policy", requested);
+            incoming.hints.transient = transient;
+            incoming.hints.urgency = urgency;
+            let stored = ActiveNotification::from_incoming(1, incoming, 100);
+            assert_eq!(stored.expires_unix_ms.is_some(), closes);
+            assert_eq!(stored.toast_expires_unix_ms.is_some(), toast_times_out);
+        }
+        let engine = NotificationEngine::new(StateStore::default()).await;
+        let mut incoming = notification("reply", -1);
+        incoming.hints.resident = true;
+        incoming.actions = vec![NotificationAction {
+            key: "mail-reply-sender".into(),
+            label: "Reply".into(),
+        }];
+        let id = engine.notify(0, incoming.clone()).await.unwrap();
+        assert!(!engine.reply(id, "not inline").await);
+        assert!(
+            engine
+                .invoke_action(id, "mail-reply-sender", None)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            engine.active().await.len(),
+            1,
+            "resident action remains live"
+        );
+        incoming.actions.push(NotificationAction {
+            key: "inline-reply".into(),
+            label: "Send".into(),
+        });
+        engine.notify(id, incoming).await.unwrap();
+        let mut signals = engine.subscribe_signals();
+        assert!(!engine.reply(id, "  ").await);
+        assert!(engine.reply(id, "Hello").await);
+        assert_eq!(
+            signals.recv().await.unwrap(),
+            NotificationSignal::Replied {
+                id,
+                text: "Hello".into()
+            }
+        );
+        engine.dismiss(id).await.unwrap();
+        assert!(!engine.reply(id, "closed").await);
+    }
+
+    #[tokio::test]
+    async fn restart_archives_old_actions_and_keeps_transient_id_high_watermark() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notifications.sqlite3");
+        let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
+            .await
+            .unwrap();
+        engine
+            .notify(0, notification("retained", -1))
+            .await
+            .unwrap();
+        let mut transient = notification("private", -1);
+        transient.hints.transient = true;
+        let last_id = engine.notify(0, transient).await.unwrap();
+        assert_eq!(engine.history(None, 100).await.unwrap().len(), 1);
+        drop(engine);
+        let restarted = NotificationEngine::persistent(StateStore::default(), path)
+            .await
+            .unwrap();
+        assert!(restarted.active().await.is_empty());
+        let history = restarted.history(None, 100).await.unwrap();
+        assert_eq!(history[0].close_reason, Some(close_reason::UNDEFINED));
+        assert!(restarted.notify(0, notification("new", -1)).await.unwrap() > last_id);
     }
 
     #[tokio::test]

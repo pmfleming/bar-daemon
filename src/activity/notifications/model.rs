@@ -42,7 +42,12 @@ pub(crate) struct ActiveNotification {
     pub hints: NotificationHints,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
+    /// Protocol lifetime; None keeps the notification actionable in the center.
     pub expires_unix_ms: Option<u64>,
+    #[serde(default = "default_toast_visible")]
+    pub toast_visible: bool,
+    #[serde(default)]
+    pub toast_expires_unix_ms: Option<u64>,
     pub group_key: String,
     #[serde(default)]
     pub source_monitor: String,
@@ -60,7 +65,14 @@ pub(crate) struct HistoryNotification {
 
 impl ActiveNotification {
     pub(crate) fn from_incoming(id: u32, incoming: IncomingNotification, now: u64) -> Self {
-        let timeout = effective_timeout_ms(incoming.expire_timeout, incoming.hints.urgency);
+        let toast_timeout = effective_timeout_ms(incoming.expire_timeout, incoming.hints.urgency);
+        // Default, non-transient notifications persist in the center. Explicit
+        // client expiry and transient notifications still close on timeout.
+        let timeout = if incoming.expire_timeout < 0 && !incoming.hints.transient {
+            None
+        } else {
+            toast_timeout
+        };
         let expires_unix_ms = timeout.map(|timeout| now.saturating_add(timeout));
         let group_key = if !incoming.hints.desktop_entry.is_empty() {
             incoming.hints.desktop_entry.clone()
@@ -80,6 +92,8 @@ impl ActiveNotification {
             created_unix_ms: now,
             updated_unix_ms: now,
             expires_unix_ms,
+            toast_visible: true,
+            toast_expires_unix_ms: toast_timeout.map(|timeout| now.saturating_add(timeout)),
             group_key,
             source_monitor: String::new(),
             snoozed_until_unix_ms: None,
@@ -91,6 +105,10 @@ impl ActiveNotification {
         *self = Self::from_incoming(self.id, incoming, now);
         self.created_unix_ms = created;
     }
+}
+
+fn default_toast_visible() -> bool {
+    true
 }
 
 fn effective_timeout_ms(requested: i32, urgency: u8) -> Option<u64> {

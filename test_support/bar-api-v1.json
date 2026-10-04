@@ -1016,7 +1016,9 @@
           "app_name": "Calendar",
           "body": "Meeting starts soon",
           "created_unix_ms": 1768463900000,
-          "expires_unix_ms": 1768463905000,
+          "expires_unix_ms": null,
+          "toast_visible": true,
+          "toast_expires_unix_ms": 1768463905000,
           "group_key": "calendar",
           "hints": {
             "category": "calendar",
