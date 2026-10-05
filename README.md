@@ -75,13 +75,13 @@ the current tracked worktrees, not persistent local-project pins. All five
 daemons must share one framework; do not vendor or revision-pin it.
 
 ```sh
-python3 ../daemon-framework/tools/local-build.py develop .
+../daemon-framework/tools/local-build develop .
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked --all-targets -- --include-ignored
 # The dev shell supplies PipeWire and HYPRIDLE_TEST_BIN for private fixtures.
 cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml -- --include-ignored
-python3 ../daemon-framework/tools/local-build.py check .
+../daemon-framework/tools/local-build check .
 ```
 
 Nix package checks and CI run all tests, including the ignored PipeWire and native

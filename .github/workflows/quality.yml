@@ -31,29 +31,30 @@ jobs:
           repository: pmfleming/rust-quality-lens
           path: rust-quality-lens
       - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: dtolnay/rust-toolchain@stable
       - name: Format
-        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo fmt --all -- --check
+        run: ../daemon-framework/tools/local-build develop . --command cargo fmt --all -- --check
       - name: Clippy
-        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: ../daemon-framework/tools/local-build develop . --command cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Architecture policy (complete generated-symbol evidence)
         run: |
-          python3 ../daemon-framework/tools/local-build.py develop . --command cargo build --locked --manifest-path ../rust-quality-lens/Cargo.toml --target-dir target/rqlens-ci --bin rqlens
-          python3 ../daemon-framework/tools/local-build.py develop . --command target/rqlens-ci/debug/rqlens measure architecture-rules --config rqlens.toml
+          ../daemon-framework/tools/local-build develop . --command cargo build --locked --manifest-path ../rust-quality-lens/Cargo.toml --target-dir target/rqlens-ci --bin rqlens
+          ../daemon-framework/tools/local-build develop . --command target/rqlens-ci/debug/rqlens measure architecture-rules --config rqlens.toml
           # Configured error-level architecture rules require a fresh, complete
           # artifact. No --fail-on partial: that would require every producer.
-          python3 ../daemon-framework/tools/local-build.py develop . --command target/rqlens-ci/debug/rqlens check --config rqlens.toml
+          ../daemon-framework/tools/local-build develop . --command target/rqlens-ci/debug/rqlens check --config rqlens.toml
       - name: Dependency policy
         run: |
-          python3 ../daemon-framework/tools/local-build.py develop . --command cargo audit
-          python3 ../daemon-framework/tools/local-build.py develop . --command cargo deny check
-          python3 ../daemon-framework/tools/local-build.py develop . --command cargo shear
+          ../daemon-framework/tools/local-build develop . --command cargo audit
+          ../daemon-framework/tools/local-build develop . --command cargo deny check
+          ../daemon-framework/tools/local-build develop . --command cargo shear
       # The dev shell supplies PipeWire and the shared patched Hypridle package,
       # including HYPRIDLE_TEST_BIN. Both fixtures use private mock services.
       - name: Test and collect coverage (including PipeWire and native idle)
-        run: python3 ../daemon-framework/tools/local-build.py develop . --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml -- --include-ignored
+        run: ../daemon-framework/tools/local-build develop . --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml -- --include-ignored
       - name: Check changed-line coverage
         if: github.event_name == 'pull_request'
-        run: python3 ../daemon-framework/tools/local-build.py develop . --command diff-cover cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
+        run: ../daemon-framework/tools/local-build develop . --command diff-cover cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
       - uses: actions/upload-artifact@v7
         with:
           name: coverage

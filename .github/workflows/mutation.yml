@@ -26,9 +26,10 @@ jobs:
           ref: main
           path: daemon-framework
       - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: dtolnay/rust-toolchain@stable
       - name: Test battery policy mutations
         run: |
-          python3 ../daemon-framework/tools/local-build.py develop . --command cargo mutants \
+          ../daemon-framework/tools/local-build develop . --command cargo mutants \
             --file src/battery/config.rs \
             --file src/battery/history.rs \
             --file src/battery/policy.rs \
