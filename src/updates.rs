@@ -1,11 +1,6 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use notify::{RecursiveMode, Watcher};
-use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
     model::{UpdateLane, UpdateState},
@@ -13,6 +8,7 @@ use crate::{
 };
 
 mod jobs;
+mod watch;
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/nixos-delayed-updates-v2";
 
@@ -23,56 +19,16 @@ pub(crate) fn state_dir() -> PathBuf {
 }
 
 pub(crate) async fn monitor(store: StateStore) {
-    let directory = state_dir();
-    let (tx, mut rx) = mpsc::channel(16);
-    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-        if result.is_ok() {
-            let _ = tx.try_send(());
-        }
-    })
-    .ok();
-    let mut watched_path = None;
+    monitor_path(store, state_dir()).await;
+}
+
+async fn monitor_path(store: StateStore, directory: PathBuf) {
+    let mut watch = watch::Watch::new();
     loop {
-        if let Some(watcher) = watcher.as_mut() {
-            update_watch(watcher, &directory, &mut watched_path);
-        }
+        watch.refresh(&directory);
         refresh_path(&store, directory.clone()).await;
-        tokio::select! {
-            value = rx.recv() => if value.is_none() { sleep(Duration::from_secs(2)).await; },
-            _ = sleep(Duration::from_secs(60)) => {}
-        }
+        watch.wait().await;
     }
-}
-
-fn update_watch(watcher: &mut impl Watcher, directory: &Path, watched_path: &mut Option<PathBuf>) {
-    let Some((next_path, mode)) = watch_target(directory) else {
-        return;
-    };
-    if watched_path.as_ref() == Some(&next_path) {
-        return;
-    }
-    if let Some(previous) = watched_path.take()
-        && let Err(error) = watcher.unwatch(&previous)
-    {
-        tracing::debug!(%error, path = %previous.display(), "could not replace NixOS update watch");
-    }
-    match watcher.watch(&next_path, mode) {
-        Ok(()) => *watched_path = Some(next_path),
-        Err(error) => {
-            tracing::debug!(%error, path = %next_path.display(), "NixOS update watcher unavailable")
-        }
-    }
-}
-
-fn watch_target(directory: &Path) -> Option<(PathBuf, RecursiveMode)> {
-    if directory.is_dir() {
-        return Some((directory.to_path_buf(), RecursiveMode::Recursive));
-    }
-    directory
-        .ancestors()
-        .skip(1)
-        .find(|path| path.is_dir())
-        .map(|path| (path.to_path_buf(), RecursiveMode::NonRecursive))
 }
 
 pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
@@ -85,12 +41,13 @@ pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
 }
 
 async fn refresh_path(store: &StateStore, directory: PathBuf) {
+    let state_directory = directory_display(&directory);
     let result = tokio::task::spawn_blocking(move || read_state(&directory))
         .await
         .unwrap_or_else(|error| Err(error.into()));
     store
         .update_updates(result.unwrap_or_else(|error| UpdateState {
-            state_directory: directory_display(&state_dir()),
+            state_directory,
             error: Some(error.to_string()),
             ..UpdateState::default()
         }))
@@ -122,7 +79,13 @@ fn read_state(directory: &Path) -> Result<UpdateState> {
 
 fn read_lane(directory: &Path, name: &str) -> UpdateLane {
     let lane = directory.join(name);
-    let required = ["ready-flake.lock", "ready-revision", "ready-base-hash"];
+    // Keep in sync with update-daemon's ready_is_complete predicate.
+    let required = [
+        "ready-flake.lock",
+        "ready-revision",
+        "ready-base-hash",
+        "ready-created-at",
+    ];
     let ready =
         required.iter().all(|file| lane.join(file).is_file()) && lane.join("system").is_symlink();
     UpdateLane {
@@ -150,35 +113,4 @@ fn directory_display(path: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{fs, os::unix::fs::symlink};
-    use tempfile::tempdir;
-
-    use super::{read_state, watch_target};
-
-    #[test]
-    fn requires_complete_ready_lane() {
-        let root = tempdir().unwrap();
-        let fast = root.path().join("delayed");
-        fs::create_dir(&fast).unwrap();
-        fs::write(fast.join("ready-flake.lock"), "lock").unwrap();
-        assert!(!read_state(root.path()).unwrap().ready);
-        fs::write(fast.join("ready-revision"), "abc\n").unwrap();
-        fs::write(fast.join("ready-base-hash"), "def\n").unwrap();
-        fs::write(fast.join("ready-created-at"), "123").unwrap();
-        symlink("/nix/store/system", fast.join("system")).unwrap();
-        let state = read_state(root.path()).unwrap();
-        assert!(state.ready);
-        assert_eq!(state.lanes[0].revision.as_deref(), Some("abc"));
-        assert_eq!(state.lanes[0].created_at, Some(123));
-    }
-
-    #[test]
-    fn watches_parent_until_state_directory_exists() {
-        let root = tempdir().unwrap();
-        let directory = root.path().join("updates");
-        assert_eq!(watch_target(&directory).unwrap().0, root.path());
-        fs::create_dir(&directory).unwrap();
-        assert_eq!(watch_target(&directory).unwrap().0, directory);
-    }
-}
+mod tests;

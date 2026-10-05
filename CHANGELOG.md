@@ -15,6 +15,11 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Ignore update-monitor read events and coalesce write bursts to prevent idle
+  refresh loops; recover watches after directory replacement or watcher failure.
+- Require `ready-created-at` before reporting delayed updates ready, matching the
+  privileged worker's completeness check.
+
 - Normalize display mode catalogs, exact current modes, connector capabilities and
   mirror sources in Rust for all bar-api display snapshots and events.
 

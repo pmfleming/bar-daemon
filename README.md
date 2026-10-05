@@ -15,7 +15,7 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
 - systemd-logind sleep capabilities, active inhibitors, confirmed lock-before-suspend/hibernate actions, shared/separate idle profiles, and read-only ThinkPad sleep diagnostics
 - Native Freedesktop notification server with expiry, actions, DND, active state, and persistent SQLite history; resilient SwayNC fallback adapter
-- Event-driven NixOS delayed-update readiness across fast and delayed lanes
+- Event-driven NixOS delayed-update readiness and read-only worker job status
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
 
 ## Usage
