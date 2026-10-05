@@ -45,6 +45,16 @@ protocol prevents overload-induced loss, not disk-failure or crash recovery.
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
 | Timezone | systemd-timedated system D-Bus | IANA city, abbreviation, and current offset |
 
+### Hyprland events
+
+The framework owns event-socket framing and reconnection. Bar event intake
+forwards geometry and compositor-preference invalidations independently of
+workspace queries, so slow command IPC cannot block them. Workspace refreshes
+coalesce over a fixed 75 ms window; invalidations during a query trigger a
+follow-up refresh. Healthy workspace monitoring is event-driven, with one-second
+recovery queries while disconnected or after a failed snapshot. All futures are
+owned by the domain monitor and cancelled together at shutdown.
+
 ### Interactive audio
 
 A dedicated `bar-pipewire-control` thread owns a persistent PipeWire connection.

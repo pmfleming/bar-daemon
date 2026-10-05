@@ -32,6 +32,7 @@ wayland-client = "0.31"
 wayland-scanner = "0.31"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 wayland-server = "0.31"
 tempfile = "3"
 zbus = { version = "5", features = ["p2p"] }

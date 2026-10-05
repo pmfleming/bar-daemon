@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use shelllist_hyprland::Event;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    net::UnixStream,
+    sync::{mpsc, watch},
     time::sleep,
 };
 
@@ -116,10 +116,6 @@ impl HyprlandClient {
             bail!("Hyprland rejected workspace focus: {}", response.trim())
         }
     }
-
-    async fn event_socket(&self) -> Result<UnixStream> {
-        self.ipc.event_socket().await
-    }
 }
 
 fn parse_snapshot(
@@ -186,58 +182,77 @@ fn parse_snapshot(
 
 pub(crate) async fn monitor(store: StateStore) {
     let client = HyprlandClient::default();
-    loop {
-        match client.event_socket().await {
-            Ok(stream) => {
-                store.compositor_changed.notify_one();
-                monitor_events(&client, &store, stream).await;
-                store.compositor_changed.notify_one();
-            }
-            Err(error) => {
-                tracing::debug!(%error, "Hyprland event socket unavailable");
-                refresh(&client, &store).await;
-            }
-        }
-        sleep(Duration::from_secs(1)).await;
-    }
+    let (sender, events) = mpsc::channel(64);
+    // Both futures are owned by this monitor; shutdown drops the event receiver
+    // and cancels pending reads without leaving an orphan watcher task.
+    tokio::join!(
+        shelllist_hyprland::watch_events_detailed(sender),
+        monitor_with(store, events, || client.snapshot()),
+    );
 }
 
-async fn monitor_events(client: &HyprlandClient, store: &StateStore, stream: UnixStream) {
-    // Attach first so compositor changes made during the snapshot are queued.
-    let mut lines = BufReader::new(stream).lines();
-    refresh(client, store).await;
-    loop {
-        match lines.next_line().await {
-            Ok(Some(event)) => {
-                if shelllist_hyprland::preferences::preference_event(&event) {
+async fn monitor_with<F, Fut>(store: StateStore, mut events: mpsc::Receiver<Event>, fetch: F)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<WorkspaceState>>,
+{
+    let (changes, updates) = watch::channel(false);
+    // Intake must not await a snapshot: geometry/preference invalidations keep
+    // flowing even during slow IPC. Watch coalesces workspace refresh requests.
+    let intake = async {
+        let mut connected = false;
+        while let Some(event) = events.recv().await {
+            let refresh = match event {
+                Event::Connected | Event::Disconnected => {
+                    connected = event == Event::Connected;
                     store.compositor_changed.notify_one();
-                }
-                if shelllist_hyprland::work_area::geometry_event(&event) {
                     store.work_area_changed.notify_one();
+                    true
                 }
-                if refresh_event(&event) {
-                    refresh(client, store).await;
+                Event::Message(event) => {
+                    if shelllist_hyprland::preferences::preference_event(&event) {
+                        store.compositor_changed.notify_one();
+                    }
+                    if shelllist_hyprland::work_area::geometry_event(&event) {
+                        store.work_area_changed.notify_one();
+                    }
+                    refresh_event(&event)
                 }
-            }
-            Ok(None) => return,
-            Err(error) => {
-                tracing::warn!(%error, "Hyprland event stream failed");
-                return;
+            };
+            if refresh {
+                changes.send_replace(connected);
             }
         }
+    };
+    tokio::select! {
+        _ = intake => {},
+        _ = refresh_workspaces(&store, updates, fetch) => {},
     }
 }
 
-async fn refresh(client: &HyprlandClient, store: &StateStore) {
-    match client.snapshot().await {
-        Ok(snapshot) => store.update_workspaces(snapshot).await,
-        Err(error) => {
-            store
-                .update_workspaces(WorkspaceState {
-                    error: Some(error.to_string()),
-                    ..WorkspaceState::default()
-                })
-                .await;
+async fn refresh_workspaces<F, Fut>(
+    store: &StateStore,
+    mut updates: watch::Receiver<bool>,
+    fetch: F,
+) where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<WorkspaceState>>,
+{
+    loop {
+        let connected = *updates.borrow_and_update();
+        let state = fetch().await.unwrap_or_else(|error| WorkspaceState {
+            error: Some(error.to_string()),
+            ..WorkspaceState::default()
+        });
+        let retry = !connected || !state.available;
+        store.update_workspaces(state).await;
+        tokio::select! {
+            changed = updates.changed() => {
+                if changed.is_err() { return; }
+                // A fixed window (not reset by new events) bounds burst latency.
+                sleep(Duration::from_millis(75)).await;
+            }
+            _ = sleep(Duration::from_secs(1)), if retry => {},
         }
     }
 }
@@ -265,7 +280,103 @@ fn refresh_event(event: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_snapshot;
+    use super::{monitor_with, parse_snapshot, refresh_workspaces};
+    use crate::{model::WorkspaceState, state::StateStore};
+    use shelllist_hyprland::Event;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+    use tokio::sync::{Semaphore, mpsc, watch};
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_snapshots_do_not_block_invalidations_and_bursts_coalesce() {
+        let store = StateStore::default();
+        let (events, receiver) = mpsc::channel(128);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Semaphore::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let (count, start, blocked) = (calls.clone(), started.clone(), gate.clone());
+        events.send(Event::Connected).await.unwrap();
+        let task = tokio::spawn(monitor_with(store.clone(), receiver, move || {
+            let call = count.fetch_add(1, Ordering::SeqCst);
+            let (start, blocked) = (start.clone(), blocked.clone());
+            async move {
+                start.add_permits(1);
+                if call == 0 {
+                    blocked.acquire().await.unwrap().forget();
+                }
+                Ok(WorkspaceState {
+                    available: true,
+                    ..Default::default()
+                })
+            }
+        }));
+        started.acquire().await.unwrap().forget();
+        store.compositor_changed.notified().await;
+        store.work_area_changed.notified().await;
+        for _ in 0..100 {
+            events
+                .send(Event::Message("workspace>>1".into()))
+                .await
+                .unwrap();
+        }
+        events
+            .send(Event::Message("configreloaded>>".into()))
+            .await
+            .unwrap();
+        store.compositor_changed.notified().await; // delivered while first fetch is blocked
+        store.work_area_changed.notified().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        gate.add_permits(1);
+        started.acquire().await.unwrap().forget();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(store.snapshot().await.workspaces.available);
+        events.send(Event::Disconnected).await.unwrap();
+        store.compositor_changed.notified().await;
+        store.work_area_changed.notified().await;
+        started.acquire().await.unwrap().forget();
+        drop(events);
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn workspace_failures_retry_without_new_events_but_success_stops_polling() {
+        let store = StateStore::default();
+        let (changes, updates) = watch::channel(true);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let task = tokio::spawn(async move {
+            refresh_workspaces(&store, updates, move || {
+                let call = count.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if call == 0 {
+                        anyhow::bail!("offline");
+                    }
+                    Ok(WorkspaceState {
+                        available: true,
+                        ..Default::default()
+                    })
+                }
+            })
+            .await;
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        drop(changes);
+        task.await.unwrap();
+    }
 
     #[test]
     fn parses_and_orders_workspace_snapshot() {
