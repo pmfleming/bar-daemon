@@ -9,28 +9,57 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, daemonFramework }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      daemonFramework,
+    }:
     let
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
-    in {
+    in
+    {
       # Shared with Shelllist's Home Manager module: one patch set for runtime and tests.
       lib.mkManagedHypridle = import ./packaging/hypridle;
 
-      packages = forAllSystems (system: pkgs:
+      packages = forAllSystems (
+        system: pkgs:
         let
           managedHypridle = self.lib.mkManagedHypridle pkgs.hypridle;
-          barDaemon = pkgs.rustPlatform.buildRustPackage {
+          barDaemon = daemonFramework.lib.buildRustPackage pkgs {
             pname = "bar-daemon";
             version = "0.1.0";
-            src = ./.;
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./Cargo.toml
+                ./Cargo.lock
+                ./src
+                ./tests
+                ./test_support
+                ./protocols
+                ./packaging/licenses
+                ./docs/activity.example.json
+              ];
+            };
             postUnpack = ''
-              cp -R --no-preserve=mode ${daemonFramework} "$(dirname "$sourceRoot")/daemon-framework"
+              cp -R --no-preserve=mode ${daemonFramework.lib.daemonSource pkgs} "$(dirname "$sourceRoot")/daemon-framework"
             '';
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config pkgs.llvmPackages.libclang ];
-            buildInputs = [ pkgs.pipewire pkgs.systemd ];
-            nativeCheckInputs = [ pkgs.dbus pkgs.pipewire ];
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+              pkgs.pkg-config
+              pkgs.llvmPackages.libclang
+            ];
+            buildInputs = [
+              pkgs.pipewire
+              pkgs.systemd
+            ];
+            nativeCheckInputs = [
+              pkgs.dbus
+              pkgs.pipewire
+            ];
             HYPRIDLE_TEST_BIN = "${managedHypridle}/bin/hypridle";
             cargoTestFlags = [ "--all-targets" ];
             checkFlags = [ "--include-ignored" ];
@@ -75,18 +104,33 @@
               platforms = pkgs.lib.platforms.linux;
             };
           };
-        in { default = barDaemon; inherit managedHypridle; });
+        in
+        {
+          default = barDaemon;
+          inherit managedHypridle;
+        }
+      );
 
-      apps = forAllSystems (system: pkgs: {
-        default = {
-          type = "app";
-          program = "${self.packages.${system}.default}/bin/bar-daemon";
-        };
-      });
+      apps = forAllSystems (
+        system: pkgs: {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/bar-daemon";
+          };
+        }
+      );
 
-      nixosModules.default = { config, lib, pkgs, ... }:
-        let cfg = config.services.bar-daemon;
-        in {
+      nixosModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.services.bar-daemon;
+        in
+        {
           options.services.bar-daemon.enable = lib.mkEnableOption "bar-daemon services";
           config = lib.mkIf cfg.enable {
             environment.systemPackages = [ self.packages.${pkgs.system}.default ];
@@ -99,37 +143,39 @@
       checks = forAllSystems (system: pkgs: { default = self.packages.${system}.default; });
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt-tree);
 
-      devShells = forAllSystems (system: pkgs: {
-        default = pkgs.mkShell {
-          packages = with pkgs; [
-            brightnessctl
-            cargo
-            cargo-audit
-            cargo-deny
-            cargo-llvm-cov
-            cargo-mutants
-            cargo-shear
-            clippy
-            dbus
-            jq
-            llvmPackages.libclang
-            llvmPackages.llvm
-            pkg-config
-            pipewire
-            python3Packages.diff-cover
-            rust-analyzer
-            rustc
-            rustfmt
-            systemd
-          ];
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
-          LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
-          BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
-          HYPRIDLE_TEST_BIN = "${self.packages.${system}.managedHypridle}/bin/hypridle";
-          RUST_BACKTRACE = "1";
-          RUST_LOG = "bar_daemon=debug";
-        };
-      });
+      devShells = forAllSystems (
+        system: pkgs: {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              brightnessctl
+              cargo
+              cargo-audit
+              cargo-deny
+              cargo-llvm-cov
+              cargo-mutants
+              cargo-shear
+              clippy
+              dbus
+              jq
+              llvmPackages.libclang
+              llvmPackages.llvm
+              pkg-config
+              pipewire
+              python3Packages.diff-cover
+              rust-analyzer
+              rustc
+              rustfmt
+              systemd
+            ];
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
+            LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
+            BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
+            HYPRIDLE_TEST_BIN = "${self.packages.${system}.managedHypridle}/bin/hypridle";
+            RUST_BACKTRACE = "1";
+            RUST_LOG = "bar_daemon=debug";
+          };
+        }
+      );
     };
 }
