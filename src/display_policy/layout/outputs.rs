@@ -42,10 +42,10 @@ pub(super) fn current_mode(output: &Output) -> String {
     if mode(&observed).is_some() {
         return observed;
     }
-    if output.disabled {
-        if let Some(id) = output.available_modes.iter().find(|id| mode(id).is_some()) {
-            return id.clone();
-        }
+    if output.disabled
+        && let Some(id) = output.available_modes.iter().find(|id| mode(id).is_some())
+    {
+        return id.clone();
     }
     // No invented geometry/mode when the compositor has no usable observation.
     String::new()
@@ -59,49 +59,45 @@ struct NormalizedOutput<'a> {
     internal: bool,
     current_mode: String,
     modes: Vec<Mode>,
-    mirror_of: String,
+    mirror_of: &'a str,
 }
 
 pub(crate) fn serialize_outputs<S: Serializer>(
     outputs: &[Output],
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    outputs
-        .iter()
-        .map(|output| {
-            let current_mode = current_mode(output);
-            let mut modes: Vec<_> = output
-                .available_modes
-                .iter()
-                .filter_map(|id| Mode::parse(id))
-                .collect();
-            if !modes.iter().any(|mode| mode.id == current_mode) {
-                if let Some(current) = Mode::parse(&current_mode) {
-                    modes.insert(0, current);
-                }
-            }
-            NormalizedOutput {
-                observed: output,
-                supported: connector(&output.name),
-                internal: output.internal(),
-                current_mode,
-                modes,
-                mirror_of: if output.disabled {
-                    String::new()
-                } else {
-                    output
-                        .mirror_source(outputs)
-                        .map_or_else(|| output.mirror_of.clone(), |source| source.name.clone())
-                },
-            }
-        })
-        .collect::<Vec<_>>()
-        .serialize(serializer)
+    serializer.collect_seq(outputs.iter().map(|output| {
+        let current_mode = current_mode(output);
+        let mut modes: Vec<_> = output
+            .available_modes
+            .iter()
+            .filter_map(|id| Mode::parse(id))
+            .collect();
+        if !modes.iter().any(|mode| mode.id == current_mode)
+            && let Some(current) = Mode::parse(&current_mode)
+        {
+            modes.insert(0, current);
+        }
+        NormalizedOutput {
+            observed: output,
+            supported: connector(&output.name),
+            internal: output.internal(),
+            current_mode,
+            modes,
+            mirror_of: if output.disabled {
+                ""
+            } else {
+                output
+                    .mirror_source(outputs)
+                    .map_or(&output.mirror_of, |source| &source.name)
+            },
+        }
+    }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Output, Setting, current_mode};
     use crate::display_policy::DisplayPolicyState;
     use serde_json::{Value, json};
 

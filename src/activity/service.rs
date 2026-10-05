@@ -192,7 +192,7 @@ impl ActivityService {
                 source.id.clone(),
                 ActivitySourceState {
                     id: source.id.clone(),
-                    name: source_name(source),
+                    name: source.display_name().into(),
                     kind: source.kind.clone(),
                     available: error.is_none(),
                     item_count,
@@ -427,7 +427,7 @@ impl ActivityService {
                     .cloned()
                     .unwrap_or_else(|| ActivitySourceState {
                         id: source.id.clone(),
-                        name: source_name(source),
+                        name: source.display_name().into(),
                         kind: source.kind.clone(),
                         ..ActivitySourceState::default()
                     })
@@ -470,14 +470,6 @@ impl ActivityService {
         };
         drop(data);
         self.state.update_activity(state).await;
-    }
-}
-
-fn source_name(source: &super::config::CalendarSourceConfig) -> String {
-    if source.name.is_empty() {
-        source.id.clone()
-    } else {
-        source.name.clone()
     }
 }
 

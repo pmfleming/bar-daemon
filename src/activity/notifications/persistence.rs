@@ -37,12 +37,12 @@ enum PersistenceCommand {
         before: Option<Position>,
         limit: usize,
         excluded: Vec<(u64, u32)>,
-        response: oneshot::Sender<Result<Vec<CatalogRecord>, String>>,
+        response: oneshot::Sender<Result<Vec<CatalogRecord>>>,
     },
     List {
         before_history_id: Option<i64>,
         limit: usize,
-        response: oneshot::Sender<Result<Vec<HistoryNotification>, String>>,
+        response: oneshot::Sender<Result<Vec<HistoryNotification>>>,
     },
 }
 
@@ -98,21 +98,14 @@ impl NotificationPersistence {
         limit: usize,
         excluded: Vec<(u64, u32)>,
     ) -> Result<Vec<CatalogRecord>> {
-        let (response, receiver) = oneshot::channel();
-        self.commands
-            .send(PersistenceCommand::Query {
-                query,
-                before,
-                limit,
-                excluded,
-                response,
-            })
-            .await
-            .context("notification persistence worker stopped")?;
-        receiver
-            .await
-            .context("notification persistence worker stopped")?
-            .map_err(|error| anyhow!(error))
+        self.request(|response| PersistenceCommand::Query {
+            query,
+            before,
+            limit,
+            excluded,
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn list(
@@ -120,19 +113,26 @@ impl NotificationPersistence {
         before_history_id: Option<i64>,
         limit: usize,
     ) -> Result<Vec<HistoryNotification>> {
+        self.request(|response| PersistenceCommand::List {
+            before_history_id,
+            limit,
+            response,
+        })
+        .await
+    }
+
+    async fn request<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<Result<T>>) -> PersistenceCommand,
+    ) -> Result<T> {
         let (response, receiver) = oneshot::channel();
         self.commands
-            .send(PersistenceCommand::List {
-                before_history_id,
-                limit,
-                response,
-            })
+            .send(command(response))
             .await
             .context("notification persistence worker stopped")?;
         receiver
             .await
             .context("notification persistence worker stopped")?
-            .map_err(|error| anyhow!(error))
     }
 }
 
@@ -211,11 +211,9 @@ fn persistence_worker(
                     continue; // Superseded/cancelled reads need no SQLite work.
                 }
                 let result = if let Some(error) = &history_error {
-                    Err(error.clone())
+                    Err(anyhow!(error.clone()))
                 } else {
-                    store
-                        .query(&query, before, limit, &excluded)
-                        .map_err(|error| error.to_string())
+                    store.query(&query, before, limit, &excluded)
                 };
                 let _ = response.send(result);
             }
@@ -224,10 +222,7 @@ fn persistence_worker(
                 limit,
                 response,
             } => {
-                let result = store
-                    .list(before_history_id, limit)
-                    .map_err(|error| error.to_string());
-                let _ = response.send(result);
+                let _ = response.send(store.list(before_history_id, limit));
             }
         }
     }
@@ -344,24 +339,6 @@ impl NotificationStore {
             [],
             |row| row.get(0),
         )?)
-    }
-
-    #[cfg(test)]
-    fn load_active(&self) -> Result<Vec<ActiveNotification>> {
-        let mut statement = self.connection.prepare(
-            "SELECT payload_json FROM notifications
-             WHERE closed_unix_ms IS NULL ORDER BY history_id",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut active = Vec::new();
-        for payload in rows {
-            let payload = payload?;
-            match serde_json::from_str(&payload) {
-                Ok(notification) => active.push(notification),
-                Err(error) => tracing::warn!(%error, "ignored invalid persisted notification"),
-            }
-        }
-        Ok(active)
     }
 
     fn load_dnd(&self) -> Result<(bool, Option<u64>)> {
@@ -484,39 +461,28 @@ impl NotificationStore {
              SELECT n.history_id, n.payload_json, n.closed_unix_ms, n.close_reason
              FROM matched JOIN notifications n USING(history_id)
              ORDER BY matched.created_unix_ms DESC, matched.session_id DESC")?;
-        let rows = statement.query_map(
-            params![
-                SCOPE_LIMIT,
-                position.created,
-                position.id,
-                query,
-                limit + 1 + excluded.len()
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<u64>>(2)?,
-                    row.get::<_, Option<u32>>(3)?,
-                ))
-            },
-        )?;
+        let mut rows = statement.query(params![
+            SCOPE_LIMIT,
+            position.created,
+            position.id,
+            query,
+            limit + 1 + excluded.len()
+        ])?;
         let mut records = Vec::new();
-        for row in rows {
-            let (history_id, payload, closed_unix_ms, close_reason) = row?;
+        while let Some(row) = rows.next()? {
             anyhow::ensure!(
-                payload.len() <= PAGE_BYTES,
+                row.get_ref(1)?.as_str()?.len() <= PAGE_BYTES,
                 "Notification exceeds history page byte limit"
             );
-            let notification: ActiveNotification = serde_json::from_str(&payload)?;
-            if excluded.contains(&(notification.created_unix_ms, notification.id)) {
+            let record = history_record(row)?;
+            if excluded.contains(&(record.notification.created_unix_ms, record.notification.id)) {
                 continue;
             }
             records.push(CatalogRecord {
-                history_id: Some(history_id),
-                notification,
-                closed_unix_ms,
-                close_reason,
+                history_id: Some(record.history_id),
+                notification: record.notification,
+                closed_unix_ms: record.closed_unix_ms,
+                close_reason: record.close_reason,
             });
             if records.len() > limit {
                 break;
@@ -536,28 +502,24 @@ impl NotificationStore {
              FROM notifications WHERE history_id < ?1
              ORDER BY history_id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![before, limit], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<u64>>(2)?,
-                row.get::<_, Option<u32>>(3)?,
-            ))
-        })?;
+        let mut rows = statement.query(params![before, limit])?;
         let mut history = Vec::new();
-        for row in rows {
-            let (history_id, payload, closed_unix_ms, close_reason) = row?;
-            let notification =
-                serde_json::from_str(&payload).context("decode persisted notification history")?;
-            history.push(HistoryNotification {
-                history_id,
-                notification,
-                closed_unix_ms,
-                close_reason,
-            });
+        while let Some(row) = rows.next()? {
+            history.push(history_record(row).context("decode persisted notification history")?);
         }
         Ok(history)
     }
+}
+
+// Deserialize directly from SQLite's row buffer; both history APIs share the
+// same schema without allocating an intermediate payload String.
+fn history_record(row: &rusqlite::Row<'_>) -> Result<HistoryNotification> {
+    Ok(HistoryNotification {
+        history_id: row.get(0)?,
+        notification: serde_json::from_str(row.get_ref(1)?.as_str()?)?,
+        closed_unix_ms: row.get(2)?,
+        close_reason: row.get(3)?,
+    })
 }
 
 #[cfg(test)]
@@ -622,9 +584,11 @@ mod tests {
         assert_eq!(
             NotificationStore::open(&path)
                 .unwrap()
-                .load_active()
+                .list(None, 10)
                 .unwrap()
-                .len(),
+                .iter()
+                .filter(|item| item.closed_unix_ms.is_none())
+                .count(),
             1
         );
 
@@ -634,7 +598,13 @@ mod tests {
         drop(persistence);
         worker.join().unwrap();
         let restarted = NotificationStore::open(&path).unwrap();
-        assert!(restarted.load_active().unwrap().is_empty());
+        assert!(
+            restarted
+                .list(None, 10)
+                .unwrap()
+                .iter()
+                .all(|item| item.closed_unix_ms.is_some())
+        );
         assert_eq!(restarted.load_dnd().unwrap(), (true, Some(1234)));
     }
 
@@ -676,7 +646,13 @@ mod tests {
         drop(persistence);
         worker.join().unwrap();
         let restarted = NotificationStore::open(&path).unwrap();
-        assert!(restarted.load_active().unwrap().is_empty());
+        assert!(
+            restarted
+                .list(None, 10)
+                .unwrap()
+                .iter()
+                .all(|item| item.closed_unix_ms.is_some())
+        );
         assert_eq!(restarted.load_dnd().unwrap(), (true, None));
     }
 }

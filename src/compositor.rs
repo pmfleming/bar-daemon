@@ -1,18 +1,8 @@
 //! One event-driven compositor preference cache, shared by every client. Reads
 //! use native bounded IPC; failures retain the last known value and retry.
-use crate::state::StateStore;
-use serde::{Deserialize, Serialize};
+use crate::{model::CompositorState, state::StateStore};
 use shelllist_hyprland::preferences::Preferences;
 use std::{future::Future, time::Duration};
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct CompositorState {
-    pub available: bool,
-    pub revision: u64,
-    /// None until a successful observation; retained (but unavailable) on error.
-    pub animations_enabled: Option<bool>,
-    pub error: Option<String>,
-}
 
 pub(crate) async fn monitor(store: StateStore) {
     let client = shelllist_hyprland::Client::default();

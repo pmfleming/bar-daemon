@@ -255,7 +255,7 @@ fn generated_contract_fixture() -> Value {
                 "error": null
             },
             "workarea": { "available": false, "revision": 0, "monitors": {}, "error": null },
-            "compositor": crate::compositor::CompositorState {
+            "compositor": crate::model::CompositorState {
                 available: true, revision: 1, animations_enabled: Some(false), error: None,
             },
             "workspaces": {

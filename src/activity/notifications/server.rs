@@ -15,7 +15,6 @@ pub(crate) const BUS_NAME: &str = "org.freedesktop.Notifications";
 pub(crate) const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
 const INTERFACE: &str = "org.freedesktop.Notifications";
 
-#[derive(Clone)]
 pub(crate) struct NotificationServer {
     engine: Arc<NotificationEngine>,
 }
@@ -57,12 +56,9 @@ impl NotificationServer {
                 "notification actions must contain key/label pairs".into(),
             ));
         }
-        let actions = actions
-            .chunks_exact(2)
-            .map(|pair| NotificationAction {
-                key: pair[0].clone(),
-                label: pair[1].clone(),
-            })
+        let mut actions = actions.into_iter();
+        let actions = std::iter::from_fn(|| actions.next().zip(actions.next()))
+            .map(|(key, label)| NotificationAction { key, label })
             .collect::<Vec<_>>();
         self.engine
             .notify(

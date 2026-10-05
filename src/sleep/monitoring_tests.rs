@@ -5,10 +5,18 @@ use std::sync::{
 
 use shelllist_daemon_tokio::AbortOnDrop;
 
-use super::*;
+use super::{Event, observe, refresh_loop, signal_connection};
 use crate::sleep::{
-    MANAGER_INTERFACE,
+    MANAGER_INTERFACE, MANAGER_PATH,
     lock_tests::{SessionState, fake_logind},
+    read_state,
+};
+use crate::{model::PowerSleepState, state::StateStore};
+use anyhow::Result;
+use std::time::Duration;
+use tokio::{
+    sync::{mpsc, watch},
+    time::{sleep, timeout},
 };
 
 async fn wait_for<F>(store: &StateStore, predicate: F)

@@ -84,25 +84,9 @@ async fn connected(store: &StateStore) -> Result<()> {
     if !present {
         bail!("no laptop lid was detected");
     }
-    let properties = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.login1",
-        "/org/freedesktop/login1",
-        "org.freedesktop.DBus.Properties",
-    )
-    .await?;
-    let session_properties = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.login1",
-        session.path().clone(),
-        "org.freedesktop.DBus.Properties",
-    )
-    .await?;
     let mut owner_changes = manager.receive_owner_changed().await?;
-    let mut changes = properties.receive_signal("PropertiesChanged").await?;
-    let mut session_changes = session_properties
-        .receive_signal("PropertiesChanged")
-        .await?;
+    let mut changes = power_sleep::property_changes(&manager).await?;
+    let mut session_changes = power_sleep::property_changes(&session).await?;
     let mut policies = store.subscribe();
     let mut fallback = interval(Duration::from_secs(2));
     fallback.set_missed_tick_behavior(MissedTickBehavior::Skip);

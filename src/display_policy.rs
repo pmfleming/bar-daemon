@@ -15,7 +15,7 @@ use crate::{
     paths::{data_file, load_json_or_default, save_json_atomic},
     state::StateStore,
 };
-use planner::{Output, Planner, external_signature};
+use planner::{Output, Planner};
 
 pub(crate) mod focus;
 pub(crate) mod layout;
@@ -251,21 +251,7 @@ async fn reconcile<B: Backend>(
             // Never disable the fallback based on the snapshot that selected
             // the plan. Hotplug can invalidate it while earlier IPC is pending.
             backend.eligible().await?;
-            let current = backend.outputs().await?;
-            if external_signature(&current) != plan.external
-                || !current
-                    .iter()
-                    .any(|o| o.name == target.name && o.id == target.id)
-                || current.iter().any(|o| {
-                    o.active()
-                        && o.mirror_source(&current)
-                            .is_some_and(|source| source.name == target.name)
-                })
-            {
-                bail!(
-                    "display topology changed before disabling the laptop screen; keeping the fallback"
-                );
-            }
+            plan.validate_disable(target, &backend.outputs().await?)?;
         }
         if sleep_interrupted(store, generation).await {
             bail!("sleep transition interrupted display reconciliation");

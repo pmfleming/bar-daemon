@@ -218,11 +218,7 @@ fn finish_event(
     Ok(Some(ActivityEvent {
         id: format!("{}:{uid}:{}", source.id, start.unix_ms),
         source_id: source.id.clone(),
-        calendar_name: if source.name.is_empty() {
-            source.id.clone()
-        } else {
-            source.name.clone()
-        },
+        calendar_name: source.display_name().into(),
         color: source.color.clone(),
         title,
         start_unix_ms: start.unix_ms,

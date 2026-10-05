@@ -1,17 +1,9 @@
 //! One shared work-area cache. Compositor fallback polling exists only while read.
-use crate::state::StateStore;
-use serde::{Deserialize, Serialize};
+use crate::{model::WorkAreaState, state::StateStore};
 use shelllist_hyprland::work_area::Insets;
 use std::{collections::BTreeMap, future::Future, time::Duration};
 use tokio::sync::watch;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WorkAreaState {
-    pub available: bool,
-    pub revision: u64,
-    pub monitors: BTreeMap<String, Insets>,
-    pub error: Option<String>,
-}
 pub(crate) struct Interest(watch::Sender<usize>);
 impl Interest {
     pub fn new(sender: watch::Sender<usize>) -> Self {

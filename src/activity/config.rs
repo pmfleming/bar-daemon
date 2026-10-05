@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashSet,
     env,
     path::{Path, PathBuf},
@@ -29,6 +30,16 @@ pub(crate) struct CalendarSourceConfig {
     pub kind: String,
     pub path: PathBuf,
     pub color: String,
+}
+
+impl CalendarSourceConfig {
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() {
+            &self.id
+        } else {
+            &self.name
+        }
+    }
 }
 
 impl Default for CalendarSourceConfig {
@@ -93,7 +104,7 @@ pub(crate) fn notification_database_path() -> PathBuf {
 }
 
 impl ActivityConfig {
-    pub(crate) fn configured_weather_locations(&self) -> Vec<WeatherConfig> {
+    pub(crate) fn configured_weather_locations(&self) -> Cow<'_, [WeatherConfig]> {
         if self.weather_locations.is_empty() {
             self.weather
                 .iter()
@@ -105,9 +116,10 @@ impl ActivityConfig {
                     weather.home = true;
                     weather
                 })
-                .collect()
+                .collect::<Vec<_>>()
+                .into()
         } else {
-            self.weather_locations.clone()
+            Cow::Borrowed(&self.weather_locations)
         }
     }
 }
@@ -210,6 +222,15 @@ mod tests {
         super::validate(&config).unwrap();
         assert!(!config.calendar_sources.is_empty());
         assert!(!config.world_clocks.is_empty());
+        assert!(matches!(
+            config.configured_weather_locations(),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let legacy: ActivityConfig = serde_json::from_str(r#"{"weather":{}}"#).unwrap();
+        let locations = legacy.configured_weather_locations();
+        assert_eq!(locations[0].id, "home");
+        assert!(locations[0].home);
+        assert!(legacy.weather.as_ref().unwrap().id.is_empty());
 
         config
             .calendar_sources

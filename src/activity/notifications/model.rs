@@ -1,5 +1,29 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NotificationActiveState {
+    pub available: bool,
+    pub revision: u64,
+    pub notifications: Vec<ActiveNotification>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct NotificationState {
+    pub available: bool,
+    pub count: u32,
+    pub dnd: bool,
+    pub dnd_until_unix_ms: Option<u64>,
+    pub inhibited: bool,
+    pub text: String,
+    pub tooltip: String,
+    pub alt: String,
+    pub class_name: String,
+    pub backend: String,
+    pub history_revision: u64,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NotificationAction {
     pub key: String,

@@ -2,9 +2,10 @@
 
 Quality measurements guide design review; they are not targets to game by adding forwarding modules.
 The verified gates in `rqlens.toml` and CI remain authoritative.
-See the [ownership and duplication review](quality-review-1e4e70b.md) for the latest
+See the [borrowing and locality review](quality-review-ff1b2c1.md) for the latest
 measurements, trade-offs and the current analyzer's partial-evidence gate failure.
-Earlier evidence is recorded in the [committed-RQLens quality pass](quality-pass-64a587d.md)
+Earlier evidence is recorded in the [ownership and duplication review](quality-review-1e4e70b.md),
+the [committed-RQLens quality pass](quality-pass-64a587d.md)
 and the [domain simplification review](quality-review.md).
 
 ## Composition-root baseline

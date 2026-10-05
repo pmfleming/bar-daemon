@@ -11,17 +11,13 @@ use std::{
 use anyhow::{Context, Result, bail};
 use tokio::sync::{Mutex, Notify, Semaphore, broadcast};
 
-use crate::{
-    model::{NotificationActiveState, NotificationState},
-    state::StateStore,
-    time::unix_ms,
-};
+use crate::{state::StateStore, time::unix_ms};
 
 use super::{
     history::{self, HistoryError, HistoryPage, HistoryQuery},
     model::{
-        ActiveNotification, HistoryNotification, IncomingNotification, NotificationSignal,
-        close_reason,
+        ActiveNotification, HistoryNotification, IncomingNotification, NotificationActiveState,
+        NotificationSignal, NotificationState, close_reason,
     },
     persistence::{NotificationPersistence, PendingWrites},
     policy::NotificationPolicy,
@@ -129,7 +125,7 @@ pub(crate) struct NotificationEngine {
     mutations: Mutex<()>,
     data: Mutex<EngineData>,
     next_id: AtomicU32,
-    ingress: Arc<Semaphore>,
+    ingress: Semaphore,
     expiry_wakeup: Notify,
     signals: broadcast::Sender<NotificationSignal>,
     state: StateStore,
@@ -171,7 +167,7 @@ impl NotificationEngine {
                 history_revision: 0,
             }),
             next_id: AtomicU32::new(last_id),
-            ingress: Arc::new(Semaphore::new(256)),
+            ingress: Semaphore::new(256),
             expiry_wakeup: Notify::new(),
             signals,
             state,
@@ -203,8 +199,9 @@ impl NotificationEngine {
         replaces_id: u32,
         notification: IncomingNotification,
     ) -> Result<u32> {
-        let _permit = Arc::clone(&self.ingress)
-            .try_acquire_owned()
+        let _permit = self
+            .ingress
+            .try_acquire()
             .context("notification ingress is full")?;
         self.policy.validate(&notification)?;
         let _mutation = self.mutations.lock().await;

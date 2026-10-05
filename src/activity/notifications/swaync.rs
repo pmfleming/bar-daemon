@@ -8,7 +8,8 @@ use tokio::{
     time::sleep,
 };
 
-use crate::{model::NotificationState, state::StateStore};
+use super::model::NotificationState;
+use crate::state::StateStore;
 
 const INITIAL_RETRY: Duration = Duration::from_millis(1500);
 const MAXIMUM_RETRY: Duration = Duration::from_secs(30);
@@ -37,7 +38,7 @@ pub(crate) async fn monitor(store: StateStore) {
                     .update_notifications(NotificationState {
                         available: false,
                         error: Some("SwayNC subscription ended".into()),
-                        ..store.snapshot().await.notifications
+                        ..store.read(|s| s.notifications.clone()).await
                     })
                     .await;
             }

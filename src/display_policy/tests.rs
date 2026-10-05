@@ -3,7 +3,13 @@ use std::{
     collections::VecDeque,
 };
 
-use super::*;
+use super::{Backend, DisplayPolicy, Output, Planner, reconcile};
+use crate::{
+    paths::{load_json_or_default, save_json_atomic},
+    state::StateStore,
+};
+use anyhow::{Result, bail};
+use std::time::{Duration, Instant};
 
 fn internal(disabled: bool) -> Output {
     Output {
@@ -52,15 +58,13 @@ fn laptop_travel_dock_wake_and_unplug_preserve_a_fallback() {
     // A daemon-confirmed resume invalidates pre-sleep stability even though
     // CLOCK_MONOTONIC did not advance while the machine slept.
     planner.reset();
-    let wake = planner.plan(
-        true,
-        &[internal(true), external()],
-        start + Duration::from_secs(5),
-    );
+    let resumed = [internal(true), external()];
+    let wake = planner.plan(true, &resumed, start + Duration::from_secs(5));
     assert_eq!(wake.status, "settling");
     assert!(!wake.disable_internal);
     assert_eq!(wake.targets.len(), 1);
-    let unplug = planner.plan(true, &[internal(true)], start + Duration::from_secs(6));
+    let unplugged = [internal(true)];
+    let unplug = planner.plan(true, &unplugged, start + Duration::from_secs(6));
     assert_eq!(unplug.status, "internal");
     assert_eq!(unplug.targets.len(), 1);
     // A compositor accepting a command is not proof that it enabled the panel.

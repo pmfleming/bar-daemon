@@ -5,7 +5,7 @@ use std::io::Read;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::model::{ActiveNotification, HistoryNotification};
+use super::model::ActiveNotification;
 
 pub(crate) const SCOPE_LIMIT: usize = 5_000;
 pub(crate) const MAX_PAGE: usize = 100;
@@ -48,22 +48,12 @@ struct Cursor {
     expires: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct CatalogRecord {
     pub history_id: Option<i64>,
     pub notification: ActiveNotification,
     pub closed_unix_ms: Option<u64>,
     pub close_reason: Option<u32>,
-}
-impl From<HistoryNotification> for CatalogRecord {
-    fn from(value: HistoryNotification) -> Self {
-        Self {
-            history_id: Some(value.history_id),
-            notification: value.notification,
-            closed_unix_ms: value.closed_unix_ms,
-            close_reason: value.close_reason,
-        }
-    }
 }
 impl From<ActiveNotification> for CatalogRecord {
     fn from(notification: ActiveNotification) -> Self {
@@ -225,24 +215,23 @@ pub(crate) fn page(
         bytes += size;
         records.push(record);
     }
-    let next_cursor = if more {
-        let last = &records.last().expect("nonempty bounded page").notification;
-        Some(
+    let next_cursor = records
+        .last()
+        .filter(|_| more)
+        .map(|record| {
             serde_json::to_string(&Cursor {
                 epoch: epoch.into(),
                 revision: revision.to_string(),
                 query: query.query.clone(),
                 before: Position {
-                    created: last.created_unix_ms,
-                    id: last.id,
+                    created: record.notification.created_unix_ms,
+                    id: record.notification.id,
                 },
                 expires: now.saturating_add(CURSOR_TTL_MS),
             })
-            .map_err(|e| HistoryError::Unavailable(e.into()))?,
-        )
-    } else {
-        None
-    };
+        })
+        .transpose()
+        .map_err(|e| HistoryError::Unavailable(e.into()))?;
     let anchor_reached = !more
         || query.anchor.is_none_or(|anchor| {
             records.last().is_some_and(|record| {

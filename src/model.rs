@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::activity::notifications::model::ActiveNotification;
+use crate::activity::notifications::model::{NotificationActiveState, NotificationState};
 
 pub(crate) use crate::activity::model::ActivityState;
 
@@ -9,9 +9,9 @@ pub(crate) struct BarSnapshot {
     pub activity: ActivityState,
     pub workspaces: WorkspaceState,
     #[serde(default)]
-    pub workarea: crate::work_area::WorkAreaState,
+    pub workarea: WorkAreaState,
     #[serde(default)]
-    pub compositor: crate::compositor::CompositorState,
+    pub compositor: CompositorState,
     pub media: MediaState,
     pub audio: AudioState,
     pub brightness: BrightnessState,
@@ -27,6 +27,24 @@ pub(crate) struct BarSnapshot {
     pub notification_active: NotificationActiveState,
     pub updates: UpdateState,
     pub timezone: TimezoneState,
+}
+
+// Snapshot data must not depend on the effectful compositor monitors.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WorkAreaState {
+    pub available: bool,
+    pub revision: u64,
+    pub monitors: std::collections::BTreeMap<String, shelllist_hyprland::work_area::Insets>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CompositorState {
+    pub available: bool,
+    pub revision: u64,
+    /// None until a successful observation; retained (but unavailable) on error.
+    pub animations_enabled: Option<bool>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -123,30 +141,6 @@ pub(crate) struct UpdateLane {
     pub created_at: Option<u64>,
     pub auto_apply: bool,
     pub system: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct NotificationActiveState {
-    pub available: bool,
-    pub revision: u64,
-    pub notifications: Vec<ActiveNotification>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct NotificationState {
-    pub available: bool,
-    pub count: u32,
-    pub dnd: bool,
-    pub dnd_until_unix_ms: Option<u64>,
-    pub inhibited: bool,
-    pub text: String,
-    pub tooltip: String,
-    pub alt: String,
-    pub class_name: String,
-    pub backend: String,
-    pub history_revision: u64,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

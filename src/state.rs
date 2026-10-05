@@ -4,10 +4,11 @@ use serde::Serialize;
 use serde_json::{Value, to_value};
 use tokio::sync::{RwLock, broadcast};
 
+use crate::activity::notifications::model::{NotificationActiveState, NotificationState};
 use crate::model::{
-    ActivityState, AudioState, BarSnapshot, BatteryState, BrightnessState, MediaState,
-    NotificationActiveState, NotificationState, OsdHardwareState, PowerProfileState,
-    PowerSleepState, SleepOperation, TimezoneState, UpdateState, WorkspaceState,
+    ActivityState, AudioState, BarSnapshot, BatteryState, BrightnessState, CompositorState,
+    MediaState, OsdHardwareState, PowerProfileState, PowerSleepState, SleepOperation,
+    TimezoneState, UpdateState, WorkAreaState, WorkspaceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -139,7 +140,7 @@ impl StateStore {
     pub(crate) fn work_area_demand(&self) -> tokio::sync::watch::Receiver<usize> {
         self.work_area_demand.subscribe()
     }
-    pub(crate) async fn update_work_area(&self, mut value: crate::work_area::WorkAreaState) {
+    pub(crate) async fn update_work_area(&self, mut value: WorkAreaState) {
         let mut snapshot = self.snapshot.write().await;
         value.revision = snapshot.workarea.revision;
         if value == snapshot.workarea {
@@ -150,7 +151,7 @@ impl StateStore {
         self.publish(crate::protocol::stream::WORKAREA, &snapshot.workarea);
     }
 
-    pub(crate) async fn update_compositor(&self, mut value: crate::compositor::CompositorState) {
+    pub(crate) async fn update_compositor(&self, mut value: CompositorState) {
         let mut snapshot = self.snapshot.write().await;
         value.revision = snapshot.compositor.revision;
         if value == snapshot.compositor {

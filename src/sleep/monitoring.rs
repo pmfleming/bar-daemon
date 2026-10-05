@@ -9,7 +9,7 @@ use tokio::{
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
 
-use super::{BUS, MANAGER_PATH, manager, read_state, resume};
+use super::{manager, property_changes, read_state, resume};
 use crate::{model::PowerSleepState, state::StateStore};
 
 const CLOCK_POLL: Duration = Duration::from_secs(2);
@@ -67,14 +67,7 @@ async fn signal_connection(
 ) -> Result<()> {
     let proxy = manager(connection).await?;
     let mut prepare = proxy.receive_signal("PrepareForSleep").await?;
-    let properties = zbus::Proxy::new(
-        connection,
-        BUS,
-        MANAGER_PATH,
-        "org.freedesktop.DBus.Properties",
-    )
-    .await?;
-    let mut changes = properties.receive_signal("PropertiesChanged").await?;
+    let mut changes = property_changes(&proxy).await?;
     events.send(Event::Refresh).await?;
     loop {
         let event = tokio::select! {

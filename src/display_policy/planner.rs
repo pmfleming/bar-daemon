@@ -73,6 +73,14 @@ impl Output {
     pub(super) fn mirrored(&self) -> bool {
         !self.mirror_of.is_empty() && self.mirror_of != "none" && self.mirror_of != "-1"
     }
+    pub(super) fn has_active_mirrors(&self, outputs: &[Output]) -> bool {
+        outputs.iter().any(|output| {
+            output.active()
+                && output
+                    .mirror_source(outputs)
+                    .is_some_and(|source| source.name == self.name)
+        })
+    }
     pub(super) fn mirror_source<'a>(&self, outputs: &'a [Output]) -> Option<&'a Output> {
         self.mirrored()
             .then(|| {
@@ -115,9 +123,9 @@ impl Output {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Signature(String, i64, u32, u32, u64, u64);
+struct Signature(String, i64, u32, u32, u64, u64);
 
-pub(super) fn external_signature(outputs: &[Output]) -> Vec<Signature> {
+fn external_signature(outputs: &[Output]) -> Vec<Signature> {
     let mut keys: Vec<_> = outputs
         .iter()
         .filter(|o| o.external() && o.usable())
@@ -136,11 +144,27 @@ pub(super) fn external_signature(outputs: &[Output]) -> Vec<Signature> {
     keys
 }
 
-pub(super) struct Plan {
+pub(super) struct Plan<'a> {
     pub disable_internal: bool,
-    pub targets: Vec<Output>,
+    pub targets: Vec<&'a Output>,
     pub status: &'static str,
-    pub external: Vec<Signature>,
+    external: Vec<Signature>,
+}
+
+impl Plan<'_> {
+    pub fn validate_disable(&self, target: &Output, current: &[Output]) -> Result<()> {
+        if external_signature(current) != self.external
+            || !current
+                .iter()
+                .any(|o| o.name == target.name && o.id == target.id)
+            || target.has_active_mirrors(current)
+        {
+            bail!(
+                "display topology changed before disabling the laptop screen; keeping the fallback"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -155,7 +179,12 @@ impl Planner {
         self.last_observation = None;
     }
 
-    pub fn plan(&mut self, prefer_external: bool, outputs: &[Output], now: Instant) -> Plan {
+    pub fn plan<'a>(
+        &mut self,
+        prefer_external: bool,
+        outputs: &'a [Output],
+        now: Instant,
+    ) -> Plan<'a> {
         if self
             .last_observation
             .is_some_and(|previous| now.duration_since(previous) > MAX_OBSERVATION_GAP)
@@ -189,17 +218,11 @@ impl Planner {
             .filter(|o| {
                 o.internal()
                     && if disable_internal {
-                        o.usable()
-                            && !outputs.iter().any(|m| {
-                                m.active()
-                                    && m.mirror_source(outputs)
-                                        .is_some_and(|source| source.name == o.name)
-                            })
+                        o.usable() && !o.has_active_mirrors(outputs)
                     } else {
                         !o.active() || (o.mirrored() && !outputs.iter().any(Output::usable))
                     }
             })
-            .cloned()
             .collect();
         Plan {
             disable_internal,

@@ -127,6 +127,21 @@ pub(crate) async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy
         .context("connect to systemd-logind")
 }
 
+// Subscribe to property changes on a logind manager or session.
+pub(crate) async fn property_changes(
+    proxy: &zbus::Proxy<'_>,
+) -> Result<zbus::proxy::SignalStream<'static>> {
+    Ok(zbus::Proxy::new(
+        proxy.connection(),
+        proxy.destination().as_str(),
+        proxy.path().as_str(),
+        "org.freedesktop.DBus.Properties",
+    )
+    .await?
+    .receive_signal("PropertiesChanged")
+    .await?)
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
     Lock,
