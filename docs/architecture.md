@@ -55,6 +55,18 @@ follow-up refresh. Healthy workspace monitoring is event-driven, with one-second
 recovery queries while disconnected or after a failed snapshot. All futures are
 owned by the domain monitor and cancelled together at shutdown.
 
+Work-area queries run only with interested readers. Healthy event delivery
+refreshes geometry on invalidation and reconciles every 30 seconds, rather than
+polling every second: Hyprland layer-surface reservation commits do not always
+emit socket events. Disconnection or failed reads enable one-second recovery.
+Dropping the last reader cancels an in-flight query. Recent idle cache entries
+remain reusable; invalidations clear idle data without querying, and entries
+older than the reconciliation interval are refreshed when demand returns.
+
+Compositor preferences retain their last-known value on read failures. They
+remain event-driven while connected and successful, with five-second recovery
+while either reads fail or event delivery is unavailable.
+
 ### Interactive audio
 
 A dedicated `bar-pipewire-control` thread owns a persistent PipeWire connection.

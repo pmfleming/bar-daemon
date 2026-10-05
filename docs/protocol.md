@@ -98,9 +98,10 @@ older snapshot replies and reset their revision fence after transport loss.
 Errors mark the state unavailable and retain the last known boolean rather than
 silently enabling motion. One shared worker refreshes on startup, config reloads
 and event-socket reconnect/disconnect, using the existing Hyprland event listener.
-Healthy values are not polled; failed reads retry after five seconds or the next
-invalidation. Requests use the framework's bounded native socket transport, never
-`hyprctl` subprocesses. This is independent of display-control permissions.
+Healthy values are not polled while event delivery is connected; failed reads
+or disconnected event delivery retry after five seconds or the next invalidation.
+Requests use the framework's bounded native socket transport, never `hyprctl`
+subprocesses. This is independent of display-control permissions.
 
 UI environment overrides, animation choice and scoped layer-window rules remain
 frontend-owned. Deploy the framework, daemon and frontend together for the new

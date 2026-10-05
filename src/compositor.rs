@@ -1,6 +1,7 @@
 //! One event-driven compositor preference cache, shared by every client. Reads
 //! use native bounded IPC; failures retain the last known value and retry.
 use crate::{model::CompositorState, state::StateStore};
+use futures::FutureExt;
 use shelllist_hyprland::preferences::Preferences;
 use std::{future::Future, time::Duration};
 
@@ -16,6 +17,7 @@ where
 {
     let mut last_known = None;
     loop {
+        let _ = store.compositor_changed.notified().now_or_never();
         let state = match fetch().await {
             Ok(preferences) => {
                 last_known = Some(preferences.animations_enabled);
@@ -33,14 +35,14 @@ where
                 ..Default::default()
             },
         };
-        let failed = !state.available;
+        let recovery = !state.available || !store.hyprland_connected();
         store.update_compositor(state).await;
         // Notify retains one pending invalidation even if it arrives during a
-        // read. Healthy preferences have no timer/polling; reconnects and config
-        // reloads arrive from the daemon's existing compositor event connection.
+        // read. Connected, healthy preferences have no polling; recover while
+        // event delivery is unavailable even if command reads still succeed.
         tokio::select! {
             _ = store.compositor_changed.notified() => {},
-            _ = tokio::time::sleep(retry), if failed => {},
+            _ = tokio::time::sleep(retry), if recovery => {},
         }
     }
 }
@@ -71,6 +73,7 @@ mod tests {
     #[tokio::test]
     async fn cache_retries_errors_preserves_last_known_and_deduplicates_events() {
         let store = StateStore::default();
+        store.set_hyprland_connected(true);
         let mut events = store.subscribe();
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
@@ -136,9 +139,51 @@ mod tests {
         task.abort();
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn successful_commands_still_reconcile_while_event_delivery_is_down() {
+        let store = StateStore::default();
+        store.set_hyprland_connected(true);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let task = tokio::spawn(monitor_with(
+            store.clone(),
+            move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Preferences {
+                        animations_enabled: false,
+                    })
+                }
+            },
+            Duration::from_secs(5),
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        store.set_hyprland_connected(false);
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        store.set_hyprland_connected(true);
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        let state = store.snapshot().await.compositor;
+        assert_eq!(state.animations_enabled, Some(false));
+        assert_eq!(state.revision, 1);
+        task.abort();
+        let _ = task.await;
+    }
+
     #[tokio::test]
     async fn reload_during_read_is_not_lost_and_reconnect_can_change_preference() {
         let store = StateStore::default();
+        store.set_hyprland_connected(true);
         let mut events = store.subscribe();
         let calls = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(Semaphore::new(0));

@@ -1,8 +1,14 @@
-//! One shared work-area cache. Compositor fallback polling exists only while read.
+//! Demand-owned geometry cache: events plus slow reconciliation while connected,
+//! fast recovery when disconnected. Idle caches survive until invalidated.
 use crate::{model::WorkAreaState, state::StateStore};
+use futures::FutureExt;
 use shelllist_hyprland::work_area::Insets;
 use std::{collections::BTreeMap, future::Future, time::Duration};
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
+
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
+// Layer-surface reservation changes need not emit a socket event.
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) struct Interest(watch::Sender<usize>);
 impl Interest {
@@ -26,66 +32,71 @@ where
     Fut: Future<Output = anyhow::Result<BTreeMap<String, Insets>>>,
 {
     let mut demand = store.work_area_demand();
+    let mut dirty = true;
+    let mut failed = false;
+    let mut next_refresh = Instant::now();
     loop {
-        if *demand.borrow_and_update() == 0 {
-            // Invalidate idle data: the next reader must wait for fresh geometry.
-            store.update_work_area(WorkAreaState::default()).await;
-            if demand.changed().await.is_err() {
-                return;
-            }
-            continue;
+        let observed = *demand.borrow_and_update() > 0;
+        if observed && (dirty || Instant::now() >= next_refresh) {
+            // This read covers earlier invalidations. Those arriving during the
+            // read retain a Notify permit and cause a follow-up query.
+            let _ = store.work_area_changed.notified().now_or_never();
+            let Some(result) = while_observed(fetch(), &mut demand).await else {
+                continue;
+            };
+            let state = match result {
+                Ok(monitors) => WorkAreaState {
+                    available: true,
+                    monitors,
+                    ..Default::default()
+                },
+                Err(error) => WorkAreaState {
+                    error: Some(error.to_string()),
+                    ..Default::default()
+                },
+            };
+            failed = !state.available;
+            next_refresh = Instant::now()
+                + if failed || !store.hyprland_connected() {
+                    RECOVERY_INTERVAL
+                } else {
+                    RECONCILE_INTERVAL
+                };
+            dirty = false;
+            store.update_work_area(state).await;
         }
-        let state = match fetch().await {
-            Ok(monitors) => WorkAreaState {
-                available: true,
-                monitors,
-                ..Default::default()
-            },
-            Err(error) => WorkAreaState {
-                error: Some(error.to_string()),
-                ..Default::default()
-            },
-        };
-        store.update_work_area(state).await;
+        let recovery = failed || !store.hyprland_connected();
+        if !observed {
+            // Without events, an idle observation cannot stay fresh. Connected
+            // idle caches are invalidated only by geometry/connection changes.
+            dirty |= recovery;
+            if dirty {
+                store.update_work_area(WorkAreaState::default()).await;
+            }
+        }
         tokio::select! {
-            _ = store.work_area_changed.notified() => {},
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+            _ = store.work_area_changed.notified() => { dirty = true; },
+            _ = tokio::time::sleep_until(next_refresh), if observed => { dirty = true; },
             changed = demand.changed() => { if changed.is_err() { return; } },
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    #[tokio::test]
-    async fn interest_is_shared_and_drop_stops_polling_and_invalidates_cache() {
-        let store = StateStore::default();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let count = calls.clone();
-        let task = tokio::spawn(monitor_with(store.clone(), move || {
-            count.fetch_add(1, Ordering::SeqCst);
-            async { Ok(BTreeMap::new()) }
-        }));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let first = store.work_area_interest();
-        let second = store.work_area_interest();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(store.snapshot().await.workarea.available);
-        drop(first);
-        assert_eq!(*store.work_area_demand().borrow(), 1);
-        drop(second);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let stopped = calls.load(Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(1050)).await;
-        assert_eq!(calls.load(Ordering::SeqCst), stopped);
-        assert!(!store.snapshot().await.workarea.available);
-        task.abort();
+async fn while_observed<T>(
+    future: impl Future<Output = T>,
+    demand: &mut watch::Receiver<usize>,
+) -> Option<T> {
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            biased;
+            changed = demand.changed() => {
+                if changed.is_err() || *demand.borrow_and_update() == 0 { return None; }
+            }
+            result = &mut future => return Some(result),
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;

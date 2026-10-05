@@ -205,8 +205,7 @@ where
             let refresh = match event {
                 Event::Connected | Event::Disconnected => {
                     connected = event == Event::Connected;
-                    store.compositor_changed.notify_one();
-                    store.work_area_changed.notify_one();
+                    store.set_hyprland_connected(connected);
                     true
                 }
                 Event::Message(event) => {
@@ -331,6 +330,7 @@ mod tests {
         store.compositor_changed.notified().await; // delivered while first fetch is blocked
         store.work_area_changed.notified().await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(store.hyprland_connected());
         gate.add_permits(1);
         started.acquire().await.unwrap().forget();
         tokio::time::advance(Duration::from_secs(2)).await;
@@ -341,6 +341,7 @@ mod tests {
         store.compositor_changed.notified().await;
         store.work_area_changed.notified().await;
         started.acquire().await.unwrap().forget();
+        assert!(!store.hyprland_connected());
         drop(events);
         task.await.unwrap();
     }

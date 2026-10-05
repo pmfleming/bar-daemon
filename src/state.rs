@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use serde::Serialize;
 use serde_json::{Value, to_value};
@@ -22,6 +25,7 @@ pub(crate) struct StateStore {
     snapshot: Arc<RwLock<BarSnapshot>>,
     events: broadcast::Sender<DomainEvent>,
     work_area_demand: tokio::sync::watch::Sender<usize>,
+    hyprland_connected: Arc<AtomicBool>,
     pub(crate) work_area_changed: Arc<tokio::sync::Notify>,
     pub(crate) compositor_changed: Arc<tokio::sync::Notify>,
 }
@@ -33,6 +37,7 @@ impl Default for StateStore {
             snapshot: Arc::new(RwLock::new(BarSnapshot::default())),
             events,
             work_area_demand: tokio::sync::watch::channel(0).0,
+            hyprland_connected: Arc::new(AtomicBool::new(false)),
             work_area_changed: Arc::new(tokio::sync::Notify::new()),
             compositor_changed: Arc::new(tokio::sync::Notify::new()),
         }
@@ -132,6 +137,18 @@ impl StateStore {
                 &snapshot.sleep_policy,
             );
         }
+    }
+
+    pub(crate) fn hyprland_connected(&self) -> bool {
+        self.hyprland_connected.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_hyprland_connected(&self, connected: bool) {
+        self.hyprland_connected.store(connected, Ordering::Relaxed);
+        // Every connection transition invalidates caches, even if several
+        // transitions coalesce and the final connectivity value is unchanged.
+        self.work_area_changed.notify_one();
+        self.compositor_changed.notify_one();
     }
 
     pub(crate) fn work_area_interest(&self) -> crate::work_area::Interest {
