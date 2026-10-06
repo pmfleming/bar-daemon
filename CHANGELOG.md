@@ -18,6 +18,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Recover isolated Pocket Casts and Audible PWA labels when Chromium drops launcher
+  environment hints, requiring matching app URL, class and per-app profile from
+  the actual D-Bus owner; playback IDs and metadata remain unchanged.
+
 - Ignore update-monitor read events and coalesce write bursts to prevent idle
   refresh loops; recover watches after directory replacement or watcher failure.
 - Require `ready-created-at` before reporting delayed updates ready, matching the

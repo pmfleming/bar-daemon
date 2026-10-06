@@ -76,9 +76,17 @@ The desktop entry ID is the installed filename without `.desktop`. Both values
 must be present; the ID accepts ASCII letters, digits, dots, underscores and
 hyphens (starting with a letter/digit), and each value is limited to 128 bytes.
 The daemon resolves the browser's actual D-Bus owner PID, reads only that process's
-environment for the labels, and never logs or persists the environment. Missing,
-invalid or inaccessible hints fall back to the player's own identity. These are
-presentation hints, not trusted authorization or playback routing information.
+environment for the labels, and never logs or persists process data. If Chromium
+has dropped these labels, the daemon also recognizes the isolated Pocket Casts
+and Audible launcher convention: `--class=com.laufan.pocketcasts` or
+`com.laufan.audible`, a matching absolute `--user-data-dir` ending in
+`chrome-web-apps/<class>`, and an HTTPS `--app` URL on `play.pocketcasts.com` or a
+supported Audible regional host. All three must agree. Native NUL-separated argv
+and Chromium's flattened process title are supported; ambiguous values fail
+closed. Shared-profile `--app-id` PWAs and ordinary browser tabs are not inferred.
+Missing, invalid or inaccessible hints fall back to the player's own identity.
+These are presentation hints, not trusted authorization or playback routing
+information. No browser profile contents, cookies or history are read.
 
 Player IDs and controls remain tied to the original MPRIS service. Track titles,
 authors/hosts, albums, artwork and seek support come from Chrome/the site's Media

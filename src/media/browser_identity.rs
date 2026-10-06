@@ -6,7 +6,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use tokio::io::AsyncReadExt;
 
-const MAX_ENV_BYTES: u64 = 64 * 1024;
+mod pwa;
+
+const MAX_PROCESS_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct BrowserIdentity {
@@ -45,21 +47,34 @@ async fn read_owner(connection: &zbus::Connection, name: &str) -> Result<Browser
     let pid = bus
         .get_connection_unix_process_id(owner.clone().into())
         .await?;
-    let file = tokio::fs::File::open(format!("/proc/{pid}/environ")).await?;
-    let mut environment = Vec::new();
-    file.take(MAX_ENV_BYTES + 1)
-        .read_to_end(&mut environment)
-        .await?;
-    ensure!(
-        environment.len() as u64 <= MAX_ENV_BYTES,
-        "environment too large"
-    );
+    let labels = read_process(&format!("/proc/{pid}")).await;
     ensure!(
         bus.get_name_owner(name.try_into()?).await? == owner,
         "owner changed"
     );
-    // Do not log or retain the environment: it may contain unrelated secrets.
-    parse_environment(&environment).context("no valid browser presentation labels")
+    labels.context("no valid browser presentation labels")
+}
+
+async fn read_bounded(path: &str) -> Option<Vec<u8>> {
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PROCESS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    (bytes.len() as u64 <= MAX_PROCESS_BYTES).then_some(bytes)
+}
+
+async fn read_process(directory: &str) -> Option<BrowserIdentity> {
+    // Never log or retain process bytes: both files may contain unrelated secrets.
+    if let Some(environment) = read_bounded(&format!("{directory}/environ")).await
+        && let Some(labels) = parse_environment(&environment)
+    {
+        return Some(labels);
+    }
+    // Chromium can rewrite its process environment/title, losing launcher hints.
+    // Only a matching isolated profile + class + known app URL is a fallback.
+    pwa::parse(&read_bounded(&format!("{directory}/cmdline")).await?)
 }
 
 fn parse_environment(environment: &[u8]) -> Option<BrowserIdentity> {
