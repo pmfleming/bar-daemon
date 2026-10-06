@@ -275,7 +275,8 @@ fn generated_contract_fixture() -> Value {
                 "pinned_player": null,
                 "players": [{
                     "id": "org.mpris.MediaPlayer2.spotify", "identity": "Spotify", "desktop_entry": "spotify",
-                    "content_type": "music", "control_mode": "automatic",
+                    "content_type": "music", "content_type_source": "url", "control_mode": "automatic",
+                    "source": {"url": "spotify:track:example", "service": "spotify"},
                     "playback_status": "playing", "title": "Track", "artist": "Artist", "album": "Album", "art_url": "",
                     "length_us": 240000000, "position_us": 60000000,
                     "position_observed_at_unix_ms": 1234567890000_u64, "playback_rate": 1.0,

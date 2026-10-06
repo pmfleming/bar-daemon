@@ -52,6 +52,15 @@ D-Bus endpoint:
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
 
+## Browser media sources
+
+MPRIS content URLs provide offline service labels for YouTube, Vimeo, SoundCloud,
+Spotify, Pocket Casts and Audible without replacing the browser's control target.
+Only explicit content metadata or unambiguous URL patterns classify content;
+unknown sources remain usable. No artwork lookup, page scraping or browser cookie
+access is performed. See [media source metadata](docs/media.md) for the additive
+wire fields, supported paths and privacy boundaries.
+
 ## Isolated Chromium media apps
 
 Chrome publishes one MPRIS player per browser process, not per app window. Use a

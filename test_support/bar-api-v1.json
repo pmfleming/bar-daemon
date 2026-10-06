@@ -1046,6 +1046,7 @@
           "can_previous": true,
           "can_seek": true,
           "content_type": "music",
+          "content_type_source": "url",
           "control_mode": "automatic",
           "desktop_entry": "spotify",
           "id": "org.mpris.MediaPlayer2.spotify",
@@ -1055,6 +1056,10 @@
           "playback_status": "playing",
           "position_observed_at_unix_ms": 1234567890000,
           "position_us": 60000000,
+          "source": {
+            "service": "spotify",
+            "url": "spotify:track:example"
+          },
           "title": "Track"
         }
       ]

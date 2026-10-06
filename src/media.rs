@@ -10,12 +10,13 @@ use tokio::{
 use zvariant::OwnedValue;
 
 use crate::{
-    model::{MediaContentType, MediaControlMode, MediaPlayer, MediaState},
+    model::{MediaControlMode, MediaPlayer, MediaState},
     state::StateStore,
     time::unix_ms as unix_time_ms,
 };
 
 mod browser_identity;
+mod source;
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -377,14 +378,17 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         .unwrap_or_default()
         .max(0) as u64;
     let playback_rate = player.get_property::<f64>("Rate").await.unwrap_or(1.0);
+    let source = source::resolve(
+        property_string(&metadata, "xesam:url").as_deref(),
+        property_string(&metadata, "xesam:contentType").as_deref(),
+    );
     Ok(MediaPlayer {
         id: name.to_string(),
         identity,
         desktop_entry,
-        content_type: classify_content(
-            property_string(&metadata, "xesam:contentType").as_deref(),
-            property_string(&metadata, "xesam:url").as_deref(),
-        ),
+        content_type: source.content_type,
+        content_type_source: source.content_type_source,
+        source: source.source,
         control_mode: MediaControlMode::Automatic,
         playback_status,
         title: property_string(&metadata, "xesam:title").unwrap_or_default(),
@@ -402,27 +406,6 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         can_next: player.get_property("CanGoNext").await.unwrap_or(false),
         can_previous: player.get_property("CanGoPrevious").await.unwrap_or(false),
     })
-}
-
-fn classify_content(content_type: Option<&str>, url: Option<&str>) -> MediaContentType {
-    let kind = content_type.unwrap_or("").to_lowercase();
-    let url = url.unwrap_or("");
-    if kind == "podcast"
-        || url.starts_with("spotify:episode:")
-        || url.starts_with("https://open.spotify.com/episode/")
-    {
-        MediaContentType::Podcast
-    } else if kind == "video" || kind.starts_with("video/") {
-        MediaContentType::Video
-    } else if kind == "music"
-        || url.starts_with("spotify:track:")
-        || url.starts_with("https://open.spotify.com/track/")
-    {
-        MediaContentType::Music
-    } else {
-        // Audio MIME types and player identity cannot distinguish songs from podcasts.
-        MediaContentType::Unknown
-    }
 }
 
 fn property_string(values: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
@@ -552,8 +535,24 @@ mod tests {
         }
     }
 
+    struct FakeBrowserRoot;
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2")]
+    impl FakeBrowserRoot {
+        #[zbus(property)]
+        fn identity(&self) -> &str {
+            "Mozilla zen"
+        }
+
+        #[zbus(property)]
+        fn desktop_entry(&self) -> &str {
+            "zen"
+        }
+    }
+
     struct FakePlayer {
         can_seek: bool,
+        url: Option<&'static str>,
     }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
@@ -564,17 +563,38 @@ mod tests {
         }
 
         #[zbus(property)]
+        fn rate(&self) -> f64 {
+            0.0 // Zen can report this while paused; do not invent a playback rate.
+        }
+
+        #[zbus(property)]
+        fn position(&self) -> i64 {
+            861_000_000
+        }
+
+        #[zbus(property)]
         fn metadata(&self) -> std::collections::HashMap<String, zvariant::OwnedValue> {
             use zvariant::Value;
-            [
+            let mut entries = vec![
                 ("xesam:title", Value::from("Chapter / episode")),
                 ("xesam:artist", Value::from(vec!["Author / host"])),
                 ("xesam:album", Value::from("Book / podcast")),
                 ("mpris:artUrl", Value::from("https://example.com/art.jpg")),
-            ]
-            .into_iter()
-            .map(|(key, value)| (key.into(), value.try_to_owned().unwrap()))
-            .collect()
+                ("mpris:length", Value::from(2_589_000_000_i64)),
+                (
+                    "mpris:trackid",
+                    Value::from(
+                        zvariant::ObjectPath::try_from("/org/mpris/MediaPlayer2/firefox").unwrap(),
+                    ),
+                ),
+            ];
+            if let Some(url) = self.url {
+                entries.push(("xesam:url", Value::from(url)));
+            }
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.try_to_owned().unwrap()))
+                .collect()
         }
     }
 
@@ -595,7 +615,13 @@ mod tests {
                 .server(zbus::Guid::generate())
                 .unwrap()
                 .p2p()
-                .serve_at(super::PATH, FakePlayer { can_seek })
+                .serve_at(
+                    super::PATH,
+                    FakePlayer {
+                        can_seek,
+                        url: None,
+                    },
+                )
                 .unwrap()
                 .build();
             let client = zbus::connection::Builder::unix_stream(client).p2p().build();
@@ -613,25 +639,77 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn source_changes_follow_metadata_not_the_reused_firefox_track_id() {
+        use crate::model::{MediaContentType as Kind, MediaSourceService as Service};
+        let (server, client) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(server)
+            .server(zbus::Guid::generate())
+            .unwrap()
+            .p2p()
+            .serve_at(
+                super::PATH,
+                FakePlayer {
+                    can_seek: true,
+                    url: None,
+                },
+            )
+            .unwrap()
+            .serve_at(super::PATH, FakeBrowserRoot)
+            .unwrap()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client).p2p().build();
+        let (server, client) = tokio::try_join!(server, client).unwrap();
+        let interface = server
+            .object_server()
+            .interface::<_, FakePlayer>(super::PATH)
+            .await
+            .unwrap();
+        let name = "org.mpris.MediaPlayer2.firefox.instance_1_380";
+        for (url, service, kind) in [
+            (
+                Some("https://www.youtube.com/watch?v=RQzh-xnLRlM"),
+                Some(Service::Youtube),
+                Kind::Video,
+            ),
+            (
+                Some("https://soundcloud.com/artist/recording"),
+                Some(Service::Soundcloud),
+                Kind::Unknown,
+            ),
+            (Some("https://example.org/player"), None, Kind::Unknown),
+            (None, None, Kind::Unknown),
+        ] {
+            interface.get_mut().await.url = url;
+            let player = super::read_player(&client, name).await.unwrap();
+            assert_eq!(
+                player.source.as_ref().map(|source| source.url.as_str()),
+                url
+            );
+            assert_eq!(
+                player.source.as_ref().and_then(|source| source.service),
+                service
+            );
+            assert_eq!(player.content_type, kind);
+            assert_eq!(player.id, name);
+            assert_eq!(player.identity, "Mozilla zen");
+            assert_eq!(player.desktop_entry, "zen");
+            assert_eq!(player.title, "Chapter / episode");
+            assert_eq!(player.artist, "Author / host");
+            assert_eq!(player.album, "Book / podcast");
+            assert_eq!(player.art_url, "https://example.com/art.jpg");
+            assert_eq!(player.length_us, 2_589_000_000);
+            assert_eq!(player.position_us, 861_000_000);
+            assert_eq!(player.playback_rate, 0.0);
+            assert!(player.can_seek);
+            // No transport methods exist on the fake: enrichment only reads.
+            assert!(!player.can_next);
+        }
+    }
+
     #[test]
-    fn classification_is_conservative_and_modes_are_closed() {
-        use crate::model::{MediaContentType as Content, MediaControlMode as Mode};
-        assert_eq!(
-            super::classify_content(Some("audio/mpeg"), None),
-            Content::Unknown
-        );
-        assert_eq!(
-            super::classify_content(Some("video/mp4"), None),
-            Content::Video
-        );
-        assert_eq!(
-            super::classify_content(None, Some("spotify:track:123")),
-            Content::Music
-        );
-        assert_eq!(
-            super::classify_content(None, Some("https://open.spotify.com/episode/123")),
-            Content::Podcast
-        );
+    fn modes_are_closed() {
+        use crate::model::MediaControlMode as Mode;
         assert!(serde_json::from_str::<Mode>("\"invented\"").is_err());
         assert_eq!(
             serde_json::from_str::<Mode>("\"automatic\"").unwrap(),

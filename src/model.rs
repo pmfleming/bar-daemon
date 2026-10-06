@@ -433,7 +433,34 @@ pub(crate) enum MediaContentType {
     Unknown,
     Music,
     Podcast,
+    Audiobook,
     Video,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaContentTypeSource {
+    #[default]
+    Unknown,
+    Mpris,
+    Url,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum MediaSourceService {
+    Youtube,
+    Vimeo,
+    Soundcloud,
+    Spotify,
+    Pocketcasts,
+    Audible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MediaSource {
+    pub url: String,
+    pub service: Option<MediaSourceService>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -443,6 +470,10 @@ pub(crate) struct MediaPlayer {
     pub desktop_entry: String,
     #[serde(default)]
     pub content_type: MediaContentType,
+    #[serde(default)]
+    pub content_type_source: MediaContentTypeSource,
+    #[serde(default)]
+    pub source: Option<MediaSource>,
     #[serde(default)]
     pub control_mode: MediaControlMode,
     pub playback_status: String,

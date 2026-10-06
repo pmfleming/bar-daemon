@@ -75,15 +75,22 @@ Run `bar-daemon debug protocol-registry` for canonical parameter examples. `medi
 playback. `automatic` clears the pin. `set-mode` requires a current `player_id`
 and `mode` of `automatic`, `tracks` or `seek`; it also invokes no playback.
 `media` state adds nullable `pinned_player`; players add `control_mode` and
-`content_type` (`unknown`, `music`, `podcast`, `video`). These are additive v1
-fields/operations. Unknown mode values and disappeared player IDs are rejected.
+`content_type` (`unknown`, `music`, `podcast`, `audiobook`, `video`). Players also
+carry nullable `source: {url, service}` and `content_type_source`
+(`unknown`, `mpris`, `url`). The source URL is validated player-supplied metadata,
+not a fetch/open instruction; service keys are nullable presentation hints.
+These are additive v1 fields/operations. See [media source metadata](media.md)
+for recognition rules, URL privacy and compatibility. Unknown mode values and
+disappeared player IDs are rejected.
 
 Automatic selection tracks observed transitions into playing, not list order:
 newest currently playing first, then newest retained player, then deterministic
 initial fallback. It cannot infer playback starts preceding discovery. Pins last
 until Automatic or player exit. Overrides are per MPRIS ID, daemon-session-local,
-and removed on exit; they are not disk preferences. Explicit content metadata and
-Spotify track/episode URLs support conservative classification. Audio MIME type
+and removed on exit; they are not disk preferences. Explicit content metadata
+takes precedence over conservative URL classification (Spotify tracks/episodes,
+YouTube/Vimeo videos).
+Other recognized service URLs need not imply a content kind. Audio MIME type
 and player identity alone remain unknown; clients should use ±30-second seek for
 unknown/video/podcast content unless explicitly overridden. Capabilities remain
 independent of mode.
