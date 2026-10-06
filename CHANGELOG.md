@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Opt-in isolated Chromium web-app labels from the actual D-Bus owner's process
+  environment, retaining per-instance MPRIS metadata, selection and controls.
+
 - Shared event-driven compositor preference cache and `compositor.changed` stream,
   using native framework IPC with last-known-value retention and bounded retries.
 

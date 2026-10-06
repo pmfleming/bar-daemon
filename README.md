@@ -52,6 +52,30 @@ D-Bus endpoint:
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
 
+## Isolated Chromium media apps
+
+Chrome publishes one MPRIS player per browser process, not per app window. Use a
+separate `--user-data-dir` for each audio app and export these optional labels in
+its launcher before starting Chrome:
+
+```sh
+export SHELLLIST_MEDIA_IDENTITY='Pocket Casts'
+export SHELLLIST_MEDIA_DESKTOP_ENTRY='com.laufan.pocketcasts'
+```
+
+The desktop entry ID is the installed filename without `.desktop`. Both values
+must be present; the ID accepts ASCII letters, digits, dots, underscores and
+hyphens (starting with a letter/digit), and each value is limited to 128 bytes.
+The daemon resolves the browser's actual D-Bus owner PID, reads only that process's
+environment for the labels, and never logs or persists the environment. Missing,
+invalid or inaccessible hints fall back to the player's own identity. These are
+presentation hints, not trusted authorization or playback routing information.
+
+Player IDs and controls remain tied to the original MPRIS service. Track titles,
+authors/hosts, albums, artwork and seek support come from Chrome/the site's Media
+Session implementation; no browser history, cookies, or page scraping is used.
+Players may only appear after playback starts. Regular Chrome is unchanged.
+
 ## Brightness control
 
 Observation and adjustment share one service and lock, including readback and state

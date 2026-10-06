@@ -15,6 +15,8 @@ use crate::{
     time::unix_ms as unix_time_ms,
 };
 
+mod browser_identity;
+
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
@@ -345,14 +347,18 @@ async fn watch_properties(connection: zbus::Connection, name: String, changed: m
 async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaPlayer> {
     let root = zbus::Proxy::new(connection, name, PATH, ROOT_INTERFACE).await?;
     let player = zbus::Proxy::new(connection, name, PATH, PLAYER_INTERFACE).await?;
-    let identity = root
+    let mut identity = root
         .get_property::<String>("Identity")
         .await
         .unwrap_or_else(|_| name.trim_start_matches(PREFIX).to_string());
-    let desktop_entry = root
+    let mut desktop_entry = root
         .get_property::<String>("DesktopEntry")
         .await
         .unwrap_or_default();
+    if let Some(labels) = browser_identity::read(connection, name).await {
+        identity = labels.identity;
+        desktop_entry = labels.desktop_entry;
+    }
     let playback_status = player
         .get_property::<String>("PlaybackStatus")
         .await
@@ -556,6 +562,20 @@ mod tests {
         fn can_seek(&self) -> bool {
             self.can_seek
         }
+
+        #[zbus(property)]
+        fn metadata(&self) -> std::collections::HashMap<String, zvariant::OwnedValue> {
+            use zvariant::Value;
+            [
+                ("xesam:title", Value::from("Chapter / episode")),
+                ("xesam:artist", Value::from(vec!["Author / host"])),
+                ("xesam:album", Value::from("Book / podcast")),
+                ("mpris:artUrl", Value::from("https://example.com/art.jpg")),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.try_to_owned().unwrap()))
+            .collect()
+        }
     }
 
     #[tokio::test]
@@ -585,6 +605,11 @@ mod tests {
                 .unwrap();
             assert_eq!(player.can_seek, can_seek);
             assert_eq!(serde_json::to_value(&player).unwrap()["can_seek"], can_seek);
+            assert_eq!(player.id, "org.mpris.MediaPlayer2.test");
+            assert_eq!(player.title, "Chapter / episode");
+            assert_eq!(player.artist, "Author / host");
+            assert_eq!(player.album, "Book / podcast");
+            assert_eq!(player.art_url, "https://example.com/art.jpg");
         }
     }
 
