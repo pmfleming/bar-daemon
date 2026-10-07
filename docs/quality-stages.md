@@ -66,3 +66,58 @@ branch counts: explicit validation and the bounded hourly loop add decisions.
 Validation: five offline tests cover transport parameters/timeout, field mappings,
 short columns, empty days, exact cutoffs, horizon limits, labels, malformed JSON and
 all timestamp overflow sites; strict all-target Clippy and the full-fixture runner.
+
+## 5. Fresh, full-fixture quality evidence
+
+Add `tools/quality-evidence.sh` and use it in CI. It retains the existing private
+fixture runner, then executes verification, every standard measurement and the strict
+practice/test/partial/architecture gate. Independent collection continues after errors;
+failed runs retain logs and reports but never receive an outer `complete.txt` marker.
+Each run uses a copied executable and a fresh output directory. A derived config changes
+only root/output paths, verified by parsed equality; policy thresholds, test selection and
+architecture rules remain intact. Runner and CI sources participate in fingerprints.
+Eleven Python contract tests cover fixture selection and orchestration, failed commands,
+partial policy, path quoting, config preservation, binary replacement and output reuse.
+
+RQLens companion commit **`36a2ae1`** adds opt-in `verification.include_ignored` across
+verification, correctness, LLVM coverage and repeated tests, including sanitizer/Miri
+commands when enabled. Compile-only discovery and doctests retain their own selection.
+This project enables it so analyzer evidence includes the same native fixtures as the
+explicit runner. **Publish/use this RQLens commit or newer alongside the CI/config change.**
+The analyzer was built and tested from an isolated committed worktree to avoid consuming
+concurrent compiler-backend edits. Its ordinary test suite and strict all-target Clippy
+pass; four optional analyzer integration/live tests remain ignored, not certified.
+
+The upstream lexical-ownership fix in `ab30776` removes the need to move the remaining
+block-local DTOs and private fixture guard just to satisfy inventory. Their original
+scopes remain. Capture the browser-identity fixture's nested libtest output instead of
+inheriting stdout: both child variants still must succeed and failures include their
+output, but duplicate child result lines no longer make the parent test status unknown.
+The analyzer's conservative duplicate-result handling is not relaxed.
+
+Validation: **202 unit tests + two integration tests**, zero ignored or failed tests;
+formatting, strict Clippy, doctests, warning-free rustdoc, cargo-audit, cargo-deny and
+cargo-shear pass. Audit still reports a non-failing yanked `chacha20 0.10.1` warning;
+no dependency-policy settings or lockfile entries were changed. RQLens reports
+**20 passed practice checks, eight explicitly skipped
+optional checks, no unavailable checks or failures**. Full-fixture Cobertura line
+coverage improves from **68.2% to approximately 69.3%** with identical runner selection.
+RQLens's LLVM JSON aggregate uses a different line-count representation; do not compare
+its percentage directly with Cobertura. MSRV 1.85, mutation, sanitizers, Miri, fuzzing and
+repeated-run flakiness were not certified by this pass.
+
+Evidence: `target/quality-stages/stage5-validated` records pre-commit validation;
+`stage5-committed` is the post-commit refresh. Each contains its exact config, binary hash,
+revision/status, phase logs, full-fixture coverage and `analysis/` artifacts. Earlier
+`stage5-evidence` and `stage5-final-evidence` directories are investigation snapshots,
+not the final certification result. Stages 1–4 retain their original analyzer snapshots;
+do not count changed analyzer inventory as an application-code metric improvement.
+
+**The strict gate remains blocked, not waived.** Observed architecture references all
+resolve (1,120), with zero observed rule violations. Nevertheless, state-update/Wayland
+macro-generated bodies and imported implementation owners remain incompletely inventoried;
+type-health also lacks complete cfg/derive coverage. An exploratory expansion probe received
+all eight enumerated replies but explicitly did not establish semantic inventory completeness.
+Fresh standard artifacts retain these limitations. Incomplete architecture/correctness inputs
+block the architecture, partial and test-failure policies even when all executed tests pass.
+No generated bodies are suppressed, no tests removed, and no thresholds raised to obtain green.

@@ -1,6 +1,11 @@
 project_name = "bar-daemon"
 project_root = "."
-fingerprint_inputs = ["protocols", "test_support", "docs/activity.example.json"]
+fingerprint_inputs = [
+  "protocols", "test_support", "docs/activity.example.json",
+  "tools/quality-fixtures.sh", "tools/test_quality_fixtures.py",
+  "tools/quality-evidence.sh", "tools/test_quality_evidence.py",
+  ".github/workflows/quality.yml",
+]
 # source_roots is optional; Cargo workspace and local path packages are discovered automatically.
 output_dir = "target/analysis"
 
@@ -16,6 +21,8 @@ identity_build_macros = true
 timeout_seconds = 600
 workspace = true
 all_targets = true
+# Match the private PipeWire/native-idle fixture selection in tools/quality-fixtures.sh.
+include_ignored = true
 all_features = false
 locked = true
 audit = true

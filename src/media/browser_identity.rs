@@ -192,7 +192,7 @@ mod tests {
                 ("Audible", "com.laufan.audible"),
                 ("Pocket Casts", "com.laufan.pocketcasts"),
             ] {
-                let status = std::process::Command::new("dbus-run-session")
+                let output = std::process::Command::new("dbus-run-session")
                     .arg(format!("--config-file={}", bus_config.display()))
                     .arg("--")
                     .arg(std::env::current_exe().unwrap())
@@ -200,9 +200,17 @@ mod tests {
                     .env("BAR_DAEMON_BROWSER_IDENTITY_TEST", "1")
                     .env("SHELLLIST_MEDIA_IDENTITY", identity)
                     .env("SHELLLIST_MEDIA_DESKTOP_ENTRY", desktop)
-                    .status()
+                    // Child libtest records must not masquerade as duplicate
+                    // results in the parent harness. Keep diagnostics on failure.
+                    .output()
                     .expect("dbus-run-session must be available in the test environment");
-                assert!(status.success());
+                assert!(
+                    output.status.success(),
+                    "isolated identity {identity} failed ({}):\n{}\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
             }
             return;
         }

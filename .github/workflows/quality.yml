@@ -36,31 +36,24 @@ jobs:
         run: ../daemon-framework/tools/local-build develop . --command cargo fmt --all -- --check
       - name: Clippy
         run: ../daemon-framework/tools/local-build develop . --command cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Architecture policy (complete generated-symbol evidence)
-        run: |
-          ../daemon-framework/tools/local-build develop . --command cargo build --locked --manifest-path ../rust-quality-lens/Cargo.toml --target-dir target/rqlens-ci --bin rqlens
-          ../daemon-framework/tools/local-build develop . --command target/rqlens-ci/debug/rqlens measure architecture-rules --config rqlens.toml
-          # Configured error-level architecture rules require a fresh, complete
-          # artifact. No --fail-on partial: that would require every producer.
-          ../daemon-framework/tools/local-build develop . --command target/rqlens-ci/debug/rqlens check --config rqlens.toml
-      - name: Dependency policy
-        run: |
-          ../daemon-framework/tools/local-build develop . --command cargo audit
-          ../daemon-framework/tools/local-build develop . --command cargo deny check
-          ../daemon-framework/tools/local-build develop . --command cargo shear
+      - name: Build quality analyzer
+        run: ../daemon-framework/tools/local-build develop . --command cargo build --locked --manifest-path ../rust-quality-lens/Cargo.toml --target-dir target/rqlens-ci --bin rqlens
       # The dev shell supplies PipeWire and the shared patched Hypridle package,
       # including HYPRIDLE_TEST_BIN. Both fixtures use private mock services.
-      - name: Fixture runner regression tests
-        run: python3 -B -m unittest discover -s tools -p 'test_quality_fixtures.py'
-      - name: Test and collect coverage (including PipeWire and native idle)
+      - name: Evidence runner regression tests
+        run: python3 -B -m unittest discover -s tools -p 'test_quality_*.py'
+      - name: Full fixtures, verification, measurements and strict quality gate
         env:
-          QUALITY_OUTPUT_DIR: target/ci-fixtures
-        run: ../daemon-framework/tools/local-build develop . --command bash tools/quality-fixtures.sh coverage
+          QUALITY_EVIDENCE_DIR: target/ci-evidence
+          RQLENS_BIN: target/rqlens-ci/debug/rqlens
+        # Collect first; an incomplete architecture inventory must fail without
+        # preventing fixture, dependency or coverage evidence from being saved.
+        run: ../daemon-framework/tools/local-build develop . --command bash tools/quality-evidence.sh
       - name: Check changed-line coverage
-        if: github.event_name == 'pull_request'
-        run: ../daemon-framework/tools/local-build develop . --command diff-cover target/ci-fixtures/cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
+        if: always() && github.event_name == 'pull_request'
+        run: ../daemon-framework/tools/local-build develop . --command diff-cover target/ci-evidence/fixtures/cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: fixture-evidence
-          path: bar-daemon/target/ci-fixtures/
+          name: quality-evidence
+          path: bar-daemon/target/ci-evidence/
