@@ -57,9 +57,12 @@ D-Bus endpoint:
 MPRIS content URLs provide offline service labels for YouTube, Vimeo, SoundCloud,
 Spotify, Pocket Casts and Audible without replacing the browser's control target.
 Only explicit content metadata or unambiguous URL patterns classify content;
-unknown sources remain usable. No artwork lookup, page scraping or browser cookie
-access is performed. See [media source metadata](docs/media.md) for the additive
-wire fields, supported paths and privacy boundaries.
+unknown sources remain usable. Online lookup is off by default. To fill missing
+YouTube title/channel/artwork, set `BAR_DAEMON_YOUTUBE_METADATA=1` in the daemon's
+service environment and restart it. This sends recognized video IDs to YouTube
+without cookies, page scraping or browser extensions. Playback never waits for
+lookup. See [media source metadata](docs/media.md) for additive wire fields,
+bounds, caching, supported paths and privacy boundaries.
 
 ## Isolated Chromium media apps
 

@@ -16,16 +16,23 @@ pub(super) struct BrowserIdentity {
     pub desktop_entry: String,
 }
 
-pub(super) async fn read(connection: &zbus::Connection, name: &str) -> Option<BrowserIdentity> {
+pub(super) async fn read(
+    connection: &zbus::Connection,
+    name: &str,
+    expected_owner: &str,
+) -> Option<BrowserIdentity> {
     if !is_chromium_instance(name) {
         return None;
     }
     // A missing /proc entry, restricted environment, or disappearing owner must
     // never hide a working player or delay all other players indefinitely.
-    tokio::time::timeout(Duration::from_millis(500), read_owner(connection, name))
-        .await
-        .ok()?
-        .ok()
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        read_owner(connection, name, expected_owner),
+    )
+    .await
+    .ok()?
+    .ok()
 }
 
 fn is_chromium_instance(name: &str) -> bool {
@@ -40,9 +47,17 @@ fn is_chromium_instance(name: &str) -> bool {
     })
 }
 
-async fn read_owner(connection: &zbus::Connection, name: &str) -> Result<BrowserIdentity> {
+async fn read_owner(
+    connection: &zbus::Connection,
+    name: &str,
+    expected_owner: &str,
+) -> Result<BrowserIdentity> {
     let bus = zbus::fdo::DBusProxy::new(connection).await?;
     let owner = bus.get_name_owner(name.try_into()?).await?;
+    ensure!(
+        owner.as_str() == expected_owner,
+        "owner changed before metadata read"
+    );
     // Never trust the PID embedded in a caller-selected MPRIS service name.
     let pid = bus
         .get_connection_unix_process_id(owner.clone().into())
@@ -216,7 +231,7 @@ mod tests {
             assert_eq!(player.id, name);
             assert_eq!(player.title, "Now playing");
             server.release_name(name).await.unwrap();
-            assert!(read(&client, name).await.is_none());
+            assert!(read(&client, name, "").await.is_none());
         });
     }
 

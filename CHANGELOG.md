@@ -6,6 +6,12 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Optional YouTube oEmbed fallback for missing title/channel/artwork, enabled by
+  `BAR_DAEMON_YOUTUBE_METADATA=1`. Bounded fixed-endpoint requests, session caching,
+  private temporary thumbnails and owner/content-generation checks leave MPRIS
+  controls and supplied metadata authoritative. No cookies or browser extensions.
+  Filled fields carry additive `metadata_sources` provenance.
+
 - Opt-in isolated Chromium web-app labels from the actual D-Bus owner's process
   environment, retaining per-instance MPRIS metadata, selection and controls.
 

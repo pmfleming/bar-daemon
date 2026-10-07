@@ -16,7 +16,9 @@ use crate::{
 };
 
 mod browser_identity;
+mod enrichment;
 mod source;
+mod youtube;
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -213,6 +215,7 @@ async fn monitor_connection(
     let (changes_tx, mut changes_rx) = mpsc::channel::<()>(32);
     let mut watchers = JoinSet::new();
     let mut names = Vec::new();
+    let mut enrichment = enrichment::Enrichment::from_environment();
 
     refresh(
         connection,
@@ -221,6 +224,7 @@ async fn monitor_connection(
         &mut names,
         &mut watchers,
         &changes_tx,
+        &mut enrichment,
     )
     .await;
     loop {
@@ -229,12 +233,24 @@ async fn monitor_connection(
                 let Some(signal) = signal else { bail!("D-Bus owner-change stream ended"); };
                 let args = signal.args()?;
                 if args.name().as_str().starts_with(PREFIX) {
-                    refresh(connection, store, service, &mut names, &mut watchers, &changes_tx).await;
+                    refresh(connection, store, service, &mut names, &mut watchers, &changes_tx, &mut enrichment).await;
                 }
             }
             changed = changes_rx.recv() => {
                 if changed.is_none() { bail!("MPRIS property watcher ended"); }
-                refresh_players(connection, store, service, &names).await;
+                refresh_players(connection, store, service, &names, &mut enrichment, None).await;
+            }
+            completed = enrichment.tasks.join_next(), if !enrichment.tasks.is_empty() => {
+                match completed {
+                    Some(Ok(completed)) => {
+                        refresh_players(connection, store, service, &names, &mut enrichment, Some(completed)).await;
+                        // Admit queued requests and let new owners use validated cached
+                        // metadata on a fresh observation, never an old request ticket.
+                        let _ = changes_tx.try_send(());
+                    }
+                    Some(Err(_)) => enrichment.task_failed(),
+                    None => {}
+                }
             }
         }
     }
@@ -247,6 +263,7 @@ async fn refresh(
     watched_names: &mut Vec<String>,
     watchers: &mut JoinSet<()>,
     changes_tx: &mpsc::Sender<()>,
+    enrichment: &mut enrichment::Enrichment,
 ) {
     match player_names(connection).await {
         Ok(next_names) => {
@@ -262,7 +279,7 @@ async fn refresh(
                 }
                 *watched_names = next_names;
             }
-            refresh_players(connection, store, service, watched_names).await;
+            refresh_players(connection, store, service, watched_names, enrichment, None).await;
         }
         Err(error) => {
             store
@@ -280,6 +297,8 @@ async fn refresh_players(
     store: &StateStore,
     service: &MediaService,
     names: &[String],
+    enrichment: &mut enrichment::Enrichment,
+    completed: Option<enrichment::Completed>,
 ) {
     let mut players = Vec::new();
     for name in names {
@@ -296,6 +315,10 @@ async fn refresh_players(
             .cmp(&b.identity.to_lowercase())
             .then(a.id.cmp(&b.id))
     });
+    enrichment.prepare(&mut players);
+    if let Some(completed) = completed {
+        enrichment.complete(completed, &mut players);
+    }
     service.publish(store, players).await;
 }
 
@@ -346,8 +369,20 @@ async fn watch_properties(connection: zbus::Connection, name: String, changed: m
 }
 
 async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaPlayer> {
-    let root = zbus::Proxy::new(connection, name, PATH, ROOT_INTERFACE).await?;
-    let player = zbus::Proxy::new(connection, name, PATH, PLAYER_INTERFACE).await?;
+    // Bind all reads to one unique owner. Missing ownership still permits the
+    // baseline snapshot (including peer tests), but never online enrichment.
+    let owner = if let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await {
+        dbus.get_name_owner(name.try_into()?)
+            .await
+            .ok()
+            .map(|owner| owner.to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let destination = if owner.is_empty() { name } else { &owner };
+    let root = zbus::Proxy::new(connection, destination, PATH, ROOT_INTERFACE).await?;
+    let player = zbus::Proxy::new(connection, destination, PATH, PLAYER_INTERFACE).await?;
     let mut identity = root
         .get_property::<String>("Identity")
         .await
@@ -356,7 +391,7 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         .get_property::<String>("DesktopEntry")
         .await
         .unwrap_or_default();
-    if let Some(labels) = browser_identity::read(connection, name).await {
+    if let Some(labels) = browser_identity::read(connection, name, &owner).await {
         identity = labels.identity;
         desktop_entry = labels.desktop_entry;
     }
@@ -384,6 +419,8 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
     );
     Ok(MediaPlayer {
         id: name.to_string(),
+        owner: owner.clone(),
+        metadata_sources: Default::default(),
         identity,
         desktop_entry,
         content_type: source.content_type,

@@ -1052,6 +1052,7 @@
           "id": "org.mpris.MediaPlayer2.spotify",
           "identity": "Spotify",
           "length_us": 240000000,
+          "metadata_sources": {},
           "playback_rate": 1.0,
           "playback_status": "playing",
           "position_observed_at_unix_ms": 1234567890000,

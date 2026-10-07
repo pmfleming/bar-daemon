@@ -466,6 +466,12 @@ pub(crate) struct MediaSource {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MediaPlayer {
     pub id: String,
+    // Internal owner binding; never replace the public MPRIS service ID.
+    #[serde(skip)]
+    pub owner: String,
+    /// Only fields filled by the optional fallback, never MPRIS-owned values.
+    #[serde(default)]
+    pub metadata_sources: std::collections::BTreeMap<String, String>,
     pub identity: String,
     pub desktop_entry: String,
     #[serde(default)]

@@ -23,6 +23,7 @@ shelllist-daemon-core = { version = "0.1.0", path = "../daemon-framework/crates/
 shelllist-daemon-tokio = { version = "0.1.0", path = "../daemon-framework/crates/shelllist-daemon-tokio" }
 shelllist-hyprland = { version = "0.1.0", path = "../daemon-framework/crates/shelllist-hyprland" }
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 udev = "0.9"
@@ -34,5 +35,4 @@ wayland-scanner = "0.31"
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 wayland-server = "0.31"
-tempfile = "3"
 zbus = { version = "5", features = ["p2p"] }

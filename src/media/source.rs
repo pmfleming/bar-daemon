@@ -110,16 +110,7 @@ fn web_hints(url: &Url) -> (Option<Service>, Kind) {
         | "youtu.be"
         | "www.youtube-nocookie.com"
         | "youtube-nocookie.com" => {
-            let video = if host == "youtu.be" {
-                segments.len() == 1 && youtube_id(segments[0])
-            } else if path == "/watch" {
-                let ids: Vec<_> = url.query_pairs().filter(|(key, _)| key == "v").collect();
-                ids.len() == 1 && youtube_id(&ids[0].1)
-            } else {
-                segments.len() == 2
-                    && matches!(segments[0], "shorts" | "embed" | "live")
-                    && youtube_id(segments[1])
-            };
+            let video = youtube_video(url).is_some();
             // Even music.youtube.com can play videos/podcasts; never infer Music.
             (
                 Some(Service::Youtube),
@@ -179,6 +170,39 @@ fn audible_host(host: &str) -> bool {
 
 fn ascii_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+// Online enrichment receives only this validated ID, never the original URL's
+// query/fragment, credentials, arbitrary host or port.
+pub(super) fn youtube_video_id(raw: &str) -> Option<String> {
+    let (source, kind) = parse_source(raw)?;
+    if source.service != Some(Service::Youtube) || kind != Kind::Video {
+        return None;
+    }
+    youtube_video(&Url::parse(raw).ok()?)
+}
+
+fn youtube_video(url: &Url) -> Option<String> {
+    let path = url.path().strip_suffix('/').unwrap_or(url.path());
+    let segments: Vec<_> = path.strip_prefix('/').unwrap_or(path).split('/').collect();
+    let id = if url.host_str() == Some("youtu.be") {
+        match segments.as_slice() {
+            [id] => (*id).to_owned(),
+            _ => return None,
+        }
+    } else if path == "/watch" {
+        let ids: Vec<_> = url.query_pairs().filter(|(key, _)| key == "v").collect();
+        if ids.len() != 1 {
+            return None;
+        }
+        ids[0].1.to_string()
+    } else {
+        match segments.as_slice() {
+            ["shorts" | "embed" | "live", id] => (*id).to_owned(),
+            _ => return None,
+        }
+    };
+    youtube_id(&id).then_some(id)
 }
 
 fn youtube_id(id: &str) -> bool {
