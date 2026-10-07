@@ -10,6 +10,10 @@
         "body": "Meeting starts soon",
         "closed_unix_ms": null,
         "created_unix_ms": 1768463900000,
+        "hints": {
+          "desktop_entry": "calendar",
+          "image_path": ""
+        },
         "id": 1,
         "snoozed_until_unix_ms": null,
         "summary": "Planning"
@@ -24,6 +28,10 @@
         "body": "Meeting starts soon",
         "closed_unix_ms": null,
         "created_unix_ms": 1768463900000,
+        "hints": {
+          "desktop_entry": "calendar",
+          "image_path": ""
+        },
         "id": 1,
         "snoozed_until_unix_ms": null,
         "summary": "Planning"
@@ -87,6 +95,10 @@
           "body": "Meeting starts soon",
           "closed_unix_ms": null,
           "created_unix_ms": 1768463900000,
+          "hints": {
+            "desktop_entry": "calendar",
+            "image_path": ""
+          },
           "id": 1,
           "snoozed_until_unix_ms": null,
           "summary": "Planning"

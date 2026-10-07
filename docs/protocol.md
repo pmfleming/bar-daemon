@@ -184,7 +184,11 @@ snapshot has `view`, `epoch`, string `revision` and normalized `query`.
   an app without making the conversation key the app identity.
 
 Preview strings are bounded (name 128, icon 512, summary 160, body 240 Unicode
-characters). Search still uses full normalized app/summary/body text. SQLite
+characters). Previews also retain `hints.desktop_entry` (1024 characters) and
+`hints.image_path` (512 characters), including theme icon names supplied via the
+image-path hint. These bounded artwork hints are projected for live and archived
+records alike; no sound/action hints or image-data payloads are included.
+Search still uses full normalized app/summary/body text. SQLite
 projects bounded metadata; Rust overlays unsnoozed live identities and aggregates
 all candidates before paging. Only the selected stored record deserializes its
 full notification/actions. Each complete response is limited to 512 KiB and fails

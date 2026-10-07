@@ -4,6 +4,12 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve bounded image-path and desktop-entry hints in notification-center
+  previews, so app lists and compact headers can resolve sender artwork for
+  both live and archived notifications instead of falling back to a bell.
+
 ### Added
 
 - `notifications.queryCenter`: native app groups and counts, bounded previews,

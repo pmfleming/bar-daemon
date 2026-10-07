@@ -67,6 +67,13 @@ impl CenterQuery {
     }
 }
 
+// Only artwork metadata is needed by compact views, not sound/action hints.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PreviewHints {
+    pub desktop_entry: String,
+    pub image_path: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Preview {
     pub id: u32,
@@ -74,6 +81,7 @@ pub(crate) struct Preview {
     pub app_key: String,
     pub app_name: String,
     pub app_icon: String,
+    pub hints: PreviewHints,
     pub summary: String,
     pub body: String,
     pub closed_unix_ms: Option<u64>,
@@ -93,6 +101,10 @@ impl Preview {
             app_key: app_key(&n.hints.desktop_entry, &n.app_name, n.id, n.created_unix_ms),
             app_name: clip(&n.app_name, 128),
             app_icon: clip(&n.app_icon, 512),
+            hints: PreviewHints {
+                desktop_entry: clip(&n.hints.desktop_entry, 1024),
+                image_path: clip(&n.hints.image_path, 512),
+            },
             summary: clip(&n.summary, 160),
             body: clip(&n.body, 240),
             closed_unix_ms: None,

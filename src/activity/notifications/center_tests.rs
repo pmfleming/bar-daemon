@@ -299,6 +299,89 @@ async fn center_ignores_notification_artwork_when_grouping_named_senders() {
 }
 
 #[tokio::test]
+async fn center_keeps_artwork_hints_in_live_archived_and_restarted_previews() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.db");
+    let mut engine = NotificationEngine::persistent(StateStore::default(), path.clone())
+        .await
+        .unwrap();
+    // Real sender shapes: artwork is frequently a hint, not app_icon.
+    let cases = [
+        ("Signal", "", "org.signal.Signal"),
+        ("Thunderbird", "", "thunderbird"),
+        ("", "com.mitchellh.ghostty", "com.mitchellh.ghostty"),
+        ("Shelllist", "", "dialog-error"),
+        ("bar-daemon", "", "battery-caution"),
+        ("satty", "com.gabm.satty", "/icons/satty.svg"),
+    ];
+    let mut ids = Vec::new();
+    for (name, desktop, image) in cases {
+        let mut incoming = notification(name, "Artwork");
+        incoming.hints.desktop_entry = desktop.into();
+        incoming.hints.image_path = image.into();
+        ids.push(engine.notify(0, incoming).await.unwrap());
+    }
+    for phase in 0..3 {
+        let CenterPage::Apps { apps, .. } = engine.query_center(query("apps")).await.unwrap()
+        else {
+            panic!()
+        };
+        for ((_, desktop, image), id) in cases.iter().zip(&ids) {
+            let app = apps.iter().find(|app| app.latest.id == *id).unwrap();
+            let mut request = query("app");
+            request.app_key = Some(app.key.clone());
+            let CenterPage::App {
+                entries, overview, ..
+            } = engine.query_center(request).await.unwrap()
+            else {
+                panic!()
+            };
+            for preview in [&app.latest, &entries[0], &overview[0]] {
+                let value = serde_json::to_value(preview).unwrap();
+                assert_eq!(
+                    value["hints"],
+                    serde_json::json!({"desktop_entry": desktop, "image_path": image})
+                );
+                assert_eq!(value["app_icon"], "");
+            }
+        }
+        if phase == 0 {
+            for id in &ids {
+                engine.dismiss(*id).await.unwrap();
+            }
+        } else if phase == 1 {
+            engine = NotificationEngine::persistent(StateStore::default(), path.clone())
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn center_bounds_artwork_hints_for_live_and_stored_previews() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine =
+        NotificationEngine::persistent(StateStore::default(), dir.path().join("history.db"))
+            .await
+            .unwrap();
+    let mut incoming = notification("Long hints", "Artwork");
+    incoming.hints.desktop_entry = "界".repeat(1100);
+    incoming.hints.image_path = "画".repeat(600);
+    let id = engine.notify(0, incoming).await.unwrap();
+    for archived in [false, true] {
+        if archived {
+            engine.dismiss(id).await.unwrap();
+        }
+        let CenterPage::Apps { apps, .. } = engine.query_center(query("apps")).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(apps[0].latest.hints.desktop_entry, "界".repeat(1024));
+        assert_eq!(apps[0].latest.hints.image_path, "画".repeat(512));
+    }
+}
+
+#[tokio::test]
 async fn center_validates_queries_and_does_not_merge_unnamed_senders() {
     let engine = NotificationEngine::new(StateStore::default()).await;
     for value in [

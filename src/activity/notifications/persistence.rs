@@ -506,7 +506,8 @@ impl NotificationStore {
              substr(json_extract(payload_json, '$.summary'), 1, 160),
              substr(json_extract(payload_json, '$.body'), 1, 240),
              json_extract(payload_json, '$.snoozed_until_unix_ms'),
-             substr(json_extract(payload_json, '$.group_key'), 1, 4097), instr(search_text, ?2) > 0
+             substr(json_extract(payload_json, '$.group_key'), 1, 4097), instr(search_text, ?2) > 0,
+             substr(json_extract(payload_json, '$.hints.image_path'), 1, 512)
              FROM notifications WHERE history_id IN
              (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)",
         )?;
@@ -534,6 +535,10 @@ impl NotificationStore {
                 app_key: center::app_key(&text(4)?, &name, id, created),
                 app_name: center::clip(&name, 128),
                 app_icon: center::clip(&icon, 512),
+                hints: center::PreviewHints {
+                    desktop_entry: center::clip(&text(4)?, 1024),
+                    image_path: text(12)?,
+                },
                 summary: text(7)?,
                 body: text(8)?,
                 snoozed_until_unix_ms: row.get(9)?,
