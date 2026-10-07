@@ -88,6 +88,7 @@ pub const METHODS: &[&str] = &[
     "notifications.setDnd",
     "notifications.list",
     "notifications.queryHistory",
+    "notifications.queryCenter",
     "notifications.dismiss",
     "notifications.clear",
     "notifications.clearGroup",
@@ -166,6 +167,7 @@ pub fn registry() -> Value {
             { "name": "notifications.toggleDnd", "params": {}, "result": "operation" },
             { "name": "notifications.setDnd", "params": { "enabled": true, "until_unix_ms": 1768467500000_u64 }, "result": "notifications" },
             { "name": "notifications.list", "params": { "before_history_id": null, "limit": 50 }, "result": "notification_history" },
+            { "name": "notifications.queryCenter", "params": { "view": "apps", "query": "", "offset": 0, "epoch": null, "revision": null, "app_anchor": null, "app_key": null, "page": 1, "page_anchor": null, "selected": null, "group_key": null }, "result": "notification_center" },
             { "name": "notifications.queryHistory", "params": { "query": "", "cursor": null, "anchor": null, "limit": 50 }, "result": "notification_page" },
             { "name": "notifications.dismiss", "params": { "id": 1 }, "result": "operation" },
             { "name": "notifications.clear", "params": {}, "result": "operation" },
@@ -434,6 +436,32 @@ fn generated_contract_fixture() -> Value {
         1768463900000,
     )
     .expect("native catalog projection");
+    for (name, request) in [
+        ("notification_apps", json!({"view": "apps"})),
+        (
+            "notification_app",
+            json!({"view": "app", "app_key": "desktop:calendar", "selected": {"id": 1, "created": 1768463900000_u64}}),
+        ),
+    ] {
+        let request = serde_json::from_value(request).expect("center request");
+        let center = crate::activity::notifications::center::project(
+            page.records
+                .iter()
+                .map(|r| {
+                    crate::activity::notifications::center::Preview::from_active(
+                        &r.notification,
+                        "",
+                    )
+                })
+                .collect(),
+            &request,
+            "contract-epoch",
+            1,
+            |_| Ok(page.records[0].clone()),
+        )
+        .expect("native center projection");
+        fixture[name] = serde_json::to_value(center).expect("center wire projection");
+    }
     fixture["notification_page"] = serde_json::to_value(page).expect("catalog wire projection");
     fixture
 }

@@ -48,7 +48,7 @@ struct Cursor {
     expires: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct CatalogRecord {
     pub history_id: Option<i64>,
     pub notification: ActiveNotification,

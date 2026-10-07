@@ -1,4 +1,107 @@
 {
+  "notification_app": {
+    "app_key": "desktop:calendar",
+    "count": 1,
+    "entries": [
+      {
+        "app_icon": "calendar",
+        "app_key": "desktop:calendar",
+        "app_name": "Calendar",
+        "body": "Meeting starts soon",
+        "closed_unix_ms": null,
+        "created_unix_ms": 1768463900000,
+        "id": 1,
+        "snoozed_until_unix_ms": null,
+        "summary": "Planning"
+      }
+    ],
+    "epoch": "contract-epoch",
+    "overview": [
+      {
+        "app_icon": "calendar",
+        "app_key": "desktop:calendar",
+        "app_name": "Calendar",
+        "body": "Meeting starts soon",
+        "closed_unix_ms": null,
+        "created_unix_ms": 1768463900000,
+        "id": 1,
+        "snoozed_until_unix_ms": null,
+        "summary": "Planning"
+      }
+    ],
+    "page": 1,
+    "pages": 1,
+    "query": "",
+    "revision": "1",
+    "selected": {
+      "close_reason": null,
+      "closed_unix_ms": null,
+      "history_id": null,
+      "notification": {
+        "actions": [
+          {
+            "key": "default",
+            "label": "Open"
+          }
+        ],
+        "app_icon": "calendar",
+        "app_name": "Calendar",
+        "body": "Meeting starts soon",
+        "created_unix_ms": 1768463900000,
+        "expires_unix_ms": null,
+        "group_key": "calendar",
+        "hints": {
+          "category": "calendar",
+          "desktop_entry": "calendar",
+          "image_data_present": false,
+          "image_path": "",
+          "resident": false,
+          "sound_file": "",
+          "sound_name": "",
+          "suppress_sound": false,
+          "transient": false,
+          "urgency": 1
+        },
+        "id": 1,
+        "snoozed_until_unix_ms": null,
+        "source_monitor": "eDP-1",
+        "summary": "Planning",
+        "toast_expires_unix_ms": null,
+        "toast_visible": false,
+        "updated_unix_ms": 1768463900000
+      }
+    },
+    "total_count": 1,
+    "view": "app"
+  },
+  "notification_apps": {
+    "anchor_reached": true,
+    "apps": [
+      {
+        "count": 1,
+        "key": "desktop:calendar",
+        "latest": {
+          "app_icon": "calendar",
+          "app_key": "desktop:calendar",
+          "app_name": "Calendar",
+          "body": "Meeting starts soon",
+          "closed_unix_ms": null,
+          "created_unix_ms": 1768463900000,
+          "id": 1,
+          "snoozed_until_unix_ms": null,
+          "summary": "Planning"
+        },
+        "total_count": 1
+      }
+    ],
+    "epoch": "contract-epoch",
+    "next_offset": null,
+    "offset": 0,
+    "query": "",
+    "revision": "1",
+    "total_apps": 1,
+    "view": "apps"
+  },
   "notification_page": {
     "anchor_reached": true,
     "epoch": "contract-epoch",
@@ -378,6 +481,23 @@
           "limit": 50
         },
         "result": "notification_history"
+      },
+      {
+        "name": "notifications.queryCenter",
+        "params": {
+          "app_anchor": null,
+          "app_key": null,
+          "epoch": null,
+          "group_key": null,
+          "offset": 0,
+          "page": 1,
+          "page_anchor": null,
+          "query": "",
+          "revision": null,
+          "selected": null,
+          "view": "apps"
+        },
+        "result": "notification_center"
       },
       {
         "name": "notifications.queryHistory",

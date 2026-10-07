@@ -128,6 +128,9 @@ impl ApiService {
             "notifications.toggleDnd" => self.notifications.notification_action(true).await,
             "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,
             "notifications.list" => self.notifications.notification_list(params).await,
+            "notifications.queryCenter" => {
+                self.notifications.notification_query_center(params).await
+            }
             "notifications.queryHistory" => {
                 self.notifications.notification_query_history(params).await
             }

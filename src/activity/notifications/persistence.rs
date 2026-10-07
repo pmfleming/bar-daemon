@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
+    center::{self, CenterPage, CenterQuery, Preview},
     history::{CatalogRecord, PAGE_BYTES, Position, SCOPE_LIMIT, search_text},
     model::{ActiveNotification, HistoryNotification},
 };
@@ -32,6 +33,13 @@ enum Mutation {
 #[derive(Debug)]
 enum PersistenceCommand {
     Mutate(Vec<Mutation>),
+    Center {
+        query: Box<CenterQuery>,
+        active: Vec<ActiveNotification>,
+        epoch: String,
+        revision: u64,
+        response: oneshot::Sender<Result<CenterPage>>,
+    },
     Query {
         query: String,
         before: Option<Position>,
@@ -89,6 +97,23 @@ impl NotificationPersistence {
             ),
             mutations: Vec::new(),
         })
+    }
+
+    pub(crate) async fn center(
+        &self,
+        query: CenterQuery,
+        active: Vec<ActiveNotification>,
+        epoch: String,
+        revision: u64,
+    ) -> Result<CenterPage> {
+        self.request(|response| PersistenceCommand::Center {
+            query: Box::new(query),
+            active,
+            epoch,
+            revision,
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn query(
@@ -194,6 +219,15 @@ fn persistence_worker(
             PersistenceCommand::Mutate(mutations) => {
                 apply_mutations(&mut store, mutations, &mut history_error);
             }
+            PersistenceCommand::Center {
+                query,
+                active,
+                epoch,
+                revision,
+                response,
+            } => reply(response, history_error.as_deref(), || {
+                store.center(&query, &active, &epoch, revision)
+            }),
             PersistenceCommand::Query {
                 query,
                 before,
@@ -454,6 +488,72 @@ impl NotificationStore {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    fn center(
+        &self,
+        query: &CenterQuery,
+        active: &[ActiveNotification],
+        epoch: &str,
+        revision: u64,
+    ) -> Result<CenterPage> {
+        // SQLite projects bounded metadata from the recent candidate IDs. Body
+        // and action payloads are decoded only for the explicitly selected row.
+        let mut statement = self.connection.prepare(
+            "SELECT history_id, session_id, created_unix_ms, closed_unix_ms,
+             substr(json_extract(payload_json, '$.hints.desktop_entry'), 1, 1025),
+             substr(json_extract(payload_json, '$.app_name'), 1, 1025), substr(json_extract(payload_json, '$.app_icon'), 1, 1025),
+             substr(json_extract(payload_json, '$.summary'), 1, 160),
+             substr(json_extract(payload_json, '$.body'), 1, 240),
+             json_extract(payload_json, '$.snoozed_until_unix_ms'),
+             substr(json_extract(payload_json, '$.group_key'), 1, 4097), instr(search_text, ?2) > 0
+             FROM notifications WHERE history_id IN
+             (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)",
+        )?;
+        let mut cursor = statement.query(params![SCOPE_LIMIT, query.query])?;
+        let mut rows = Vec::new();
+        while let Some(row) = cursor.next()? {
+            let id = row.get(1)?;
+            let created = row.get(2)?;
+            if active
+                .iter()
+                .any(|n| n.id == id && n.created_unix_ms == created)
+            {
+                continue;
+            }
+            let text = |index| -> rusqlite::Result<String> {
+                Ok(row.get::<_, Option<String>>(index)?.unwrap_or_default())
+            };
+            let name = text(5)?;
+            let icon = text(6)?;
+            rows.push(Preview {
+                history_id: Some(row.get(0)?),
+                id,
+                created_unix_ms: created,
+                closed_unix_ms: row.get(3)?,
+                app_key: center::app_key(&text(4)?, &name, &icon, id, created),
+                app_name: center::clip(&name, 128),
+                app_icon: center::clip(&icon, 512),
+                summary: text(7)?,
+                body: text(8)?,
+                snoozed_until_unix_ms: row.get(9)?,
+                group_key: text(10)?,
+                matches: row.get(11)?,
+            });
+        }
+        rows.extend(active.iter().map(|n| Preview::from_active(n, &query.query)));
+        center::project(rows, query, epoch, revision, |preview| {
+            if let Some(n) = active.iter().find(|n| n.id == preview.id && n.created_unix_ms == preview.created_unix_ms) {
+                return Ok(n.clone().into());
+            }
+            let mut statement = self.connection.prepare("SELECT history_id, payload_json, closed_unix_ms, close_reason FROM notifications WHERE history_id = ?1")?;
+            let mut rows = statement.query([preview.history_id])?;
+            let row = rows.next()?.context("notification no longer retained")?;
+            anyhow::ensure!(row.get_ref(1)?.as_str()?.len() <= PAGE_BYTES, "Notification exceeds history page byte limit");
+            let record = history_record(row)?;
+            Ok(CatalogRecord { history_id: Some(record.history_id), notification: record.notification,
+                closed_unix_ms: record.closed_unix_ms, close_reason: record.close_reason })
+        }).map_err(|e| anyhow!(e.message()))
     }
 
     fn query(

@@ -49,6 +49,7 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.setDnd`
 - `notifications.list` (legacy)
 - `notifications.queryHistory`
+- `notifications.queryCenter`
 - `notifications.dismiss`
 - `notifications.clear`
 - `notifications.clearGroup`
@@ -144,7 +145,7 @@ In native mode, `notifications.changed` carries compact count, DND (including an
 
 Group dismissal and expiry publish only the final summary/collection per batch (individual D-Bus close signals are retained). Popup hiding and timed-DND expiry do not increment `history_revision`. History reads wait for the mutation/persistence-enqueue boundary, so a subscriber querying a newly published revision cannot overtake its pending write batch.
 
-`notifications.queryHistory` is the authoritative center catalog. Request parameters are `{query: "", cursor: null, anchor: null, limit: 50}`. It merges unsnoozed live records with the newest **5,000 persisted records**, deduplicates by `(id, created_unix_ms)`, sorts descending by creation time then ID, and applies Unicode-lowercase literal substring search across app name, summary and body. `%`/`_` are literal, not SQL wildcards. This query scope does not delete older persisted history. Live transient records are included; closed transients and persisted records replaced by transients are absent.
+`notifications.queryHistory` is the legacy record-page catalog. Request parameters are `{query: "", cursor: null, anchor: null, limit: 50}`. It merges unsnoozed live records with the newest **5,000 persisted records**, deduplicates by `(id, created_unix_ms)`, sorts descending by creation time then ID, and applies Unicode-lowercase literal substring search across app name, summary and body. `%`/`_` are literal, not SQL wildcards. This query scope does not delete older persisted history. Live transient records are included; closed transients and persisted records replaced by transients are absent.
 
 The result `notification_page` contains `epoch`, exact string `revision`, normalized `query`, `records`, nullable `next_cursor`, `scope_limit`, and `anchor_reached`. Each record has `notification`, nullable `history_id`, `closed_unix_ms`, and `close_reason`. Live records use a null history ID; view identity remains notification ID plus creation time. Popup fields are normalized away from live toast changes. A page holds 1–100 requested records (default 50), with at most 512 KiB of serialized record content; byte truncation still returns a progressing cursor. A record exceeding that budget fails explicitly. Queries are limited to 1,024 UTF-8 bytes before and after normalization, and two concurrent reads. The scan covers at most the recent persisted scope plus the existing 200-live-record cap. Only candidate IDs are sorted in SQL before loading bounded payloads.
 
@@ -153,6 +154,50 @@ Cursors are opaque, stateless read positions bound to epoch, content revision an
 For refresh, optionally send the oldest visible notification as `anchor: {created: <created_unix_ms>, id: <id>}` on each page. `anchor_reached` becomes true when the page reaches or passes that position, or exhausts the query—even if that record was deleted. Clients can stage the requested window and atomically replace it without reconstructing a full catalog, losing their viewport, or preserving omitted/deleted records. A new query normally requests only its first page.
 
 The additive API leaves `notifications.list` available for legacy clients: optional `before_history_id` and maximum limit 200, without the new consistency/search guarantees. Storage adds/backfills a Unicode-normalized search column transactionally; legacy payloads and history IDs remain intact. Payload-update invalidation and a dirty-row index repair legacy writes after rollback/re-upgrade, without rescanning unchanged retained payloads on every startup. Deploy matching daemon and frontend builds; do not implement a frontend catalog fallback. `notifications.clearGroup` still dismisses a group, and `notifications.snooze` suppresses a record until wake.
+
+### Grouped notification center
+
+`notifications.queryCenter` supplies native app aggregation and bounded detail
+snapshots over the same recent scope, search semantics, mutation boundary and
+shared two-reader limit as `queryHistory`. It does not change read status or
+notification lifecycle. The response envelope is `notification_center`; every
+snapshot has `view`, `epoch`, string `revision` and normalized `query`.
+
+- `{view: "apps", query: "", offset: 0, epoch: null, revision: null,
+  app_anchor: null}` returns up to 50 `apps`, `total_apps`, `offset`, nullable
+  `next_offset` and `anchor_reached`. Each app has `key`, matching `count`,
+  scope-wide `total_count` and its newest matching `latest` preview. Apps sort by
+  that record's `(created_unix_ms, id)` descending, never by count. Continuation
+  offsets require the returned epoch/revision; a changed revision fails with
+  `history-cursor-stale`, not a mixed page. An optional app key anchor lets clients
+  privately stage a refresh through their old window before atomic publication.
+- `{view: "app", query: "", app_key: <key>, page: 1, page_anchor: null,
+  selected: null}` returns `app_key`, matching `count`, `total_count`, `page`,
+  `pages`, at most three `overview` previews, five `entries`, and nullable full
+  `selected` catalog record. Pages are one-based, bounded to 1–1040; shrinking
+  results clamp to the last page (empty is page 1 of 1). `page_anchor:
+  {id, created}` resolves the page containing that record when still present;
+  otherwise the requested page is clamped. Direct seeking needs no cursor replay.
+  `selected: {id, created}` loads only that matching record in the selected app,
+  independently of its current index page; a missing/nonmatching record is null.
+  With no `app_key`, `group_key` or `selected` can resolve a legacy toast link to
+  an app without making the conversation key the app identity.
+
+Preview strings are bounded (name 128, icon 512, summary 160, body 240 Unicode
+characters). Search still uses full normalized app/summary/body text. SQLite
+projects bounded metadata; Rust overlays unsnoozed live identities and aggregates
+all candidates before paging. Only the selected stored record deserializes its
+full notification/actions. Each complete response is limited to 512 KiB and fails
+explicitly if it cannot fit; no silently truncated selected payload is returned.
+
+App keys prefer desktop entry, otherwise an unambiguous exact name/icon pair.
+Unnamed senders and overlong identity components (>1024 UTF-8 bytes, or an encoded
+key >4096 bytes) conservatively use creation time plus ID, avoiding accidental
+merges and unqueryable keys. These are descriptive grouping keys, not trusted
+application identities or mutation targets. Conversation `group_key` remains
+independent. Mutations still require the existing live notification/action guards;
+archived records never revive old D-Bus actions. Deploy matching frontend and
+daemon builds; clients must not reconstruct these groups from loaded record pages.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 

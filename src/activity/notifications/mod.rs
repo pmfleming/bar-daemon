@@ -3,6 +3,9 @@
 //! The native server owns expiry, persistence, and signal delivery. SwayNC is
 //! retained as an optional compatibility backend.
 
+pub(crate) mod center;
+#[cfg(test)]
+mod center_tests;
 pub(crate) mod engine;
 pub(crate) mod history;
 #[cfg(test)]

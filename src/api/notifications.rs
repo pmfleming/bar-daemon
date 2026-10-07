@@ -88,6 +88,20 @@ impl NotificationApi {
             Err(value) => error("notification-operation-failed", value.to_string()),
         }
     }
+    pub(super) async fn notification_query_center(&self, params: Value) -> Value {
+        let Some(engine) = self.notifications.native_engine() else {
+            return native_required();
+        };
+        let request = request!(
+            params,
+            crate::activity::notifications::center::CenterQuery,
+            "notifications.queryCenter"
+        );
+        match engine.query_center(request).await {
+            Ok(page) => success(json!({"notification_center": page})),
+            Err(value) => error(value.code(), value.message()),
+        }
+    }
     pub(super) async fn notification_query_history(&self, params: Value) -> Value {
         let Some(engine) = self.notifications.native_engine() else {
             return native_required();

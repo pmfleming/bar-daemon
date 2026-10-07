@@ -6,6 +6,11 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- `notifications.queryCenter`: native app groups and counts, bounded previews,
+  five-message pages with direct seeking, selected-record lookup and
+  epoch/revision-fenced app paging. Full-scope search and lifecycle/action guards
+  remain daemon-owned; clients no longer need to download/group message bodies.
+
 - Optional YouTube oEmbed fallback for missing title/channel/artwork, enabled by
   `BAR_DAEMON_YOUTUBE_METADATA=1`. Bounded fixed-endpoint requests, session caching,
   private temporary thumbnails and owner/content-generation checks leave MPRIS

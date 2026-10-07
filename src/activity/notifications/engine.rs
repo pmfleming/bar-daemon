@@ -428,6 +428,53 @@ impl NotificationEngine {
         persistence.list(before_history_id, limit).await
     }
 
+    pub(crate) async fn query_center(
+        &self,
+        mut query: super::center::CenterQuery,
+    ) -> Result<super::center::CenterPage, HistoryError> {
+        query.normalize()?;
+        let _reader = self
+            .history_readers
+            .try_acquire()
+            .map_err(|_| HistoryError::Busy)?;
+        let _mutation = self.mutations.lock().await;
+        let (revision, active) = {
+            let data = self.data.lock().await;
+            (
+                data.history_revision,
+                data.active
+                    .values()
+                    .filter(|n| n.snoozed_until_unix_ms.is_none())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        query.validate_revision(&self.history_epoch, revision)?;
+        if let Some(persistence) = &self.persistence {
+            return persistence
+                .center(query, active, self.history_epoch.clone(), revision)
+                .await
+                .map_err(HistoryError::Unavailable);
+        }
+        super::center::project(
+            active
+                .iter()
+                .map(|n| super::center::Preview::from_active(n, &query.query))
+                .collect(),
+            &query,
+            &self.history_epoch,
+            revision,
+            |preview| {
+                active
+                    .iter()
+                    .find(|n| n.id == preview.id && n.created_unix_ms == preview.created_unix_ms)
+                    .cloned()
+                    .map(Into::into)
+                    .ok_or_else(|| anyhow::anyhow!("Notification unavailable"))
+            },
+        )
+    }
+
     pub(crate) async fn query_history(
         &self,
         mut query: HistoryQuery,
