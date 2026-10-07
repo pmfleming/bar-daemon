@@ -190,9 +190,12 @@ all candidates before paging. Only the selected stored record deserializes its
 full notification/actions. Each complete response is limited to 512 KiB and fails
 explicitly if it cannot fit; no silently truncated selected payload is returned.
 
-App keys prefer desktop entry, otherwise an unambiguous exact name/icon pair.
-Unnamed senders and overlong identity components (>1024 UTF-8 bytes, or an encoded
-key >4096 bytes) conservatively use creation time plus ID, avoiding accidental
+App keys prefer desktop entry, otherwise the trimmed, case-sensitive application
+name. Notification icons never participate: a sender can change artwork with
+content or urgency without splitting its group. Distinct desktop IDs remain
+separate even when display names match; name-only groups do not claim a desktop
+identity. Unnamed senders and overlong identity components (>1024 UTF-8 bytes)
+conservatively use creation time plus ID, avoiding accidental
 merges and unqueryable keys. These are descriptive grouping keys, not trusted
 application identities or mutation targets. Conversation `group_key` remains
 independent. Mutations still require the existing live notification/action guards;

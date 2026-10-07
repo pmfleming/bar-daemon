@@ -531,7 +531,7 @@ impl NotificationStore {
                 id,
                 created_unix_ms: created,
                 closed_unix_ms: row.get(3)?,
-                app_key: center::app_key(&text(4)?, &name, &icon, id, created),
+                app_key: center::app_key(&text(4)?, &name, id, created),
                 app_name: center::clip(&name, 128),
                 app_icon: center::clip(&icon, 512),
                 summary: text(7)?,

@@ -90,13 +90,7 @@ impl Preview {
         Self {
             id: n.id,
             created_unix_ms: n.created_unix_ms,
-            app_key: app_key(
-                &n.hints.desktop_entry,
-                &n.app_name,
-                &n.app_icon,
-                n.id,
-                n.created_unix_ms,
-            ),
+            app_key: app_key(&n.hints.desktop_entry, &n.app_name, n.id, n.created_unix_ms),
             app_name: clip(&n.app_name, 128),
             app_icon: clip(&n.app_icon, 512),
             summary: clip(&n.summary, 160),
@@ -117,17 +111,18 @@ pub(crate) fn clip(value: &str, limit: usize) -> String {
 }
 // Descriptive grouping, not authentication. Never route a mutation by app key.
 // Unnamed senders do not all collapse into a shared "unknown" app.
-pub(crate) fn app_key(desktop: &str, name: &str, icon: &str, id: u32, created: u64) -> String {
+pub(crate) fn app_key(desktop: &str, name: &str, id: u32, created: u64) -> String {
     let unknown = || format!("unknown:{created}:{id}");
     if desktop.len() > 1024 {
         unknown()
     } else if !desktop.trim().is_empty() {
         format!("desktop:{}", desktop.trim())
-    } else if name.len() > 1024 || icon.len() > 1024 || name.trim().is_empty() {
+    } else if name.len() > 1024 || name.trim().is_empty() {
         unknown()
     } else {
-        let key = format!("named:{}", serde_json::json!([name, icon]));
-        if key.len() > 4096 { unknown() } else { key }
+        // Notification artwork represents content/urgency, not sender identity.
+        // Keep known desktop IDs distinct even when their display names match.
+        format!("named:{}", name.trim())
     }
 }
 

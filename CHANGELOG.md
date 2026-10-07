@@ -29,6 +29,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Keep name-only notification senders in one app group when their notification
+  icons change; preserve separate groups for distinct desktop-entry identities.
+
 - Recover isolated Pocket Casts and Audible PWA labels when Chromium drops launcher
   environment hints, requiring matching app URL, class and per-app profile from
   the actual D-Bus owner; playback IDs and metadata remain unchanged.

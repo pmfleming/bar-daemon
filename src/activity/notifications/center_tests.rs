@@ -235,13 +235,67 @@ async fn center_searches_full_unicode_body_and_resolves_legacy_group_links() {
     assert_eq!(app_key, "desktop:chat");
     assert!(selected.unwrap().notification.body.contains("ÄRGER"));
     assert_eq!(
-        super::center::app_key(&"d".repeat(1025), "App", "icon", 7, 8),
+        super::center::app_key(&"d".repeat(1025), "App", 7, 8),
         "unknown:8:7"
     );
     assert_ne!(
-        super::center::app_key("", "a:b", "c", 1, 2),
-        super::center::app_key("", "a", "b:c", 1, 2)
+        super::center::app_key("", "a:b", 1, 2),
+        super::center::app_key("", "a", 1, 2)
     );
+}
+
+#[tokio::test]
+async fn center_ignores_notification_artwork_when_grouping_named_senders() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.db");
+    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
+        .await
+        .unwrap();
+    for icon in ["battery-full-charged", "", "battery-caution"] {
+        let mut incoming = notification("bar-daemon", "Battery event");
+        incoming.hints.desktop_entry.clear();
+        incoming.app_icon = icon.into();
+        let id = engine.notify(0, incoming).await.unwrap();
+        if !icon.is_empty() {
+            engine.dismiss(id).await.unwrap();
+        }
+    }
+    for desktop in ["first.app", "second.app"] {
+        let mut incoming = notification("bar-daemon", "Distinct app");
+        incoming.hints.desktop_entry = desktop.into();
+        engine.notify(0, incoming).await.unwrap();
+    }
+    let CenterPage::Apps {
+        apps, total_apps, ..
+    } = engine.query_center(query("apps")).await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        total_apps, 3,
+        "distinct desktop IDs must not merge by display name"
+    );
+    let group = apps
+        .iter()
+        .find(|app| app.key == "named:bar-daemon")
+        .unwrap();
+    assert_eq!(group.count, 3, "mixed live/history icons share one app");
+    let mut request = query("app");
+    request.app_key = Some(group.key.clone());
+    let CenterPage::App { count, entries, .. } =
+        engine.query_center(request.clone()).await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(count, 3);
+    assert_eq!(entries.len(), 3);
+    let restarted = NotificationEngine::persistent(StateStore::default(), path)
+        .await
+        .unwrap();
+    let CenterPage::App { count, .. } = restarted.query_center(request).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(count, 3, "persisted metadata uses the same identity policy");
 }
 
 #[tokio::test]
