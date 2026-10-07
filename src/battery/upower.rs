@@ -48,7 +48,6 @@ pub(super) async fn read_state(
         .filter(|value| value.is_finite() && *value >= 0.0);
     Ok(BatteryState {
         available: present && device_type == 2,
-        native_path: native_path.clone(),
         percentage,
         state: state_name(state_code).into(),
         charging: matches!(state_code, 1 | 5),
@@ -59,15 +58,10 @@ pub(super) async fn read_state(
         time_to_full_seconds: device.get_property("TimeToFull").await.unwrap_or(0),
         health_percent: health,
         cycles: sysfs::read_cycle_count(&native_path),
+        native_path,
         warning: on_battery && percentage <= WARNING_PERCENT,
         critical: on_battery && percentage <= CRITICAL_PERCENT,
-        policy: Default::default(),
-        operation: Default::default(),
-        protection: Default::default(),
-        devices: Vec::new(),
-        history: Default::default(),
-        forecast: Default::default(),
-        error: None,
+        ..Default::default()
     })
 }
 

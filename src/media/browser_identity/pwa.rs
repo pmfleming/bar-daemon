@@ -4,8 +4,9 @@
 use std::path::{Component, Path};
 
 use super::BrowserIdentity;
+use crate::media::source;
 
-pub(super) fn parse(command_line: &[u8]) -> Option<BrowserIdentity> {
+fn launch_flags(command_line: &[u8]) -> Option<(&str, &str, &str)> {
     let text = std::str::from_utf8(command_line.strip_suffix(b"\0")?).ok()?;
     // Linux argv is normally NUL-delimited. Chromium can replace it with one
     // flattened process title. Accept only unambiguous whitespace-free values
@@ -35,8 +36,12 @@ pub(super) fn parse(command_line: &[u8]) -> Option<BrowserIdentity> {
             return None;
         }
     }
-    let class = class?;
-    let profile = Path::new(profile?);
+    Some((class?, profile?, app?))
+}
+
+pub(super) fn parse(command_line: &[u8]) -> Option<BrowserIdentity> {
+    let (class, profile, app) = launch_flags(command_line)?;
+    let profile = Path::new(profile);
     if !profile.is_absolute()
         || profile
             .components()
@@ -45,35 +50,15 @@ pub(super) fn parse(command_line: &[u8]) -> Option<BrowserIdentity> {
     {
         return None;
     }
-    let app = app?;
-    if app.chars().any(char::is_whitespace) || app.contains('\\') {
-        return None;
-    }
-    let url = reqwest::Url::parse(app).ok()?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-    {
+    let url = source::parse_url(app)?;
+    if url.scheme() != "https" || url.port().is_some() {
         return None;
     }
     let host = url.host_str()?;
     let identity = match class {
         "com.laufan.pocketcasts" if host == "play.pocketcasts.com" => "Pocket Casts",
         "com.laufan.audible"
-            if matches!(
-                host.strip_prefix("www.").unwrap_or(host),
-                "audible.com"
-                    | "audible.co.uk"
-                    | "audible.de"
-                    | "audible.fr"
-                    | "audible.it"
-                    | "audible.es"
-                    | "audible.ca"
-                    | "audible.com.au"
-                    | "audible.co.jp"
-                    | "audible.in"
-            ) =>
+            if source::audible_domain(host.strip_prefix("www.").unwrap_or(host)) =>
         {
             "Audible"
         }
@@ -87,7 +72,7 @@ pub(super) fn parse(command_line: &[u8]) -> Option<BrowserIdentity> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BrowserIdentity, parse};
 
     fn command(class: &str, url: &str, separator: &str) -> Vec<u8> {
         format!(
@@ -161,6 +146,11 @@ mod tests {
                 "https://play.pocketcasts.com:1234/",
             ),
             valid.replace("https://", "http://"),
+            valid.replace("--class=com.laufan.pocketcasts", "--class="),
+            valid.replace("--no-first-run", "--app"),
+            valid.replace("--no-first-run", "--user-data-dir"),
+            valid.replace("--no-first-run", "--class"),
+            valid.replace("--no-first-run", "--flag=bad\nvalue"),
             valid.replace("https://", "file://"),
         ] {
             assert_eq!(parse(invalid.as_bytes()), None, "{invalid:?}");

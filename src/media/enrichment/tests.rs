@@ -1,4 +1,12 @@
-use super::*;
+use super::{Completed, Enrichment, MAX_CACHE, MAX_REQUESTS, Ticket};
+use crate::{
+    media::{
+        source,
+        youtube::{Fetcher, Metadata},
+    },
+    model::MediaPlayer,
+};
+use std::{sync::Arc, time::Instant};
 
 fn player(id: &str, video: &str) -> MediaPlayer {
     MediaPlayer {
@@ -30,11 +38,11 @@ fn result(state: &Enrichment, player: &MediaPlayer) -> Completed {
             player: player.id.clone(),
             generation: state.sessions[&player.id].generation,
         }],
-        metadata: Some(Metadata {
+        metadata: Some(Arc::new(Metadata {
             title: "Provider title".into(),
             artist: "Channel".into(),
-            artwork: Some(std::sync::Arc::new(tempfile::NamedTempFile::new().unwrap())),
-        }),
+            artwork: Some(tempfile::NamedTempFile::new().unwrap()),
+        })),
     }
 }
 
@@ -67,6 +75,9 @@ async fn disabled_is_offline_and_success_fills_only_missing_fields_with_provenan
         .unwrap()
         .path()
         .to_owned();
+    players[0].position_us = 1_000_000;
+    players[0].can_pause = false;
+    state.prepare(&mut players); // Timing/capability signals must not invalidate the ticket.
     state.complete(completed, &mut players);
     assert_eq!(players[0].title, "Browser title");
     assert_eq!(players[0].artist, "Channel");
@@ -107,7 +118,9 @@ async fn disabled_is_offline_and_success_fills_only_missing_fields_with_provenan
 
 #[tokio::test]
 async fn late_results_cannot_follow_owner_content_generation_or_removal() {
-    for change in ["url", "owner", "title", "clear", "removed", "aba"] {
+    for change in [
+        "url", "owner", "title", "album", "length", "clear", "removed", "aba",
+    ] {
         let original = player("browser", "RQzh-xnLRlM");
         let mut players = vec![original.clone()];
         let mut state = enabled();
@@ -117,6 +130,8 @@ async fn late_results_cannot_follow_owner_content_generation_or_removal() {
             "url" | "aba" => players[0] = player("browser", "abcdefghijk"),
             "owner" => players[0].owner = ":1.99".into(),
             "title" => players[0].title = "New browser metadata".into(),
+            "album" => players[0].album = "New album".into(),
+            "length" => players[0].length_us = 1_000_000,
             "clear" => players[0].source = None,
             "removed" => players.clear(),
             _ => unreachable!(),

@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    JSON_LIMIT, bounded_get, download_artwork, image_signature, oembed_url, parse, public_ip, text,
+    thumbnail_url,
+};
+use reqwest::{Client, Url};
+use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -16,7 +21,7 @@ fn ids_endpoints_payloads_and_thumbnails_are_constrained() {
     ] {
         let video = crate::media::source::youtube_video_id(&raw).unwrap();
         assert_eq!(video, id);
-        let endpoint = oembed_url(&video);
+        let endpoint = oembed_url(&video).unwrap();
         assert_eq!(endpoint.host_str(), Some("www.youtube.com"));
         let query: Vec<_> = endpoint.query_pairs().collect();
         assert_eq!(query[0].1, format!("https://www.youtube.com/watch?v={id}"));
@@ -48,9 +53,29 @@ fn ids_endpoints_payloads_and_thumbnails_are_constrained() {
         "https://i.ytimg.com/vi/DIFFERENTID/hqdefault.jpg",
         "https://i.ytimg.com/vi/RQzh-xnLRlM/hqdefault.jpg?token=secret",
         "https://i.ytimg.com/vi/RQzh-xnLRlM/redirect",
+        "https://i.ytimg.com/vi/RQzh-xnLRlM/default.webp",
+        "https://i.ytimg.com/vi_webp/RQzh-xnLRlM/default.jpg",
+        "https://i.ytimg.com/vi/RQzh-xnLRlM/default.jpg/extra",
+        "https://i.ytimg.com/vi/RQzh-xnLRlM/default.jpg/",
+        "https://i.ytimg.com/vi/RQzh-xnLRlM/default.jpg.png",
         "https://user:pass@i.ytimg.com/vi/RQzh-xnLRlM/hqdefault.jpg",
     ] {
         assert!(thumbnail_url(url, id).is_none(), "{url}");
+    }
+    for (directory, extension) in [("vi", "jpg"), ("vi_webp", "webp")] {
+        for size in [
+            "default",
+            "mqdefault",
+            "hqdefault",
+            "sddefault",
+            "maxresdefault",
+        ] {
+            let raw = format!("https://i.ytimg.com/{directory}/{id}/{size}.{extension}");
+            assert_eq!(
+                thumbnail_url(&raw, id).as_ref().map(Url::as_str),
+                Some(raw.as_str())
+            );
+        }
     }
     assert!(parse(br#"{"type":"rich","title":"Wrong"}"#, id).is_err());
     assert!(parse(b"not JSON", id).is_err());

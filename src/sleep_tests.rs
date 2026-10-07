@@ -4,8 +4,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use tokio::{net::UnixStream, sync::Notify, time::timeout};
-use zbus::{Connection, connection::Builder};
+use tokio::{sync::Notify, time::timeout};
+use zbus::Connection;
 
 use super::*;
 
@@ -228,24 +228,17 @@ impl FakeManager {
 }
 
 pub(super) async fn fake_logind(state: Arc<SessionState>) -> (Connection, Connection) {
-    let (server, client) = UnixStream::pair().unwrap();
-    let server = Builder::unix_stream(server)
-        .server(zbus::Guid::generate())
-        .unwrap()
-        .p2p()
-        .serve_at(SESSION_PATH, FakeAutoSession)
-        .unwrap()
-        .serve_at(
-            "/org/freedesktop/login1/session/test",
-            FakeSession(Arc::clone(&state)),
-        )
-        .unwrap()
-        .serve_at(MANAGER_PATH, FakeManager(state))
-        .unwrap()
-        .build();
-    let client = Builder::unix_stream(client).p2p().build();
-    let (server, client) = tokio::try_join!(server, client).unwrap();
-    (server, client)
+    crate::test_support::dbus_peer(|builder| {
+        builder
+            .serve_at(SESSION_PATH, FakeAutoSession)?
+            .serve_at(
+                "/org/freedesktop/login1/session/test",
+                FakeSession(Arc::clone(&state)),
+            )?
+            .serve_at(MANAGER_PATH, FakeManager(state))
+    })
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

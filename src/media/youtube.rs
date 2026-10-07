@@ -10,41 +10,13 @@ use reqwest::{
 use serde::Deserialize;
 use tempfile::NamedTempFile;
 
-use crate::model::MediaPlayer;
-
 const JSON_LIMIT: usize = 64 * 1024;
 const IMAGE_LIMIT: usize = 1024 * 1024;
 
-#[derive(Clone, Default)]
 pub(super) struct Metadata {
     pub title: String,
     pub artist: String,
-    pub artwork: Option<Arc<NamedTempFile>>,
-}
-
-impl Metadata {
-    pub fn apply(&self, player: &mut MediaPlayer) {
-        for (field, target, value) in [
-            ("title", &mut player.title, &self.title),
-            ("artist", &mut player.artist, &self.artist),
-        ] {
-            if target.trim().is_empty() && !value.is_empty() {
-                *target = value.clone();
-                player
-                    .metadata_sources
-                    .insert(field.into(), "youtube-oembed".into());
-            }
-        }
-        if player.art_url.trim().is_empty()
-            && let Some(file) = &self.artwork
-            && let Ok(url) = Url::from_file_path(file.path())
-        {
-            player.art_url = url.to_string();
-            player
-                .metadata_sources
-                .insert("art_url".into(), "youtube-oembed".into());
-        }
-    }
+    pub artwork: Option<NamedTempFile>,
 }
 
 #[derive(Clone)]
@@ -69,7 +41,7 @@ impl Fetcher {
     pub async fn fetch(&self, id: &str) -> Result<Metadata> {
         let body = bounded_get(
             &self.client,
-            oembed_url(id),
+            oembed_url(id)?,
             JSON_LIMIT,
             &["application/json"],
         )
@@ -83,7 +55,7 @@ impl Fetcher {
     }
 }
 
-async fn download_artwork(client: &Client, url: Url) -> Result<Arc<NamedTempFile>> {
+async fn download_artwork(client: &Client, url: Url) -> Result<NamedTempFile> {
     let bytes = bounded_get(
         client,
         url,
@@ -100,17 +72,17 @@ async fn download_artwork(client: &Client, url: Url) -> Result<Arc<NamedTempFile
             .tempfile()?;
         file.write_all(&bytes)?;
         file.flush()?;
-        Ok(Arc::new(file))
+        Ok(file)
     })
     .await?
 }
 
-fn oembed_url(id: &str) -> Url {
-    let mut url = Url::parse("https://www.youtube.com/oembed").expect("fixed endpoint");
+fn oembed_url(id: &str) -> Result<Url> {
+    let mut url = Url::parse("https://www.youtube.com/oembed")?;
     url.query_pairs_mut()
         .append_pair("url", &format!("https://www.youtube.com/watch?v={id}"))
         .append_pair("format", "json");
-    url
+    Ok(url)
 }
 
 #[derive(Deserialize)]
@@ -150,50 +122,31 @@ fn parse(body: &[u8], id: &str) -> Result<(Metadata, Option<Url>)> {
 }
 
 fn thumbnail_url(raw: &str, id: &str) -> Option<Url> {
-    let url = Url::parse(raw).ok()?;
+    let url = super::source::parse_url(raw)?;
     if url.scheme() != "https"
         || url.host_str() != Some("i.ytimg.com")
         || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || raw
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
     {
         return None;
     }
-    let parts: Vec<_> = url.path().split('/').collect();
-    match parts.as_slice() {
-        ["", "vi", video, file]
-            if *video == id
-                && matches!(
-                    *file,
-                    "default.jpg"
-                        | "mqdefault.jpg"
-                        | "hqdefault.jpg"
-                        | "sddefault.jpg"
-                        | "maxresdefault.jpg"
-                ) =>
-        {
-            Some(url.clone())
-        }
-        ["", "vi_webp", video, file]
-            if *video == id
-                && matches!(
-                    *file,
-                    "default.webp"
-                        | "mqdefault.webp"
-                        | "hqdefault.webp"
-                        | "sddefault.webp"
-                        | "maxresdefault.webp"
-                ) =>
-        {
-            Some(url.clone())
-        }
-        _ => None,
-    }
+    let mut parts = url.path().split('/').skip(1);
+    let extension = match parts.next() {
+        Some("vi") => "jpg",
+        Some("vi_webp") => "webp",
+        _ => return None,
+    };
+    let video = parts.next()?;
+    let (size, format) = parts.next()?.split_once('.')?;
+    (video == id
+        && format == extension
+        && matches!(
+            size,
+            "default" | "mqdefault" | "hqdefault" | "sddefault" | "maxresdefault"
+        )
+        && parts.next().is_none())
+    .then_some(url)
 }
 
 fn image_signature(body: &[u8]) -> bool {

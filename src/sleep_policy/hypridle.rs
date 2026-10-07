@@ -309,16 +309,11 @@ mod tests {
     #[tokio::test]
     async fn live_timeout_updates_preserve_process_and_skip_unchanged_timeout() {
         let state = std::sync::Arc::new(std::sync::Mutex::new((30, 0)));
-        let (a, b) = tokio::net::UnixStream::pair().unwrap();
-        let server = zbus::connection::Builder::unix_stream(a)
-            .server(zbus::Guid::generate())
-            .unwrap()
-            .p2p()
-            .serve_at("/org/laufan/Hypridle", FakeControl(state.clone()))
-            .unwrap()
-            .build();
-        let client = zbus::connection::Builder::unix_stream(b).p2p().build();
-        let (_server, client) = tokio::try_join!(server, client).unwrap();
+        let (_server, client) = crate::test_support::dbus_peer(|builder| {
+            builder.serve_at("/org/laufan/Hypridle", FakeControl(state.clone()))
+        })
+        .await
+        .unwrap();
         super::set_timeout_on(&client, 30).await.unwrap();
         assert_eq!(*state.lock().unwrap(), (30, 0));
         super::set_timeout_on(&client, 45).await.unwrap();

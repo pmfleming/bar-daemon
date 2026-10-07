@@ -242,16 +242,11 @@ mod tests {
     #[tokio::test]
     async fn client_receives_actions_tokens_replies_and_closure() {
         let engine = NotificationEngine::new(crate::state::StateStore::default()).await;
-        let (server, client) = tokio::net::UnixStream::pair().unwrap();
-        let server = zbus::connection::Builder::unix_stream(server)
-            .server(zbus::Guid::generate())
-            .unwrap()
-            .p2p()
-            .serve_at(OBJECT_PATH, NotificationServer::new(Arc::clone(&engine)))
-            .unwrap()
-            .build();
-        let client = zbus::connection::Builder::unix_stream(client).p2p().build();
-        let (server, client) = tokio::try_join!(server, client).unwrap();
+        let (server, client) = crate::test_support::dbus_peer(|builder| {
+            builder.serve_at(OBJECT_PATH, NotificationServer::new(Arc::clone(&engine)))
+        })
+        .await
+        .unwrap();
         let forwarder = tokio::spawn(forward_signals(Arc::clone(&engine), server.clone()));
         let proxy = zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, INTERFACE)
             .await

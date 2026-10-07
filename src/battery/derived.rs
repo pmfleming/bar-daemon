@@ -70,23 +70,16 @@ fn discharge(point: &BatteryHistoryPoint) -> bool {
 }
 
 pub(crate) fn energy(points: &[BatteryHistoryPoint]) -> EnergyHistory {
-    let first = points
+    let (first, last) = points
         .iter()
         .filter(|p| p.timestamp_ms > 0)
-        .map(|p| p.active_time_ms)
-        .min()
-        .unwrap_or(0);
-    let last = points
-        .iter()
-        .filter(|p| p.timestamp_ms > 0)
-        .map(|p| p.active_time_ms)
-        .max()
-        .unwrap_or(first);
+        .map(|p| (p.active_time_ms, p.active_time_ms))
+        .reduce(|(first, last), (time, _)| (first.min(time), last.max(time)))
+        .unwrap_or_default();
     let duration = last - first;
     let interval = duration.div_ceil(48 * 900_000).max(1) * 900_000;
     let mut bins: BTreeMap<u64, EnergyBin> = BTreeMap::new();
-    for pair in points.windows(2) {
-        let [previous, point] = pair else { continue };
+    for (previous, point) in points.iter().zip(points.iter().skip(1)) {
         if previous.timestamp_ms == 0
             || point.timestamp_ms <= previous.timestamp_ms
             || !point.continuous

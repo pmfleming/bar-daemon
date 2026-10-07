@@ -16,7 +16,9 @@ pub(super) struct SourceMetadata {
 
 pub(super) fn resolve(raw_url: Option<&str>, content_type: Option<&str>) -> SourceMetadata {
     let resolved = raw_url.and_then(parse_source);
-    let inferred = resolved.as_ref().map_or(Kind::Unknown, |(_, kind)| *kind);
+    let inferred = resolved
+        .as_ref()
+        .map_or(Kind::Unknown, |(_, _, kind)| *kind);
     let explicit = match content_type
         .unwrap_or("")
         .trim()
@@ -38,36 +40,45 @@ pub(super) fn resolve(raw_url: Option<&str>, content_type: Option<&str>) -> Sour
         (Kind::Unknown, Origin::Unknown)
     };
     SourceMetadata {
-        source: resolved.map(|(source, _)| source),
+        source: resolved
+            .zip(raw_url)
+            .map(|((_, service, _), raw)| MediaSource {
+                url: raw.to_owned(),
+                service,
+            }),
         content_type,
         content_type_source,
     }
 }
 
-fn parse_source(raw: &str) -> Option<(MediaSource, Kind)> {
-    // Do not publish credentials or silently repair malformed player input.
-    // Query/fragment values can also be sensitive: retain them only in transient
-    // state, never log, persist, open, or fetch this URL.
-    if raw.is_empty()
-        || raw.len() > 8192
-        || raw
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+// Shared lexical boundary; each caller still restricts schemes/hosts/paths.
+// Never silently repair whitespace/backslashes or retain URL credentials.
+pub(super) fn parse_url(raw: &str) -> Option<Url> {
+    if raw
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
     {
         return None;
     }
     let url = Url::parse(raw).ok()?;
-    if !url.username().is_empty() || url.password().is_some() {
+    (url.username().is_empty() && url.password().is_none()).then_some(url)
+}
+
+fn parse_source(raw: &str) -> Option<(Url, Option<Service>, Kind)> {
+    // Query/fragment values remain transient: never log, persist, open or fetch.
+    if raw.len() > 8192 {
         return None;
     }
+    let url = parse_url(raw)?;
     let (service, kind) = match url.scheme() {
         "http" | "https" => {
+            // Require the literal scheme/authority, not a :// inside the query
+            // of a repaired URL such as https:host?redirect=https://other.
             let (scheme, rest) = raw.split_once("://")?;
-            let authority = rest.split(['/', '?', '#']).next()?;
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
             if !scheme.eq_ignore_ascii_case(url.scheme())
                 || authority.is_empty()
                 || authority.contains('@')
-                || url.host_str().is_none()
             {
                 return None;
             }
@@ -89,13 +100,7 @@ fn parse_source(raw: &str) -> Option<(MediaSource, Kind)> {
         // No local paths, browser-internal URLs, or arbitrary executable schemes.
         _ => return None,
     };
-    Some((
-        MediaSource {
-            url: raw.to_owned(),
-            service,
-        },
-        kind,
-    ))
+    Some((url, service, kind))
 }
 
 fn web_hints(url: &Url) -> (Option<Service>, Kind) {
@@ -153,6 +158,10 @@ fn audible_host(host: &str) -> bool {
         .strip_prefix("www.")
         .or_else(|| host.strip_prefix("listen."))
         .unwrap_or(host);
+    audible_domain(host)
+}
+
+pub(super) fn audible_domain(host: &str) -> bool {
     matches!(
         host,
         "audible.com"
@@ -175,11 +184,11 @@ fn ascii_id(id: &str) -> bool {
 // Online enrichment receives only this validated ID, never the original URL's
 // query/fragment, credentials, arbitrary host or port.
 pub(super) fn youtube_video_id(raw: &str) -> Option<String> {
-    let (source, kind) = parse_source(raw)?;
-    if source.service != Some(Service::Youtube) || kind != Kind::Video {
+    let (url, service, _) = parse_source(raw)?;
+    if service != Some(Service::Youtube) {
         return None;
     }
-    youtube_video(&Url::parse(raw).ok()?)
+    youtube_video(&url)
 }
 
 fn youtube_video(url: &Url) -> Option<String> {
@@ -191,11 +200,12 @@ fn youtube_video(url: &Url) -> Option<String> {
             _ => return None,
         }
     } else if path == "/watch" {
-        let ids: Vec<_> = url.query_pairs().filter(|(key, _)| key == "v").collect();
-        if ids.len() != 1 {
+        let mut ids = url.query_pairs().filter(|(key, _)| key == "v");
+        let id = ids.next()?.1;
+        if ids.next().is_some() {
             return None;
         }
-        ids[0].1.to_string()
+        id.into_owned()
     } else {
         match segments.as_slice() {
             ["shorts" | "embed" | "live", id] => (*id).to_owned(),
@@ -222,7 +232,8 @@ fn spotify_kind(category: &str) -> Kind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Kind, Origin, Service, resolve};
+    use crate::model::MediaSource;
 
     #[test]
     fn wire_fields_are_additive_and_have_explicit_provenance() {

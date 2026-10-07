@@ -3,8 +3,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio::net::UnixStream;
-use zbus::{Connection, connection::Builder};
+use zbus::Connection;
 use zvariant::OwnedValue;
 
 use super::automation::PowerEnvelope;
@@ -130,16 +129,11 @@ async fn fake_profiles() -> (Connection, Connection, Arc<Mutex<FakeState>>) {
         selected: "performance".into(),
         ..Default::default()
     }));
-    let (server, client) = UnixStream::pair().unwrap();
-    let server = Builder::unix_stream(server)
-        .server(zbus::Guid::generate())
-        .unwrap()
-        .p2p()
-        .serve_at(PATH, FakeProfiles(Arc::clone(&state)))
-        .unwrap()
-        .build();
-    let client = Builder::unix_stream(client).p2p().build();
-    let (server, client) = tokio::try_join!(server, client).unwrap();
+    let (server, client) = crate::test_support::dbus_peer(|builder| {
+        builder.serve_at(PATH, FakeProfiles(Arc::clone(&state)))
+    })
+    .await
+    .unwrap();
     (server, client, state)
 }
 
