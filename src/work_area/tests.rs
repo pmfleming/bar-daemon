@@ -1,9 +1,72 @@
-use super::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use super::{
+    CacheAction, RECONCILE_INTERVAL, RECOVERY_INTERVAL, RefreshPolicy, monitor_with, while_observed,
 };
-use tokio::{sync::Semaphore, task::yield_now, time::advance};
+use crate::state::StateStore;
+use shelllist_hyprland::work_area::Insets;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{
+    sync::{Semaphore, watch},
+    task::yield_now,
+    time::{Instant, advance},
+};
+
+struct ReadGuard(Arc<AtomicBool>);
+impl Drop for ReadGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn refresh_policy_retains_only_healthy_idle_cache_and_uses_exact_deadlines() {
+    let now = Instant::now();
+    for (available, connected, interval) in [
+        (true, true, RECONCILE_INTERVAL),
+        (true, false, RECOVERY_INTERVAL),
+        (false, true, RECOVERY_INTERVAL),
+        (false, false, RECOVERY_INTERVAL),
+    ] {
+        let mut policy = RefreshPolicy::new(now);
+        assert_eq!(policy.action(true, connected, now), CacheAction::Fetch);
+        policy.completed(available, connected, now);
+        assert_eq!(policy.action(true, connected, now), CacheAction::Wait);
+        assert_eq!(
+            policy.action(true, connected, now + interval),
+            CacheAction::Fetch
+        );
+        let idle = if available && connected {
+            CacheAction::Wait
+        } else {
+            CacheAction::Clear
+        };
+        assert_eq!(policy.action(false, connected, now + interval), idle);
+        policy.dirty = true;
+        assert_eq!(policy.action(false, connected, now), CacheAction::Clear);
+    }
+}
+
+#[tokio::test]
+async fn lost_demand_wins_over_a_ready_read() {
+    let (sender, mut demand) = watch::channel(1);
+    sender.send_replace(0);
+    assert_eq!(
+        while_observed(std::future::ready(7), &mut demand).await,
+        None
+    );
+    sender.send_replace(1);
+    drop(sender);
+    assert_eq!(
+        while_observed(std::future::ready(7), &mut demand).await,
+        None
+    );
+}
 
 fn counting_monitor(store: &StateStore) -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -225,12 +288,6 @@ async fn silent_changes_reconcile_slowly_and_old_idle_cache_refreshes_on_demand(
 
 #[tokio::test(start_paused = true)]
 async fn dropping_last_reader_cancels_inflight_query() {
-    struct ReadGuard(Arc<AtomicBool>);
-    impl Drop for ReadGuard {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
     let store = StateStore::default();
     let reader = store.work_area_interest();
     let cancelled = Arc::new(AtomicBool::new(false));

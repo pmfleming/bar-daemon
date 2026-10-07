@@ -22,6 +22,71 @@ impl Drop for Interest {
         self.0.send_modify(|count| *count = count.saturating_sub(1));
     }
 }
+#[derive(Debug, PartialEq, Eq)]
+enum CacheAction {
+    Fetch,
+    Clear,
+    Wait,
+}
+
+struct RefreshPolicy {
+    dirty: bool,
+    failed: bool,
+    next_refresh: Instant,
+}
+
+impl RefreshPolicy {
+    fn new(now: Instant) -> Self {
+        Self {
+            dirty: true,
+            failed: false,
+            next_refresh: now,
+        }
+    }
+
+    fn action(&mut self, observed: bool, connected: bool, now: Instant) -> CacheAction {
+        if observed {
+            return if self.dirty || now >= self.next_refresh {
+                CacheAction::Fetch
+            } else {
+                CacheAction::Wait
+            };
+        }
+        // Disconnected/failed idle observations cannot stay fresh without events.
+        self.dirty |= self.failed || !connected;
+        if self.dirty {
+            CacheAction::Clear
+        } else {
+            CacheAction::Wait
+        }
+    }
+
+    fn completed(&mut self, available: bool, connected: bool, now: Instant) {
+        self.failed = !available;
+        self.dirty = false;
+        self.next_refresh = now
+            + if self.failed || !connected {
+                RECOVERY_INTERVAL
+            } else {
+                RECONCILE_INTERVAL
+            };
+    }
+}
+
+fn observed_state(result: anyhow::Result<BTreeMap<String, Insets>>) -> WorkAreaState {
+    match result {
+        Ok(monitors) => WorkAreaState {
+            available: true,
+            monitors,
+            ..Default::default()
+        },
+        Err(error) => WorkAreaState {
+            error: Some(error.to_string()),
+            ..Default::default()
+        },
+    }
+}
+
 pub(crate) async fn monitor(store: StateStore) {
     let client = shelllist_hyprland::Client::default();
     monitor_with(store, || client.work_areas()).await;
@@ -32,51 +97,27 @@ where
     Fut: Future<Output = anyhow::Result<BTreeMap<String, Insets>>>,
 {
     let mut demand = store.work_area_demand();
-    let mut dirty = true;
-    let mut failed = false;
-    let mut next_refresh = Instant::now();
+    let mut policy = RefreshPolicy::new(Instant::now());
     loop {
         let observed = *demand.borrow_and_update() > 0;
-        if observed && (dirty || Instant::now() >= next_refresh) {
-            // This read covers earlier invalidations. Those arriving during the
-            // read retain a Notify permit and cause a follow-up query.
-            let _ = store.work_area_changed.notified().now_or_never();
-            let Some(result) = while_observed(fetch(), &mut demand).await else {
-                continue;
-            };
-            let state = match result {
-                Ok(monitors) => WorkAreaState {
-                    available: true,
-                    monitors,
-                    ..Default::default()
-                },
-                Err(error) => WorkAreaState {
-                    error: Some(error.to_string()),
-                    ..Default::default()
-                },
-            };
-            failed = !state.available;
-            next_refresh = Instant::now()
-                + if failed || !store.hyprland_connected() {
-                    RECOVERY_INTERVAL
-                } else {
-                    RECONCILE_INTERVAL
+        match policy.action(observed, store.hyprland_connected(), Instant::now()) {
+            CacheAction::Fetch => {
+                // Consume only earlier invalidations. A notification arriving
+                // during the read retains its permit for a follow-up query.
+                let _ = store.work_area_changed.notified().now_or_never();
+                let Some(result) = while_observed(fetch(), &mut demand).await else {
+                    continue;
                 };
-            dirty = false;
-            store.update_work_area(state).await;
-        }
-        let recovery = failed || !store.hyprland_connected();
-        if !observed {
-            // Without events, an idle observation cannot stay fresh. Connected
-            // idle caches are invalidated only by geometry/connection changes.
-            dirty |= recovery;
-            if dirty {
-                store.update_work_area(WorkAreaState::default()).await;
+                let state = observed_state(result);
+                policy.completed(state.available, store.hyprland_connected(), Instant::now());
+                store.update_work_area(state).await;
             }
+            CacheAction::Clear => store.update_work_area(WorkAreaState::default()).await,
+            CacheAction::Wait => {}
         }
         tokio::select! {
-            _ = store.work_area_changed.notified() => { dirty = true; },
-            _ = tokio::time::sleep_until(next_refresh), if observed => { dirty = true; },
+            _ = store.work_area_changed.notified() => { policy.dirty = true; },
+            _ = tokio::time::sleep_until(policy.next_refresh), if observed => { policy.dirty = true; },
             changed = demand.changed() => { if changed.is_err() { return; } },
         }
     }
