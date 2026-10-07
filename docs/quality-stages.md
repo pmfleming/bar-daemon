@@ -47,3 +47,22 @@ complexity; combined effort for these four functions is **77,101**.
 Validation: four derived-battery tests, including invalid endpoints, no bridging of
 unobserved gaps, nonzero origins and `u64::MAX` duration/coordinates; strict all-target
 Clippy and the full-fixture runner.
+
+## 4. Weather transport and normalization
+
+HTTP request construction borrows static query fields and the configured timezone.
+Response normalization, hourly selection and daily decoding are pure operations with
+an explicit clock; region IDs use that same instant. Remove the now-unused implicit-
+clock timezone wrapper and borrow today's forecast rather than cloning it.
+
+Keep the 12-hour/7-day limits, inclusive half-hour cutoff, units and short-column/empty-
+day defaults. Provider timestamps now use checked seconds-to-milliseconds conversion:
+malformed extreme values return an error instead of overflowing in debug/release.
+
+RQLens `fetch` effort **150,549 → 2,820**; normalization **29,584**, hourly selection
+**9,811**, hourly conversion **7,426**, daily conversion **11,112**, request construction
+**3,014**. This is primarily an effort/ownership improvement, not a reduction in all
+branch counts: explicit validation and the bounded hourly loop add decisions.
+Validation: five offline tests cover transport parameters/timeout, field mappings,
+short columns, empty days, exact cutoffs, horizon limits, labels, malformed JSON and
+all timestamp overflow sites; strict all-target Clippy and the full-fixture runner.

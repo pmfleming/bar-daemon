@@ -79,10 +79,6 @@ pub(crate) fn ids_for_offset(offset_seconds: i32, at: DateTime<Utc>) -> Vec<Stri
         .collect()
 }
 
-pub(crate) fn current_ids_for_offset(offset_seconds: i32) -> Vec<String> {
-    ids_for_offset(offset_seconds, Utc::now())
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};

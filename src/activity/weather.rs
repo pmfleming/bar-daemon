@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::{
@@ -53,29 +54,22 @@ struct DailyWeather {
     sunset: Vec<i64>,
 }
 
-pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
-    let response = reqwest::Client::new()
-        .get(FORECAST_URL)
+fn forecast_request(client: &reqwest::Client, config: &WeatherConfig) -> reqwest::RequestBuilder {
+    client.get(FORECAST_URL)
+        .query(&[("latitude", config.latitude), ("longitude", config.longitude)])
         .query(&[
-            ("latitude", config.latitude.to_string()),
-            ("longitude", config.longitude.to_string()),
-            ("timezone", config.timezone.clone()),
-            ("timeformat", "unixtime".into()),
-            ("forecast_days", "7".into()),
-            (
-                "current",
-                "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,is_day,wind_speed_10m,wind_direction_10m,wind_gusts_10m".into(),
-            ),
-            (
-                "hourly",
-                "temperature_2m,precipitation_probability,precipitation,wind_speed_10m,wind_direction_10m,weather_code,is_day".into(),
-            ),
-            (
-                "daily",
-                "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset".into(),
-            ),
+            ("timezone", config.timezone.as_str()),
+            ("timeformat", "unixtime"),
+            ("forecast_days", "7"),
+            ("current", "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,is_day,wind_speed_10m,wind_direction_10m,wind_gusts_10m"),
+            ("hourly", "temperature_2m,precipitation_probability,precipitation,wind_speed_10m,wind_direction_10m,weather_code,is_day"),
+            ("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"),
         ])
         .timeout(std::time::Duration::from_secs(12))
+}
+
+pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
+    forecast_request(&reqwest::Client::new(), config)
         .send()
         .await
         .context("request Open-Meteo forecast")?
@@ -83,91 +77,119 @@ pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
         .context("Open-Meteo forecast status")?
         .json::<ForecastResponse>()
         .await
-        .context("decode Open-Meteo forecast")?;
-
-    let now_ms = crate::time::unix_ms_i64();
-    let hourly = response
-        .hourly
-        .time
-        .iter()
-        .enumerate()
-        .filter(|(_, time)| **time * 1_000 >= now_ms - 30 * 60 * 1_000)
-        .take(12)
-        .map(|(index, time)| {
-            let condition_code = value(&response.hourly.weather_code, index);
-            WeatherHour {
-                time_unix_ms: *time * 1_000,
-                temperature_c: value(&response.hourly.temperature_2m, index),
-                precipitation_probability: value(&response.hourly.precipitation_probability, index),
-                precipitation_mm: value(&response.hourly.precipitation, index),
-                wind_speed_kmh: value(&response.hourly.wind_speed_10m, index),
-                wind_direction_degrees: value(&response.hourly.wind_direction_10m, index),
-                condition: condition(condition_code).into(),
-                condition_code,
-                is_day: value(&response.hourly.is_day, index) != 0,
-            }
-        })
-        .collect();
-    let daily = response
-        .daily
-        .time
-        .iter()
-        .enumerate()
-        .take(7)
-        .map(|(index, time)| {
-            let condition_code = value(&response.daily.weather_code, index);
-            WeatherDay {
-                date_unix_ms: *time * 1_000,
-                high_c: value(&response.daily.temperature_2m_max, index),
-                low_c: value(&response.daily.temperature_2m_min, index),
-                precipitation_probability: value(
-                    &response.daily.precipitation_probability_max,
-                    index,
-                ),
-                condition: condition(condition_code).into(),
-                condition_code,
-                sunrise_unix_ms: value(&response.daily.sunrise, index) * 1_000,
-                sunset_unix_ms: value(&response.daily.sunset, index) * 1_000,
-            }
-        })
-        .collect::<Vec<_>>();
-    let today = daily.first().cloned().unwrap_or_default();
-
-    Ok(WeatherState {
-        available: true,
-        id: config.id.clone(),
-        location: config.location.clone(),
-        home: config.home,
-        timezone: response.timezone,
-        utc_offset_seconds: response.utc_offset_seconds,
-        timezone_region_ids: crate::timezone_regions::current_ids_for_offset(
-            response.utc_offset_seconds,
-        ),
-        latitude: config.latitude,
-        longitude: config.longitude,
-        condition: condition(response.current.weather_code).into(),
-        condition_code: response.current.weather_code,
-        is_day: response.current.is_day != 0,
-        temperature_c: response.current.temperature_2m,
-        apparent_temperature_c: response.current.apparent_temperature,
-        high_c: today.high_c,
-        low_c: today.low_c,
-        precipitation_probability: today.precipitation_probability,
-        precipitation_mm: response.current.precipitation,
-        wind_speed_kmh: response.current.wind_speed_10m,
-        wind_direction_degrees: response.current.wind_direction_10m,
-        wind_gust_kmh: response.current.wind_gusts_10m,
-        humidity_percent: response.current.relative_humidity_2m,
-        sunrise_unix_ms: today.sunrise_unix_ms,
-        sunset_unix_ms: today.sunset_unix_ms,
-        updated_unix_ms: now_ms,
-        solar_noon: None, // Refreshed against the local date when activity is published.
-        hourly,
-        daily,
-        error: None,
-    })
+        .context("decode Open-Meteo forecast")?
+        .normalize(config, Utc::now())
 }
 
+impl ForecastResponse {
+    // All time-dependent normalization uses the supplied instant, not another
+    // clock read. This boundary is testable without HTTP or the daemon state.
+    fn normalize(self, config: &WeatherConfig, now: DateTime<Utc>) -> Result<WeatherState> {
+        let now_ms = now.timestamp_millis();
+        let hourly = self.hourly.hours(now_ms)?;
+        let daily = self.daily.days()?;
+        let default_day = WeatherDay::default();
+        let today = daily.first().unwrap_or(&default_day);
+        Ok(WeatherState {
+            available: true,
+            id: config.id.clone(),
+            location: config.location.clone(),
+            home: config.home,
+            timezone: self.timezone,
+            utc_offset_seconds: self.utc_offset_seconds,
+            timezone_region_ids: crate::timezone_regions::ids_for_offset(
+                self.utc_offset_seconds,
+                now,
+            ),
+            latitude: config.latitude,
+            longitude: config.longitude,
+            condition: condition(self.current.weather_code).into(),
+            condition_code: self.current.weather_code,
+            is_day: self.current.is_day != 0,
+            temperature_c: self.current.temperature_2m,
+            apparent_temperature_c: self.current.apparent_temperature,
+            high_c: today.high_c,
+            low_c: today.low_c,
+            precipitation_probability: today.precipitation_probability,
+            precipitation_mm: self.current.precipitation,
+            wind_speed_kmh: self.current.wind_speed_10m,
+            wind_direction_degrees: self.current.wind_direction_10m,
+            wind_gust_kmh: self.current.wind_gusts_10m,
+            humidity_percent: self.current.relative_humidity_2m,
+            sunrise_unix_ms: today.sunrise_unix_ms,
+            sunset_unix_ms: today.sunset_unix_ms,
+            updated_unix_ms: now_ms,
+            solar_noon: None, // Refreshed against the local date when activity is published.
+            hourly,
+            daily,
+            error: None,
+        })
+    }
+}
+
+impl HourlyWeather {
+    fn hours(&self, now_ms: i64) -> Result<Vec<WeatherHour>> {
+        let earliest = now_ms.saturating_sub(30 * 60 * 1_000);
+        let mut hours = Vec::new();
+        for (index, time) in self.time.iter().enumerate() {
+            let time_unix_ms = milliseconds(*time)?;
+            if time_unix_ms < earliest {
+                continue;
+            }
+            hours.push(self.hour(index, time_unix_ms));
+            if hours.len() == 12 {
+                break;
+            }
+        }
+        Ok(hours)
+    }
+
+    fn hour(&self, index: usize, time_unix_ms: i64) -> WeatherHour {
+        let condition_code = value(&self.weather_code, index);
+        WeatherHour {
+            time_unix_ms,
+            temperature_c: value(&self.temperature_2m, index),
+            precipitation_probability: value(&self.precipitation_probability, index),
+            precipitation_mm: value(&self.precipitation, index),
+            wind_speed_kmh: value(&self.wind_speed_10m, index),
+            wind_direction_degrees: value(&self.wind_direction_10m, index),
+            condition: condition(condition_code).into(),
+            condition_code,
+            is_day: value(&self.is_day, index) != 0,
+        }
+    }
+}
+
+impl DailyWeather {
+    fn days(&self) -> Result<Vec<WeatherDay>> {
+        self.time
+            .iter()
+            .enumerate()
+            .take(7)
+            .map(|(index, time)| {
+                let condition_code = value(&self.weather_code, index);
+                Ok(WeatherDay {
+                    date_unix_ms: milliseconds(*time)?,
+                    high_c: value(&self.temperature_2m_max, index),
+                    low_c: value(&self.temperature_2m_min, index),
+                    precipitation_probability: value(&self.precipitation_probability_max, index),
+                    condition: condition(condition_code).into(),
+                    condition_code,
+                    sunrise_unix_ms: milliseconds(value(&self.sunrise, index))?,
+                    sunset_unix_ms: milliseconds(value(&self.sunset, index))?,
+                })
+            })
+            .collect()
+    }
+}
+
+fn milliseconds(seconds: i64) -> Result<i64> {
+    seconds
+        .checked_mul(1_000)
+        .context("Open-Meteo timestamp outside millisecond range")
+}
+
+// Preserve the existing default for short provider columns and empty days.
 fn value<T: Copy + Default>(values: &[T], index: usize) -> T {
     values.get(index).copied().unwrap_or_default()
 }
@@ -188,3 +210,6 @@ fn condition(code: u16) -> &'static str {
         _ => "Unknown",
     }
 }
+
+#[cfg(test)]
+mod tests;
