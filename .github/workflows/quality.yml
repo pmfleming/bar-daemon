@@ -50,12 +50,17 @@ jobs:
           ../daemon-framework/tools/local-build develop . --command cargo shear
       # The dev shell supplies PipeWire and the shared patched Hypridle package,
       # including HYPRIDLE_TEST_BIN. Both fixtures use private mock services.
+      - name: Fixture runner regression tests
+        run: python3 -B -m unittest discover -s tools -p 'test_quality_fixtures.py'
       - name: Test and collect coverage (including PipeWire and native idle)
-        run: ../daemon-framework/tools/local-build develop . --command cargo llvm-cov --workspace --all-targets --locked --cobertura --output-path cobertura.xml -- --include-ignored
+        env:
+          QUALITY_OUTPUT_DIR: target/ci-fixtures
+        run: ../daemon-framework/tools/local-build develop . --command bash tools/quality-fixtures.sh coverage
       - name: Check changed-line coverage
         if: github.event_name == 'pull_request'
-        run: ../daemon-framework/tools/local-build develop . --command diff-cover cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
+        run: ../daemon-framework/tools/local-build develop . --command diff-cover target/ci-fixtures/cobertura.xml --compare-branch origin/${{ github.base_ref }} --fail-under 80
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
-          name: coverage
-          path: bar-daemon/cobertura.xml
+          name: fixture-evidence
+          path: bar-daemon/target/ci-fixtures/
