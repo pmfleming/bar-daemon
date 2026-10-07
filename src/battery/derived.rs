@@ -69,6 +69,65 @@ fn discharge(point: &BatteryHistoryPoint) -> bool {
     point.mode == "discharging" || (point.mode.is_empty() && !point.charging && !point.plugged)
 }
 
+// Only continuous, ordered, measured discharge samples can contribute energy.
+struct DischargeSegment {
+    start: u64,
+    end: u64,
+    start_watts: f64,
+    end_watts: f64,
+}
+
+impl DischargeSegment {
+    fn between(
+        previous: &BatteryHistoryPoint,
+        point: &BatteryHistoryPoint,
+        origin: u64,
+    ) -> Option<Self> {
+        if previous.timestamp_ms == 0
+            || point.timestamp_ms <= previous.timestamp_ms
+            || !point.continuous
+            || point.active_time_ms <= previous.active_time_ms
+            || !discharge(previous)
+            || !discharge(point)
+            || !power_available(previous)
+            || !power_available(point)
+        {
+            return None;
+        }
+        Some(Self {
+            start: previous.active_time_ms.saturating_sub(origin),
+            end: point.active_time_ms.saturating_sub(origin),
+            start_watts: previous.power_watts,
+            end_watts: point.power_watts,
+        })
+    }
+
+    fn power_at(&self, time: u64) -> f64 {
+        self.start_watts
+            + (self.end_watts - self.start_watts) * (time - self.start) as f64
+                / (self.end - self.start) as f64
+    }
+
+    fn accumulate(&self, bins: &mut BTreeMap<u64, EnergyBin>, duration: u64, interval: u64) {
+        let mut offset = self.start;
+        while offset < self.end {
+            let index = offset / interval;
+            let boundary = (index + 1).saturating_mul(interval);
+            let stop = self.end.min(boundary);
+            let bin = bins.entry(index).or_insert_with(|| EnergyBin {
+                x0: (index * interval) as f64 / duration as f64,
+                x1: duration.min(boundary) as f64 / duration as f64,
+                ..Default::default()
+            });
+            bin.value += (self.power_at(offset) / 2.0 + self.power_at(stop) / 2.0)
+                * (stop - offset) as f64
+                / 3_600_000.0;
+            bin.observed_ms = bin.observed_ms.saturating_add(stop - offset);
+            offset = stop;
+        }
+    }
+}
+
 pub(crate) fn energy(points: &[BatteryHistoryPoint]) -> EnergyHistory {
     let (first, last) = points
         .iter()
@@ -80,37 +139,8 @@ pub(crate) fn energy(points: &[BatteryHistoryPoint]) -> EnergyHistory {
     let interval = duration.div_ceil(48 * 900_000).max(1) * 900_000;
     let mut bins: BTreeMap<u64, EnergyBin> = BTreeMap::new();
     for (previous, point) in points.iter().zip(points.iter().skip(1)) {
-        if previous.timestamp_ms == 0
-            || point.timestamp_ms <= previous.timestamp_ms
-            || !point.continuous
-            || point.active_time_ms <= previous.active_time_ms
-            || !discharge(previous)
-            || !discharge(point)
-            || !power_available(previous)
-            || !power_available(point)
-        {
-            continue;
-        }
-        let start = previous.active_time_ms.saturating_sub(first);
-        let end = point.active_time_ms.saturating_sub(first);
-        let mut offset = start;
-        while offset < end {
-            let index = offset / interval;
-            let stop = end.min((index + 1).saturating_mul(interval));
-            let power = |time: u64| {
-                previous.power_watts
-                    + (point.power_watts - previous.power_watts) * (time - start) as f64
-                        / (end - start) as f64
-            };
-            let bin = bins.entry(index).or_insert_with(|| EnergyBin {
-                x0: (index * interval) as f64 / duration as f64,
-                x1: duration.min((index + 1).saturating_mul(interval)) as f64 / duration as f64,
-                ..Default::default()
-            });
-            bin.value +=
-                (power(offset) / 2.0 + power(stop) / 2.0) * (stop - offset) as f64 / 3_600_000.0;
-            bin.observed_ms = bin.observed_ms.saturating_add(stop - offset);
-            offset = stop;
+        if let Some(segment) = DischargeSegment::between(previous, point, first) {
+            segment.accumulate(&mut bins, duration, interval);
         }
     }
     let bars: Vec<_> = bins
@@ -194,6 +224,78 @@ mod tests {
         assert_eq!(zero.total_wh, 0.0);
         assert!(energy(&[]).bars.is_empty());
     }
+    #[test]
+    fn rejects_bad_endpoints_without_bridging_gaps() {
+        let start = point(0, 10, 8.0, false);
+        let end = point(900_000, 900_010, 8.0, true);
+        for bad in [
+            BatteryHistoryPoint {
+                timestamp_ms: 0,
+                ..end.clone()
+            },
+            BatteryHistoryPoint {
+                timestamp_ms: start.timestamp_ms,
+                ..end.clone()
+            },
+            BatteryHistoryPoint {
+                active_time_ms: start.active_time_ms,
+                ..end.clone()
+            },
+            BatteryHistoryPoint {
+                active_time_ms: 0,
+                ..end.clone()
+            },
+            BatteryHistoryPoint {
+                power_valid: Some(false),
+                ..end.clone()
+            },
+            BatteryHistoryPoint {
+                power_watts: f64::NAN,
+                ..end.clone()
+            },
+            BatteryHistoryPoint {
+                power_valid: None,
+                power_watts: 0.0,
+                ..end.clone()
+            },
+        ] {
+            assert!(energy(&[start.clone(), bad]).bars.is_empty());
+        }
+        for invalid_power in [-1.0, f64::NAN, f64::INFINITY] {
+            let bad = BatteryHistoryPoint {
+                power_watts: invalid_power,
+                ..start.clone()
+            };
+            assert!(energy(&[bad, end.clone()]).bars.is_empty());
+        }
+        let resumed = point(1_800_000, 1_800_010, 8.0, false);
+        let result = energy(&[start, end, resumed, point(2_700_000, 2_700_010, 8.0, true)]);
+        assert_eq!(result.observed_ms, 1_800_000);
+        assert_eq!(result.total_wh, 4.0);
+        assert_eq!(result.bars.len(), 2);
+        assert_eq!(result.bars[1].x0, 2.0 / 3.0);
+    }
+
+    #[test]
+    fn bounds_bins_at_u64_extremes_and_handles_nonzero_origin() {
+        let value = energy(&[
+            point(0, 0, 8.0, false),
+            point(u64::MAX - 1000, u64::MAX, 8.0, true),
+        ]);
+        assert!(value.bars.len() <= 48);
+        assert_eq!(value.observed_ms, u64::MAX);
+        assert_eq!(value.bars.last().unwrap().x1, 1.0);
+        let expected = 8.0 * u64::MAX as f64 / 3_600_000.0;
+        assert!((value.total_wh / expected - 1.0).abs() < 1e-12);
+        let shifted = energy(&[
+            point(0, u64::MAX - 900_000, 8.0, false),
+            point(900_000, u64::MAX, 8.0, true),
+        ]);
+        assert_eq!(shifted.observed_ms, 900_000);
+        assert_eq!(shifted.total_wh, 2.0);
+        assert_eq!((shifted.bars[0].x0, shifted.bars[0].x1), (0.0, 1.0));
+    }
+
     #[test]
     fn forecast_uses_actual_limits_and_rejects_unbounded_estimates() {
         let mut battery = BatteryState {

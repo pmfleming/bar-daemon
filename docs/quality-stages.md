@@ -33,3 +33,17 @@ RQLens `persistence_worker`: cognitive **17 → 3**, cyclomatic **9 → 5**, eff
 Validation: 22 notification tests, including cancelled/fenced reads that must not
 execute storage work and a real SQLite trigger failure followed by successful queued
 writes; strict all-target Clippy and the full-fixture runner.
+
+## 3. Battery energy integration
+
+`DischargeSegment` validates the two measured endpoints, interpolates power, and
+accumulates trapezoids into bounded bins. `energy` retains timeline bounds and result
+assembly. Arithmetic order, continuity exclusions, legacy power validity and the
+48-bin/15-minute sizing policy are preserved; no new module dependencies are needed.
+
+RQLens `energy`: cognitive **6 → 3**, cyclomatic **11 → 3**, effort
+**152,462 → 37,390**. Segment validation/interpolation/accumulation add their own
+complexity; combined effort for these four functions is **77,101**.
+Validation: four derived-battery tests, including invalid endpoints, no bridging of
+unobserved gaps, nonzero origins and `u64::MAX` duration/coordinates; strict all-target
+Clippy and the full-fixture runner.
