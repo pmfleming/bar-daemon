@@ -20,3 +20,16 @@ Validation: eight work-area tests, including exact deadline/recovery cases and
 last-reader departure winning over a simultaneously ready result; strict all-target
 Clippy and the full-fixture runner. Move the test-only cancellation guard to module
 scope so its ownership is explicit to both Rust readers and the analyzer.
+
+## 2. Notification persistence dispatch
+
+Share cancellation-aware response delivery and extract ordered mutation application.
+Failed writes still fence every later revisioned catalog query, even after successful
+mutations; later accepted writes still run. The legacy list deliberately remains
+best-effort (it carries no catalog revision), but now skips cancelled reads too.
+
+RQLens `persistence_worker`: cognitive **17 → 3**, cyclomatic **9 → 5**, effort
+**24,446 → 11,906**. Extracted `apply_mutations` is 3/3 and `reply` is 2/4.
+Validation: 22 notification tests, including cancelled/fenced reads that must not
+execute storage work and a real SQLite trigger failure followed by successful queued
+writes; strict all-target Clippy and the full-fixture runner.

@@ -192,13 +192,7 @@ fn persistence_worker(
     while let Some(command) = receiver.blocking_recv() {
         match command {
             PersistenceCommand::Mutate(mutations) => {
-                for mutation in mutations {
-                    if let Err(error) = store.apply(mutation) {
-                        tracing::warn!(%error, "notification history update failed");
-                        // Never label stale storage with a newer engine revision.
-                        history_error = Some(error.to_string());
-                    }
-                }
+                apply_mutations(&mut store, mutations, &mut history_error);
             }
             PersistenceCommand::Query {
                 query,
@@ -206,26 +200,48 @@ fn persistence_worker(
                 limit,
                 excluded,
                 response,
-            } => {
-                if response.is_closed() {
-                    continue; // Superseded/cancelled reads need no SQLite work.
-                }
-                let result = if let Some(error) = &history_error {
-                    Err(anyhow!(error.clone()))
-                } else {
-                    store.query(&query, before, limit, &excluded)
-                };
-                let _ = response.send(result);
-            }
+            } => reply(response, history_error.as_deref(), || {
+                store.query(&query, before, limit, &excluded)
+            }),
+            // The legacy list has no catalog revision: retain its best-effort
+            // history semantics, but skip reads whose caller has gone away.
             PersistenceCommand::List {
                 before_history_id,
                 limit,
                 response,
-            } => {
-                let _ = response.send(store.list(before_history_id, limit));
-            }
+            } => reply(response, None, || store.list(before_history_id, limit)),
         }
     }
+}
+
+fn apply_mutations(
+    store: &mut NotificationStore,
+    mutations: Vec<Mutation>,
+    history_error: &mut Option<String>,
+) {
+    for mutation in mutations {
+        if let Err(error) = store.apply(mutation) {
+            tracing::warn!(%error, "notification history update failed");
+            // Continue accepted writes, but never label stale storage with a
+            // newer engine revision, even when later writes succeed.
+            *history_error = Some(error.to_string());
+        }
+    }
+}
+
+fn reply<T>(
+    response: oneshot::Sender<Result<T>>,
+    history_error: Option<&str>,
+    read: impl FnOnce() -> Result<T>,
+) {
+    if response.is_closed() {
+        return;
+    }
+    let result = match history_error {
+        Some(error) => Err(anyhow!("{error}")),
+        None => read(),
+    };
+    let _ = response.send(result);
 }
 
 struct NotificationStore {
@@ -526,11 +542,76 @@ fn history_record(row: &rusqlite::Row<'_>) -> Result<HistoryNotification> {
 mod tests {
     use tempfile::tempdir;
 
-    use super::{NotificationPersistence, NotificationStore, persistence_worker};
+    use super::{NotificationPersistence, NotificationStore, persistence_worker, reply};
     use crate::activity::notifications::model::{
         ActiveNotification, IncomingNotification, NotificationHints,
     };
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
+
+    #[tokio::test]
+    async fn cancelled_and_fenced_reads_do_not_execute_storage_work() {
+        let calls = std::cell::Cell::new(0);
+        let read = || {
+            calls.set(calls.get() + 1);
+            Ok(7)
+        };
+        for error in [None, Some("write failed")] {
+            let (response, receiver) = oneshot::channel();
+            drop(receiver);
+            reply(response, error, read);
+        }
+        let (response, receiver) = oneshot::channel();
+        reply(response, Some("write failed"), read);
+        assert_eq!(
+            receiver.await.unwrap().unwrap_err().to_string(),
+            "write failed"
+        );
+        assert_eq!(calls.get(), 0);
+        let (response, receiver) = oneshot::channel();
+        reply(response, None, read);
+        assert_eq!(receiver.await.unwrap().unwrap(), 7);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_write_fences_queries_but_does_not_discard_later_mutations() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("notifications.sqlite3");
+        let store = NotificationStore::open(&path).unwrap();
+        store.save(&notification(1, false)).unwrap();
+        store.connection.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON notifications BEGIN SELECT RAISE(FAIL, 'simulated disk failure'); END;").unwrap();
+        let (commands, receiver) = mpsc::channel(1);
+        let persistence = NotificationPersistence { commands };
+        let worker = std::thread::spawn(move || persistence_worker(store, receiver));
+        {
+            let mut writes = persistence.reserve().await.unwrap();
+            writes.save(notification(1, true)); // Fails to remove the persisted copy.
+            writes.save(notification(2, false));
+            writes.set_dnd(true, None);
+        }
+        assert_eq!(persistence.list(None, 10).await.unwrap().len(), 2);
+        let first = persistence
+            .query(String::new(), None, 10, Vec::new())
+            .await
+            .unwrap_err();
+        assert!(first.to_string().contains("simulated disk failure"));
+        persistence.reserve().await.unwrap().close(2, 200, 2);
+        let second = persistence
+            .query(String::new(), None, 10, Vec::new())
+            .await
+            .unwrap_err();
+        assert_eq!(second.to_string(), first.to_string());
+        assert_eq!(
+            persistence.list(None, 10).await.unwrap()[0].close_reason,
+            Some(2)
+        );
+        drop(persistence);
+        worker.join().unwrap();
+        assert_eq!(
+            NotificationStore::open(&path).unwrap().load_dnd().unwrap(),
+            (true, None)
+        );
+    }
 
     fn notification(id: u32, transient: bool) -> ActiveNotification {
         ActiveNotification::from_incoming(
