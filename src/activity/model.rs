@@ -12,6 +12,8 @@ pub(crate) struct ActivityState {
     pub next_event: Option<ActivityEvent>,
     pub sources: Vec<ActivitySourceState>,
     pub world_clocks: Vec<WorldClockState>,
+    #[serde(default)]
+    pub locations: Vec<super::locations::Location>,
     pub lunar: Option<super::astronomy::LunarPhase>,
     pub weather: WeatherState,
     pub weather_locations: Vec<WeatherState>,

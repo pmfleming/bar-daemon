@@ -103,12 +103,20 @@ impl ActivityService {
     }
 
     pub(crate) async fn monitor(self: Arc<Self>) {
+        let mut events = self.state.subscribe();
         self.refresh().await;
         let mut refresh = tokio::time::interval(Duration::from_secs(60));
         refresh.tick().await;
         loop {
-            refresh.tick().await;
-            self.refresh().await;
+            tokio::select! {
+                _ = refresh.tick() => self.refresh().await,
+                event = events.recv() => match event {
+                    Ok(event) if event.stream == crate::protocol::stream::TIMEZONE => self.publish_state(None).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.publish_state(None).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    _ => {},
+                }
+            }
         }
     }
 
@@ -453,7 +461,7 @@ impl ActivityService {
                 .iter()
                 .find_map(|source: &ActivitySourceState| source.error.clone())
         });
-        let state = ActivityState {
+        let mut state = ActivityState {
             available: true,
             syncing: false,
             event_count: events.count().try_into().unwrap_or(u32::MAX),
@@ -467,6 +475,7 @@ impl ActivityService {
             next_event,
             sources,
             world_clocks,
+            locations: Vec::new(),
             lunar: super::astronomy::lunar(now),
             weather: super::astronomy::weather(data.weather.clone(), now),
             weather_locations: data
@@ -478,6 +487,8 @@ impl ActivityService {
             error,
         };
         drop(data);
+        let local = self.state.read(|s| s.timezone.clone()).await;
+        state.locations = super::locations::project(&state, &local);
         self.state.update_activity(state).await;
     }
 }

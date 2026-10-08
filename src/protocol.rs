@@ -469,6 +469,13 @@ fn generated_contract_fixture() -> Value {
         fixture[name] = serde_json::to_value(center).expect("center wire projection");
     }
     fixture["notification_page"] = serde_json::to_value(page).expect("catalog wire projection");
+    let activity =
+        serde_json::from_value(fixture["snapshot"]["activity"].clone()).expect("activity fixture");
+    let local =
+        serde_json::from_value(fixture["snapshot"]["timezone"].clone()).expect("timezone fixture");
+    fixture["snapshot"]["activity"]["locations"] =
+        serde_json::to_value(crate::activity::locations::project(&activity, &local))
+            .expect("native locations");
     fixture
 }
 
