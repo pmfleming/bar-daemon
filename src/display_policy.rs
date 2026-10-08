@@ -41,6 +41,8 @@ impl Default for DisplayPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DisplayPolicyState {
     pub available: bool,
+    #[serde(default)]
+    pub baseline: String,
     pub policy: DisplayPolicy,
     pub status: String,
     pub error: Option<String>,
@@ -69,13 +71,14 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
     layout::ensure_policy_change_allowed().await?;
     save_json_atomic(&policy_path(), &policy).await?;
     layout::use_docking_policy().await?;
-    let state = DisplayPolicyState {
+    let mut state = DisplayPolicyState {
         available: true,
         policy,
         status: "pending".into(),
         error: None,
         ..store.read(|s| s.display_policy.clone()).await
     };
+    state.baseline = layout::baseline(&state.outputs, &state.policy);
     store.update_display_policy(state.clone()).await;
     Ok(state)
 }
@@ -112,6 +115,7 @@ pub(crate) async fn layout_action(
     let mut state = store.read(|s| s.display_policy.clone()).await;
     state.layout = document;
     state.outputs = backend.outputs().await?;
+    state.baseline = layout::baseline(&state.outputs, &state.policy);
     state.error = None;
     store.update_display_policy(state.clone()).await;
     Ok(state)
@@ -358,6 +362,7 @@ pub(crate) async fn monitor(store: StateStore) {
         {
             tracing::info!(status = %state.status, error = ?state.error, "laptop display policy");
         }
+        state.baseline = layout::baseline(&state.outputs, &state.policy);
         store.update_display_policy(state).await;
     }
 }

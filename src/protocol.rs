@@ -163,7 +163,7 @@ pub fn registry() -> Value {
             { "name": "displayPolicy.set", "params": { "prefer_external": true }, "result": "display_policy" },
             { "name": "displayFocus.set", "params": { "values": { "misc:mouse_move_focuses_monitor": false } }, "result": "display_policy" },
             { "name": "displayFocus.reset", "params": {}, "result": "display_policy" },
-            { "name": "displayLayout.preview", "params": { "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true, "mirror_of": "" }] }, "result": "display_policy" },
+            { "name": "displayLayout.preview", "params": { "baseline": "snapshot-baseline-token", "outputs": [{ "name": "eDP-1", "mode": "1920x1200@60", "x": 0, "y": 0, "scale": 1.25, "transform": 0, "enabled": true, "mirror_of": "" }] }, "result": "display_policy" },
             { "name": "displayLayout.confirm", "params": { "id": "preview-id" }, "result": "display_policy" },
             { "name": "displayLayout.revert", "params": { "id": "preview-id" }, "result": "display_policy" },
             { "name": "notifications.togglePanel", "params": {}, "result": "operation" },

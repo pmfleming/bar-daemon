@@ -394,9 +394,46 @@ async fn apply_setting<B: Backend>(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Preview {
+    pub baseline: String,
+    pub outputs: Vec<Setting>,
+}
+
+// Process-scoped keyed fingerprint: restarted daemons invalidate old drafts.
+// Ignore observation order and transient focus/DPMS fields, but include mode
+// catalogs, physical identities, geometry, mirroring and policy ownership.
+pub(super) fn baseline(outputs: &[Output], policy: &super::DisplayPolicy) -> String {
+    use std::{collections::hash_map::RandomState, hash::BuildHasher, sync::OnceLock};
+    static HASHER: OnceLock<RandomState> = OnceLock::new();
+    let mut ordered: Vec<_> = outputs.iter().filter(|o| connector(&o.name)).collect();
+    ordered.sort_by(|a, b| a.name.cmp(&b.name));
+    let values: Vec<_> = ordered
+        .iter()
+        .map(|o| {
+            let mut modes = o.available_modes.clone();
+            modes.sort();
+            serde_json::json!([
+                o.id,
+                o.name,
+                o.description,
+                Setting::observed(o, outputs),
+                modes
+            ])
+        })
+        .collect();
+    format!(
+        "{:016x}",
+        HASHER
+            .get_or_init(RandomState::new)
+            .hash_one(serde_json::json!([policy, values]).to_string())
+    )
+}
+
 pub(super) async fn preview<B: Backend>(
     backend: &B,
-    proposed: Layout,
+    proposed: Preview,
     store: &StateStore,
 ) -> Result<Document> {
     preview_at(
@@ -410,7 +447,7 @@ pub(super) async fn preview<B: Backend>(
 }
 async fn preview_at<B: Backend>(
     backend: &B,
-    proposed: Layout,
+    proposed: Preview,
     store: &StateStore,
     path: &Path,
     runtime: &mut Runtime,
@@ -426,6 +463,14 @@ async fn preview_at<B: Backend>(
         "Confirm or revert the previous layout first"
     );
     let outputs = backend.outputs().await?;
+    let policy = store.read(|s| s.display_policy.policy.clone()).await;
+    ensure!(
+        proposed.baseline == baseline(&outputs, &policy),
+        "Display baseline is stale; reload the layout"
+    );
+    let proposed = Layout {
+        outputs: proposed.outputs,
+    };
     proposed.validate(&outputs, true)?;
     let previous = Layout::observed(&outputs);
     // Reject a non-recoverable snapshot before touching the compositor.

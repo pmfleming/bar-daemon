@@ -109,9 +109,14 @@ impl Fixture {
         }
     }
     async fn preview(&mut self, proposed: Layout) -> Result<Document> {
+        let policy = self.store.read(|s| s.display_policy.policy.clone()).await;
+        let baseline = super::baseline(&self.backend.outputs.borrow(), &policy);
         preview_at(
             &self.backend,
-            proposed,
+            super::Preview {
+                baseline,
+                outputs: proposed.outputs,
+            },
             &self.store,
             &self.path,
             &mut self.runtime,
@@ -143,6 +148,54 @@ impl Fixture {
     async fn document(&self) -> Document {
         load_json_or_default(&self.path, "test").await.unwrap()
     }
+}
+
+#[tokio::test]
+async fn stale_preview_rejects_before_persistence_or_compositor_writes() {
+    let mut f = Fixture::new();
+    let token = super::baseline(&f.backend.outputs.borrow(), &Default::default());
+    let proposed = Layout::observed(&f.backend.outputs.borrow());
+    f.backend.outputs.borrow_mut()[0].scale = 2.0;
+    let error = preview_at(
+        &f.backend,
+        super::Preview {
+            baseline: token,
+            outputs: proposed.outputs,
+        },
+        &f.store,
+        &f.path,
+        &mut f.runtime,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("baseline is stale"));
+    assert!(f.backend.calls.borrow().is_empty());
+    assert!(!f.path.exists());
+    assert!(f.runtime.trial.is_none());
+}
+
+#[test]
+fn baseline_tracks_policy_and_catalog_but_not_order_or_focus() {
+    let mut outputs = fake().outputs.into_inner();
+    let policy = super::super::DisplayPolicy::default();
+    let original = super::baseline(&outputs, &policy);
+    outputs[0].focused = !outputs[0].focused;
+    assert_eq!(super::baseline(&outputs, &policy), original);
+    outputs[0].available_modes.push("1280x800@60.00Hz".into());
+    assert_ne!(super::baseline(&outputs, &policy), original);
+    outputs[0].available_modes.reverse();
+    let reordered = super::baseline(&outputs, &policy);
+    outputs[0].available_modes.reverse();
+    assert_eq!(super::baseline(&outputs, &policy), reordered);
+    assert_ne!(
+        super::baseline(
+            &outputs,
+            &super::super::DisplayPolicy {
+                prefer_external: false
+            }
+        ),
+        reordered
+    );
 }
 
 #[tokio::test]
