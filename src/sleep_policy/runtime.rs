@@ -71,22 +71,18 @@ fn verify_effective(text: &str, minutes: u32) -> Result<()> {
     let mut section = "";
     let (mut delay, mut ac) = (None, None);
     for line in text.lines().map(str::trim) {
-        if line.starts_with(['#', ';']) || line.is_empty() {
-            continue;
-        }
         if line.starts_with('[') {
             section = line;
-            continue;
         }
-        if section != "[Sleep]" {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            match key.trim() {
-                "HibernateDelaySec" => delay = Some(value.trim()),
-                "HibernateOnACPower" => ac = Some(value.trim()),
-                _ => {}
-            }
+        let assignment = line
+            .split_once('=')
+            .map(|(key, value)| (key.trim(), value.trim()));
+        // Exact section/key pairs also exclude comments and bare/malformed keys.
+        // Keep empty values: systemd resets and later assignments must win.
+        match (section, assignment) {
+            ("[Sleep]", Some(("HibernateDelaySec", value))) => delay = Some(value),
+            ("[Sleep]", Some(("HibernateOnACPower", value))) => ac = Some(value),
+            _ => {}
         }
     }
     anyhow::ensure!(
@@ -307,6 +303,13 @@ mod tests {
         ] {
             assert!(verify_effective(&(ours.clone() + extra), 120).is_err());
         }
-        assert!(verify_effective(&(ours + "[Other]\nHibernateDelaySec=20min\n"), 120).is_ok());
+        for extra in [
+            "[Other]\nHibernateDelaySec=20min\n",
+            "\n# HibernateDelaySec=20min\n; HibernateOnACPower=no\nHibernateDelaySec\n",
+            "[Other]\nHibernateOnACPower=no\n[Sleep]\n HibernateDelaySec = 120min \n HibernateOnACPower = yes \n",
+        ] {
+            assert!(verify_effective(&(ours.clone() + extra), 120).is_ok());
+        }
+        assert!(verify_effective("HibernateDelaySec=120min\nHibernateOnACPower=yes", 120).is_err());
     }
 }
