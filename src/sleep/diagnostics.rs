@@ -105,30 +105,59 @@ fn disk_swap_available(swaps: &str) -> Option<bool> {
     }
     let mut disk = false;
     for line in lines.filter(|line| !line.trim().is_empty()) {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        if fields.len() != 5 || !matches!(fields[1], "file" | "partition") {
+        let mut fields = line.split_whitespace();
+        let [
+            Some(device),
+            Some("file" | "partition"),
+            Some(size),
+            Some(_),
+            Some(_),
+            None,
+        ] = std::array::from_fn(|_| fields.next())
+        else {
             return None;
-        }
-        let size = fields[2].parse::<u64>().ok()?;
-        let zram = fields[0]
+        };
+        let size = size.parse::<u64>().ok()?;
+        let zram = device
             .strip_prefix("/dev/zram")
             .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()));
-        if size > 0 && !zram {
-            disk = true;
-        }
+        disk |= size > 0 && !zram;
     }
     Some(disk)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::inspect;
+    use super::{disk_swap_available, inspect};
     use std::{fs, path::Path};
 
     fn put(root: &Path, path: &str, value: &str) {
         let path = root.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, value).unwrap();
+    }
+
+    #[test]
+    fn swap_rows_are_bounded_and_all_rows_must_validate() {
+        let header = "Filename Type Size Used Priority\n";
+        for (rows, expected) in [
+            ("\n", Some(false)),
+            ("/dev/zram0 partition 10 0 5\n", Some(false)),
+            ("/swap file 0 0 -2\n", Some(false)),
+            ("/dev/zram-data partition 10 0 5\n", Some(true)),
+            ("/swap file 10 0 -2\n", Some(true)),
+            ("/swap file 10 0\n", None),
+            ("/swap file 10 0 -2 extra\n", None),
+            ("/swap unknown 10 0 -2\n", None),
+            ("/swap file invalid 0 -2\n", None),
+            ("/swap file 10 0 -2\nmalformed\n", None),
+        ] {
+            assert_eq!(
+                disk_swap_available(&format!("{header}{rows}")),
+                expected,
+                "{rows}"
+            );
+        }
     }
 
     #[test]
