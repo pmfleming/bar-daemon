@@ -38,6 +38,11 @@ struct ExpiryBatch {
     dnd_expired: bool,
 }
 
+// Consume a one-shot deadline only when it is due; future/absent deadlines stay intact.
+fn take_due(deadline: &mut Option<u64>, now: u64) -> bool {
+    deadline.take_if(|until| *until <= now).is_some()
+}
+
 impl EngineData {
     fn upsert(
         &mut self,
@@ -80,48 +85,35 @@ impl EngineData {
 
     fn expire(&mut self, now: u64) -> ExpiryBatch {
         let mut changed = Vec::new();
+        let mut expired_ids = Vec::new();
         for policy in self.app_policies.values_mut() {
-            if policy.silent && policy.until_unix_ms.is_some_and(|until| until <= now) {
+            if policy.silent && take_due(&mut policy.until_unix_ms, now) {
                 policy.silent = false;
-                policy.until_unix_ms = None;
                 self.history_revision = self.history_revision.wrapping_add(1);
             }
         }
         for notification in self.active.values_mut() {
-            let mut dirty = false;
-            if notification
-                .snoozed_until_unix_ms
-                .is_some_and(|until| until <= now)
-            {
-                notification.snoozed_until_unix_ms = None;
-                dirty = true;
+            let woke = take_due(&mut notification.snoozed_until_unix_ms, now);
+            if notification.snoozed_until_unix_ms.is_some() {
+                continue;
             }
-            if notification.snoozed_until_unix_ms.is_none()
-                && notification
-                    .toast_expires_unix_ms
-                    .is_some_and(|until| until <= now)
-            {
+            if take_due(&mut notification.toast_expires_unix_ms, now) {
                 notification.toast_visible = false;
-                notification.toast_expires_unix_ms = None;
                 // Popup-only changes do not invalidate persisted history.
             }
-            if dirty {
+            if notification
+                .expires_unix_ms
+                .is_some_and(|expiry| expiry <= now)
+            {
+                expired_ids.push(notification.id);
+            }
+            if woke {
                 changed.push(notification.clone());
             }
         }
-        let expired_ids = self
-            .active
-            .values()
-            .filter(|item| {
-                item.snoozed_until_unix_ms.is_none()
-                    && item.expires_unix_ms.is_some_and(|expiry| expiry <= now)
-            })
-            .map(|item| item.id)
-            .collect();
-        let dnd_expired = self.dnd && self.dnd_until_unix_ms.is_some_and(|until| until <= now);
+        let dnd_expired = self.dnd && take_due(&mut self.dnd_until_unix_ms, now);
         if dnd_expired {
             self.dnd = false;
-            self.dnd_until_unix_ms = None;
         }
         if !changed.is_empty() {
             self.history_revision = self.history_revision.wrapping_add(1);
@@ -1125,6 +1117,53 @@ mod tests {
         .unwrap();
         assert_eq!(engine.clear_group("test").await.unwrap(), 2);
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn expiry_consumes_due_deadlines_once_without_waking_future_snoozes() {
+        use super::super::{model::ActiveNotification, policy::AppPolicy};
+        let engine = NotificationEngine::new(StateStore::default()).await;
+        let mut data = engine.data.lock().await;
+        data.dnd = true;
+        data.dnd_until_unix_ms = Some(100);
+        for (id, snooze) in [(1, None), (2, Some(100)), (3, Some(101))] {
+            let mut n = ActiveNotification::from_incoming(id, notification("expiry", 0), 1);
+            n.snoozed_until_unix_ms = snooze;
+            n.toast_expires_unix_ms = Some(100);
+            n.expires_unix_ms = Some(100);
+            data.active.insert(id, n);
+        }
+        for (key, silent, until) in [
+            ("due", true, 100),
+            ("future", true, 101),
+            ("inactive", false, 100),
+        ] {
+            data.app_policies.insert(
+                key.into(),
+                AppPolicy {
+                    silent,
+                    until_unix_ms: Some(until),
+                    ..Default::default()
+                },
+            );
+        }
+        let early = data.expire(99);
+        assert!(early.changed.is_empty() && early.expired_ids.is_empty() && !early.dnd_expired);
+        let due = data.expire(100);
+        assert_eq!(due.expired_ids, [1, 2]);
+        assert_eq!(due.changed.iter().map(|n| n.id).collect::<Vec<_>>(), [2]);
+        assert!(due.dnd_expired && !data.dnd && data.dnd_until_unix_ms.is_none());
+        assert_eq!(data.history_revision, 2); // one policy, one snooze batch
+        assert!(!data.active[&1].toast_visible && !data.active[&2].toast_visible);
+        assert_eq!(data.active[&2].toast_expires_unix_ms, None);
+        assert_eq!(data.active[&3].toast_expires_unix_ms, Some(100));
+        assert_eq!(data.active[&3].snoozed_until_unix_ms, Some(101));
+        assert_eq!(data.app_policies["due"].until_unix_ms, None);
+        assert_eq!(data.app_policies["future"].until_unix_ms, Some(101));
+        assert_eq!(data.app_policies["inactive"].until_unix_ms, Some(100));
+        let repeated = data.expire(100);
+        assert!(repeated.changed.is_empty() && !repeated.dnd_expired);
+        assert_eq!(data.history_revision, 2);
     }
 
     #[tokio::test]
