@@ -320,12 +320,19 @@ impl ActivityService {
                 todo.created_unix_ms,
             )
         });
-        let busy_dates = events
+        let today = chrono::Utc::now().with_timezone(&timezone).date_naive();
+        let days = super::day::project(
+            &events,
+            &todos,
+            from_date.parse()?,
+            last_date.parse()?,
+            today,
+            &timezone,
+        );
+        let busy_dates = days
             .iter()
-            .filter_map(event_date)
-            .chain(todos.iter().filter_map(|todo| todo.due_date.clone()))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
+            .filter(|(_, day)| !day.event_ids.is_empty() || !day.todo_ids.is_empty())
+            .map(|(date, _)| date.clone())
             .collect();
         Ok(ActivityRange {
             from_unix_ms,
@@ -333,6 +340,8 @@ impl ActivityService {
             events,
             todos,
             busy_dates,
+            days,
+            local_date: today.to_string(),
         })
     }
 
@@ -471,15 +480,6 @@ impl ActivityService {
         drop(data);
         self.state.update_activity(state).await;
     }
-}
-
-fn event_date(event: &ActivityEvent) -> Option<String> {
-    event.start_date.clone().or_else(|| {
-        Local
-            .timestamp_millis_opt(event.start_unix_ms)
-            .single()
-            .map(|date| date.format("%Y-%m-%d").to_string())
-    })
 }
 
 #[cfg(test)]

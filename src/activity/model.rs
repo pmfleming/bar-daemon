@@ -164,4 +164,12 @@ pub(crate) struct ActivityRange {
     pub events: Vec<ActivityEvent>,
     pub todos: Vec<TodoItem>,
     pub busy_dates: Vec<String>,
+    pub days: std::collections::BTreeMap<String, ActivityDay>,
+    pub local_date: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ActivityDay {
+    pub event_ids: Vec<String>,
+    pub todo_ids: Vec<String>,
 }

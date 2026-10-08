@@ -1,5 +1,6 @@
 pub(crate) mod astronomy;
 pub(crate) mod config;
+mod day;
 mod ics;
 pub(crate) mod model;
 pub(crate) mod notifications;
