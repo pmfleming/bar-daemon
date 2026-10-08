@@ -558,30 +558,33 @@ struct PropsValues {
     muted: Option<bool>,
 }
 
-fn parse_props(pod: &pw::spa::pod::Pod) -> Option<PropsValues> {
+fn pod_object(pod: &pw::spa::pod::Pod) -> Option<pw::spa::pod::Object> {
     use pw::spa::pod::{Value, deserialize::PodDeserializer};
     let (_, Value::Object(object)) =
         PodDeserializer::deserialize_from::<Value>(pod.as_bytes()).ok()?
     else {
         return None;
     };
-    Some(parse_props_object(object))
+    Some(object)
+}
+
+fn parse_props(pod: &pw::spa::pod::Pod) -> Option<PropsValues> {
+    pod_object(pod).map(parse_props_object)
 }
 
 fn parse_props_object(object: pw::spa::pod::Object) -> PropsValues {
     use pw::spa::pod::{Value, ValueArray};
     let mut values = PropsValues::default();
     for property in object.properties {
-        match property.value {
-            Value::Bool(value) if property.key == pw::spa::sys::SPA_PROP_mute => {
-                values.muted = Some(value)
-            }
-            Value::Float(value) if property.key == pw::spa::sys::SPA_PROP_volume => {
+        match (property.key, property.value) {
+            (pw::spa::sys::SPA_PROP_mute, Value::Bool(value)) => values.muted = Some(value),
+            (pw::spa::sys::SPA_PROP_volume, Value::Float(value)) => {
                 values.volume = Some(raw_to_linear(value))
             }
-            Value::ValueArray(ValueArray::Float(volumes))
-                if property.key == pw::spa::sys::SPA_PROP_channelVolumes =>
-            {
+            (
+                pw::spa::sys::SPA_PROP_channelVolumes,
+                Value::ValueArray(ValueArray::Float(volumes)),
+            ) => {
                 values.channels = Some(volumes.len().max(1));
                 if !volumes.is_empty() {
                     values.volume = Some(raw_to_linear(
@@ -596,28 +599,20 @@ fn parse_props_object(object: pw::spa::pod::Object) -> PropsValues {
 }
 
 fn parse_route(pod: &pw::spa::pod::Pod) -> Option<RouteProbe> {
-    use pw::spa::pod::{Value, deserialize::PodDeserializer};
-    let (_, Value::Object(object)) =
-        PodDeserializer::deserialize_from::<Value>(pod.as_bytes()).ok()?
-    else {
-        return None;
-    };
+    use pw::spa::pod::Value;
+    let object = pod_object(pod)?;
     let mut index = None;
     let mut route_device = None;
     let mut direction = None;
     let mut values = None;
     for property in object.properties {
-        match property.value {
-            Value::Int(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_index => {
-                index = Some(value)
-            }
-            Value::Int(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_device => {
-                route_device = Some(value)
-            }
-            Value::Id(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_direction => {
+        match (property.key, property.value) {
+            (pw::spa::sys::SPA_PARAM_ROUTE_index, Value::Int(value)) => index = Some(value),
+            (pw::spa::sys::SPA_PARAM_ROUTE_device, Value::Int(value)) => route_device = Some(value),
+            (pw::spa::sys::SPA_PARAM_ROUTE_direction, Value::Id(value)) => {
                 direction = Some(value.0)
             }
-            Value::Object(value) if property.key == pw::spa::sys::SPA_PARAM_ROUTE_props => {
+            (pw::spa::sys::SPA_PARAM_ROUTE_props, Value::Object(value)) => {
                 values = Some(parse_props_object(value))
             }
             _ => {}
@@ -839,6 +834,71 @@ mod tests {
     use pipewire as pw;
 
     use super::{RouteProbe, SinkProbe, apply_route, preferred_node};
+
+    #[test]
+    fn pod_decoding_preserves_types_defaults_and_channel_volume_precedence() {
+        use pw::spa::{
+            pod::{Object, Property, Value, ValueArray, serialize::PodSerializer},
+            sys,
+        };
+        let mut props = Object {
+            type_: sys::SPA_TYPE_OBJECT_Props,
+            id: sys::SPA_PARAM_Props,
+            properties: vec![
+                Property::new(sys::SPA_PROP_mute, Value::Int(1)), // wrong type is ignored
+                Property::new(sys::SPA_PROP_volume, Value::Float(0.125)),
+                Property::new(
+                    sys::SPA_PROP_channelVolumes,
+                    Value::ValueArray(ValueArray::Float(vec![])),
+                ),
+            ],
+        };
+        let values = super::parse_props_object(props.clone());
+        assert_eq!(
+            (values.volume, values.channels, values.muted),
+            (Some(0.5), Some(1), None)
+        );
+        props.properties.push(Property::new(
+            sys::SPA_PROP_channelVolumes,
+            Value::ValueArray(ValueArray::Float(vec![1.0, 1.0])),
+        ));
+        let values = super::parse_props_object(props.clone());
+        assert_eq!((values.volume, values.channels), (Some(1.0), Some(2)));
+        let decode = |value: &Value| {
+            let bytes = PodSerializer::serialize(std::io::Cursor::new(Vec::new()), value)
+                .unwrap()
+                .0
+                .into_inner();
+            super::parse_route(pw::spa::pod::Pod::from_bytes(&bytes).unwrap())
+        };
+        let mut route = Object {
+            type_: sys::SPA_TYPE_OBJECT_ParamRoute,
+            id: sys::SPA_PARAM_Route,
+            properties: vec![
+                Property::new(sys::SPA_PARAM_ROUTE_index, Value::Int(7)),
+                Property::new(sys::SPA_PARAM_ROUTE_device, Value::Int(2)),
+                Property::new(
+                    sys::SPA_PARAM_ROUTE_direction,
+                    Value::Id(pw::spa::utils::Id(sys::SPA_DIRECTION_OUTPUT)),
+                ),
+                Property::new(sys::SPA_PARAM_ROUTE_props, Value::Object(props)),
+            ],
+        };
+        let parsed = decode(&Value::Object(route.clone())).unwrap();
+        assert_eq!(
+            (
+                parsed.index,
+                parsed.route_device,
+                parsed.channels,
+                parsed.volume,
+                parsed.muted
+            ),
+            (7, 2, 2, 1.0, false)
+        );
+        route.properties[0].value = Value::Bool(true);
+        assert!(decode(&Value::Object(route)).is_none());
+        assert!(decode(&Value::Bool(true)).is_none());
+    }
 
     #[test]
     fn applies_the_only_matching_hardware_route() {
