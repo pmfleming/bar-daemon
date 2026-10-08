@@ -106,14 +106,16 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ActivityState, TimezoneState, WeatherState, WorldClockState, project};
     #[test]
     fn reordering_and_duplicate_clocks_do_not_change_identities() {
-        let mut activity = ActivityState::default();
-        activity.world_clocks = vec![
-            WorldClockState::new("Etc/UTC", "Zulu").unwrap(),
-            WorldClockState::new("Etc/UTC", "Alpha").unwrap(),
-        ];
+        let mut activity = ActivityState {
+            world_clocks: vec![
+                WorldClockState::new("Etc/UTC", "Zulu").unwrap(),
+                WorldClockState::new("Etc/UTC", "Alpha").unwrap(),
+            ],
+            ..Default::default()
+        };
         let before = project(&activity, &Default::default());
         activity.world_clocks.reverse();
         assert_eq!(project(&activity, &Default::default()), before);
