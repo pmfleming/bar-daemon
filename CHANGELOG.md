@@ -12,6 +12,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Optional notification period view: three newest records followed by disjoint
+  Today / This week / This month / Older groups. Previews never duplicate group
+  records; calendar-day fencing prevents mixed windows across local midnight.
 - Date-grouped notification timelines with bounded exact-repeat stacks and
   revision-fenced scrolling windows; no frontend grouping of partial history.
 - Persistent per-app silence, timed quiet periods, grouping and DND bypass.

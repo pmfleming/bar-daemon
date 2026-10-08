@@ -173,7 +173,7 @@ pub fn registry() -> Value {
             { "name": "notifications.prepareDelete", "params": { "app_key": "desktop:org.signal.Signal", "selected": null }, "result": "delete_confirmation" },
             { "name": "notifications.delete", "params": { "token": "confirmation-token", "cancel": false }, "result": "deleted" },
             { "name": "notifications.list", "params": { "before_history_id": null, "limit": 50 }, "result": "notification_history" },
-            { "name": "notifications.queryCenter", "params": { "view": "apps", "query": "", "offset": 0, "epoch": null, "revision": null, "app_anchor": null, "app_key": null, "page": 1, "page_anchor": null, "selected": null, "group_key": null }, "result": "notification_center" },
+            { "name": "notifications.queryCenter", "params": { "view": "apps", "query": "", "offset": 0, "epoch": null, "revision": null, "app_anchor": null, "app_key": null, "page": 1, "page_anchor": null, "selected": null, "group_key": null, "period_groups": false, "period_day": null }, "result": "notification_center" },
             { "name": "notifications.queryHistory", "params": { "query": "", "cursor": null, "anchor": null, "limit": 50 }, "result": "notification_page" },
             { "name": "notifications.dismiss", "params": { "id": 1 }, "result": "operation" },
             { "name": "notifications.clear", "params": {}, "result": "operation" },

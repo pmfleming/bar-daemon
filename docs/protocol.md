@@ -196,6 +196,17 @@ snapshot has `view`, `epoch`, string `revision` and normalized `query`.
   stack, with at most 50 members. Disabling grouping yields singleton entries.
   Continuations require the returned epoch/revision; `timeline_anchor` allows
   atomic refresh through an existing window. There is no change to lifecycle.
+  With `period_groups: true`, `recent` contains the three newest matching previews
+  (or fewer), individually, and `dates` always has `today`, `week`, `month`, `older`
+  in that order, including zero counts. These mutually exclusive periods exclude
+  `recent`: local today takes precedence, then the week beginning Monday, then
+  the calendar month, then older dates. Repeat stacks still never span local days.
+  A null `date` returns no selected period/entries, allowing all groups to start
+  closed. A period key seeks directly into that group. `period_day` is the local
+  `YYYY-MM-DD` used for classification; continuations must echo it along with
+  epoch/revision and become stale across midnight even without a new revision.
+  Recent previews/counts and entries belong to one snapshot; clients must publish
+  them atomically. Omitting `period_groups` preserves the original date view.
 
 Preview strings are bounded (name 128, icon 512, summary 160, body 240 Unicode
 characters). Previews also retain `hints.desktop_entry` (1024 characters) and

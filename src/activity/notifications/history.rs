@@ -85,6 +85,12 @@ pub(crate) enum HistoryError {
     Busy,
     Unavailable(anyhow::Error),
 }
+impl std::fmt::Display for HistoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
+    }
+}
+impl std::error::Error for HistoryError {}
 impl HistoryError {
     pub fn code(&self) -> &'static str {
         match self {

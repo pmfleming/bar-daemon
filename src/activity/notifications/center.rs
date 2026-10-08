@@ -30,6 +30,9 @@ pub(crate) struct CenterQuery {
     pub selected: Option<Position>,
     pub group_key: Option<String>,
     pub date: Option<String>,
+    #[serde(default)]
+    pub period_groups: bool,
+    pub period_day: Option<String>,
     pub timeline_anchor: Option<String>,
     #[serde(default = "default_grouping")]
     pub group_similar: bool,
@@ -45,6 +48,12 @@ impl CenterQuery {
         if !["apps", "app", "timeline"].contains(&self.view.as_str())
             || self.offset > 5200
             || self.date.as_ref().is_some_and(|s| s.len() > 10)
+            || self.period_day.as_ref().is_some_and(|s| s.len() > 10)
+            || (self.period_groups
+                && self
+                    .date
+                    .as_ref()
+                    .is_some_and(|s| !["today", "week", "month", "older"].contains(&s.as_str())))
             || self.timeline_anchor.as_ref().is_some_and(|s| s.len() > 64)
             || self.page == 0
             || self.page > 1040
@@ -271,7 +280,7 @@ pub(crate) fn project(
     if query.view == "timeline" {
         return checked(CenterPage::Timeline(super::timeline::project(
             rows, query, epoch, revision,
-        )));
+        )?));
     }
     let count = rows.len();
     let pages = count.div_ceil(INDEX_SIZE).max(1);

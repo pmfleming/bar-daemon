@@ -540,6 +540,8 @@
           "offset": 0,
           "page": 1,
           "page_anchor": null,
+          "period_day": null,
+          "period_groups": false,
           "query": "",
           "revision": null,
           "selected": null,

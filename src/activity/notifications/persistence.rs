@@ -713,7 +713,7 @@ impl NotificationStore {
             let record = history_record(row)?;
             Ok(CatalogRecord { history_id: Some(record.history_id), notification: record.notification,
                 closed_unix_ms: record.closed_unix_ms, close_reason: record.close_reason })
-        }).map_err(|e| anyhow!(e.message()))
+        }).map_err(anyhow::Error::new)
     }
 
     fn query(

@@ -653,7 +653,11 @@ impl NotificationEngine {
             return persistence
                 .center(query, active, self.history_epoch.clone(), revision)
                 .await
-                .map_err(HistoryError::Unavailable);
+                .map_err(|error| {
+                    error
+                        .downcast::<HistoryError>()
+                        .unwrap_or_else(HistoryError::Unavailable)
+                });
         }
         super::center::project(
             active

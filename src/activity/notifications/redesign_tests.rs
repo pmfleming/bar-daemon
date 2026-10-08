@@ -246,6 +246,66 @@ async fn delete_includes_retained_records_older_than_the_search_window() {
 }
 
 #[tokio::test]
+async fn period_view_excludes_live_previews_from_saved_groups_and_preserves_stale_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine =
+        NotificationEngine::persistent(StateStore::default(), dir.path().join("notifications.db"))
+            .await
+            .unwrap();
+    let mut ids = Vec::new();
+    for i in 0..6 {
+        let id = engine
+            .notify(0, incoming("chat", "Repeated"))
+            .await
+            .unwrap();
+        ids.push(id);
+        if i < 3 {
+            engine.dismiss(id).await.unwrap();
+        }
+    }
+    let mut request = query(
+        serde_json::json!({"view":"timeline", "app_key":"desktop:chat", "period_groups":true}),
+    );
+    let CenterPage::Timeline(page) = engine.query_center(request.clone()).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        page.recent
+            .unwrap()
+            .iter()
+            .map(|p| p.id)
+            .collect::<Vec<_>>(),
+        ids[3..].iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert!(page.entries.is_empty() && page.date.is_empty());
+    assert_eq!(page.dates[0].count, 3);
+    request.date = Some("today".into());
+    let CenterPage::Timeline(page) = engine.query_center(request.clone()).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(page.count, 3);
+    assert_eq!(
+        page.entries[0]
+            .members
+            .iter()
+            .map(|p| p.id)
+            .collect::<Vec<_>>(),
+        ids[..3].iter().rev().copied().collect::<Vec<_>>()
+    );
+    request.offset = 1;
+    request.epoch = Some(page.epoch);
+    request.revision = Some(page.revision);
+    request.period_day = Some("1970-01-01".into());
+    assert!(
+        matches!(
+            engine.query_center(request).await,
+            Err(super::history::HistoryError::Stale)
+        ),
+        "the persistence worker must preserve the typed stale-calendar error so clients refresh rather than fail"
+    );
+}
+
+#[tokio::test]
 async fn app_policy_applies_before_popup_publication_and_is_app_scoped() {
     let state = StateStore::default();
     let engine = NotificationEngine::new(state.clone()).await;
