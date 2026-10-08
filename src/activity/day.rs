@@ -29,9 +29,14 @@ pub(super) fn project<T: TimeZone>(
                             && event.end_date.as_deref().unwrap_or(start) > key.as_str();
                     }
                 }
-                event.end_unix_ms > event.start_unix_ms
+                let last_instant = if event.end_unix_ms == event.start_unix_ms {
+                    event.start_unix_ms // A valid zero-duration VEVENT is an instant.
+                } else {
+                    event.end_unix_ms.saturating_sub(1)
+                };
+                event.end_unix_ms >= event.start_unix_ms
                     && date_at(event.start_unix_ms).is_some_and(|d| d <= date)
-                    && date_at(event.end_unix_ms - 1).is_some_and(|d| d >= date)
+                    && date_at(last_instant).is_some_and(|d| d >= date)
             })
             .map(|e| e.id.clone())
             .collect();
