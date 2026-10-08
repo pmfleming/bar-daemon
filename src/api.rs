@@ -42,6 +42,13 @@ pub(crate) fn error(code: &str, message: impl Into<String>) -> Value {
     shelllist_daemon_core::error(API, EnvelopeError::new(code, message))
 }
 
+fn unsupported_method(method: &str) -> Value {
+    error(
+        "unsupported-method",
+        format!("Unsupported bar-api method: {method}"),
+    )
+}
+
 fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {
     serde_json::from_value(params).map_err(|value| {
         error(
@@ -124,36 +131,11 @@ impl ApiService {
             "displayLayout.preview" | "displayLayout.confirm" | "displayLayout.revert" => {
                 self.effects.display_layout(method, params).await
             }
-            "notifications.togglePanel" => self.notifications.notification_action(false).await,
-            "notifications.toggleDnd" => self.notifications.notification_action(true).await,
-            "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,
-            "notifications.setAppPolicy" => {
-                self.notifications.notification_set_app_policy(params).await
+            method if method.starts_with("notifications.") => {
+                self.notifications.dispatch(method, params).await
             }
-            "notifications.prepareDelete" => {
-                self.notifications.notification_prepare_delete(params).await
-            }
-            "notifications.delete" => self.notifications.notification_delete(params).await,
-            "notifications.list" => self.notifications.notification_list(params).await,
-            "notifications.queryCenter" => {
-                self.notifications.notification_query_center(params).await
-            }
-            "notifications.queryHistory" => {
-                self.notifications.notification_query_history(params).await
-            }
-            "notifications.dismiss" => self.notifications.notification_dismiss(params).await,
-            "notifications.clear" => self.notifications.notification_clear().await,
-            "notifications.clearGroup" => self.notifications.notification_clear_group(params).await,
-            "notifications.snooze" => self.notifications.notification_snooze(params).await,
-            "notifications.invokeAction" => {
-                self.notifications.notification_invoke_action(params).await
-            }
-            "notifications.reply" => self.notifications.notification_reply(params).await,
             "updates.refresh" => self.effects.updates_refresh().await,
-            _ => error(
-                "unsupported-method",
-                format!("Unsupported bar-api method: {method}"),
-            ),
+            _ => unsupported_method(method),
         }
     }
 }
@@ -193,6 +175,56 @@ mod tests {
             assert_eq!(response["ok"], false);
             assert_eq!(response["error"]["code"], "validation-error");
         }
+    }
+
+    #[tokio::test]
+    async fn notification_routing_preserves_backend_and_validation_errors() {
+        let api = api().await;
+        for method in [
+            "setDnd",
+            "setAppPolicy",
+            "delete",
+            "dismiss",
+            "snooze",
+            "invokeAction",
+            "reply",
+        ] {
+            let response = api
+                .dispatch(&format!("notifications.{method}"), json!({}))
+                .await;
+            assert_eq!(response["error"]["code"], "validation-error", "{method}");
+        }
+        for method in [
+            "queryCenter",
+            "queryHistory",
+            "list",
+            "clear",
+            "prepareDelete",
+        ] {
+            let response = api
+                .dispatch(&format!("notifications.{method}"), json!({}))
+                .await;
+            assert_eq!(
+                response["error"]["code"], "native-notifications-required",
+                "{method}"
+            );
+        }
+        for method in ["dismiss", "snooze", "invokeAction", "reply"] {
+            let response = api
+                .dispatch(
+                    &format!("notifications.{method}"),
+                    json!({"id":0, "until_unix_ms":1, "action_key":"default", "text":"reply"}),
+                )
+                .await;
+            assert_eq!(
+                response["error"]["message"],
+                "notification id must be positive"
+            );
+        }
+        assert_eq!(
+            api.dispatch("notifications.unknown", json!({})).await["error"]["code"],
+            "unsupported-method"
+        );
     }
 
     #[tokio::test]

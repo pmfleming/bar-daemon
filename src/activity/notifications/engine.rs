@@ -48,10 +48,9 @@ impl EngineData {
         maximum_active: usize,
     ) -> (ActiveNotification, Option<u32>) {
         let mut evicted = None;
-        let stored = if let Some(existing) = self.active.get_mut(&id) {
+        let mut stored = if let Some(mut existing) = self.active.remove(&id) {
             existing.replace_from(incoming, now);
-            existing.source_monitor = source_monitor;
-            existing.clone()
+            existing
         } else {
             if self.active.len() >= maximum_active
                 && let Some(oldest) = self
@@ -63,26 +62,18 @@ impl EngineData {
                 self.active.remove(&oldest);
                 evicted = Some(oldest);
             }
-            let mut stored = ActiveNotification::from_incoming(id, incoming, now);
-            stored.source_monitor = source_monitor;
-            self.active.insert(id, stored.clone());
-            stored
+            ActiveNotification::from_incoming(id, incoming, now)
         };
-        let mut stored = stored;
-        let key = super::center::app_key(
-            &stored.hints.desktop_entry,
-            &stored.app_name,
-            stored.id,
-            stored.created_unix_ms,
-        );
+        stored.source_monitor = source_monitor;
+        let key = stored.app_key();
         if self
             .app_policies
             .get(&key)
             .is_some_and(|policy| policy.silenced(now))
         {
             stored.toast_visible = false;
-            self.active.insert(id, stored.clone());
         }
+        self.active.insert(id, stored.clone());
         self.history_revision = self.history_revision.wrapping_add(1);
         (stored, evicted)
     }
@@ -314,13 +305,7 @@ impl NotificationEngine {
             let mut data = engine.data.lock().await;
             if policy.silenced(unix_ms()) {
                 for notification in data.active.values_mut() {
-                    if super::center::app_key(
-                        &notification.hints.desktop_entry,
-                        &notification.app_name,
-                        notification.id,
-                        notification.created_unix_ms,
-                    ) == key
-                    {
+                    if notification.app_key() == key {
                         // Clearing silence must not replay an old popup.
                         notification.toast_visible = false;
                         notification.toast_expires_unix_ms = None;
@@ -358,14 +343,8 @@ impl NotificationEngine {
         };
         let data = self.data.lock().await;
         for n in data.active.values() {
-            if app_key.as_ref().is_none_or(|key| {
-                key == &super::center::app_key(
-                    &n.hints.desktop_entry,
-                    &n.app_name,
-                    n.id,
-                    n.created_unix_ms,
-                )
-            }) && selected.is_none_or(|p| p.id == n.id && p.created == n.created_unix_ms)
+            if app_key.as_ref().is_none_or(|key| key == &n.app_key())
+                && selected.is_none_or(|p| p.id == n.id && p.created == n.created_unix_ms)
             {
                 records.push(history::Position {
                     id: n.id,
@@ -627,6 +606,20 @@ impl NotificationEngine {
         persistence.list(before_history_id, limit).await
     }
 
+    // Call while holding mutations: the revision and overlay must describe the
+    // same persistence boundary as the subsequent storage read.
+    async fn catalog_snapshot(&self) -> (u64, Vec<ActiveNotification>) {
+        let data = self.data.lock().await;
+        (
+            data.history_revision,
+            data.active
+                .values()
+                .filter(|n| n.snoozed_until_unix_ms.is_none())
+                .cloned()
+                .collect(),
+        )
+    }
+
     pub(crate) async fn query_center(
         &self,
         mut query: super::center::CenterQuery,
@@ -637,17 +630,7 @@ impl NotificationEngine {
             .try_acquire()
             .map_err(|_| HistoryError::Busy)?;
         let _mutation = self.mutations.lock().await;
-        let (revision, active) = {
-            let data = self.data.lock().await;
-            (
-                data.history_revision,
-                data.active
-                    .values()
-                    .filter(|n| n.snoozed_until_unix_ms.is_none())
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        };
+        let (revision, active) = self.catalog_snapshot().await;
         query.validate_revision(&self.history_epoch, revision)?;
         if let Some(persistence) = &self.persistence {
             return persistence
@@ -690,17 +673,7 @@ impl NotificationEngine {
         // The revision, active overlay and persisted rows are one read. This
         // also waits for the preceding mutation's reserved writes to enqueue.
         let _mutation = self.mutations.lock().await;
-        let (revision, active) = {
-            let data = self.data.lock().await;
-            (
-                data.history_revision,
-                data.active
-                    .values()
-                    .filter(|item| item.snoozed_until_unix_ms.is_none())
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        };
+        let (revision, active) = self.catalog_snapshot().await;
         let now = unix_ms();
         let before = query.position(&self.history_epoch, revision, now)?;
         let persisted = if let Some(persistence) = &self.persistence {
@@ -886,12 +859,7 @@ impl NotificationEngine {
                 .filter(|item| item.snoozed_until_unix_ms.is_none())
                 .map(|item| {
                     let mut item = item.clone();
-                    let key = super::center::app_key(
-                        &item.hints.desktop_entry,
-                        &item.app_name,
-                        item.id,
-                        item.created_unix_ms,
-                    );
+                    let key = item.app_key();
                     if let Some(policy) = data.app_policies.get(&key) {
                         item.dnd_bypass = policy.bypass_dnd;
                         if policy.silenced(unix_ms()) {
@@ -951,20 +919,12 @@ mod tests {
     use crate::state::StateStore;
 
     use super::NotificationEngine;
-    use crate::activity::notifications::model::{
-        IncomingNotification, NotificationHints, close_reason,
-    };
+    use crate::activity::notifications::model::{IncomingNotification, close_reason};
 
     fn notification(summary: &str, timeout_ms: i32) -> IncomingNotification {
-        IncomingNotification {
-            app_name: "test".into(),
-            app_icon: String::new(),
-            summary: summary.into(),
-            body: String::new(),
-            actions: Vec::new(),
-            hints: NotificationHints::default(),
-            expire_timeout: timeout_ms,
-        }
+        let mut n = super::super::model::incoming("test", summary, "");
+        n.expire_timeout = timeout_ms;
+        n
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

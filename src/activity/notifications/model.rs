@@ -57,6 +57,19 @@ pub(crate) struct IncomingNotification {
     pub expire_timeout: i32,
 }
 
+#[cfg(test)]
+pub(super) fn incoming(app: &str, summary: &str, body: &str) -> IncomingNotification {
+    IncomingNotification {
+        app_name: app.into(),
+        app_icon: String::new(),
+        summary: summary.into(),
+        body: body.into(),
+        actions: Vec::new(),
+        hints: NotificationHints::default(),
+        expire_timeout: 0,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActiveNotification {
     pub id: u32,
@@ -85,7 +98,7 @@ pub(crate) struct ActiveNotification {
     pub snoozed_until_unix_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct HistoryNotification {
     pub history_id: i64,
     pub notification: ActiveNotification,
@@ -94,6 +107,15 @@ pub(crate) struct HistoryNotification {
 }
 
 impl ActiveNotification {
+    pub(super) fn app_key(&self) -> String {
+        super::identity::app_key(
+            &self.hints.desktop_entry,
+            &self.app_name,
+            self.id,
+            self.created_unix_ms,
+        )
+    }
+
     pub(crate) fn from_incoming(id: u32, incoming: IncomingNotification, now: u64) -> Self {
         let toast_timeout = effective_timeout_ms(incoming.expire_timeout, incoming.hints.urgency);
         // Default, non-transient notifications persist in the center. Explicit

@@ -33,6 +33,9 @@ pub(crate) struct Position {
     pub id: u32,
 }
 impl Position {
+    pub fn invalid(self) -> bool {
+        self.id == 0 || self.created > i64::MAX as u64
+    }
     pub fn contains(self, notification: &ActiveNotification) -> bool {
         (notification.created_unix_ms, notification.id) < (self.created, self.id)
     }
@@ -122,19 +125,10 @@ pub(crate) fn new_epoch() -> Result<String> {
 
 impl HistoryQuery {
     pub fn normalize(&mut self) -> Result<(), HistoryError> {
-        if self.query.len() > 1024
-            || !(1..=MAX_PAGE).contains(&self.limit)
-            || self
-                .anchor
-                .is_some_and(|anchor| anchor.id == 0 || anchor.created > i64::MAX as u64)
-        {
+        if !(1..=MAX_PAGE).contains(&self.limit) || self.anchor.is_some_and(Position::invalid) {
             return Err(HistoryError::Invalid);
         }
-        self.query = self.query.trim().to_lowercase();
-        if self.query.len() > 1024 {
-            return Err(HistoryError::Invalid);
-        }
-        Ok(())
+        normalize_search(&mut self.query)
     }
     pub fn position(
         &self,
@@ -158,11 +152,22 @@ impl HistoryQuery {
         {
             return Err(HistoryError::Stale);
         }
-        if cursor.before.id == 0 || cursor.before.created > i64::MAX as u64 {
+        if cursor.before.invalid() {
             return Err(HistoryError::Invalid);
         }
         Ok(Some(cursor.before))
     }
+}
+
+pub(super) fn normalize_search(query: &mut String) -> Result<(), HistoryError> {
+    if query.len() > 1024 {
+        return Err(HistoryError::Invalid);
+    }
+    *query = query.trim().to_lowercase();
+    if query.len() > 1024 {
+        return Err(HistoryError::Invalid);
+    }
+    Ok(())
 }
 
 pub(crate) fn search_text(notification: &ActiveNotification) -> String {

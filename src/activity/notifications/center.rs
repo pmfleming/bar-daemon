@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    history::{CatalogRecord, HistoryError, HistoryQuery, PAGE_BYTES, Position},
+    history::{CatalogRecord, HistoryError, PAGE_BYTES, Position, normalize_search},
     model::ActiveNotification,
 };
 
@@ -57,22 +57,18 @@ impl CenterQuery {
             || self.timeline_anchor.as_ref().is_some_and(|s| s.len() > 64)
             || self.page == 0
             || self.page > 1040
-            || self.app_key.as_ref().is_some_and(|s| s.len() > 4096)
-            || self.app_anchor.as_ref().is_some_and(|s| s.len() > 4096)
-            || self.group_key.as_ref().is_some_and(|s| s.len() > 4096)
+            || [&self.app_key, &self.app_anchor, &self.group_key]
+                .into_iter()
+                .flatten()
+                .any(|s| s.len() > 4096)
             || self.selected.is_some_and(|p| p.id == 0 || p.created == 0)
         {
             return Err(HistoryError::Invalid);
         }
-        let mut query = HistoryQuery {
-            query: self.query.clone(),
-            cursor: None,
-            anchor: self.page_anchor,
-            limit: INDEX_SIZE,
-        };
-        query.normalize()?;
-        self.query = query.query;
-        Ok(())
+        if self.page_anchor.is_some_and(Position::invalid) {
+            return Err(HistoryError::Invalid);
+        }
+        normalize_search(&mut self.query)
     }
     pub fn validate_revision(&self, epoch: &str, revision: u64) -> Result<(), HistoryError> {
         if self.offset > 0
@@ -112,14 +108,14 @@ pub(crate) struct Preview {
     #[serde(skip)]
     pub group_key: String,
     #[serde(skip)]
-    pub repeat_key: Option<String>,
+    pub repeat_key: Option<RepeatKey>,
 }
 impl Preview {
     pub fn from_active(n: &ActiveNotification, query: &str) -> Self {
         Self {
             id: n.id,
             created_unix_ms: n.created_unix_ms,
-            app_key: app_key(&n.hints.desktop_entry, &n.app_name, n.id, n.created_unix_ms),
+            app_key: n.app_key(),
             app_name: clip(&n.app_name, 128),
             app_icon: clip(&n.app_icon, 512),
             identity_icon: clip(&n.identity_icon, 1024),
@@ -134,7 +130,7 @@ impl Preview {
             history_id: None,
             matches: super::history::search_text(n).contains(query),
             group_key: clip(&n.group_key, 4097),
-            repeat_key: super::timeline::repeat_key(
+            repeat_key: repeat_key(
                 &n.summary,
                 &n.body,
                 &n.hints.category,
@@ -150,21 +146,20 @@ impl Preview {
 pub(crate) fn clip(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
-// Descriptive grouping, not authentication. Never route a mutation by app key.
-// Unnamed senders do not all collapse into a shared "unknown" app.
-pub(crate) fn app_key(desktop: &str, name: &str, id: u32, created: u64) -> String {
-    let unknown = || format!("unknown:{created}:{id}");
-    if desktop.len() > 1024 {
-        unknown()
-    } else if !desktop.trim().is_empty() {
-        format!("desktop:{}", desktop.trim())
-    } else if name.len() > 1024 || name.trim().is_empty() {
-        unknown()
-    } else {
-        // Notification artwork represents content/urgency, not sender identity.
-        // Keep known desktop IDs distinct even when their display names match.
-        format!("named:{}", name.trim())
-    }
+// Structural equality avoids serialization and cannot confuse embedded separators.
+pub(super) type RepeatKey = (String, String, String, u8);
+pub(super) fn repeat_key(
+    summary: &str,
+    body: &str,
+    category: &str,
+    urgency: u8,
+    action_free: bool,
+) -> Option<RepeatKey> {
+    (action_free
+        && summary.chars().count() < 160
+        && body.chars().count() < 240
+        && category.chars().count() <= 256)
+        .then(|| (summary.into(), body.into(), category.into(), urgency))
 }
 
 #[derive(Debug, Serialize)]
@@ -211,52 +206,12 @@ pub(crate) fn project(
     query: &CenterQuery,
     epoch: &str,
     revision: u64,
-    mut lookup: impl FnMut(&Preview) -> anyhow::Result<CatalogRecord>,
+    lookup: impl FnOnce(&Preview) -> anyhow::Result<CatalogRecord>,
 ) -> Result<CenterPage, HistoryError> {
     query.validate_revision(epoch, revision)?;
     rows.sort_by_key(|p| std::cmp::Reverse(p.position()));
-    let mut totals = BTreeMap::<String, usize>::new();
-    for row in &rows {
-        *totals.entry(row.app_key.clone()).or_default() += 1;
-    }
     if query.view == "apps" {
-        let mut apps = Vec::<AppSummary>::new();
-        let mut indices = BTreeMap::<String, usize>::new();
-        for row in rows.into_iter().filter(|p| p.matches) {
-            if let Some(&index) = indices.get(&row.app_key) {
-                apps[index].count += 1;
-            } else {
-                indices.insert(row.app_key.clone(), apps.len());
-                apps.push(AppSummary {
-                    key: row.app_key.clone(),
-                    count: 1,
-                    total_count: totals[&row.app_key],
-                    latest: row,
-                });
-            }
-        }
-        let total_apps = apps.len();
-        let end = (query.offset + APP_PAGE_SIZE).min(total_apps);
-        let anchor_reached = query.app_anchor.as_ref().is_none_or(|key| {
-            apps.iter()
-                .position(|app| &app.key == key)
-                .is_none_or(|index| index < end)
-        });
-        let apps = apps
-            .into_iter()
-            .skip(query.offset)
-            .take(APP_PAGE_SIZE)
-            .collect();
-        return checked(CenterPage::Apps {
-            epoch: epoch.into(),
-            revision: revision.to_string(),
-            query: query.query.clone(),
-            apps,
-            total_apps,
-            offset: query.offset,
-            next_offset: (end < total_apps).then_some(end),
-            anchor_reached,
-        });
+        return project_apps(rows, query, epoch, revision);
     }
     let key = query
         .app_key
@@ -272,11 +227,9 @@ pub(crate) fn project(
                 .map(|p| p.app_key.clone())
         })
         .unwrap_or_default();
-    let total_count = totals.get(&key).copied().unwrap_or(0);
-    let rows: Vec<_> = rows
-        .into_iter()
-        .filter(|p| p.app_key == key && p.matches)
-        .collect();
+    rows.retain(|p| p.app_key == key);
+    let total_count = rows.len();
+    rows.retain(|p| p.matches);
     if query.view == "timeline" {
         return checked(CenterPage::Timeline(super::timeline::project(
             rows, query, epoch, revision,
@@ -289,21 +242,10 @@ pub(crate) fn project(
         .and_then(|a| rows.iter().position(|p| p.position() == (a.created, a.id)))
         .map_or(query.page, |index| index / INDEX_SIZE + 1)
         .min(pages);
-    let overview = rows.iter().take(3).cloned().collect();
-    let entries = rows
-        .iter()
-        .skip((page - 1) * INDEX_SIZE)
-        .take(INDEX_SIZE)
-        .cloned()
-        .collect();
-    let selected = rows
-        .iter()
-        .find(|p| {
-            query
-                .selected
-                .is_some_and(|s| p.position() == (s.created, s.id))
-        })
-        .map(&mut lookup)
+    let selected = query
+        .selected
+        .and_then(|s| rows.iter().find(|p| p.position() == (s.created, s.id)))
+        .map(lookup)
         .transpose()
         .map_err(HistoryError::Unavailable)?
         .map(Box::new);
@@ -316,9 +258,60 @@ pub(crate) fn project(
         total_count,
         page,
         pages,
-        overview,
-        entries,
+        overview: rows.iter().take(3).cloned().collect(),
+        entries: rows
+            .into_iter()
+            .skip((page - 1) * INDEX_SIZE)
+            .take(INDEX_SIZE)
+            .collect(),
         selected,
+    })
+}
+fn project_apps(
+    rows: Vec<Preview>,
+    query: &CenterQuery,
+    epoch: &str,
+    revision: u64,
+) -> Result<CenterPage, HistoryError> {
+    let mut groups = BTreeMap::<String, Vec<Preview>>::new();
+    for row in rows {
+        groups.entry(row.app_key.clone()).or_default().push(row);
+    }
+    let mut apps: Vec<_> = groups
+        .into_iter()
+        .filter_map(|(key, rows)| {
+            let total_count = rows.len();
+            let mut matching = rows.into_iter().filter(|p| p.matches);
+            let latest = matching.next()?;
+            Some(AppSummary {
+                key,
+                count: 1 + matching.count(),
+                total_count,
+                latest,
+            })
+        })
+        .collect();
+    apps.sort_by_key(|app| std::cmp::Reverse(app.latest.position()));
+    let total_apps = apps.len();
+    let end = (query.offset + APP_PAGE_SIZE).min(total_apps);
+    let anchor_reached = query.app_anchor.as_ref().is_none_or(|key| {
+        apps.iter()
+            .position(|app| &app.key == key)
+            .is_none_or(|index| index < end)
+    });
+    checked(CenterPage::Apps {
+        epoch: epoch.into(),
+        revision: revision.to_string(),
+        query: query.query.clone(),
+        apps: apps
+            .into_iter()
+            .skip(query.offset)
+            .take(APP_PAGE_SIZE)
+            .collect(),
+        total_apps,
+        offset: query.offset,
+        next_offset: (end < total_apps).then_some(end),
+        anchor_reached,
     })
 }
 fn checked(page: CenterPage) -> Result<CenterPage, HistoryError> {

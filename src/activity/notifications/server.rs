@@ -13,7 +13,6 @@ use super::{
 
 pub(crate) const BUS_NAME: &str = "org.freedesktop.Notifications";
 pub(crate) const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
-const INTERFACE: &str = "org.freedesktop.Notifications";
 
 pub(crate) struct NotificationServer {
     engine: Arc<NotificationEngine>,
@@ -134,54 +133,26 @@ pub(crate) async fn forward_signals(engine: Arc<NotificationEngine>, connection:
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         };
-        let result = match signal {
-            NotificationSignal::Closed { id, reason } => {
-                connection
-                    .emit_signal(
-                        None::<()>,
-                        OBJECT_PATH,
-                        INTERFACE,
-                        "NotificationClosed",
-                        &(id, reason),
-                    )
-                    .await
-            }
-            NotificationSignal::ActionInvoked { id, action_key } => {
-                connection
-                    .emit_signal(
-                        None::<()>,
-                        OBJECT_PATH,
-                        INTERFACE,
-                        "ActionInvoked",
-                        &(id, action_key),
-                    )
-                    .await
-            }
-            NotificationSignal::ActivationToken { id, token } => {
-                connection
-                    .emit_signal(
-                        None::<()>,
-                        OBJECT_PATH,
-                        INTERFACE,
-                        "ActivationToken",
-                        &(id, token),
-                    )
-                    .await
-            }
-            NotificationSignal::Replied { id, text } => {
-                connection
-                    .emit_signal(
-                        None::<()>,
-                        OBJECT_PATH,
-                        INTERFACE,
-                        "NotificationReplied",
-                        &(id, text),
-                    )
-                    .await
-            }
-        };
-        if let Err(error) = result {
+        if let Err(error) = emit_signal(&connection, signal).await {
             tracing::warn!(%error, "notification D-Bus signal could not be emitted");
+        }
+    }
+}
+
+async fn emit_signal(connection: &Connection, signal: NotificationSignal) -> zbus::Result<()> {
+    let emitter = SignalEmitter::new(connection, OBJECT_PATH)?;
+    match signal {
+        NotificationSignal::Closed { id, reason } => {
+            NotificationServer::notification_closed(&emitter, id, reason).await
+        }
+        NotificationSignal::ActionInvoked { id, action_key } => {
+            NotificationServer::action_invoked(&emitter, id, &action_key).await
+        }
+        NotificationSignal::ActivationToken { id, token } => {
+            NotificationServer::activation_token(&emitter, id, &token).await
+        }
+        NotificationSignal::Replied { id, text } => {
+            NotificationServer::notification_replied(&emitter, id, &text).await
         }
     }
 }
@@ -249,9 +220,14 @@ mod tests {
         .await
         .unwrap();
         let forwarder = tokio::spawn(forward_signals(Arc::clone(&engine), server.clone()));
-        let proxy = zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, INTERFACE)
-            .await
-            .unwrap();
+        let proxy = zbus::Proxy::new(
+            &client,
+            BUS_NAME,
+            OBJECT_PATH,
+            "org.freedesktop.Notifications",
+        )
+        .await
+        .unwrap();
         let mut invoked = proxy.receive_signal("ActionInvoked").await.unwrap();
         let mut tokens = proxy.receive_signal("ActivationToken").await.unwrap();
         let mut replies = proxy.receive_signal("NotificationReplied").await.unwrap();

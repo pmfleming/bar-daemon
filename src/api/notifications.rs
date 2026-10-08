@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use super::{error, success};
-use crate::activity::notifications::service::NotificationService;
+use super::{decode_request, error, success};
+use crate::activity::notifications::{
+    engine::NotificationEngine, history::HistoryError, service::NotificationService,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+type Response = Result<Value, Value>;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,50 +28,42 @@ struct DeleteRequest {
     #[serde(default)]
     cancel: bool,
 }
-
 #[derive(Deserialize)]
 struct DndRequest {
     enabled: bool,
     #[serde(default)]
     until_unix_ms: Option<u64>,
 }
-
 #[derive(Deserialize)]
 struct HistoryRequest {
     before_history_id: Option<i64>,
     #[serde(default = "default_history_limit")]
     limit: usize,
 }
-
 #[derive(Deserialize)]
 struct NotificationRequest {
     id: u32,
 }
-
 #[derive(Deserialize)]
 struct SnoozeRequest {
     id: u32,
     until_unix_ms: u64,
 }
-
 #[derive(Deserialize)]
 struct GroupRequest {
     group_key: String,
 }
-
 #[derive(Deserialize)]
 struct ActionRequest {
     id: u32,
     action_key: String,
     activation_token: Option<String>,
 }
-
 #[derive(Deserialize)]
 struct ReplyRequest {
     id: u32,
     text: String,
 }
-
 const fn default_history_limit() -> usize {
     50
 }
@@ -81,223 +77,239 @@ impl NotificationApi {
         Self { notifications }
     }
 
-    pub(super) async fn notification_action(&self, dnd: bool) -> Value {
-        let result = if dnd {
-            self.notifications
+    pub(super) async fn dispatch(&self, method: &str, params: Value) -> Value {
+        let result = match method {
+            "notifications.togglePanel" => self.action(false).await,
+            "notifications.toggleDnd" => self.action(true).await,
+            "notifications.setDnd" => self.set_dnd(params).await,
+            "notifications.setAppPolicy" => self.set_app_policy(params).await,
+            "notifications.prepareDelete" => self.prepare_delete(params).await,
+            "notifications.delete" => self.delete(params).await,
+            "notifications.list" => self.list(params).await,
+            "notifications.queryCenter" => self.query_center(params).await,
+            "notifications.queryHistory" => self.query_history(params).await,
+            "notifications.dismiss" => self.dismiss(params).await,
+            "notifications.clear" => self.clear().await,
+            "notifications.clearGroup" => self.clear_group(params).await,
+            "notifications.snooze" => self.snooze(params).await,
+            "notifications.invokeAction" => self.invoke_action(params).await,
+            "notifications.reply" => self.reply(params).await,
+            _ => Err(super::unsupported_method(method)),
+        };
+        result.map_or_else(std::convert::identity, success)
+    }
+
+    fn engine(&self) -> Result<&Arc<NotificationEngine>, Value> {
+        self.notifications.native_engine().ok_or_else(|| {
+            error(
+                "native-notifications-required",
+                "native notifications are disabled",
+            )
+        })
+    }
+
+    async fn action(&self, dnd: bool) -> Response {
+        if dnd {
+            let enabled = self
+                .notifications
                 .toggle_dnd()
                 .await
-                .map(|enabled| json!({"operation":"toggle-dnd","enabled":enabled}))
+                .map_err(operation_error)?;
+            Ok(json!({"operation":"toggle-dnd", "enabled":enabled}))
         } else {
             self.notifications
                 .toggle_panel()
                 .await
-                .map(|()| json!({"operation":"toggle-panel"}))
-        };
-        match result {
-            Ok(operation) => success(operation),
-            Err(value) => error("notification-operation-failed", value.to_string()),
+                .map_err(operation_error)?;
+            Ok(json!({"operation":"toggle-panel"}))
         }
     }
-    pub(super) async fn notification_set_app_policy(&self, params: Value) -> Value {
-        let request = request!(params, PolicyRequest, "notifications.setAppPolicy");
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine.set_app_policy(request.app_key, request.policy).await {
-            Ok(state) => success(json!({"notifications":state})),
-            Err(e) => error("notification-policy-failed", e.to_string()),
-        }
+    async fn set_app_policy(&self, params: Value) -> Response {
+        let request: PolicyRequest = decode_request(params, "notifications.setAppPolicy")?;
+        let state = self
+            .engine()?
+            .set_app_policy(request.app_key, request.policy)
+            .await
+            .map_err(|e| error("notification-policy-failed", e.to_string()))?;
+        Ok(json!({"notifications":state}))
     }
-    pub(super) async fn notification_prepare_delete(&self, params: Value) -> Value {
-        let request = request!(params, DeleteScope, "notifications.prepareDelete");
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine
+    async fn prepare_delete(&self, params: Value) -> Response {
+        let request: DeleteScope = decode_request(params, "notifications.prepareDelete")?;
+        let challenge = self
+            .engine()?
             .prepare_delete(request.app_key, request.selected)
             .await
-        {
-            Ok(challenge) => success(json!({"delete_confirmation":challenge})),
-            Err(e) => error("notification-delete-failed", e.to_string()),
-        }
+            .map_err(delete_error)?;
+        Ok(json!({"delete_confirmation":challenge}))
     }
-    pub(super) async fn notification_delete(&self, params: Value) -> Value {
-        let request = request!(params, DeleteRequest, "notifications.delete");
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
+    async fn delete(&self, params: Value) -> Response {
+        let request: DeleteRequest = decode_request(params, "notifications.delete")?;
+        let engine = self.engine()?;
         if request.cancel {
             engine.cancel_delete(&request.token).await;
-            return success(json!({"cancelled":true}));
+            return Ok(json!({"cancelled":true}));
         }
-        match engine.delete_confirmed(request.token).await {
-            Ok(count) => success(json!({"deleted":count})),
-            Err(e) => error("notification-delete-failed", e.to_string()),
-        }
+        let count = engine
+            .delete_confirmed(request.token)
+            .await
+            .map_err(delete_error)?;
+        Ok(json!({"deleted":count}))
     }
-    pub(super) async fn notification_set_dnd(&self, params: Value) -> Value {
-        let request = request!(params, DndRequest, "notifications.setDnd");
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine.set_dnd(request.enabled, request.until_unix_ms).await {
-            Ok(state) => success(json!({"notifications": state})),
-            Err(value) => error("notification-operation-failed", value.to_string()),
-        }
+    async fn set_dnd(&self, params: Value) -> Response {
+        let request: DndRequest = decode_request(params, "notifications.setDnd")?;
+        let state = self
+            .engine()?
+            .set_dnd(request.enabled, request.until_unix_ms)
+            .await
+            .map_err(operation_error)?;
+        Ok(json!({"notifications":state}))
     }
-    pub(super) async fn notification_query_center(&self, params: Value) -> Value {
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        let request = request!(
-            params,
-            crate::activity::notifications::center::CenterQuery,
-            "notifications.queryCenter"
-        );
-        match engine.query_center(request).await {
-            Ok(page) => success(json!({"notification_center": page})),
-            Err(value) => error(value.code(), value.message()),
-        }
+    async fn query_center(&self, params: Value) -> Response {
+        let engine = self.engine()?;
+        let request = decode_request(params, "notifications.queryCenter")?;
+        let page = engine.query_center(request).await.map_err(history_error)?;
+        Ok(json!({"notification_center":page}))
     }
-    pub(super) async fn notification_query_history(&self, params: Value) -> Value {
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        let request = request!(
-            params,
-            crate::activity::notifications::history::HistoryQuery,
-            "notifications.queryHistory"
-        );
-        match engine.query_history(request).await {
-            Ok(page) => success(json!({"notification_page": page})),
-            Err(value) => error(value.code(), value.message()),
-        }
+    async fn query_history(&self, params: Value) -> Response {
+        let engine = self.engine()?;
+        let request = decode_request(params, "notifications.queryHistory")?;
+        let page = engine.query_history(request).await.map_err(history_error)?;
+        Ok(json!({"notification_page":page}))
     }
-    pub(super) async fn notification_list(&self, params: Value) -> Value {
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        let request = request!(params, HistoryRequest, "notifications.list");
+    async fn list(&self, params: Value) -> Response {
+        let engine = self.engine()?;
+        let request: HistoryRequest = decode_request(params, "notifications.list")?;
         if request.before_history_id.is_some_and(|id| id <= 0) {
-            return error(
+            return Err(error(
                 "validation-error",
                 "before_history_id must be positive or null",
-            );
+            ));
         }
-        match engine
+        let history = engine
             .history(request.before_history_id, request.limit.min(200))
             .await
-        {
-            Ok(history) => success(json!({"notification_history": history})),
-            Err(value) => error("notification-history-failed", value.to_string()),
+            .map_err(|e| error("notification-history-failed", e.to_string()))?;
+        Ok(json!({"notification_history":history}))
+    }
+    async fn dismiss(&self, params: Value) -> Response {
+        let request: NotificationRequest = decode_request(params, "notifications.dismiss")?;
+        let id = positive_id(request.id)?;
+        if self.engine()?.dismiss(id).await.map_err(operation_error)? {
+            Ok(json!({"operation":"dismiss", "id":id}))
+        } else {
+            Err(not_found(id))
         }
     }
-    pub(super) async fn notification_dismiss(&self, params: Value) -> Value {
-        let request = request!(params, NotificationRequest, "notifications.dismiss");
-        let Some(id) = positive_id(request.id) else {
-            return error("validation-error", "notification id must be positive");
-        };
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine.dismiss(id).await {
-            Ok(true) => success(json!({"operation":"dismiss","id":id})),
-            Ok(false) => error(
-                "notification-not-found",
-                format!("notification {id} is not active"),
-            ),
-            Err(value) => error("notification-operation-failed", value.to_string()),
-        }
+    async fn clear(&self) -> Response {
+        let closed = self.engine()?.clear().await.map_err(operation_error)?;
+        Ok(json!({"operation":"clear", "closed":closed}))
     }
-    pub(super) async fn notification_clear(&self) -> Value {
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine.clear().await {
-            Ok(closed) => success(json!({"operation":"clear","closed":closed})),
-            Err(value) => error("notification-operation-failed", value.to_string()),
-        }
-    }
-    pub(super) async fn notification_clear_group(&self, params: Value) -> Value {
-        let request = request!(params, GroupRequest, "notifications.clearGroup");
+    async fn clear_group(&self, params: Value) -> Response {
+        let request: GroupRequest = decode_request(params, "notifications.clearGroup")?;
         if request.group_key.trim().is_empty() {
-            return error("validation-error", "group_key must not be empty");
+            return Err(error("validation-error", "group_key must not be empty"));
         }
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine.clear_group(&request.group_key).await {
-            Ok(closed) => success(
-                json!({"operation":"clear-group", "group_key":request.group_key, "closed":closed}),
-            ),
-            Err(value) => error("notification-operation-failed", value.to_string()),
-        }
+        let closed = self
+            .engine()?
+            .clear_group(&request.group_key)
+            .await
+            .map_err(operation_error)?;
+        Ok(json!({"operation":"clear-group", "group_key":request.group_key, "closed":closed}))
     }
-    pub(super) async fn notification_snooze(&self, params: Value) -> Value {
-        let request = request!(params, SnoozeRequest, "notifications.snooze");
-        let Some(id) = positive_id(request.id) else {
-            return error("validation-error", "notification id must be positive");
-        };
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine.snooze(id, request.until_unix_ms).await {
-            Ok(true) => success(
-                json!({"operation":"snooze", "id":id, "until_unix_ms":request.until_unix_ms}),
-            ),
-            Ok(false) => error(
+    async fn snooze(&self, params: Value) -> Response {
+        let request: SnoozeRequest = decode_request(params, "notifications.snooze")?;
+        let id = positive_id(request.id)?;
+        if self
+            .engine()?
+            .snooze(id, request.until_unix_ms)
+            .await
+            .map_err(operation_error)?
+        {
+            Ok(json!({"operation":"snooze", "id":id, "until_unix_ms":request.until_unix_ms}))
+        } else {
+            Err(error(
                 "notification-snooze-failed",
                 "notification is unavailable or duration has elapsed",
-            ),
-            Err(value) => error("notification-operation-failed", value.to_string()),
+            ))
         }
     }
-    pub(super) async fn notification_invoke_action(&self, params: Value) -> Value {
-        let request = request!(params, ActionRequest, "notifications.invokeAction");
-        let Some(id) = positive_id(request.id) else {
-            return error("validation-error", "notification id must be positive");
-        };
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        match engine
+    async fn invoke_action(&self, params: Value) -> Response {
+        let request: ActionRequest = decode_request(params, "notifications.invokeAction")?;
+        let id = positive_id(request.id)?;
+        if self
+            .engine()?
             .invoke_action(id, &request.action_key, request.activation_token)
             .await
+            .map_err(operation_error)?
         {
-            Ok(true) => success(
-                json!({"operation":"invoke-action","id":id,"action_key":request.action_key}),
-            ),
-            Ok(false) => error(
+            Ok(json!({"operation":"invoke-action", "id":id, "action_key":request.action_key}))
+        } else {
+            Err(error(
                 "notification-action-not-found",
                 "notification or action is unavailable",
-            ),
-            Err(value) => error("notification-operation-failed", value.to_string()),
+            ))
         }
     }
-    pub(super) async fn notification_reply(&self, params: Value) -> Value {
-        let request = request!(params, ReplyRequest, "notifications.reply");
-        let Some(id) = positive_id(request.id) else {
-            return error("validation-error", "notification id must be positive");
-        };
-        let Some(engine) = self.notifications.native_engine() else {
-            return native_required();
-        };
-        if engine.reply(id, &request.text).await {
-            success(json!({"operation":"reply","id":id}))
+    async fn reply(&self, params: Value) -> Response {
+        let request: ReplyRequest = decode_request(params, "notifications.reply")?;
+        let id = positive_id(request.id)?;
+        if self.engine()?.reply(id, &request.text).await {
+            Ok(json!({"operation":"reply", "id":id}))
         } else {
-            error(
-                "notification-not-found",
-                format!("notification {id} is not active"),
-            )
+            Err(not_found(id))
         }
     }
 }
-fn native_required() -> Value {
+fn positive_id(id: u32) -> Result<u32, Value> {
+    (id > 0)
+        .then_some(id)
+        .ok_or_else(|| error("validation-error", "notification id must be positive"))
+}
+fn not_found(id: u32) -> Value {
     error(
-        "native-notifications-required",
-        "native notifications are disabled",
+        "notification-not-found",
+        format!("notification {id} is not active"),
     )
 }
-fn positive_id(id: u32) -> Option<u32> {
-    (id > 0).then_some(id)
+fn operation_error(value: anyhow::Error) -> Value {
+    error("notification-operation-failed", value.to_string())
+}
+fn delete_error(value: anyhow::Error) -> Value {
+    error("notification-delete-failed", value.to_string())
+}
+fn history_error(value: HistoryError) -> Value {
+    error(value.code(), value.message())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NotificationApi, NotificationEngine, NotificationService};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn native_responses_have_one_envelope_and_preserve_domain_errors() {
+        let engine = NotificationEngine::new(Default::default()).await;
+        let api = NotificationApi::new(NotificationService::native(engine));
+        for (method, params, field) in [
+            ("queryCenter", json!({"view":"apps"}), "notification_center"),
+            ("queryHistory", json!({}), "notification_page"),
+            ("setDnd", json!({"enabled":true}), "notifications"),
+            ("clear", json!({}), "closed"),
+        ] {
+            let response = api
+                .dispatch(&format!("notifications.{method}"), params)
+                .await;
+            assert_eq!(response["ok"], true, "{response}");
+            assert!(response["data"].get(field).is_some(), "{response}");
+        }
+        assert_eq!(
+            api.dispatch("notifications.dismiss", json!({"id":1})).await["error"]["code"],
+            "notification-not-found"
+        );
+        assert_eq!(
+            api.dispatch("notifications.queryHistory", json!({"limit":0}))
+                .await["error"]["code"],
+            "history-query-invalid"
+        );
+    }
 }

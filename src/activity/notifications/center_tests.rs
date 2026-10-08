@@ -2,7 +2,7 @@ use super::{
     center::{CenterPage, CenterQuery},
     engine::NotificationEngine,
     history::{HistoryError, Position},
-    model::{IncomingNotification, NotificationHints},
+    model::IncomingNotification,
 };
 use crate::state::StateStore;
 
@@ -10,18 +10,9 @@ fn query(view: &str) -> CenterQuery {
     serde_json::from_value(serde_json::json!({"view": view})).unwrap()
 }
 fn notification(app: &str, summary: &str) -> IncomingNotification {
-    IncomingNotification {
-        app_name: app.into(),
-        app_icon: String::new(),
-        summary: summary.into(),
-        body: "A body searchable beyond the first page".into(),
-        actions: vec![],
-        hints: NotificationHints {
-            desktop_entry: app.into(),
-            ..Default::default()
-        },
-        expire_timeout: 0,
-    }
+    let mut n = super::model::incoming(app, summary, "A body searchable beyond the first page");
+    n.hints.desktop_entry = app.into();
+    n
 }
 #[tokio::test]
 async fn center_groups_full_scope_and_seeks_without_loading_intermediate_bodies() {
@@ -212,12 +203,24 @@ async fn center_searches_full_unicode_body_and_resolves_legacy_group_links() {
     let id = engine.notify(0, incoming).await.unwrap();
     let group = engine.active().await[0].group_key.clone();
     engine.dismiss(id).await.unwrap();
+    engine
+        .notify(0, notification("chat", "Newer nonmatch"))
+        .await
+        .unwrap();
+    engine
+        .notify(0, notification("other", "Unrelated"))
+        .await
+        .unwrap();
     let mut request = query("apps");
     request.query = "ÄRGER %_".into();
     let CenterPage::Apps { apps, .. } = engine.query_center(request).await.unwrap() else {
         panic!()
     };
     assert_eq!(apps.len(), 1);
+    assert_eq!(
+        (apps[0].count, apps[0].total_count, apps[0].latest.id),
+        (1, 2, id)
+    );
     assert_eq!(apps[0].latest.body.chars().count(), 240);
     assert!(!apps[0].latest.body.contains("ÄRGER"));
     let mut request = query("app");
@@ -234,14 +237,6 @@ async fn center_searches_full_unicode_body_and_resolves_legacy_group_links() {
     };
     assert_eq!(app_key, "desktop:chat");
     assert!(selected.unwrap().notification.body.contains("ÄRGER"));
-    assert_eq!(
-        super::center::app_key(&"d".repeat(1025), "App", 7, 8),
-        "unknown:8:7"
-    );
-    assert_ne!(
-        super::center::app_key("", "a:b", 1, 2),
-        super::center::app_key("", "a", 1, 2)
-    );
 }
 
 #[tokio::test]

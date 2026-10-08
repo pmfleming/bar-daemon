@@ -583,7 +583,7 @@ impl NotificationStore {
             let desktop = row.get::<_, Option<String>>(2)?.unwrap_or_default();
             let name = row.get::<_, String>(3)?;
             if app_key.is_none_or(|key| {
-                key == center::app_key(&desktop, &name, position.id, position.created)
+                key == super::identity::app_key(&desktop, &name, position.id, position.created)
             }) && selected.is_none_or(|p| p.id == position.id && p.created == position.created)
             {
                 anyhow::ensure!(
@@ -642,7 +642,6 @@ impl NotificationStore {
              json_extract(payload_json, '$.snoozed_until_unix_ms'),
              substr(json_extract(payload_json, '$.group_key'), 1, 4097), instr(search_text, ?2) > 0,
              substr(json_extract(payload_json, '$.hints.image_path'), 1, 512),
-             length(json_extract(payload_json, '$.summary')), length(json_extract(payload_json, '$.body')),
              json_array_length(payload_json, '$.actions'), substr(json_extract(payload_json, '$.hints.category'), 1, 257), json_extract(payload_json, '$.hints.urgency'), substr(json_extract(payload_json, '$.identity_icon'), 1, 1024)
              FROM notifications WHERE history_id IN
              (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)",
@@ -650,56 +649,15 @@ impl NotificationStore {
         let mut cursor = statement.query(params![SCOPE_LIMIT, query.query])?;
         let mut rows = Vec::new();
         while let Some(row) = cursor.next()? {
-            let id = row.get(1)?;
-            let created = row.get(2)?;
+            let id: u32 = row.get(1)?;
+            let created: u64 = row.get(2)?;
             if active
                 .iter()
                 .any(|n| n.id == id && n.created_unix_ms == created)
             {
                 continue;
             }
-            let text = |index| -> rusqlite::Result<String> {
-                Ok(row.get::<_, Option<String>>(index)?.unwrap_or_default())
-            };
-            let name = text(5)?;
-            let icon = text(6)?;
-            rows.push(Preview {
-                history_id: Some(row.get(0)?),
-                id,
-                created_unix_ms: created,
-                closed_unix_ms: row.get(3)?,
-                app_key: center::app_key(&text(4)?, &name, id, created),
-                app_name: center::clip(&name, 128),
-                app_icon: center::clip(&icon, 512),
-                identity_icon: {
-                    let captured = text(18)?;
-                    if captured.is_empty() {
-                        super::identity::icon(&text(4)?, &name)
-                    } else {
-                        captured
-                    }
-                },
-                hints: center::PreviewHints {
-                    desktop_entry: center::clip(&text(4)?, 1024),
-                    image_path: text(12)?,
-                },
-                summary: text(7)?,
-                body: text(8)?,
-                snoozed_until_unix_ms: row.get(9)?,
-                group_key: text(10)?,
-                matches: row.get(11)?,
-                repeat_key: if row.get::<_, usize>(13)? < 160 && row.get::<_, usize>(14)? < 240 {
-                    super::timeline::repeat_key(
-                        &text(7)?,
-                        &text(8)?,
-                        &text(16)?,
-                        row.get::<_, Option<u8>>(17)?.unwrap_or(0),
-                        row.get::<_, usize>(15)? == 0,
-                    )
-                } else {
-                    None
-                },
-            });
+            rows.push(preview(row)?);
         }
         rows.extend(active.iter().map(|n| Preview::from_active(n, &query.query)));
         center::project(rows, query, epoch, revision, |preview| {
@@ -709,10 +667,7 @@ impl NotificationStore {
             let mut statement = self.connection.prepare("SELECT history_id, payload_json, closed_unix_ms, close_reason FROM notifications WHERE history_id = ?1")?;
             let mut rows = statement.query([preview.history_id])?;
             let row = rows.next()?.context("notification no longer retained")?;
-            anyhow::ensure!(row.get_ref(1)?.as_str()?.len() <= PAGE_BYTES, "Notification exceeds history page byte limit");
-            let record = history_record(row)?;
-            Ok(CatalogRecord { history_id: Some(record.history_id), notification: record.notification,
-                closed_unix_ms: record.closed_unix_ms, close_reason: record.close_reason })
+            catalog_record(row)
         }).map_err(anyhow::Error::new)
     }
 
@@ -746,20 +701,11 @@ impl NotificationStore {
         ])?;
         let mut records = Vec::new();
         while let Some(row) = rows.next()? {
-            anyhow::ensure!(
-                row.get_ref(1)?.as_str()?.len() <= PAGE_BYTES,
-                "Notification exceeds history page byte limit"
-            );
-            let record = history_record(row)?;
+            let record = catalog_record(row)?;
             if excluded.contains(&(record.notification.created_unix_ms, record.notification.id)) {
                 continue;
             }
-            records.push(CatalogRecord {
-                history_id: Some(record.history_id),
-                notification: record.notification,
-                closed_unix_ms: record.closed_unix_ms,
-                close_reason: record.close_reason,
-            });
+            records.push(record);
             if records.len() > limit {
                 break;
             }
@@ -778,13 +724,66 @@ impl NotificationStore {
              FROM notifications WHERE history_id < ?1
              ORDER BY history_id DESC LIMIT ?2",
         )?;
-        let mut rows = statement.query(params![before, limit])?;
-        let mut history = Vec::new();
-        while let Some(row) = rows.next()? {
-            history.push(history_record(row).context("decode persisted notification history")?);
-        }
-        Ok(history)
+        statement
+            .query_and_then(params![before, limit], history_record)?
+            .collect::<Result<_>>()
+            .context("decode persisted notification history")
     }
+}
+
+fn preview(row: &rusqlite::Row<'_>) -> Result<Preview> {
+    let text = |index| -> rusqlite::Result<&str> {
+        Ok(row.get_ref(index)?.as_str_or_null()?.unwrap_or_default())
+    };
+    let (id, created) = (row.get(1)?, row.get(2)?);
+    let (desktop, name, summary, body, captured) =
+        (text(4)?, text(5)?, text(7)?, text(8)?, text(16)?);
+    Ok(Preview {
+        history_id: Some(row.get(0)?),
+        id,
+        created_unix_ms: created,
+        closed_unix_ms: row.get(3)?,
+        app_key: super::identity::app_key(desktop, name, id, created),
+        app_name: center::clip(name, 128),
+        app_icon: center::clip(text(6)?, 512),
+        identity_icon: if captured.is_empty() {
+            super::identity::icon(desktop, name)
+        } else {
+            captured.into()
+        },
+        hints: center::PreviewHints {
+            desktop_entry: center::clip(desktop, 1024),
+            image_path: text(12)?.into(),
+        },
+        summary: summary.into(),
+        body: body.into(),
+        snoozed_until_unix_ms: row.get(9)?,
+        group_key: text(10)?.into(),
+        matches: row.get(11)?,
+        // SQL clips at the exclusion boundary (160/240/257), so truncated
+        // fields cannot pass repeat_key's strict summary/body limits.
+        repeat_key: center::repeat_key(
+            summary,
+            body,
+            text(14)?,
+            row.get::<_, Option<u8>>(15)?.unwrap_or(0),
+            row.get::<_, usize>(13)? == 0,
+        ),
+    })
+}
+
+fn catalog_record(row: &rusqlite::Row<'_>) -> Result<CatalogRecord> {
+    anyhow::ensure!(
+        row.get_ref(1)?.as_str()?.len() <= PAGE_BYTES,
+        "Notification exceeds history page byte limit"
+    );
+    let record = history_record(row)?;
+    Ok(CatalogRecord {
+        history_id: Some(record.history_id),
+        notification: record.notification,
+        closed_unix_ms: record.closed_unix_ms,
+        close_reason: record.close_reason,
+    })
 }
 
 // Deserialize directly from SQLite's row buffer; both history APIs share the
@@ -803,10 +802,39 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{NotificationPersistence, NotificationStore, persistence_worker, reply};
-    use crate::activity::notifications::model::{
-        ActiveNotification, IncomingNotification, NotificationHints,
-    };
+    use crate::activity::notifications::model::ActiveNotification;
     use tokio::sync::{mpsc, oneshot};
+
+    #[test]
+    fn live_and_saved_repeat_keys_agree_at_unicode_clipping_boundaries() {
+        let directory = tempdir().unwrap();
+        let store = NotificationStore::open(&directory.path().join("history.db")).unwrap();
+        for (summary, body, category, stackable) in [
+            (159, 239, 256, true),
+            (160, 239, 256, false),
+            (161, 239, 256, false),
+            (159, 240, 256, false),
+            (159, 241, 256, false),
+            (159, 239, 257, false),
+        ] {
+            let mut n = notification(1, false);
+            n.summary = "é".repeat(summary);
+            n.body = "β".repeat(body);
+            n.hints.category = "猫".repeat(category);
+            store.save(&n).unwrap();
+            let live = super::Preview::from_active(&n, "");
+            let query =
+                serde_json::from_value(serde_json::json!({"view":"app", "app_key":n.app_key()}))
+                    .unwrap();
+            let super::CenterPage::App { entries, .. } =
+                store.center(&query, &[], "epoch", 0).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(live.repeat_key.is_some(), stackable);
+            assert_eq!(entries[0].repeat_key, live.repeat_key);
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_and_fenced_reads_do_not_execute_storage_work() {
@@ -874,22 +902,9 @@ mod tests {
     }
 
     fn notification(id: u32, transient: bool) -> ActiveNotification {
-        ActiveNotification::from_incoming(
-            id,
-            IncomingNotification {
-                app_name: "test".into(),
-                app_icon: String::new(),
-                summary: format!("notification {id}"),
-                body: String::new(),
-                actions: Vec::new(),
-                hints: NotificationHints {
-                    transient,
-                    ..NotificationHints::default()
-                },
-                expire_timeout: 0,
-            },
-            100,
-        )
+        let mut n = super::super::model::incoming("test", &format!("notification {id}"), "");
+        n.hints.transient = transient;
+        ActiveNotification::from_incoming(id, n, 100)
     }
 
     #[tokio::test]

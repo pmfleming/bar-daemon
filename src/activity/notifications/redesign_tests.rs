@@ -1,24 +1,15 @@
 use super::{
     center::{CenterPage, CenterQuery},
     engine::NotificationEngine,
-    model::{IncomingNotification, NotificationAction, NotificationHints},
+    model::{IncomingNotification, NotificationAction},
     policy::AppPolicy,
 };
 use crate::state::StateStore;
 
 fn incoming(app: &str, text: &str) -> IncomingNotification {
-    IncomingNotification {
-        app_name: app.into(),
-        app_icon: String::new(),
-        summary: text.into(),
-        body: "Body".into(),
-        actions: vec![],
-        hints: NotificationHints {
-            desktop_entry: app.into(),
-            ..Default::default()
-        },
-        expire_timeout: 0,
-    }
+    let mut n = super::model::incoming(app, text, "Body");
+    n.hints.desktop_entry = app.into();
+    n
 }
 fn query(value: serde_json::Value) -> CenterQuery {
     serde_json::from_value(value).unwrap()

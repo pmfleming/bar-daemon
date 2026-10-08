@@ -6,7 +6,7 @@ use chrono::{Datelike, Days, Local, NaiveDate, TimeZone};
 use serde::Serialize;
 
 use super::{
-    center::{CenterQuery, Preview},
+    center::{CenterQuery, Preview, RepeatKey},
     history::{HistoryError, Position},
 };
 
@@ -66,7 +66,7 @@ fn period(created: u64, today: NaiveDate) -> &'static str {
         "today"
     } else if day >= week {
         "week"
-    } else if day >= today.with_day(1).expect("first day exists") {
+    } else if (day.year(), day.month()) == (today.year(), today.month()) {
         "month"
     } else {
         "older"
@@ -138,33 +138,7 @@ fn project_at(
     };
     let rows = buckets.remove(&selected).unwrap_or_default();
     let count = rows.len();
-    let mut entries = Vec::<TimelineEntry>::new();
-    let mut stacks = BTreeMap::<(String, String), usize>::new();
-    for row in rows {
-        let position = Position {
-            id: row.id,
-            created: row.created_unix_ms,
-        };
-        // Only exact, fully represented, action-free messages can stack. Never
-        // infer conversation identity or equality from truncated preview text.
-        if query.group_similar
-            && let Some(key) = row.repeat_key.as_ref()
-        {
-            let key = (date(row.created_unix_ms), key.clone());
-            if let Some(index) = stacks.get(&key).copied()
-                && entries[index].members.len() < STACK_LIMIT
-            {
-                entries[index].members.push(position);
-                continue;
-            }
-            stacks.insert(key, entries.len());
-        }
-        entries.push(TimelineEntry {
-            key: format!("{}:{}", row.id, row.created_unix_ms),
-            preview: row,
-            members: vec![position],
-        });
-    }
+    let entries = stack(rows, query.group_similar);
     let total_rows = entries.len();
     let end = (query.offset + WINDOW).min(total_rows);
     let anchor_reached = query.timeline_anchor.as_ref().is_none_or(|key| {
@@ -195,26 +169,41 @@ fn project_at(
     })
 }
 
-pub(crate) fn repeat_key(
-    summary: &str,
-    body: &str,
-    category: &str,
-    urgency: u8,
-    action_free: bool,
-) -> Option<String> {
-    (action_free
-        && summary.chars().count() < 160
-        && body.chars().count() < 240
-        && category.chars().count() <= 256)
-        .then(|| {
-            serde_json::to_string(&(summary, body, category, urgency)).expect("strings serialize")
-        })
+fn stack(rows: Vec<Preview>, group_similar: bool) -> Vec<TimelineEntry> {
+    let mut entries = Vec::<TimelineEntry>::new();
+    let mut stacks = BTreeMap::<(String, RepeatKey), usize>::new();
+    for mut row in rows {
+        let position = Position {
+            id: row.id,
+            created: row.created_unix_ms,
+        };
+        // Only exact, fully represented, action-free messages can stack. Never
+        // infer conversation identity or equality from truncated preview text.
+        if group_similar && let Some(key) = row.repeat_key.take() {
+            let key = (date(row.created_unix_ms), key);
+            if let Some(index) = stacks.get(&key).copied()
+                && entries[index].members.len() < STACK_LIMIT
+            {
+                entries[index].members.push(position);
+                continue;
+            }
+            stacks.insert(key, entries.len());
+        }
+        entries.push(TimelineEntry {
+            key: format!("{}:{}", row.id, row.created_unix_ms),
+            preview: row,
+            members: vec![position],
+        });
+    }
+    entries
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::center::PreviewHints;
-    use super::*;
+    use super::super::center::{CenterQuery, Preview, PreviewHints, repeat_key};
+    use super::super::history::HistoryError;
+    use super::{PERIODS, WINDOW, period, project_at};
+    use chrono::{Local, NaiveDate, TimeZone};
 
     fn day(value: &str) -> NaiveDate {
         value.parse().unwrap()
@@ -244,7 +233,7 @@ mod tests {
             history_id: None,
             matches: true,
             group_key: String::new(),
-            repeat_key: Some("exact".into()),
+            repeat_key: repeat_key("Repeated", "Body", "", 0, true),
         }
     }
     fn period_query() -> CenterQuery {

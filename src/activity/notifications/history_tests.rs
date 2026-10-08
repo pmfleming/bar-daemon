@@ -1,23 +1,14 @@
 use super::{
     engine::NotificationEngine,
     history::{self, HistoryError, HistoryQuery, MAX_PAGE, PAGE_BYTES, SCOPE_LIMIT},
-    model::{ActiveNotification, IncomingNotification, NotificationHints},
+    model::{ActiveNotification, IncomingNotification},
 };
 use crate::state::StateStore;
 
 fn notification(summary: &str, transient: bool) -> IncomingNotification {
-    IncomingNotification {
-        app_name: "Chat".into(),
-        app_icon: String::new(),
-        summary: summary.into(),
-        body: String::new(),
-        actions: Vec::new(),
-        hints: NotificationHints {
-            transient,
-            ..Default::default()
-        },
-        expire_timeout: 0,
-    }
+    let mut n = super::model::incoming("Chat", summary, "");
+    n.hints.transient = transient;
+    n
 }
 fn query(text: &str, cursor: Option<String>, limit: usize) -> HistoryQuery {
     HistoryQuery {
