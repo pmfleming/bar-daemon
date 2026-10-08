@@ -49,7 +49,7 @@ impl NotificationService {
         }
     }
 
-    pub(crate) fn native_engine(&self) -> Option<&NotificationEngine> {
+    pub(crate) fn native_engine(&self) -> Option<&Arc<NotificationEngine>> {
         match &self.backend {
             NotificationBackend::Native(engine) => Some(engine),
             NotificationBackend::SwayNc => None,

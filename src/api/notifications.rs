@@ -6,6 +6,26 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyRequest {
+    app_key: String,
+    policy: crate::activity::notifications::policy::AppPolicy,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteScope {
+    app_key: Option<String>,
+    selected: Option<crate::activity::notifications::history::Position>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteRequest {
+    token: String,
+    #[serde(default)]
+    cancel: bool,
+}
+
+#[derive(Deserialize)]
 struct DndRequest {
     enabled: bool,
     #[serde(default)]
@@ -76,6 +96,43 @@ impl NotificationApi {
         match result {
             Ok(operation) => success(operation),
             Err(value) => error("notification-operation-failed", value.to_string()),
+        }
+    }
+    pub(super) async fn notification_set_app_policy(&self, params: Value) -> Value {
+        let request = request!(params, PolicyRequest, "notifications.setAppPolicy");
+        let Some(engine) = self.notifications.native_engine() else {
+            return native_required();
+        };
+        match engine.set_app_policy(request.app_key, request.policy).await {
+            Ok(state) => success(json!({"notifications":state})),
+            Err(e) => error("notification-policy-failed", e.to_string()),
+        }
+    }
+    pub(super) async fn notification_prepare_delete(&self, params: Value) -> Value {
+        let request = request!(params, DeleteScope, "notifications.prepareDelete");
+        let Some(engine) = self.notifications.native_engine() else {
+            return native_required();
+        };
+        match engine
+            .prepare_delete(request.app_key, request.selected)
+            .await
+        {
+            Ok(challenge) => success(json!({"delete_confirmation":challenge})),
+            Err(e) => error("notification-delete-failed", e.to_string()),
+        }
+    }
+    pub(super) async fn notification_delete(&self, params: Value) -> Value {
+        let request = request!(params, DeleteRequest, "notifications.delete");
+        let Some(engine) = self.notifications.native_engine() else {
+            return native_required();
+        };
+        if request.cancel {
+            engine.cancel_delete(&request.token).await;
+            return success(json!({"cancelled":true}));
+        }
+        match engine.delete_confirmed(request.token).await {
+            Ok(count) => success(json!({"deleted":count})),
+            Err(e) => error("notification-delete-failed", e.to_string()),
         }
     }
     pub(super) async fn notification_set_dnd(&self, params: Value) -> Value {

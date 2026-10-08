@@ -190,7 +190,8 @@ fn normalize_hints(hints: &HashMap<String, OwnedValue>) -> NotificationHints {
     NotificationHints {
         urgency: hint_u8(hints, "urgency").unwrap_or(1).min(2),
         category: hint_string(hints, "category"),
-        desktop_entry: hint_string(hints, "desktop-entry"),
+        desktop_entry: hint_string(hints, "desktop-entry")
+            .or_else_empty(|| hint_string(hints, "desktop_entry")),
         image_path: hint_string(hints, "image-path")
             .or_else_empty(|| hint_string(hints, "image_path")),
         sound_name: hint_string(hints, "sound-name"),

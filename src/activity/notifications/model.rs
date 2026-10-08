@@ -21,6 +21,8 @@ pub(crate) struct NotificationState {
     pub class_name: String,
     pub backend: String,
     pub history_revision: u64,
+    #[serde(default)]
+    pub app_policies: std::collections::BTreeMap<String, super::policy::AppPolicy>,
     pub error: Option<String>,
 }
 
@@ -58,6 +60,8 @@ pub(crate) struct IncomingNotification {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActiveNotification {
     pub id: u32,
+    #[serde(default)]
+    pub identity_icon: String,
     pub app_name: String,
     pub app_icon: String,
     pub summary: String,
@@ -70,6 +74,8 @@ pub(crate) struct ActiveNotification {
     pub expires_unix_ms: Option<u64>,
     #[serde(default = "default_toast_visible")]
     pub toast_visible: bool,
+    #[serde(default)]
+    pub dnd_bypass: bool,
     #[serde(default)]
     pub toast_expires_unix_ms: Option<u64>,
     pub group_key: String,
@@ -107,6 +113,7 @@ impl ActiveNotification {
         };
         Self {
             id,
+            identity_icon: super::identity::icon(&incoming.hints.desktop_entry, &incoming.app_name),
             app_name: incoming.app_name,
             app_icon: incoming.app_icon,
             summary: incoming.summary,
@@ -117,6 +124,7 @@ impl ActiveNotification {
             updated_unix_ms: now,
             expires_unix_ms,
             toast_visible: true,
+            dnd_bypass: false,
             toast_expires_unix_ms: toast_timeout.map(|timeout| now.saturating_add(timeout)),
             group_key,
             source_monitor: String::new(),

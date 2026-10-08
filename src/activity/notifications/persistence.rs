@@ -33,6 +33,24 @@ enum Mutation {
 #[derive(Debug)]
 enum PersistenceCommand {
     Mutate(Vec<Mutation>),
+    Delete {
+        positions: Vec<Position>,
+        response: oneshot::Sender<Result<()>>,
+    },
+    Targets {
+        app_key: Option<String>,
+        selected: Option<Position>,
+        response: oneshot::Sender<Result<Vec<Position>>>,
+    },
+    Policy {
+        key: String,
+        policy: super::policy::AppPolicy,
+        response: oneshot::Sender<Result<()>>,
+    },
+    Policies {
+        response:
+            oneshot::Sender<Result<std::collections::BTreeMap<String, super::policy::AppPolicy>>>,
+    },
     Center {
         query: Box<CenterQuery>,
         active: Vec<ActiveNotification>,
@@ -97,6 +115,44 @@ impl NotificationPersistence {
             ),
             mutations: Vec::new(),
         })
+    }
+
+    pub(crate) async fn targets(
+        &self,
+        app_key: Option<String>,
+        selected: Option<Position>,
+    ) -> Result<Vec<Position>> {
+        self.request(|response| PersistenceCommand::Targets {
+            app_key,
+            selected,
+            response,
+        })
+        .await
+    }
+    pub(crate) async fn delete(&self, positions: Vec<Position>) -> Result<()> {
+        self.request(|response| PersistenceCommand::Delete {
+            positions,
+            response,
+        })
+        .await
+    }
+    pub(crate) async fn set_policy(
+        &self,
+        key: String,
+        policy: super::policy::AppPolicy,
+    ) -> Result<()> {
+        self.request(|response| PersistenceCommand::Policy {
+            key,
+            policy,
+            response,
+        })
+        .await
+    }
+    pub(crate) async fn policies(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, super::policy::AppPolicy>> {
+        self.request(|response| PersistenceCommand::Policies { response })
+            .await
     }
 
     pub(crate) async fn center(
@@ -216,6 +272,29 @@ fn persistence_worker(
     let mut history_error = None;
     while let Some(command) = receiver.blocking_recv() {
         match command {
+            PersistenceCommand::Targets {
+                app_key,
+                selected,
+                response,
+            } => reply(response, history_error.as_deref(), || {
+                store.targets(app_key.as_deref(), selected)
+            }),
+            PersistenceCommand::Delete {
+                positions,
+                response,
+            } => reply(response, history_error.as_deref(), || {
+                store.delete(&positions)
+            }),
+            PersistenceCommand::Policy {
+                key,
+                policy,
+                response,
+            } => reply(response, history_error.as_deref(), || {
+                store.set_policy(&key, &policy)
+            }),
+            PersistenceCommand::Policies { response } => {
+                reply(response, history_error.as_deref(), || store.policies())
+            }
             PersistenceCommand::Mutate(mutations) => {
                 apply_mutations(&mut store, mutations, &mut history_error);
             }
@@ -490,6 +569,61 @@ impl NotificationStore {
         Ok(())
     }
 
+    fn targets(&self, app_key: Option<&str>, selected: Option<Position>) -> Result<Vec<Position>> {
+        // Deletion includes older retained records, not only the recent search
+        // window. Otherwise deleting the window would resurrect older entries.
+        let mut statement = self.connection.prepare("SELECT session_id, created_unix_ms, json_extract(payload_json, '$.hints.desktop_entry'), json_extract(payload_json, '$.app_name') FROM notifications")?;
+        let mut cursor = statement.query([])?;
+        let mut targets = Vec::new();
+        while let Some(row) = cursor.next()? {
+            let position = Position {
+                id: row.get(0)?,
+                created: row.get(1)?,
+            };
+            let desktop = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+            let name = row.get::<_, String>(3)?;
+            if app_key.is_none_or(|key| {
+                key == center::app_key(&desktop, &name, position.id, position.created)
+            }) && selected.is_none_or(|p| p.id == position.id && p.created == position.created)
+            {
+                anyhow::ensure!(
+                    targets.len() < 100_000,
+                    "Deletion exceeds 100,000-record safety limit"
+                );
+                targets.push(position);
+            }
+        }
+        Ok(targets)
+    }
+    fn delete(&mut self, positions: &[Position]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        for position in positions {
+            transaction.execute(
+                "DELETE FROM notifications WHERE session_id = ?1 AND created_unix_ms = ?2",
+                params![position.id, position.created],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+    fn set_policy(&self, key: &str, policy: &super::policy::AppPolicy) -> Result<()> {
+        self.connection.execute("INSERT INTO notification_meta(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![format!("app_policy:{key}"), serde_json::to_string(policy)?])?;
+        Ok(())
+    }
+    fn policies(&self) -> Result<std::collections::BTreeMap<String, super::policy::AppPolicy>> {
+        let mut result = std::collections::BTreeMap::new();
+        let mut statement = self
+            .connection
+            .prepare("SELECT key, value FROM notification_meta WHERE key LIKE 'app_policy:%'")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (key, value) = row?;
+            result.insert(key[11..].to_owned(), serde_json::from_str(&value)?);
+        }
+        Ok(result)
+    }
     fn center(
         &self,
         query: &CenterQuery,
@@ -507,7 +641,9 @@ impl NotificationStore {
              substr(json_extract(payload_json, '$.body'), 1, 240),
              json_extract(payload_json, '$.snoozed_until_unix_ms'),
              substr(json_extract(payload_json, '$.group_key'), 1, 4097), instr(search_text, ?2) > 0,
-             substr(json_extract(payload_json, '$.hints.image_path'), 1, 512)
+             substr(json_extract(payload_json, '$.hints.image_path'), 1, 512),
+             length(json_extract(payload_json, '$.summary')), length(json_extract(payload_json, '$.body')),
+             json_array_length(payload_json, '$.actions'), substr(json_extract(payload_json, '$.hints.category'), 1, 257), json_extract(payload_json, '$.hints.urgency'), substr(json_extract(payload_json, '$.identity_icon'), 1, 1024)
              FROM notifications WHERE history_id IN
              (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)",
         )?;
@@ -535,6 +671,14 @@ impl NotificationStore {
                 app_key: center::app_key(&text(4)?, &name, id, created),
                 app_name: center::clip(&name, 128),
                 app_icon: center::clip(&icon, 512),
+                identity_icon: {
+                    let captured = text(18)?;
+                    if captured.is_empty() {
+                        super::identity::icon(&text(4)?, &name)
+                    } else {
+                        captured
+                    }
+                },
                 hints: center::PreviewHints {
                     desktop_entry: center::clip(&text(4)?, 1024),
                     image_path: text(12)?,
@@ -544,6 +688,17 @@ impl NotificationStore {
                 snoozed_until_unix_ms: row.get(9)?,
                 group_key: text(10)?,
                 matches: row.get(11)?,
+                repeat_key: if row.get::<_, usize>(13)? < 160 && row.get::<_, usize>(14)? < 240 {
+                    super::timeline::repeat_key(
+                        &text(7)?,
+                        &text(8)?,
+                        &text(16)?,
+                        row.get::<_, Option<u8>>(17)?.unwrap_or(0),
+                        row.get::<_, usize>(15)? == 0,
+                    )
+                } else {
+                    None
+                },
             });
         }
         rows.extend(active.iter().map(|n| Preview::from_active(n, &query.query)));

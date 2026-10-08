@@ -1,6 +1,40 @@
 use anyhow::{Result, bail};
 
 use super::model::IncomingNotification;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct AppPolicy {
+    pub silent: bool,
+    pub until_unix_ms: Option<u64>,
+    pub group_similar: bool,
+    pub bypass_dnd: bool,
+}
+impl Default for AppPolicy {
+    fn default() -> Self {
+        Self {
+            silent: false,
+            until_unix_ms: None,
+            group_similar: true,
+            bypass_dnd: false,
+        }
+    }
+}
+impl AppPolicy {
+    pub fn silenced(&self, now: u64) -> bool {
+        self.silent && self.until_unix_ms.is_none_or(|until| until > now)
+    }
+    pub fn validate(&self) -> Result<()> {
+        if self.until_unix_ms.is_some_and(|until| {
+            until <= crate::time::unix_ms()
+                || until > crate::time::unix_ms().saturating_add(7 * 86_400_000)
+        }) {
+            bail!("quiet period must end within the next seven days");
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct NotificationPolicy {

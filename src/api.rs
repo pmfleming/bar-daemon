@@ -127,6 +127,13 @@ impl ApiService {
             "notifications.togglePanel" => self.notifications.notification_action(false).await,
             "notifications.toggleDnd" => self.notifications.notification_action(true).await,
             "notifications.setDnd" => self.notifications.notification_set_dnd(params).await,
+            "notifications.setAppPolicy" => {
+                self.notifications.notification_set_app_policy(params).await
+            }
+            "notifications.prepareDelete" => {
+                self.notifications.notification_prepare_delete(params).await
+            }
+            "notifications.delete" => self.notifications.notification_delete(params).await,
             "notifications.list" => self.notifications.notification_list(params).await,
             "notifications.queryCenter" => {
                 self.notifications.notification_query_center(params).await

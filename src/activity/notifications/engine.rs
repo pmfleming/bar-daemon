@@ -28,6 +28,8 @@ struct EngineData {
     dnd: bool,
     dnd_until_unix_ms: Option<u64>,
     history_revision: u64,
+    app_policies: BTreeMap<String, super::policy::AppPolicy>,
+    delete_tickets: BTreeMap<String, (u64, Vec<history::Position>)>,
 }
 
 struct ExpiryBatch {
@@ -66,12 +68,34 @@ impl EngineData {
             self.active.insert(id, stored.clone());
             stored
         };
+        let mut stored = stored;
+        let key = super::center::app_key(
+            &stored.hints.desktop_entry,
+            &stored.app_name,
+            stored.id,
+            stored.created_unix_ms,
+        );
+        if self
+            .app_policies
+            .get(&key)
+            .is_some_and(|policy| policy.silenced(now))
+        {
+            stored.toast_visible = false;
+            self.active.insert(id, stored.clone());
+        }
         self.history_revision = self.history_revision.wrapping_add(1);
         (stored, evicted)
     }
 
     fn expire(&mut self, now: u64) -> ExpiryBatch {
         let mut changed = Vec::new();
+        for policy in self.app_policies.values_mut() {
+            if policy.silent && policy.until_unix_ms.is_some_and(|until| until <= now) {
+                policy.silent = false;
+                policy.until_unix_ms = None;
+                self.history_revision = self.history_revision.wrapping_add(1);
+            }
+        }
         for notification in self.active.values_mut() {
             let mut dirty = false;
             if notification
@@ -156,8 +180,22 @@ impl NotificationEngine {
         dnd: bool,
         dnd_until_unix_ms: Option<u64>,
     ) -> Result<Arc<Self>> {
+        tokio::task::spawn_blocking(super::identity::preload)
+            .await
+            .context("load notification application icons")?;
         let dnd_expired = dnd_until_unix_ms.is_some_and(|until| until <= unix_ms());
         let (signals, _) = broadcast::channel(256);
+        let mut app_policies = if let Some(store) = &persistence {
+            store.policies().await?
+        } else {
+            BTreeMap::new()
+        };
+        for policy in app_policies.values_mut() {
+            if policy.until_unix_ms.is_some_and(|until| until <= unix_ms()) {
+                policy.silent = false;
+                policy.until_unix_ms = None;
+            }
+        }
         let engine = Arc::new(Self {
             mutations: Mutex::new(()),
             data: Mutex::new(EngineData {
@@ -165,6 +203,8 @@ impl NotificationEngine {
                 dnd: dnd && !dnd_expired,
                 dnd_until_unix_ms: (!dnd_expired).then_some(dnd_until_unix_ms).flatten(),
                 history_revision: 0,
+                app_policies,
+                delete_tickets: BTreeMap::new(),
             }),
             next_id: AtomicU32::new(last_id),
             ingress: Semaphore::new(256),
@@ -242,6 +282,165 @@ impl NotificationEngine {
         self.expiry_wakeup.notify_one();
         self.publish_summary().await;
         Ok(id)
+    }
+
+    pub(crate) async fn set_app_policy(
+        self: &Arc<Self>,
+        key: String,
+        policy: super::policy::AppPolicy,
+    ) -> Result<NotificationState> {
+        anyhow::ensure!(
+            !key.is_empty()
+                && key.len() <= 1100
+                && ["desktop:", "named:", "unknown:"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix)),
+            "invalid notification app key"
+        );
+        policy.validate()?;
+        let engine = Arc::clone(self);
+        tokio::spawn(async move {
+            let _mutation = engine.mutations.lock().await;
+            {
+                let data = engine.data.lock().await;
+                anyhow::ensure!(
+                    data.app_policies.contains_key(&key) || data.app_policies.len() < 256,
+                    "Application policy limit reached"
+                );
+            }
+            if let Some(store) = &engine.persistence {
+                store.set_policy(key.clone(), policy.clone()).await?;
+            }
+            let mut data = engine.data.lock().await;
+            if policy.silenced(unix_ms()) {
+                for notification in data.active.values_mut() {
+                    if super::center::app_key(
+                        &notification.hints.desktop_entry,
+                        &notification.app_name,
+                        notification.id,
+                        notification.created_unix_ms,
+                    ) == key
+                    {
+                        // Clearing silence must not replay an old popup.
+                        notification.toast_visible = false;
+                        notification.toast_expires_unix_ms = None;
+                    }
+                }
+            }
+            data.app_policies.insert(key, policy);
+            data.history_revision = data.history_revision.wrapping_add(1);
+            drop(data);
+            engine.expiry_wakeup.notify_one();
+            engine.publish_summary().await;
+            Ok(engine.state.read(|state| state.notifications.clone()).await)
+        })
+        .await
+        .context("join app policy operation")?
+    }
+
+    pub(crate) async fn prepare_delete(
+        &self,
+        app_key: Option<String>,
+        selected: Option<history::Position>,
+    ) -> Result<serde_json::Value> {
+        anyhow::ensure!(
+            app_key
+                .as_ref()
+                .is_none_or(|key| !key.is_empty() && key.len() <= 4096)
+                && selected.is_none_or(|p| p.id > 0 && p.created > 0),
+            "Invalid delete scope"
+        );
+        let _mutation = self.mutations.lock().await;
+        let mut records = if let Some(store) = &self.persistence {
+            store.targets(app_key.clone(), selected).await?
+        } else {
+            Vec::new()
+        };
+        let data = self.data.lock().await;
+        for n in data.active.values() {
+            if app_key.as_ref().is_none_or(|key| {
+                key == &super::center::app_key(
+                    &n.hints.desktop_entry,
+                    &n.app_name,
+                    n.id,
+                    n.created_unix_ms,
+                )
+            }) && selected.is_none_or(|p| p.id == n.id && p.created == n.created_unix_ms)
+            {
+                records.push(history::Position {
+                    id: n.id,
+                    created: n.created_unix_ms,
+                });
+            }
+        }
+        drop(data);
+        records.sort_by_key(|p| (p.created, p.id));
+        records.dedup_by_key(|p| (p.created, p.id));
+        anyhow::ensure!(!records.is_empty(), "No notifications to delete");
+        let token = history::new_epoch()?;
+        let expires = unix_ms() + 60_000;
+        let count = records.len();
+        let mut data = self.data.lock().await;
+        data.delete_tickets
+            .retain(|_, (until, _)| *until > unix_ms());
+        anyhow::ensure!(
+            data.delete_tickets.len() < 8,
+            "Too many pending delete confirmations"
+        );
+        data.delete_tickets
+            .insert(token.clone(), (expires, records));
+        Ok(
+            serde_json::json!({"token":token, "count":count, "app_key":app_key, "selected":selected, "expires_unix_ms":expires}),
+        )
+    }
+
+    pub(crate) async fn cancel_delete(&self, token: &str) {
+        self.data.lock().await.delete_tickets.remove(token);
+    }
+
+    pub(crate) async fn delete_confirmed(self: &Arc<Self>, token: String) -> Result<usize> {
+        let engine = Arc::clone(self);
+        // An admitted deletion finishes even if the IPC caller disconnects.
+        tokio::spawn(async move {
+            let _mutation = engine.mutations.lock().await;
+            let (expires, positions) = engine
+                .data
+                .lock()
+                .await
+                .delete_tickets
+                .remove(&token)
+                .context("Delete confirmation expired; request a new confirmation")?;
+            anyhow::ensure!(
+                expires > unix_ms(),
+                "Delete confirmation expired; request a new confirmation"
+            );
+            // Commit persistent removal before publishing/removing active records.
+            // Queue ordering includes every prior accepted notification write.
+            if let Some(store) = &engine.persistence {
+                store.delete(positions.clone()).await?;
+            }
+            let mut data = engine.data.lock().await;
+            for position in &positions {
+                if data
+                    .active
+                    .get(&position.id)
+                    .is_some_and(|n| n.created_unix_ms == position.created)
+                {
+                    data.active.remove(&position.id);
+                    engine.emit(NotificationSignal::Closed {
+                        id: position.id,
+                        reason: close_reason::DISMISSED,
+                    });
+                }
+            }
+            data.history_revision = data.history_revision.wrapping_add(1);
+            drop(data);
+            engine.expiry_wakeup.notify_one();
+            engine.publish_summary().await;
+            Ok(positions.len())
+        })
+        .await
+        .context("join notification deletion")?
     }
 
     pub(crate) async fn close(&self, id: u32, reason: u32) -> Result<bool> {
@@ -617,7 +816,15 @@ impl NotificationEngine {
                     .min()
             })
         });
-        let next = notification_wakeup.chain(data.dnd_until_unix_ms).min()?;
+        let next = notification_wakeup
+            .chain(data.dnd_until_unix_ms)
+            .chain(
+                data.app_policies
+                    .values()
+                    .filter(|p| p.silent)
+                    .filter_map(|p| p.until_unix_ms),
+            )
+            .min()?;
         Some(Duration::from_millis(next.saturating_sub(unix_ms())))
     }
 
@@ -673,7 +880,23 @@ impl NotificationEngine {
                 .active
                 .values()
                 .filter(|item| item.snoozed_until_unix_ms.is_none())
-                .cloned()
+                .map(|item| {
+                    let mut item = item.clone();
+                    let key = super::center::app_key(
+                        &item.hints.desktop_entry,
+                        &item.app_name,
+                        item.id,
+                        item.created_unix_ms,
+                    );
+                    if let Some(policy) = data.app_policies.get(&key) {
+                        item.dnd_bypass = policy.bypass_dnd;
+                        if policy.silenced(unix_ms()) {
+                            item.toast_visible = false;
+                            item.hints.suppress_sound = true;
+                        }
+                    }
+                    item
+                })
                 .collect::<Vec<_>>();
             let count = visible.len().try_into().unwrap_or(u32::MAX);
             let noun = if count == 1 {
@@ -699,6 +922,7 @@ impl NotificationEngine {
                     class_name: class_name.into(),
                     backend: "native".into(),
                     history_revision: data.history_revision,
+                    app_policies: data.app_policies.clone(),
                     error: None,
                 },
                 NotificationActiveState {

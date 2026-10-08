@@ -29,14 +29,23 @@ pub(crate) struct CenterQuery {
     pub page_anchor: Option<Position>,
     pub selected: Option<Position>,
     pub group_key: Option<String>,
+    pub date: Option<String>,
+    pub timeline_anchor: Option<String>,
+    #[serde(default = "default_grouping")]
+    pub group_similar: bool,
+}
+const fn default_grouping() -> bool {
+    true
 }
 const fn first_page() -> usize {
     1
 }
 impl CenterQuery {
     pub fn normalize(&mut self) -> Result<(), HistoryError> {
-        if !["apps", "app"].contains(&self.view.as_str())
+        if !["apps", "app", "timeline"].contains(&self.view.as_str())
             || self.offset > 5200
+            || self.date.as_ref().is_some_and(|s| s.len() > 10)
+            || self.timeline_anchor.as_ref().is_some_and(|s| s.len() > 64)
             || self.page == 0
             || self.page > 1040
             || self.app_key.as_ref().is_some_and(|s| s.len() > 4096)
@@ -81,6 +90,7 @@ pub(crate) struct Preview {
     pub app_key: String,
     pub app_name: String,
     pub app_icon: String,
+    pub identity_icon: String,
     pub hints: PreviewHints,
     pub summary: String,
     pub body: String,
@@ -92,6 +102,8 @@ pub(crate) struct Preview {
     pub matches: bool,
     #[serde(skip)]
     pub group_key: String,
+    #[serde(skip)]
+    pub repeat_key: Option<String>,
 }
 impl Preview {
     pub fn from_active(n: &ActiveNotification, query: &str) -> Self {
@@ -101,6 +113,7 @@ impl Preview {
             app_key: app_key(&n.hints.desktop_entry, &n.app_name, n.id, n.created_unix_ms),
             app_name: clip(&n.app_name, 128),
             app_icon: clip(&n.app_icon, 512),
+            identity_icon: clip(&n.identity_icon, 1024),
             hints: PreviewHints {
                 desktop_entry: clip(&n.hints.desktop_entry, 1024),
                 image_path: clip(&n.hints.image_path, 512),
@@ -112,6 +125,13 @@ impl Preview {
             history_id: None,
             matches: super::history::search_text(n).contains(query),
             group_key: clip(&n.group_key, 4097),
+            repeat_key: super::timeline::repeat_key(
+                &n.summary,
+                &n.body,
+                &n.hints.category,
+                n.hints.urgency,
+                n.actions.is_empty(),
+            ),
         }
     }
     fn position(&self) -> (u64, u32) {
@@ -148,6 +168,8 @@ pub(crate) struct AppSummary {
 #[derive(Debug, Serialize)]
 #[serde(tag = "view")]
 pub(crate) enum CenterPage {
+    #[serde(rename = "timeline")]
+    Timeline(super::timeline::Timeline),
     #[serde(rename = "apps")]
     Apps {
         epoch: String,
@@ -246,6 +268,11 @@ pub(crate) fn project(
         .into_iter()
         .filter(|p| p.app_key == key && p.matches)
         .collect();
+    if query.view == "timeline" {
+        return checked(CenterPage::Timeline(super::timeline::project(
+            rows, query, epoch, revision,
+        )));
+    }
     let count = rows.len();
     let pages = count.div_ceil(INDEX_SIZE).max(1);
     let page = query

@@ -124,6 +124,7 @@ fn parse_status(line: &str) -> Result<NotificationState> {
         class_name: status.class_name,
         backend: "swaync".into(),
         history_revision: 0,
+        app_policies: Default::default(),
         error: None,
     })
 }

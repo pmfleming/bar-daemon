@@ -12,6 +12,16 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Date-grouped notification timelines with bounded exact-repeat stacks and
+  revision-fenced scrolling windows; no frontend grouping of partial history.
+- Persistent per-app silence, timed quiet periods, grouping and DND bypass.
+  Policy acknowledgements follow storage commits.
+- Snapshot-confirmed deletion across retained and active notifications, preserving
+  later arrivals and application settings. Deletion is distinct from legacy
+  dismissal and includes history older than the recent search window.
+- Desktop-file application icon capture, persisted separately from notification
+  content imagery and exposed in bounded center previews.
+
 - `notifications.queryCenter`: native app groups and counts, bounded previews,
   five-message pages with direct seeking, selected-record lookup and
   epoch/revision-fenced app paging. Full-scope search and lifecycle/action guards

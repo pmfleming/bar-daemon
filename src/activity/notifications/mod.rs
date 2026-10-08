@@ -10,9 +10,13 @@ pub(crate) mod engine;
 pub(crate) mod history;
 #[cfg(test)]
 mod history_tests;
+mod identity;
 pub(crate) mod model;
 pub(crate) mod persistence;
 pub(crate) mod policy;
+#[cfg(test)]
+mod redesign_tests;
 pub(crate) mod server;
 pub(crate) mod service;
 mod swaync;
+mod timeline;

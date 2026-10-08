@@ -15,6 +15,7 @@
           "image_path": ""
         },
         "id": 1,
+        "identity_icon": "",
         "snoozed_until_unix_ms": null,
         "summary": "Planning"
       }
@@ -33,6 +34,7 @@
           "image_path": ""
         },
         "id": 1,
+        "identity_icon": "",
         "snoozed_until_unix_ms": null,
         "summary": "Planning"
       }
@@ -56,6 +58,7 @@
         "app_name": "Calendar",
         "body": "Meeting starts soon",
         "created_unix_ms": 1768463900000,
+        "dnd_bypass": false,
         "expires_unix_ms": null,
         "group_key": "calendar",
         "hints": {
@@ -71,6 +74,7 @@
           "urgency": 1
         },
         "id": 1,
+        "identity_icon": "",
         "snoozed_until_unix_ms": null,
         "source_monitor": "eDP-1",
         "summary": "Planning",
@@ -100,6 +104,7 @@
             "image_path": ""
           },
           "id": 1,
+          "identity_icon": "",
           "snoozed_until_unix_ms": null,
           "summary": "Planning"
         },
@@ -135,6 +140,7 @@
           "app_name": "Calendar",
           "body": "Meeting starts soon",
           "created_unix_ms": 1768463900000,
+          "dnd_bypass": false,
           "expires_unix_ms": null,
           "group_key": "calendar",
           "hints": {
@@ -150,6 +156,7 @@
             "urgency": 1
           },
           "id": 1,
+          "identity_icon": "",
           "snoozed_until_unix_ms": null,
           "source_monitor": "eDP-1",
           "summary": "Planning",
@@ -485,6 +492,35 @@
           "until_unix_ms": 1768467500000
         },
         "result": "notifications"
+      },
+      {
+        "name": "notifications.setAppPolicy",
+        "params": {
+          "app_key": "desktop:org.signal.Signal",
+          "policy": {
+            "bypass_dnd": false,
+            "group_similar": true,
+            "silent": true,
+            "until_unix_ms": null
+          }
+        },
+        "result": "notifications"
+      },
+      {
+        "name": "notifications.prepareDelete",
+        "params": {
+          "app_key": "desktop:org.signal.Signal",
+          "selected": null
+        },
+        "result": "delete_confirmation"
+      },
+      {
+        "name": "notifications.delete",
+        "params": {
+          "cancel": false,
+          "token": "confirmation-token"
+        },
+        "result": "deleted"
       },
       {
         "name": "notifications.list",

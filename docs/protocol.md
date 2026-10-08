@@ -47,6 +47,9 @@ The client emits correlated `response` records and asynchronous `event` records.
 - `notifications.togglePanel`
 - `notifications.toggleDnd`
 - `notifications.setDnd`
+- `notifications.setAppPolicy`
+- `notifications.prepareDelete`
+- `notifications.delete`
 - `notifications.list` (legacy)
 - `notifications.queryHistory`
 - `notifications.queryCenter`
@@ -183,6 +186,17 @@ snapshot has `view`, `epoch`, string `revision` and normalized `query`.
   With no `app_key`, `group_key` or `selected` can resolve a legacy toast link to
   an app without making the conversation key the app identity.
 
+- `{view: "timeline", query: "", app_key: <key>, date: null, offset: 0,
+  epoch: null, revision: null, timeline_anchor: null, group_similar: true}` returns
+  authoritative local-date `dates: [{key: "YYYY-MM-DD", count}]`, selected `date`,
+  that date's notification `count`, `total_rows`, at most 20 `entries`, `offset`,
+  nullable `next_offset`, and `anchor_reached`. Missing dates default to the newest.
+  Each entry has `key`, `preview`, and `members: [{id, created}]`. Only exact,
+  action-free, untruncated summary/body/category/urgency matches within this app/date
+  stack, with at most 50 members. Disabling grouping yields singleton entries.
+  Continuations require the returned epoch/revision; `timeline_anchor` allows
+  atomic refresh through an existing window. There is no change to lifecycle.
+
 Preview strings are bounded (name 128, icon 512, summary 160, body 240 Unicode
 characters). Previews also retain `hints.desktop_entry` (1024 characters) and
 `hints.image_path` (512 characters), including theme icon names supplied via the
@@ -201,10 +215,46 @@ separate even when display names match; name-only groups do not claim a desktop
 identity. Unnamed senders and overlong identity components (>1024 UTF-8 bytes)
 conservatively use creation time plus ID, avoiding accidental
 merges and unqueryable keys. These are descriptive grouping keys, not trusted
-application identities or mutation targets. Conversation `group_key` remains
-independent. Mutations still require the existing live notification/action guards;
+application identities. App policy and confirmed deletion use these descriptive
+scopes; they do not authorize executing application actions. Conversation
+`group_key` remains independent. Sender actions still require existing live guards;
 archived records never revive old D-Bus actions. Deploy matching frontend and
 daemon builds; clients must not reconstruct these groups from loaded record pages.
+
+### Notification app policy and deletion
+
+`notifications.setAppPolicy` accepts `{app_key, policy: {silent: false,
+until_unix_ms: null, group_similar: true, bypass_dnd: false}}`. Unknown policy fields
+are rejected. Quiet deadlines must be in the next seven days; null is indefinite.
+The acknowledged response is `notifications`, including the `app_policies` map.
+Policies are stored before publication; at most 256 app keys (1100 bytes each) are
+admitted. Silent arrivals never expose a popup, even momentarily. Active snapshots
+also suppress existing popups while silenced. `dnd_bypass` on active records allows
+explicit per-app exceptions in the presentation layer. Sound playback and
+configurable retention are not implemented by this API.
+
+`notifications.prepareDelete` accepts `{app_key: null, selected: null}`. A key
+limits the scope to that app; `selected: {id, created}` limits it to an exact record.
+Unlike search windows, preparation includes **all retained history**, so older
+entries cannot reappear after a deletion. The bounded server-side snapshot holds
+up to 100,000 stored plus 200 active identities. A response `delete_confirmation`
+contains `token`, actual `count`, echoed scope (`app_key`, `selected`) and
+`expires_unix_ms`. At most eight confirmations coexist; they expire in 60 seconds.
+
+`notifications.delete` accepts `{token, cancel: false}`. Cancellation releases a
+confirmation without deleting anything. Confirmation consumes the token once,
+transactionally deletes the captured stored identities, then removes matching
+active records, sends individual D-Bus close signals and publishes one revision.
+App policies and later arrivals survive. The operation continues after an IPC
+caller disconnects; storage failure leaves active records intact. Tokens cannot be
+replayed, reused after restart, or used after expiration. Success returns `deleted`;
+errors require refreshing/reconfirming, never automatic replay. Existing dismiss,
+clear and snooze methods retain their compatibility semantics for toast clients.
+
+`identity_icon` is captured from desktop-file `Icon=` and persisted with each new
+record; bounded previews include it. Missing legacy captures resolve against the
+startup desktop registry. Content image hints remain separate and are not app
+identity. The registry is loaded off the async executor and refreshed on restart.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 
