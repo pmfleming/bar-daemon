@@ -42,13 +42,7 @@ const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Bound connection setup as well as every method on action/policy connections.
 /// Dispatch timeouts are ambiguous outcomes: never automatically replay them.
 pub(crate) async fn system_bus() -> Result<zbus::Connection> {
-    bounded("connect to system D-Bus", DEPENDENCY_TIMEOUT, async {
-        Ok(zbus::connection::Builder::system()?
-            .method_timeout(DEPENDENCY_TIMEOUT)
-            .build()
-            .await?)
-    })
-    .await
+    crate::bus::system().await
 }
 
 pub(crate) async fn bounded<T>(

@@ -38,7 +38,7 @@ pub(crate) async fn monitor(store: StateStore) {
             CLOCK_POLL
         ),
         refresh_loop(&store, requests, REFRESH_TIMEOUT, |preparing| async move {
-            let connection = zbus::Connection::system().await?;
+            let connection = super::system_bus().await?;
             read_state(&connection, preparing).await
         }),
     );
@@ -47,7 +47,7 @@ pub(crate) async fn monitor(store: StateStore) {
 async fn signal_connections(events: mpsc::Sender<Event>) {
     while !events.is_closed() {
         let result = async {
-            let connection = zbus::Connection::system().await?;
+            let connection = super::system_bus().await?;
             signal_connection(&connection, &events).await
         }
         .await;

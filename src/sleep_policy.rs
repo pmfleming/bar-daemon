@@ -182,13 +182,7 @@ async fn validate_config(policy: &SleepPolicy) -> Result<()> {
 }
 
 async fn user_systemd() -> Result<zbus::Connection> {
-    crate::sleep::bounded("connect to user systemd", Duration::from_secs(3), async {
-        Ok(zbus::connection::Builder::session()?
-            .method_timeout(Duration::from_secs(3))
-            .build()
-            .await?)
-    })
-    .await
+    crate::bus::session().await
 }
 
 async fn apply_idle() -> Result<()> {

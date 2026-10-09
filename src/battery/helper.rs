@@ -368,9 +368,7 @@ pub(crate) async fn set_thresholds(
     start: u8,
     end: u8,
 ) -> Result<ThresholdWriteResult> {
-    let connection = Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
+    let connection = crate::bus::system().await?;
     let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
         .await
         .context("connect to battery helper")?;
@@ -386,9 +384,7 @@ pub(crate) async fn set_thresholds(
 }
 
 pub(crate) async fn set_charge_behaviour(battery: &str, behaviour: &str) -> Result<String> {
-    let connection = Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
+    let connection = crate::bus::system().await?;
     let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
         .await
         .context("connect to battery helper")?;

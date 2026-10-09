@@ -10,6 +10,7 @@ mod api;
 mod audio;
 mod battery;
 mod brightness;
+mod bus;
 mod client;
 mod compositor;
 mod daemon;

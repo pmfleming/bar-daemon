@@ -8,8 +8,15 @@ sleep request. Development tests use isolated services, not live power actions.
 Action/policy system-bus connections have a three-second connection/method
 budget. Pre-dispatch sleep preparation has a twenty-second total budget;
 post-action telemetry has three seconds and cannot turn acceptance into failure.
-User-systemd connections/methods are bounded too. A dispatch timeout remains an
-ambiguous outcome, not permission to replay the request.
+User-systemd connections/methods are bounded too. Client operations reuse one
+system-bus and one session-bus connection, with three-second acquisition and
+method deadlines. A continuously drained transport watcher invalidates closed
+connections; the next acquisition reconnects, with single-flight setup and no
+RPC held under the cache mutex. Method timeouts do not discard a healthy bus or
+replay a call. Existing overall preflight/telemetry deadlines remain in force.
+The PPD hold owner and exported D-Bus services retain dedicated connections:
+their connection lifetime releases resources or owns a service name. A dispatch
+timeout remains an ambiguous outcome, not permission to replay the request.
 
 Lid observation no longer acquires the policy transaction mutex or waits for a
 lock/helper operation. One owned action worker runs alongside observation;

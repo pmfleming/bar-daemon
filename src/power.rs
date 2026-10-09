@@ -32,9 +32,10 @@ fn power_envelope() -> &'static Mutex<PowerEnvelope> {
 
 pub(crate) async fn monitor(store: StateStore) {
     loop {
-        let result = match zbus::Connection::system().await {
+        // This connection owns PPD hold cookies; detach must release them.
+        let result = match crate::bus::system_owned().await {
             Ok(connection) => monitor_connection(&connection, &store).await,
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         };
         if let Err(error) = result {
             store
@@ -230,9 +231,7 @@ pub(crate) async fn set_profile(
     if !matches!(profile, "power-saver" | "balanced" | "performance") {
         bail!("unsupported power profile: {profile}");
     }
-    let connection = zbus::Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
+    let connection = crate::bus::system().await?;
     let current = read_state(&connection).await?;
     if !current.profiles.iter().any(|item| item.name == profile) {
         bail!("power profile is unavailable: {profile}");
@@ -247,14 +246,12 @@ pub(crate) async fn set_profile(
 
 pub(crate) async fn resume_automatic(battery: &BatteryState) -> Result<PowerProfileState> {
     power_envelope().lock().await.resume(battery).await?;
-    let connection = zbus::Connection::system().await?;
+    let connection = crate::bus::system().await?;
     read_state(&connection).await
 }
 
 pub(crate) async fn set_battery_aware(enabled: bool) -> Result<PowerProfileState> {
-    let connection = zbus::Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
+    let connection = crate::bus::system().await?;
     let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE)
         .await
         .context("connect to Power Profiles service")?;
@@ -270,9 +267,7 @@ pub(crate) async fn set_battery_aware(enabled: bool) -> Result<PowerProfileState
 }
 
 pub(crate) async fn set_action_enabled(action: &str, enabled: bool) -> Result<PowerProfileState> {
-    let connection = zbus::Connection::system()
-        .await
-        .context("connect to system D-Bus")?;
+    let connection = crate::bus::system().await?;
     let proxy = zbus::Proxy::new(&connection, BUS, PATH, INTERFACE)
         .await
         .context("connect to Power Profiles service")?;

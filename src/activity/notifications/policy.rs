@@ -69,6 +69,51 @@ impl Default for NotificationPolicy {
     }
 }
 
+impl NotificationPolicy {
+    pub(crate) fn validate(&self, notification: &IncomingNotification) -> Result<()> {
+        if notification.summary.len() > self.maximum_summary_bytes {
+            bail!("notification summary exceeds configured size limit");
+        }
+        if notification.body.len() > self.maximum_body_bytes {
+            bail!("notification body exceeds configured size limit");
+        }
+        if notification.actions.len() > self.maximum_actions {
+            bail!("notification has too many actions");
+        }
+        for (field, value, maximum) in [
+            ("app_name", &notification.app_name, NAME_BYTES),
+            ("app_icon", &notification.app_icon, PATH_BYTES),
+            ("category", &notification.hints.category, CATEGORY_BYTES),
+            (
+                "desktop_entry",
+                &notification.hints.desktop_entry,
+                NAME_BYTES,
+            ),
+            ("image_path", &notification.hints.image_path, PATH_BYTES),
+            ("sound_name", &notification.hints.sound_name, NAME_BYTES),
+            ("sound_file", &notification.hints.sound_file, PATH_BYTES),
+        ] {
+            bounded_text(field, value, maximum)?;
+        }
+        for action in &notification.actions {
+            bounded_text("action key", &action.key, NAME_BYTES)?;
+            bounded_text("action label", &action.label, PATH_BYTES)?;
+        }
+        if notification
+            .actions
+            .iter()
+            .any(|action| action.key.is_empty())
+        {
+            bail!("notification action key cannot be empty");
+        }
+        // Per-field checks above bound this allocation, including JSON escaping.
+        if serde_json::to_vec(notification)?.len() > PAYLOAD_BYTES {
+            bail!("notification exceeds total {PAYLOAD_BYTES}-byte payload limit");
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::model::{NotificationAction, incoming};
@@ -129,50 +174,5 @@ mod tests {
                 .to_string()
                 .contains("total")
         );
-    }
-}
-
-impl NotificationPolicy {
-    pub(crate) fn validate(&self, notification: &IncomingNotification) -> Result<()> {
-        if notification.summary.len() > self.maximum_summary_bytes {
-            bail!("notification summary exceeds configured size limit");
-        }
-        if notification.body.len() > self.maximum_body_bytes {
-            bail!("notification body exceeds configured size limit");
-        }
-        if notification.actions.len() > self.maximum_actions {
-            bail!("notification has too many actions");
-        }
-        for (field, value, maximum) in [
-            ("app_name", &notification.app_name, NAME_BYTES),
-            ("app_icon", &notification.app_icon, PATH_BYTES),
-            ("category", &notification.hints.category, CATEGORY_BYTES),
-            (
-                "desktop_entry",
-                &notification.hints.desktop_entry,
-                NAME_BYTES,
-            ),
-            ("image_path", &notification.hints.image_path, PATH_BYTES),
-            ("sound_name", &notification.hints.sound_name, NAME_BYTES),
-            ("sound_file", &notification.hints.sound_file, PATH_BYTES),
-        ] {
-            bounded_text(field, value, maximum)?;
-        }
-        for action in &notification.actions {
-            bounded_text("action key", &action.key, NAME_BYTES)?;
-            bounded_text("action label", &action.label, PATH_BYTES)?;
-        }
-        if notification
-            .actions
-            .iter()
-            .any(|action| action.key.is_empty())
-        {
-            bail!("notification action key cannot be empty");
-        }
-        // Per-field checks above bound this allocation, including JSON escaping.
-        if serde_json::to_vec(notification)?.len() > PAYLOAD_BYTES {
-            bail!("notification exceeds total {PAYLOAD_BYTES}-byte payload limit");
-        }
-        Ok(())
     }
 }
