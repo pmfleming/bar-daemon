@@ -11,6 +11,9 @@ use super::{
 };
 
 const QUEUE_CAPACITY: usize = 1024;
+// Keep the searchable window plus any older still-live conversations. Pruning
+// never invalidates an active notification/action; closing it makes it eligible.
+const RETAINED_HISTORY: usize = SCOPE_LIMIT;
 
 #[derive(Debug)]
 enum Mutation {
@@ -88,12 +91,14 @@ impl NotificationPersistence {
     pub(crate) fn open(path: &Path) -> Result<(Self, u32, bool, Option<u64>)> {
         let store = NotificationStore::open(path)?;
         let last_id = store.last_id()?;
+        store.remember_id(last_id)?;
         // Persisted content is history, not a surviving D-Bus conversation.
         // Do not replay old popups/actions after the server session restarts.
         store.clear(
             crate::time::unix_ms(),
             super::model::close_reason::UNDEFINED,
         )?;
+        store.prune()?;
         let (dnd, dnd_until_unix_ms) = store.load_dnd()?;
         let (commands, receiver) = mpsc::channel(QUEUE_CAPACITY);
         std::thread::Builder::new()
@@ -340,6 +345,13 @@ fn apply_mutations(
             *history_error = Some(error.to_string());
         }
     }
+    // Run at the same ordered boundary as writes, before serving any queries.
+    // This bounds long-running daemons too, without changing cursor revisions
+    // independently of the mutation that advanced the retention window.
+    if let Err(error) = store.prune() {
+        tracing::warn!(%error, "notification history retention failed");
+        *history_error = Some(error.to_string());
+    }
 }
 
 fn reply<T>(
@@ -486,12 +498,31 @@ impl NotificationStore {
         Ok((enabled, enabled.then_some(until).flatten()))
     }
 
-    fn save(&self, notification: &ActiveNotification) -> Result<()> {
+    fn remember_id(&self, id: u32) -> Result<()> {
         self.connection.execute(
             "INSERT INTO notification_meta (key, value) VALUES ('last_notification_id', ?1)
              ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))",
-            [notification.id],
+            [id],
         )?;
+        Ok(())
+    }
+
+    fn prune(&self) -> Result<()> {
+        self.connection
+            .execute(
+                "DELETE FROM notifications WHERE closed_unix_ms IS NOT NULL
+             AND history_id < COALESCE((SELECT history_id FROM notifications
+                 ORDER BY history_id DESC LIMIT 1 OFFSET ?1), 0)",
+                [RETAINED_HISTORY - 1],
+            )
+            .context("prune notification history")?;
+        // SQLite reuses freed pages; deliberately avoid blocking VACUUM on the
+        // ingress worker. Retention bounds growth, not the existing file size.
+        Ok(())
+    }
+
+    fn save(&self, notification: &ActiveNotification) -> Result<()> {
+        self.remember_id(notification.id)?;
         if notification.hints.transient {
             self.connection.execute(
                 "DELETE FROM notifications WHERE session_id = ?1 AND closed_unix_ms IS NULL",
@@ -804,6 +835,57 @@ mod tests {
     use super::{NotificationPersistence, NotificationStore, persistence_worker, reply};
     use crate::activity::notifications::model::ActiveNotification;
     use tokio::sync::{mpsc, oneshot};
+
+    #[tokio::test]
+    async fn retention_runs_on_writes_and_restart_without_losing_live_rows_or_ids() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("history.db");
+        let mut store = NotificationStore::open(&path).unwrap();
+        for id in 1..=(super::RETAINED_HISTORY as u32 + 5) {
+            store.save(&notification(id, false)).unwrap();
+            if id != 1 {
+                store.close(id, 200, 2).unwrap();
+            }
+        }
+        // The worker's actual batch boundary prunes, even without a restart.
+        let mut error = None;
+        super::apply_mutations(&mut store, vec![], &mut error);
+        assert!(error.is_none());
+        let rows = store.list(None, usize::MAX / 2).unwrap();
+        assert_eq!(rows.len(), super::RETAINED_HISTORY + 1);
+        assert!(
+            rows.iter()
+                .any(|r| r.notification.id == 1 && r.closed_unix_ms.is_none())
+        );
+        store.remember_id(100_000).unwrap(); // transient high-water ID
+        drop(store);
+        let (persistence, last_id, _, _) = NotificationPersistence::open(&path).unwrap();
+        assert_eq!(last_id, 100_000);
+        let rows = persistence
+            .list(None, super::RETAINED_HISTORY + 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), super::RETAINED_HISTORY);
+        assert!(rows.iter().all(|r| r.closed_unix_ms.is_some()));
+        assert!(rows.iter().all(|r| r.notification.id != 1));
+    }
+
+    #[tokio::test]
+    async fn restart_closes_surviving_conversations_without_replaying_them() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("history.db");
+        let store = NotificationStore::open(&path).unwrap();
+        store.save(&notification(7, false)).unwrap();
+        drop(store);
+        let (persistence, id, _, _) = NotificationPersistence::open(&path).unwrap();
+        assert_eq!(id, 7);
+        let rows = persistence.list(None, 10).await.unwrap();
+        assert_eq!(
+            rows[0].close_reason,
+            Some(super::super::model::close_reason::UNDEFINED)
+        );
+        assert!(rows[0].closed_unix_ms.is_some());
+    }
 
     #[test]
     fn live_and_saved_repeat_keys_agree_at_unicode_clipping_boundaries() {
