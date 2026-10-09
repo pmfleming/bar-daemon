@@ -163,7 +163,7 @@ impl NotificationEngine {
         dnd: bool,
         dnd_until_unix_ms: Option<u64>,
     ) -> Result<Arc<Self>> {
-        tokio::task::spawn_blocking(super::identity::preload)
+        super::identity::refresh()
             .await
             .context("load notification application icons")?;
         let dnd_expired = dnd_until_unix_ms.is_some_and(|until| until <= unix_ms());
@@ -227,6 +227,9 @@ impl NotificationEngine {
             .try_acquire()
             .context("notification ingress is full")?;
         self.policy.validate(&notification)?;
+        if let Err(error) = super::identity::refresh().await {
+            tracing::warn!(%error, "desktop icon refresh failed; using previous registry");
+        }
         let _mutation = self.mutations.lock().await;
         let mut writes = self.reserve_persistence().await?;
         let now = unix_ms();

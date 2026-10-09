@@ -73,7 +73,7 @@ struct ProbeState {
 
 pub(crate) async fn monitor(store: StateStore) {
     let (changes_tx, mut changes_rx) = mpsc::channel::<()>(8);
-    std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("bar-pipewire-monitor".into())
         .spawn(move || {
             let callback: ChangeCallback = Arc::new(move || {
@@ -85,7 +85,9 @@ pub(crate) async fn monitor(store: StateStore) {
                 tracing::warn!(%error, "PipeWire monitor ended");
             }
         })
-        .ok();
+    {
+        tracing::warn!(%error, "could not start PipeWire monitor thread; falling back to two-second polling");
+    }
 
     refresh(&store).await;
     loop {

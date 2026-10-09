@@ -286,7 +286,7 @@ pub(crate) async fn set_policy(
     let _guard = tokio::time::timeout(Duration::from_secs(3), super::POLICY_WRITE.lock())
         .await
         .map_err(|_| anyhow::anyhow!("sleep policy is busy"))?;
-    let mut previous = super::load().await?;
+    let mut previous = super::load_for_update(&super::policy_path()).await?;
     if policy.enabled && !previous.critical_battery.enabled {
         no_other_power_manager().await?;
         let connection = sleep::system_bus().await?;

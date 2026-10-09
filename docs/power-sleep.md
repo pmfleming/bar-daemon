@@ -106,7 +106,7 @@ The `sleep_policy` snapshot domain and `sleep-policy.changed` stream expose the 
 {"lid_action": "profile", "same_profile": false, "battery": {"sleep_minutes": 15, "hibernate_minutes": 60}, "plugged": {"sleep_minutes": 45, "hibernate_minutes": 180}}
 ```
 
-Both fields are whole minutes, 0–10080. Zero means Never. `sleep_minutes` is inactivity before suspend; `hibernate_minutes` is **additional time asleep**, not time since last input. Never sleep disables automatic sleep; Never hibernate uses ordinary suspend. Shared mode uses the battery profile and preserves the plugged profile for later reuse. Initial settings are shared, 30 minutes to sleep, Never hibernate. Policies are atomically persisted under `$XDG_CONFIG_HOME/bar-daemon/sleep.json`. Invalid persisted data fails visibly instead of silently adopting defaults.
+Both fields are whole minutes, 0–10080. Zero means Never. `sleep_minutes` is inactivity before suspend; `hibernate_minutes` is **additional time asleep**, not time since last input. Never sleep disables automatic sleep; Never hibernate uses ordinary suspend. Shared mode uses the battery profile and preserves the plugged profile for later reuse. Initial settings are shared, 30 minutes to sleep, Never hibernate. Policies are atomically persisted under `$XDG_CONFIG_HOME/bar-daemon/sleep.json`. Invalid persisted data fails visibly instead of silently adopting defaults during monitoring or actions. An explicit settings save may repair malformed/invalid data: the original bytes are durably preserved in a private `sleep.json.invalid-*` backup, a warning is logged, and the requested changes are applied over defaults. Read/permission errors still fail rather than being treated as missing policy.
 
 ### Lid close
 

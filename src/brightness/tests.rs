@@ -41,6 +41,24 @@ fn fail_direct_write(path: &Path) {
     fs::create_dir(path.join("brightness")).unwrap();
 }
 
+#[test]
+fn discovery_skips_bad_devices_but_reports_a_completely_unusable_root() {
+    let root = tempdir().unwrap();
+    let missing = device(root.path(), "missing", 1, 1000);
+    fs::remove_file(missing.join("max_brightness")).unwrap();
+    let malformed = device(root.path(), "malformed", 1, 2000);
+    fs::write(malformed.join("max_brightness"), "not a number").unwrap();
+    let unreadable = device(root.path(), "unreadable", 1, 3000);
+    fs::remove_file(unreadable.join("brightness")).unwrap();
+    fs::remove_file(unreadable.join("actual_brightness")).unwrap();
+    device(root.path(), "zero", 0, 0);
+    assert!(discover(root.path()).is_err());
+    device(root.path(), "usable", 50, 100);
+    let found = discover(root.path()).unwrap();
+    assert_eq!(found.name, "usable");
+    assert_eq!(found.brightness, 50);
+}
+
 #[tokio::test]
 async fn repeated_steps_use_requested_values_and_publish_readback() {
     let (_root, service, path) = fixture(64764, 64764);

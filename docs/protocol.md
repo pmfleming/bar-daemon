@@ -266,8 +266,12 @@ clear and snooze methods retain their compatibility semantics for toast clients.
 
 `identity_icon` is captured from desktop-file `Icon=` and persisted with each new
 record; bounded previews include it. Missing legacy captures resolve against the
-startup desktop registry. Content image hints remain separate and are not app
-identity. The registry is loaded off the async executor and refreshed on restart.
+current desktop registry. Content image hints remain separate and are not app
+identity. The registry is loaded off the async executor and refreshed on incoming
+notifications when at least 30 seconds old. Scans are single-flight and atomically
+replace the registry, preserving XDG precedence and bounded traversal. Installs,
+updates and removals no longer require a daemon restart; existing captured history
+icons remain stable.
 
 A subscription first receives `subscribed` with the current complete domain state. Later events are `changed`; a slow subscriber receives `lagged` and should request `bar.snapshot` to recover all domains atomically.
 

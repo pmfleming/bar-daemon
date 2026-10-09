@@ -146,6 +146,48 @@ async fn load() -> Result<SleepPolicy> {
     Ok(policy)
 }
 
+/// Recovery is allowed only for an explicit settings write. Monitors/actions
+/// still use strict load() and never silently act on defaults after corruption.
+async fn load_for_update(path: &Path) -> Result<SleepPolicy> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SleepPolicy::default());
+        }
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    let parsed = serde_json::from_slice::<SleepPolicy>(&bytes)
+        .context("parse sleep policy")
+        .and_then(|policy| {
+            policy.validate()?;
+            Ok(policy)
+        });
+    match parsed {
+        Ok(policy) => Ok(policy),
+        Err(error) => {
+            let parent = path
+                .parent()
+                .context("sleep policy has no parent directory")?
+                .to_owned();
+            let backup = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+                use std::io::Write;
+                let mut backup = tempfile::Builder::new()
+                    .prefix("sleep.json.invalid-")
+                    .tempfile_in(&parent)?;
+                backup.write_all(&bytes)?;
+                backup.as_file().sync_all()?;
+                let (_, path) = backup.keep()?;
+                std::fs::File::open(parent)?.sync_all()?;
+                Ok(path)
+            })
+            .await
+            .context("back up invalid sleep policy")??;
+            tracing::warn!(%error, backup = %backup.display(), "invalid sleep policy backed up; explicit settings write will recover from defaults");
+            Ok(SleepPolicy::default())
+        }
+    }
+}
+
 fn base_config() -> Result<PathBuf> {
     std::env::var_os("BAR_DAEMON_IDLE_CONFIG")
         .map(PathBuf::from)
@@ -251,7 +293,7 @@ fn verify_idle_readiness(
 
 pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<SleepPolicyState> {
     let _guard = POLICY_WRITE.lock().await;
-    let previous = load().await?;
+    let previous = load_for_update(&policy_path()).await?;
     let policy = policy.with_stored_critical(&previous);
     policy.validate()?;
     validate_config(&policy).await?;
@@ -553,6 +595,61 @@ async fn observe_policy() -> (SleepPolicyState, Option<SleepPolicy>, Option<u32>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_writes_recover_bad_policy_with_backup_but_not_io_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sleep.json");
+        assert_eq!(
+            load_for_update(&path).await.unwrap(),
+            SleepPolicy::default()
+        );
+        for bytes in [
+            b"{broken".to_vec(),
+            serde_json::to_vec(&SleepPolicy {
+                battery: SleepProfile {
+                    sleep_minutes: MAX_MINUTES + 1,
+                    hibernate_minutes: 0,
+                },
+                ..Default::default()
+            })
+            .unwrap(),
+        ] {
+            tokio::fs::write(&path, &bytes).await.unwrap();
+            assert_eq!(
+                load_for_update(&path).await.unwrap(),
+                SleepPolicy::default()
+            );
+            assert_eq!(
+                tokio::fs::read(&path).await.unwrap(),
+                bytes,
+                "recovery load must not overwrite the original"
+            );
+            assert!(
+                std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("sleep.json.invalid-")
+                            && std::fs::read(entry.path()).unwrap() == bytes
+                    })
+            );
+        }
+        let valid = SleepPolicy {
+            lid_action: lid::LidAction::Lock,
+            ..Default::default()
+        };
+        save_json_atomic(&path, &valid).await.unwrap();
+        assert_eq!(load_for_update(&path).await.unwrap(), valid);
+        assert!(
+            load_for_update(dir.path()).await.is_err(),
+            "I/O failures are not corruption"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
 
     #[test]
     fn general_policy_updates_cannot_enable_disable_or_overwrite_critical_settings() {

@@ -213,25 +213,39 @@ async fn run_fallback(mut command: Command, deadline: Duration) -> Result<()> {
 fn discover(root: &Path) -> Result<BacklightDevice> {
     let mut devices = Vec::new();
     for entry in std::fs::read_dir(root).with_context(|| format!("read {}", root.display()))? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::warn!(%error, "skip unreadable backlight directory entry");
+                continue;
+            }
+        };
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        let max_brightness = read_u64(&path.join("max_brightness"))?;
-        // Use the requested value for control state. `actual_brightness` may lag
-        // behind it or report a slightly different hardware level; basing each
-        // adjustment on that value makes repeated percentage steps drift.
-        let brightness = read_u64(&path.join("brightness"))
-            .or_else(|_| read_u64(&path.join("actual_brightness")))?;
-        if max_brightness > 0 {
-            devices.push(BacklightDevice {
-                name,
-                path,
-                brightness,
-                max_brightness,
-            });
+        let values = (|| -> Result<(u64, u64)> {
+            let max_brightness = read_u64(&path.join("max_brightness"))?;
+            // Prefer the requested value: actual_brightness may lag, causing
+            // repeated adjustment steps to drift.
+            let brightness = read_u64(&path.join("brightness"))
+                .or_else(|_| read_u64(&path.join("actual_brightness")))?;
+            Ok((brightness, max_brightness))
+        })();
+        match values {
+            Ok((brightness, max_brightness)) if max_brightness > 0 => {
+                devices.push(BacklightDevice {
+                    name,
+                    path,
+                    brightness,
+                    max_brightness,
+                });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "skip unusable backlight device")
+            }
         }
     }
     devices
