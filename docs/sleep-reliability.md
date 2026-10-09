@@ -18,6 +18,15 @@ a policy save is busy. The state store publishes lid ownership independently so
 stale policy refreshes cannot overwrite it. Dependency failures release ownership
 and restore logind policy. A two-second fallback supplements property signals.
 
+A failed managed close now retries only proven pre-dispatch preparation failures,
+with a 4–30 second backoff while the same lid episode and policy remain eligible.
+Reopening, docking, losing the active session, changing policy, or a superseding
+sleep operation cancels retries. Successful/pending/possibly dispatched requests
+and worker failures are never replayed. Lock confirmation and inhibitors remain
+mandatory on every attempt; failure does not hand control to a potentially
+less restrictive logind policy. A permanently broken locker therefore remains a
+visible failure, not permission to sleep unlocked.
+
 Validation: 46 sleep-filtered Rust tests passed, including dependency cancellation
 and independent lid-state publication under a held policy mutex.
 

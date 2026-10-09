@@ -63,6 +63,42 @@ pub(crate) async fn bounded<T>(
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 static SLEEP_ACTION: Mutex<()> = Mutex::const_new(());
 
+/// Only errors carrying this proof may be retried automatically. In particular,
+/// dispatch errors, pending operations and cancelled workers carry no proof.
+#[derive(Debug)]
+pub(crate) struct RetryablePreflight(pub u64);
+impl std::fmt::Display for RetryablePreflight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sleep preparation failed before dispatch")
+    }
+}
+impl std::error::Error for RetryablePreflight {}
+
+pub(crate) fn operation_id() -> u64 {
+    outcome::current().id
+}
+
+pub(crate) fn mark_retryable(error: anyhow::Error) -> anyhow::Error {
+    let message = error.to_string();
+    error
+        .context(RetryablePreflight(operation_id()))
+        .context(message)
+}
+
+#[derive(Debug)]
+pub(crate) struct RetryCancelled;
+impl std::fmt::Display for RetryCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("automatic retry cancelled")
+    }
+}
+impl std::error::Error for RetryCancelled {}
+
+pub(crate) fn cancel_retry(error: anyhow::Error) -> anyhow::Error {
+    let message = error.to_string();
+    error.context(RetryCancelled).context(message)
+}
+
 #[cfg(test)]
 #[path = "sleep_tests.rs"]
 mod lock_tests;
@@ -192,9 +228,18 @@ where
     Check: std::future::Future<Output = Result<()>>,
 {
     Action::parse(action)?;
-    let _guard = SLEEP_ACTION
-        .try_lock()
-        .context("a lock or sleep request is already in progress")?;
+    let _guard = SLEEP_ACTION.try_lock().map_err(|error| {
+        let error =
+            anyhow::Error::new(error).context("a lock or sleep request is already in progress");
+        if matches!(
+            outcome::current().phase.as_str(),
+            "" | "completed" | "failed"
+        ) {
+            mark_retryable(error)
+        } else {
+            error
+        }
+    })?;
     if action != "lock" {
         anyhow::ensure!(
             outcome::TRACKER.ready_for_new_request(),
@@ -204,7 +249,7 @@ where
     }
     let _cancellation = (action != "lock").then(|| outcome::TRACKER.cancellation_guard());
     let result = async {
-        let connection = system_bus().await?;
+        let connection = system_bus().await.map_err(mark_retryable)?;
         perform_connected_with_validation(
             &connection,
             action,
@@ -313,7 +358,8 @@ where
             Ok((current, observer))
         },
     )
-    .await?;
+    .await
+    .map_err(mark_retryable)?;
     if action != Action::Lock {
         action.dispatch(connection, tracker).await?;
     }
@@ -355,7 +401,9 @@ async fn ensure_not_preparing(connection: &zbus::Connection) -> Result<()> {
         .await
         .context("cannot confirm whether logind is preparing for sleep; refusing to sleep")?;
     if preparing {
-        bail!("the system is already preparing for sleep");
+        return Err(cancel_retry(anyhow::anyhow!(
+            "the system is already preparing for sleep"
+        )));
     }
     Ok(())
 }
