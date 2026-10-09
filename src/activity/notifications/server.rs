@@ -31,7 +31,8 @@ impl NotificationServer {
             "actions".into(),
             "action-icons".into(),
             "body".into(),
-            "body-markup".into(),
+            // Shelllist renders all notification text as PlainText. Do not
+            // advertise markup or invite clients to supply HTML/image tags.
             "icon-static".into(),
             "inline-reply".into(),
             "persistence".into(),
@@ -208,6 +209,20 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn plaintext_renderer_does_not_advertise_markup_or_body_images() {
+        let server = NotificationServer::new(
+            NotificationEngine::new(crate::state::StateStore::default()).await,
+        );
+        let capabilities = server.get_capabilities().await;
+        assert!(capabilities.iter().any(|c| c == "body"));
+        assert!(
+            !capabilities
+                .iter()
+                .any(|c| c == "body-markup" || c == "body-images")
+        );
+    }
 
     // A private peer connection exercises real D-Bus serialization/dispatch,
     // without owning the user's session-bus name or touching their notifications.

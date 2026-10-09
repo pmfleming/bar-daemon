@@ -3,6 +3,20 @@ use anyhow::{Result, bail};
 use super::model::IncomingNotification;
 use serde::{Deserialize, Serialize};
 
+// UTF-8 bytes, not characters. Keep both individual fields and the complete
+// serialized payload bounded before cloning into snapshots or persisting.
+const NAME_BYTES: usize = 1024;
+const PATH_BYTES: usize = 4096;
+const CATEGORY_BYTES: usize = 256;
+const PAYLOAD_BYTES: usize = 128 * 1024;
+
+fn bounded_text(field: &str, value: &str, maximum: usize) -> Result<()> {
+    if value.len() > maximum {
+        bail!("notification {field} exceeds {maximum}-byte size limit");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AppPolicy {
@@ -55,6 +69,69 @@ impl Default for NotificationPolicy {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::super::model::{NotificationAction, incoming};
+    use super::*;
+
+    #[test]
+    fn every_retained_metadata_field_has_a_utf8_byte_limit() {
+        type Field = fn(&mut IncomingNotification) -> &mut String;
+        let fields: [(Field, usize); 9] = [
+            (|n| &mut n.app_name, NAME_BYTES),
+            (|n| &mut n.app_icon, PATH_BYTES),
+            (|n| &mut n.hints.category, CATEGORY_BYTES),
+            (|n| &mut n.hints.desktop_entry, NAME_BYTES),
+            (|n| &mut n.hints.image_path, PATH_BYTES),
+            (|n| &mut n.hints.sound_name, NAME_BYTES),
+            (|n| &mut n.hints.sound_file, PATH_BYTES),
+            (|n| &mut n.actions[0].key, NAME_BYTES),
+            (|n| &mut n.actions[0].label, PATH_BYTES),
+        ];
+        for (field, maximum) in fields {
+            let mut n = incoming("test", "summary", "body");
+            n.actions.push(NotificationAction {
+                key: "key".into(),
+                label: "label".into(),
+            });
+            *field(&mut n) = "é".repeat(maximum / 2);
+            assert!(NotificationPolicy::default().validate(&n).is_ok());
+            field(&mut n).push('x');
+            assert!(NotificationPolicy::default().validate(&n).is_err());
+        }
+    }
+
+    #[test]
+    fn aggregate_limit_includes_actions_and_json_escaping() {
+        let policy = NotificationPolicy::default();
+        let mut n = incoming("test", "summary", &"x".repeat(policy.maximum_body_bytes));
+        assert!(policy.validate(&n).is_ok());
+        n.actions = vec![
+            NotificationAction {
+                key: "key".into(),
+                label: "x".repeat(2048)
+            };
+            64
+        ];
+        assert!(
+            policy
+                .validate(&n)
+                .unwrap_err()
+                .to_string()
+                .contains("total")
+        );
+        n.actions.clear();
+        n.body = "\u{0001}".repeat(policy.maximum_body_bytes);
+        assert!(
+            policy
+                .validate(&n)
+                .unwrap_err()
+                .to_string()
+                .contains("total")
+        );
+    }
+}
+
 impl NotificationPolicy {
     pub(crate) fn validate(&self, notification: &IncomingNotification) -> Result<()> {
         if notification.summary.len() > self.maximum_summary_bytes {
@@ -66,12 +143,35 @@ impl NotificationPolicy {
         if notification.actions.len() > self.maximum_actions {
             bail!("notification has too many actions");
         }
+        for (field, value, maximum) in [
+            ("app_name", &notification.app_name, NAME_BYTES),
+            ("app_icon", &notification.app_icon, PATH_BYTES),
+            ("category", &notification.hints.category, CATEGORY_BYTES),
+            (
+                "desktop_entry",
+                &notification.hints.desktop_entry,
+                NAME_BYTES,
+            ),
+            ("image_path", &notification.hints.image_path, PATH_BYTES),
+            ("sound_name", &notification.hints.sound_name, NAME_BYTES),
+            ("sound_file", &notification.hints.sound_file, PATH_BYTES),
+        ] {
+            bounded_text(field, value, maximum)?;
+        }
+        for action in &notification.actions {
+            bounded_text("action key", &action.key, NAME_BYTES)?;
+            bounded_text("action label", &action.label, PATH_BYTES)?;
+        }
         if notification
             .actions
             .iter()
             .any(|action| action.key.is_empty())
         {
             bail!("notification action key cannot be empty");
+        }
+        // Per-field checks above bound this allocation, including JSON escaping.
+        if serde_json::to_vec(notification)?.len() > PAYLOAD_BYTES {
+            bail!("notification exceeds total {PAYLOAD_BYTES}-byte payload limit");
         }
         Ok(())
     }

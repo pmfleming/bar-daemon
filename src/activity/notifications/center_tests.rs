@@ -362,6 +362,16 @@ async fn center_bounds_artwork_hints_for_live_and_stored_previews() {
     let mut incoming = notification("Long hints", "Artwork");
     incoming.hints.desktop_entry = "界".repeat(1100);
     incoming.hints.image_path = "画".repeat(600);
+    assert!(engine.notify(0, incoming.clone()).await.is_err());
+    let CenterPage::Apps { total_apps, .. } = engine.query_center(query("apps")).await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        total_apps, 0,
+        "rejected metadata must not enter state or storage"
+    );
+    incoming.hints.desktop_entry = "界".repeat(341); // fits the 1024-byte ingress limit
     let id = engine.notify(0, incoming).await.unwrap();
     for archived in [false, true] {
         if archived {
@@ -371,7 +381,7 @@ async fn center_bounds_artwork_hints_for_live_and_stored_previews() {
         else {
             panic!()
         };
-        assert_eq!(apps[0].latest.hints.desktop_entry, "界".repeat(1024));
+        assert_eq!(apps[0].latest.hints.desktop_entry, "界".repeat(341));
         assert_eq!(apps[0].latest.hints.image_path, "画".repeat(512));
     }
 }
