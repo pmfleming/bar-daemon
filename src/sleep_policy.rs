@@ -68,6 +68,13 @@ impl Default for SleepPolicy {
 }
 
 impl SleepPolicy {
+    // The general idle/lid API does not own critical-battery settings. Clients
+    // may omit this field (serde defaults) or submit an older full snapshot.
+    fn with_stored_critical(mut self, previous: &Self) -> Self {
+        self.critical_battery = previous.critical_battery;
+        self
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         self.critical_battery.validate()?;
         for profile in [&self.battery, &self.plugged] {
@@ -250,6 +257,8 @@ fn verify_idle_readiness(
 
 pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<SleepPolicyState> {
     let _guard = POLICY_WRITE.lock().await;
+    let previous = load().await?;
+    let policy = policy.with_stored_critical(&previous);
     policy.validate()?;
     validate_config(&policy).await?;
     idle_running().await?;
@@ -261,18 +270,6 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
         if let Err(error) = &support {
             bail!("{error:#}");
         }
-    }
-    let previous = load().await?;
-    if policy.critical_battery.enabled && !previous.critical_battery.enabled {
-        let connection = crate::sleep::system_bus().await?;
-        let capability: String = crate::sleep::manager(&connection)
-            .await?
-            .call("CanHibernate", &())
-            .await?;
-        anyhow::ensure!(
-            crate::sleep::capability::configurable(&capability),
-            "critical battery protection requires hibernation support: {capability}"
-        );
     }
     persist_and_apply(&policy_path(), &policy, &previous, apply_idle).await?;
     if !timed_hibernation {
@@ -562,6 +559,44 @@ async fn observe_policy() -> (SleepPolicyState, Option<SleepPolicy>, Option<u32>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn general_policy_updates_cannot_enable_disable_or_overwrite_critical_settings() {
+        for enabled in [false, true] {
+            let previous = SleepPolicy {
+                critical_battery: critical::Policy {
+                    enabled,
+                    percent: 7,
+                    grace_seconds: 90,
+                },
+                ..Default::default()
+            };
+            let requested = SleepPolicy {
+                critical_battery: critical::Policy {
+                    enabled: !enabled,
+                    percent: 2,
+                    grace_seconds: 30,
+                },
+                lid_action: lid::LidAction::Suspend,
+                battery: SleepProfile {
+                    sleep_minutes: 12,
+                    hibernate_minutes: 0,
+                },
+                ..Default::default()
+            };
+            let effective = requested.clone().with_stored_critical(&previous);
+            assert_eq!(effective.critical_battery, previous.critical_battery);
+            assert_eq!(effective.lid_action, requested.lid_action);
+            assert_eq!(effective.battery, requested.battery);
+            let mut omitted = serde_json::to_value(&requested).unwrap();
+            omitted.as_object_mut().unwrap().remove("critical_battery");
+            let omitted: SleepPolicy = serde_json::from_value(omitted).unwrap();
+            assert_eq!(
+                omitted.with_stored_critical(&previous).critical_battery,
+                previous.critical_battery
+            );
+        }
+    }
 
     #[tokio::test]
     async fn slow_observations_do_not_own_or_wait_for_the_policy_mutex() {
