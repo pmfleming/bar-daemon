@@ -53,7 +53,15 @@ invalidate that token synchronously in Hypridle, independently of daemon policy
 transactions. GetState synchronizes with the compositor before reporting a live
 idle episode. Missing/dead processes fail closed. The daemon checks the episode
 at entry, around privileged setup, and once more after its final logind queries.
-Callbacks waiting more than three seconds for the policy mutex are discarded.
+Callbacks retain their place in the policy mutex queue, validating the idle
+episode every second while waiting. Contention does not consume the callback;
+activity, inhibition or a replacement generation still cancels it. All failures,
+including wait-time validation failures, are published in `last_error`.
+
+The policy monitor performs configuration, service, capability and authorization
+reads before acquiring the transaction mutex. Under the mutex it rejects a
+superseded policy snapshot, applies only a needed live timeout change, and
+publishes state. A stale observation schedules an immediate fresh pass.
 
 Validation: 49 sleep-filtered Rust tests pass, including activity/inhibition,
 replacement-episode and final-preflight cancellation; patched Hypridle builds.

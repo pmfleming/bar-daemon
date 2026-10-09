@@ -373,10 +373,22 @@ pub(crate) async fn idle_sleep(
     episode: u64,
     store: &StateStore,
 ) -> Result<crate::model::PowerSleepState> {
-    let _guard = tokio::time::timeout(Duration::from_secs(3), POLICY_WRITE.lock())
-        .await
-        .context("idle policy is busy; this callback was cancelled")?;
-    let result = perform_idle(expected_minutes, generation, episode).await;
+    let result = async {
+        // Keep our place in the mutex queue, but abandon obsolete idle episodes
+        // promptly. Contention alone must not consume hypridle's only callback.
+        let acquire = POLICY_WRITE.lock();
+        tokio::pin!(acquire);
+        let _guard = loop {
+            tokio::select! {
+                guard = &mut acquire => break guard,
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    hypridle::verify_episode(generation, episode).await?;
+                }
+            }
+        };
+        perform_idle(expected_minutes, generation, episode).await
+    }
+    .await;
     let mut state = store.read(|s| s.sleep_policy.clone()).await;
     state.last_error = result.as_ref().err().map(|error| format!("{error:#}"));
     store.update_sleep_policy(state).await;
@@ -490,39 +502,93 @@ pub(crate) async fn monitor(store: StateStore) {
                 }
             }
         }
-        let _guard = POLICY_WRITE.lock().await;
-        let mut state = SleepPolicyState {
-            last_error: store.read(|s| s.sleep_policy.last_error.clone()).await,
-            ..SleepPolicyState::default()
-        };
-        let result: Result<()> = async {
-            state.policy = load().await?;
-            validate_config(&state.policy).await?;
-            idle_running().await?;
-            let plugged = plugged().await?;
-            state.active_profile = state.policy.profile_name(plugged).into();
-            let profile = state.policy.profile(plugged);
-            if hypridle::active_minutes().await? != profile.sleep_minutes {
-                apply_idle().await?;
+        let ((mut state, observed, update), _guard) = observe_then_lock(observe_policy()).await;
+        // A setter may have committed while observations were in flight. Never
+        // apply or publish that old snapshot over the newly saved policy.
+        if load().await.ok() != observed {
+            timer.reset_immediately();
+            continue;
+        }
+        if let Some(minutes) = update {
+            if let Err(error) = hypridle::set_timeout(minutes).await {
+                state.available = false;
+                state.error = Some(format!("{error:#}"));
             }
-            let support = hibernate_support().await;
-            state.hibernate_available = support.is_ok();
-            state.hibernate_ready = matches!(&support, Ok(None));
-            state.hibernate_error = support.unwrap_or_else(|error| Some(format!("{error:#}")));
-            state.available = true;
-            Ok(())
         }
-        .await;
-        if let Err(error) = result {
-            state.error = Some(format!("{error:#}"));
-        }
+        state.last_error = store.read(|s| s.sleep_policy.last_error.clone()).await;
         store.update_sleep_policy(state).await;
     }
+}
+
+// Only comparison, live timeout mutation and publication need serialization.
+// In particular, never hold POLICY_WRITE during capability/polkit probes.
+async fn observe_then_lock<T>(
+    observation: impl std::future::Future<Output = T>,
+) -> (T, tokio::sync::MutexGuard<'static, ()>) {
+    let observed = observation.await;
+    (observed, POLICY_WRITE.lock().await)
+}
+
+async fn observe_policy() -> (SleepPolicyState, Option<SleepPolicy>, Option<u32>) {
+    let mut state = SleepPolicyState::default();
+    let mut observed = None;
+    let mut update = None;
+    let result: Result<()> = async {
+        state.policy = load().await?;
+        observed = Some(state.policy.clone());
+        validate_config(&state.policy).await?;
+        idle_running().await?;
+        let active_minutes = hypridle::active_minutes().await?;
+        let support = hibernate_support().await;
+        state.hibernate_available = support.is_ok();
+        state.hibernate_ready = matches!(&support, Ok(None));
+        state.hibernate_error = support.unwrap_or_else(|error| Some(format!("{error:#}")));
+        // Read power last, after potentially slow authorization, to minimize
+        // staleness. Idle actions independently revalidate AC before dispatch.
+        let plugged = plugged().await?;
+        state.active_profile = state.policy.profile_name(plugged).into();
+        let minutes = state.policy.profile(plugged).sleep_minutes;
+        update = (active_minutes != minutes).then_some(minutes);
+        state.available = true;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        state.error = Some(format!("{error:#}"));
+    }
+    (state, observed, update)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn slow_observations_do_not_own_or_wait_for_the_policy_mutex() {
+        let guard = POLICY_WRITE.lock().await;
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async {
+            let (_, _guard) = observe_then_lock(async {
+                started.send(()).unwrap();
+                released.await.unwrap();
+            })
+            .await;
+        });
+        observed.await.unwrap(); // observation runs even with a setter holding the lock
+        drop(guard);
+        let guard = POLICY_WRITE
+            .try_lock()
+            .expect("slow reads must not own POLICY_WRITE");
+        release.send(()).unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !worker.is_finished(),
+            "commit must still serialize with setters"
+        );
+        drop(guard);
+        worker.await.unwrap();
+    }
 
     #[tokio::test]
     async fn idle_trigger_changes_after_lock_or_during_helper_abort_sleep_setup() {
