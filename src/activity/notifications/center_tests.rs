@@ -16,11 +16,7 @@ fn notification(app: &str, summary: &str) -> IncomingNotification {
 }
 #[tokio::test]
 async fn center_groups_full_scope_and_seeks_without_loading_intermediate_bodies() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("history.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let mut oldest = 0;
     for index in 0..500 {
         let id = engine
@@ -97,11 +93,7 @@ async fn center_groups_full_scope_and_seeks_without_loading_intermediate_bodies(
 }
 #[tokio::test]
 async fn center_revision_fences_app_pages_and_retains_selected_identity() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
     for index in 0..65 {
         engine
             .notify(0, notification(&format!("app{index}"), "hello"))
@@ -151,11 +143,7 @@ async fn center_revision_fences_app_pages_and_retains_selected_identity() {
 }
 #[tokio::test]
 async fn center_deduplicates_live_and_never_resurrects_transient_replacement() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("history.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let id = engine
         .notify(0, notification("chat", "original"))
         .await
@@ -193,11 +181,7 @@ async fn center_deduplicates_live_and_never_resurrects_transient_replacement() {
 }
 #[tokio::test]
 async fn center_searches_full_unicode_body_and_resolves_legacy_group_links() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("history.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let mut incoming = notification("chat", "Short preview");
     incoming.body = format!("{} ÄRGER %_", "x".repeat(1000));
     let id = engine.notify(0, incoming).await.unwrap();
@@ -241,11 +225,7 @@ async fn center_searches_full_unicode_body_and_resolves_legacy_group_links() {
 
 #[tokio::test]
 async fn center_ignores_notification_artwork_when_grouping_named_senders() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
     for icon in ["battery-full-charged", "", "battery-caution"] {
         let mut incoming = notification("bar-daemon", "Battery event");
         incoming.hints.desktop_entry.clear();
@@ -295,11 +275,7 @@ async fn center_ignores_notification_artwork_when_grouping_named_senders() {
 
 #[tokio::test]
 async fn center_keeps_artwork_hints_in_live_archived_and_restarted_previews() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let mut engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, mut engine) = NotificationEngine::persistent_fixture().await;
     // Real sender shapes: artwork is frequently a hint, not app_icon.
     let cases = [
         ("Signal", "", "org.signal.Signal"),
@@ -354,11 +330,7 @@ async fn center_keeps_artwork_hints_in_live_archived_and_restarted_previews() {
 
 #[tokio::test]
 async fn center_bounds_artwork_hints_for_live_and_stored_previews() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("history.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let mut incoming = notification("Long hints", "Artwork");
     incoming.hints.desktop_entry = "界".repeat(1100);
     incoming.hints.image_path = "画".repeat(600);

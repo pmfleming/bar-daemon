@@ -21,11 +21,7 @@ fn query(text: &str, cursor: Option<String>, limit: usize) -> HistoryQuery {
 
 #[tokio::test]
 async fn catalog_search_pages_and_mutation_restart_fences() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
     let first = engine
         .notify(0, notification("ÉCLAIR 100%_", false))
         .await
@@ -113,11 +109,7 @@ async fn catalog_search_pages_and_mutation_restart_fences() {
 
 #[tokio::test]
 async fn transient_replacement_close_is_authoritative_without_intermediate_reads() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("history.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let id = engine
         .notify(0, notification("Persisted", false))
         .await
@@ -239,11 +231,7 @@ fn refresh_anchor_completes_even_when_the_oldest_visible_record_was_deleted() {
 
 #[tokio::test]
 async fn failed_persistence_never_labels_old_content_with_a_new_revision() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
     let id = engine
         .notify(0, notification("Persisted", false))
         .await
@@ -264,11 +252,7 @@ async fn failed_persistence_never_labels_old_content_with_a_new_revision() {
 
 #[tokio::test]
 async fn rollback_legacy_writes_are_reindexed_on_upgrade_without_losing_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
     let id = engine
         .notify(0, notification("Original", false))
         .await

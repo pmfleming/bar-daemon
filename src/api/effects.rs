@@ -8,8 +8,39 @@ use crate::{
     state::StateStore,
     updates,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+/// Preserve each method's field/error code while sharing envelope construction.
+fn state_response<T: Serialize, E: std::fmt::Display>(
+    field: &str,
+    code: &str,
+    result: Result<T, E>,
+) -> Value {
+    match result {
+        Ok(state) => success(json!({field: state})),
+        Err(error_value) => error(code, format!("{error_value:#}")),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn state_response_preserves_fields_codes_and_error_chains() {
+    let ok: anyhow::Result<u8> = Ok(42);
+    assert_eq!(
+        state_response("audio", "unused", ok),
+        success(json!({"audio": 42}))
+    );
+    let failed: anyhow::Result<()> = Err(anyhow::anyhow!("cause").context("context"));
+    assert_eq!(
+        state_response("audio", "audio-failed", failed),
+        error("audio-failed", "context: cause")
+    );
+    assert_eq!(
+        state_response::<(), _>("audio", "audio-failed", Err("plain")),
+        error("audio-failed", "plain")
+    );
+}
 
 #[derive(Deserialize)]
 struct ProfileRequest {
@@ -114,17 +145,13 @@ impl DesktopEffects {
     }
 
     pub(super) async fn display_layout(&self, method: &str, params: Value) -> Value {
-        match crate::display_policy::layout_action(method, params, &self.state).await {
-            Ok(state) => success(json!({"display_policy": state})),
-            Err(value) => error("display-layout-failed", format!("{value:#}")),
-        }
+        let result = crate::display_policy::layout_action(method, params, &self.state).await;
+        state_response("display_policy", "display-layout-failed", result)
     }
 
     pub(super) async fn display_focus(&self, method: &str, params: Value) -> Value {
-        match crate::display_policy::focus::action(method, params, &self.state).await {
-            Ok(state) => success(json!({"display_policy": state})),
-            Err(value) => error("display-focus-failed", format!("{value:#}")),
-        }
+        let result = crate::display_policy::focus::action(method, params, &self.state).await;
+        state_response("display_policy", "display-focus-failed", result)
     }
 
     pub(super) async fn display_policy_set(&self, params: Value) -> Value {
@@ -133,10 +160,8 @@ impl DesktopEffects {
             crate::display_policy::DisplayPolicy,
             "displayPolicy.set"
         );
-        match crate::display_policy::set(policy, &self.state).await {
-            Ok(state) => success(json!({"display_policy": state})),
-            Err(error) => super::error("display-policy-failed", format!("{error:#}")),
-        }
+        let result = crate::display_policy::set(policy, &self.state).await;
+        state_response("display_policy", "display-policy-failed", result)
     }
 
     pub(super) async fn sleep_policy_set(&self, params: Value) -> Value {
@@ -145,10 +170,8 @@ impl DesktopEffects {
             crate::sleep_policy::SleepPolicy,
             "powerSleep.setPolicy"
         );
-        match crate::sleep_policy::set(policy, &self.state).await {
-            Ok(state) => success(json!({"sleep_policy": state})),
-            Err(value) => error("sleep-policy-failed", format!("{value:#}")),
-        }
+        let result = crate::sleep_policy::set(policy, &self.state).await;
+        state_response("sleep_policy", "sleep-policy-failed", result)
     }
 
     pub(super) async fn set_critical_battery(&self, params: Value) -> Value {
@@ -157,10 +180,8 @@ impl DesktopEffects {
             crate::sleep_policy::critical::Policy,
             "powerSleep.setCriticalPolicy"
         );
-        match crate::sleep_policy::critical::set_policy(policy, &self.state).await {
-            Ok(state) => success(json!({"sleep_policy": state})),
-            Err(error) => super::error("critical-battery-policy-failed", format!("{error:#}")),
-        }
+        let result = crate::sleep_policy::critical::set_policy(policy, &self.state).await;
+        state_response("sleep_policy", "critical-battery-policy-failed", result)
     }
 
     pub(super) async fn cancel_critical_battery(&self) -> Value {
@@ -241,22 +262,13 @@ impl DesktopEffects {
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "brightness.adjust");
-        self.apply_brightness(self.brightness.adjust(request.delta_percent))
-            .await
+        let result = self.brightness.adjust(request.delta_percent).await;
+        state_response("brightness", "brightness-operation-failed", result)
     }
     pub(super) async fn brightness_set(&self, params: Value) -> Value {
         let request = request!(params, PercentRequest, "brightness.set");
-        self.apply_brightness(self.brightness.set(request.percent))
-            .await
-    }
-    async fn apply_brightness(
-        &self,
-        operation: impl std::future::Future<Output = anyhow::Result<crate::model::BrightnessState>>,
-    ) -> Value {
-        match operation.await {
-            Ok(state) => success(json!({"brightness": state})),
-            Err(value) => error("brightness-operation-failed", format!("{value:#}")),
-        }
+        let result = self.brightness.set(request.percent).await;
+        state_response("brightness", "brightness-operation-failed", result)
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "audio.adjust");
@@ -274,10 +286,8 @@ impl DesktopEffects {
             .await
     }
     async fn apply_audio(&self, command: AudioCommand) -> Value {
-        match self.audio.execute(command).await {
-            Ok(state) => success(json!({"audio": state})),
-            Err(value) => error("audio-operation-failed", value),
-        }
+        let result = self.audio.execute(command).await;
+        state_response("audio", "audio-operation-failed", result)
     }
     pub(super) async fn media_operation(&self, params: Value) -> Value {
         let request = request!(params, MediaRequest, "media.operation");

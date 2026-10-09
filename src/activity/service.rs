@@ -308,20 +308,19 @@ impl ActivityService {
             .timestamp_millis_opt(from_unix_ms)
             .single()
             .context("activity range start is outside supported dates")?
-            .date_naive()
-            .to_string();
+            .date_naive();
         let last_date = timezone
             .timestamp_millis_opt(to_unix_ms - 1)
             .single()
             .context("activity range end is outside supported dates")?
-            .date_naive()
-            .to_string();
+            .date_naive();
+        let (from_key, last_key) = (from_date.to_string(), last_date.to_string());
         let mut todos = data
             .todos
             .iter()
             .filter(|todo| match (todo.due_unix_ms, todo.due_date.as_deref()) {
                 (Some(due), _) => due >= from_unix_ms && due < to_unix_ms,
-                (None, Some(date)) => date >= from_date.as_str() && date <= last_date.as_str(),
+                (None, Some(date)) => date >= from_key.as_str() && date <= last_key.as_str(),
                 (None, None) => true,
             })
             .cloned()
@@ -335,14 +334,7 @@ impl ActivityService {
             )
         });
         let today = chrono::Utc::now().with_timezone(&timezone).date_naive();
-        let days = super::day::project(
-            &events,
-            &todos,
-            from_date.parse()?,
-            last_date.parse()?,
-            today,
-            &timezone,
-        );
+        let days = super::day::project(&events, &todos, from_date, last_date, today, &timezone);
         let busy_dates = days
             .iter()
             .filter(|(_, day)| !day.event_ids.is_empty() || !day.todo_ids.is_empty())

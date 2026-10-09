@@ -148,6 +148,17 @@ impl NotificationEngine {
         Self::build(state, None, 0, false, None).await.unwrap()
     }
 
+    /// Keep the directory guard alive for the entire persistence/restart test.
+    #[cfg(test)]
+    pub(super) async fn persistent_fixture() -> (tempfile::TempDir, PathBuf, Arc<Self>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let engine = Self::persistent(StateStore::default(), path.clone())
+            .await
+            .unwrap();
+        (dir, path, engine)
+    }
+
     pub(crate) async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
         let (persistence, last_id, dnd, dnd_until_unix_ms) =
             tokio::task::spawn_blocking(move || NotificationPersistence::open(&path))
@@ -1327,11 +1338,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_archives_old_actions_and_keeps_transient_id_high_watermark() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("notifications.sqlite3");
-        let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-            .await
-            .unwrap();
+        let (_directory, path, engine) = NotificationEngine::persistent_fixture().await;
         engine
             .notify(0, notification("retained", -1))
             .await

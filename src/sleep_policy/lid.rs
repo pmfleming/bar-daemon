@@ -105,8 +105,11 @@ async fn connected(store: &StateStore) -> Result<()> {
         tokio::select! {
             result = actions.join_next(), if !actions.is_empty() => {
                 match result.context("lid action worker ended")? {
-                    Ok(Ok(Some(state))) => { retry.clear(); store.update_power_sleep(state).await; status.error = None; }
-                    Ok(Ok(None)) => { retry.clear(); status.error = None; }
+                    Ok(Ok(state)) => {
+                        retry.clear();
+                        status.error = None;
+                        if let Some(state) = state { store.update_power_sleep(state).await; }
+                    }
                     Ok(Err(error)) => {
                         let pending = retry.failed(&error);
                         status.error = Some(format!("Lid action failed{}: {error:#}",
@@ -153,8 +156,9 @@ async fn connected(store: &StateStore) -> Result<()> {
         let closed: bool = manager.get_property("LidClosed").await?;
         // logind's Docked also covers external displays. Keep clamshell use safe.
         let docked: bool = manager.get_property("Docked").await?;
-        let triggered = edge.observe(closed, managed && !docked);
-        if !closed || !managed || docked || retry.policy.as_ref().is_some_and(|p| p != &policy) {
+        let eligible = managed && !docked;
+        let triggered = edge.observe(closed, eligible);
+        if !(closed && eligible) || retry.policy.as_ref().is_some_and(|p| p != &policy) {
             retry.clear();
         }
         if triggered && actions.is_empty() {

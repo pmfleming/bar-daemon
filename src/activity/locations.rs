@@ -25,53 +25,20 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
     let mut ordered: Vec<_> = activity.world_clocks.iter().collect();
     ordered.sort_by(|a, b| (&a.timezone, &a.label).cmp(&(&b.timezone, &b.label)));
     for clock in ordered {
-        clocks
-            .entry(clock.timezone.clone())
-            .or_insert(clock.clone());
+        clocks.entry(clock.timezone.as_str()).or_insert(clock);
     }
     let mut represented = BTreeSet::new();
     let mut locations = Vec::new();
     for weather in &activity.weather_locations {
-        let mut clock = clocks.get(&weather.timezone).cloned().unwrap_or_default();
-        clock.timezone = weather.timezone.clone();
-        if !weather.location.is_empty() {
-            clock.label = weather.location.clone();
-        }
-        if clock.city.is_empty() {
-            clock.city = clock.label.clone();
-        }
-        clock.utc_offset_seconds = weather.utc_offset_seconds;
-        if !weather.timezone_region_ids.is_empty() {
-            clock.timezone_region_ids = weather.timezone_region_ids.clone();
-        }
-        let has_coordinates = weather.latitude.is_finite()
-            && weather.longitude.is_finite()
-            && (-90.0..=90.0).contains(&weather.latitude)
-            && (-180.0..=180.0).contains(&weather.longitude);
-        locations.push(Location {
-            id: format!("weather:{}", weather.id),
-            clock,
-            latitude: if has_coordinates {
-                weather.latitude
-            } else {
-                0.0
-            },
-            longitude: if has_coordinates {
-                weather.longitude
-            } else {
-                0.0
-            },
-            has_coordinates,
-            home: weather.home,
-            has_weather: true,
-            weather: Some(weather.clone()),
-            lunar: activity.lunar.clone(),
-        });
-        represented.insert(weather.timezone.clone());
+        locations.push(weather_location(
+            weather,
+            clocks.get(weather.timezone.as_str()).copied(),
+        ));
+        represented.insert(weather.timezone.as_str());
     }
     if local.available
         && !local.timezone.is_empty()
-        && !represented.contains(&local.timezone)
+        && !represented.contains(local.timezone.as_str())
         && !locations.iter().any(|location| location.home)
     {
         locations.push(Location {
@@ -85,23 +52,60 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
                 timezone_region_ids: local.timezone_region_ids.clone(),
             },
             home: true,
-            lunar: activity.lunar.clone(),
             ..Default::default()
         });
-        represented.insert(local.timezone.clone());
+        represented.insert(local.timezone.as_str());
     }
     for (timezone, clock) in clocks {
-        if represented.insert(timezone.clone()) {
+        if !represented.contains(timezone) {
             locations.push(Location {
                 id: format!("clock:{timezone}"),
-                clock,
-                lunar: activity.lunar.clone(),
+                clock: clock.clone(),
                 ..Default::default()
             });
         }
     }
+    for location in &mut locations {
+        location.lunar = activity.lunar.clone();
+    }
     locations.sort_by(|a, b| a.id.cmp(&b.id));
     locations
+}
+
+fn weather_location(weather: &WeatherState, clock: Option<&WorldClockState>) -> Location {
+    let mut clock = clock.cloned().unwrap_or_default();
+    clock.timezone.clone_from(&weather.timezone);
+    if !weather.location.is_empty() {
+        clock.label.clone_from(&weather.location);
+    }
+    if clock.city.is_empty() {
+        clock.city.clone_from(&clock.label);
+    }
+    clock.utc_offset_seconds = weather.utc_offset_seconds;
+    if !weather.timezone_region_ids.is_empty() {
+        clock
+            .timezone_region_ids
+            .clone_from(&weather.timezone_region_ids);
+    }
+    // Range checks also reject NaN and infinities. Invalid pairs become (0, 0).
+    let has_coordinates =
+        (-90.0..=90.0).contains(&weather.latitude) && (-180.0..=180.0).contains(&weather.longitude);
+    let (latitude, longitude) = if has_coordinates {
+        (weather.latitude, weather.longitude)
+    } else {
+        (0.0, 0.0)
+    };
+    Location {
+        id: format!("weather:{}", weather.id),
+        clock,
+        latitude,
+        longitude,
+        has_coordinates,
+        home: weather.home,
+        has_weather: true,
+        weather: Some(weather.clone()),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +150,22 @@ mod tests {
         assert_eq!(locations.len(), 2);
         assert_eq!(locations[0].id, "weather:one");
         assert_eq!(locations[1].id, "weather:two");
+        for (latitude, longitude, valid) in [
+            (90.0, -180.0, true),
+            (91.0, 0.0, false),
+            (0.0, f64::INFINITY, false),
+            (f64::NAN, 0.0, false),
+        ] {
+            let weather = &mut activity.weather_locations[0];
+            (weather.latitude, weather.longitude) = (latitude, longitude);
+            let location = super::weather_location(weather, None);
+            assert_eq!(location.has_coordinates, valid);
+            let expected = if valid {
+                (latitude, longitude)
+            } else {
+                (0.0, 0.0)
+            };
+            assert_eq!((location.latitude, location.longitude), expected);
+        }
     }
 }

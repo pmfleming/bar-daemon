@@ -17,39 +17,21 @@ pub(super) fn project<T: TimeZone>(
             .map(|v| v.date_naive())
     };
     let mut days = BTreeMap::new();
-    let mut date = first;
-    while date <= last {
+    for date in
+        std::iter::successors(Some(first), |date| date.succ_opt()).take_while(|date| *date <= last)
+    {
         let key = date.to_string();
         let event_ids = events
             .iter()
-            .filter(|event| {
-                if event.all_day {
-                    if let Some(start) = event.start_date.as_deref() {
-                        return start <= key.as_str()
-                            && event.end_date.as_deref().unwrap_or(start) > key.as_str();
-                    }
-                }
-                let last_instant = if event.end_unix_ms == event.start_unix_ms {
-                    event.start_unix_ms // A valid zero-duration VEVENT is an instant.
-                } else {
-                    event.end_unix_ms.saturating_sub(1)
-                };
-                event.end_unix_ms >= event.start_unix_ms
-                    && date_at(event.start_unix_ms).is_some_and(|d| d <= date)
-                    && date_at(last_instant).is_some_and(|d| d >= date)
-            })
+            .filter(|event| event_on_date(event, date, &key, date_at))
             .map(|e| e.id.clone())
             .collect();
         let todo_ids = todos
             .iter()
-            .filter(|todo| {
-                if let Some(due) = &todo.due_date {
-                    return due == &key;
-                }
-                if let Some(due) = todo.due_unix_ms {
-                    return date_at(due) == Some(date);
-                }
-                date == today && !todo.completed
+            .filter(|todo| match (&todo.due_date, todo.due_unix_ms) {
+                (Some(due), _) => due == &key,
+                (_, Some(due)) => date_at(due) == Some(date),
+                _ => date == today && !todo.completed,
             })
             .map(|t| t.id.clone())
             .collect();
@@ -60,18 +42,49 @@ pub(super) fn project<T: TimeZone>(
                 todo_ids,
             },
         );
-        let Some(next) = date.succ_opt() else {
-            break;
-        };
-        date = next;
     }
     days
 }
 
+fn event_on_date(
+    event: &ActivityEvent,
+    date: NaiveDate,
+    key: &str,
+    date_at: impl Fn(i64) -> Option<NaiveDate>,
+) -> bool {
+    if let (true, Some(start)) = (event.all_day, event.start_date.as_deref()) {
+        return start <= key && event.end_date.as_deref().unwrap_or(start) > key;
+    }
+    // A zero-duration VEVENT is an instant; other ends are exclusive.
+    let last_instant = event.end_unix_ms.saturating_sub(1).max(event.start_unix_ms);
+    event.end_unix_ms >= event.start_unix_ms
+        && date_at(event.start_unix_ms).is_some_and(|d| d <= date)
+        && date_at(last_instant).is_some_and(|d| d >= date)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use chrono::DateTime;
+    use super::{ActivityEvent, TodoItem, project};
+    use chrono::{DateTime, NaiveDate, Utc};
+
+    #[test]
+    fn date_limits_empty_ranges_and_instant_membership() {
+        let end = NaiveDate::MAX;
+        assert_eq!(project(&[], &[], end, end, end, &Utc).len(), 1);
+        assert!(project(&[], &[], end, NaiveDate::MIN, end, &Utc).is_empty());
+        let date = DateTime::UNIX_EPOCH.date_naive();
+        for (last, included) in [(-1, false), (0, true), (1, true)] {
+            let event = ActivityEvent {
+                end_unix_ms: last,
+                ..Default::default()
+            };
+            let days = project(&[event], &[], date, date, date, &Utc);
+            assert_eq!(
+                days[&date.to_string()].event_ids.len(),
+                usize::from(included)
+            );
+        }
+    }
     #[test]
     fn membership_handles_dst_exclusive_ends_and_undated_todos() {
         let zone = chrono_tz::Europe::Berlin;

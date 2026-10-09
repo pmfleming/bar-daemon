@@ -17,11 +17,7 @@ fn query(value: serde_json::Value) -> CenterQuery {
 
 #[tokio::test]
 async fn timeline_counts_complete_dates_and_bounds_exact_repeat_stacks() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("notifications.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     for _ in 0..65 {
         let id = engine
             .notify(0, incoming("chat", "Repeated event"))
@@ -203,11 +199,7 @@ async fn cancelled_confirmation_and_single_record_identity_are_safe() {
 
 #[tokio::test]
 async fn delete_includes_retained_records_older_than_the_search_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("notifications.db");
-    let engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-        .await
-        .unwrap();
+    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
     {
         let mut db = rusqlite::Connection::open(&path).unwrap();
         let transaction = db.transaction().unwrap();
@@ -238,11 +230,7 @@ async fn delete_includes_retained_records_older_than_the_search_window() {
 
 #[tokio::test]
 async fn period_view_excludes_live_previews_from_saved_groups_and_preserves_stale_errors() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine =
-        NotificationEngine::persistent(StateStore::default(), dir.path().join("notifications.db"))
-            .await
-            .unwrap();
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let mut ids = Vec::new();
     for i in 0..6 {
         let id = engine

@@ -10,18 +10,6 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
 // Layer-surface reservation changes need not emit a socket event.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
-pub(crate) struct Interest(watch::Sender<usize>);
-impl Interest {
-    pub fn new(sender: watch::Sender<usize>) -> Self {
-        sender.send_modify(|count| *count += 1);
-        Self(sender)
-    }
-}
-impl Drop for Interest {
-    fn drop(&mut self) {
-        self.0.send_modify(|count| *count = count.saturating_sub(1));
-    }
-}
 #[derive(Debug, PartialEq, Eq)]
 enum CacheAction {
     Fetch,

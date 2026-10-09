@@ -20,6 +20,15 @@ pub(crate) struct DomainEvent {
     pub data: Value,
 }
 
+/// Subscription-scoped demand belongs to the store, not the geometry worker.
+/// Dropping the last token lets an in-flight geometry read be cancelled.
+pub(crate) struct WorkAreaInterest(tokio::sync::watch::Sender<usize>);
+impl Drop for WorkAreaInterest {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StateStore {
     snapshot: Arc<RwLock<BarSnapshot>>,
@@ -151,8 +160,9 @@ impl StateStore {
         self.compositor_changed.notify_one();
     }
 
-    pub(crate) fn work_area_interest(&self) -> crate::work_area::Interest {
-        crate::work_area::Interest::new(self.work_area_demand.clone())
+    pub(crate) fn work_area_interest(&self) -> WorkAreaInterest {
+        self.work_area_demand.send_modify(|count| *count += 1);
+        WorkAreaInterest(self.work_area_demand.clone())
     }
     pub(crate) fn work_area_demand(&self) -> tokio::sync::watch::Receiver<usize> {
         self.work_area_demand.subscribe()
