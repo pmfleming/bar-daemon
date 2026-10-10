@@ -366,6 +366,99 @@ async fn any_output_can_be_disabled_but_not_the_last_and_rollback_preserves_enab
 }
 
 #[tokio::test]
+async fn resumed_docking_never_replays_retired_manual_enablement() {
+    for saved_on in [false, true] {
+        for recovery in ["resume", "restart", "reconnect"] {
+            let mut f = Fixture::new();
+            let mut external = f.backend.outputs.borrow()[0].clone();
+            external.name = "DP-1".into();
+            external.id = 1;
+            external.x = 1536;
+            f.backend.outputs.borrow_mut().push(external);
+            f.backend.outputs.borrow_mut()[0].disabled = saved_on;
+            let mut manual = Layout::observed(&f.backend.outputs.borrow());
+            manual.outputs[0].enabled = saved_on;
+            manual.outputs[0].scale = 1.5;
+            manual.outputs[0].transform = 1;
+            let trial = f.preview(manual).await.unwrap().trial.unwrap();
+            let kept = f.finish(&trial.id, true).await.unwrap();
+            assert!(kept.manual_enablement);
+            let released = super::use_docking_policy_at(&f.path).await.unwrap();
+            assert!(!released.manual_enablement);
+            assert_eq!(released.saved, kept.saved, "keep the saved geometry");
+            // The resumed policy has observed the opposite enablement.
+            f.backend.outputs.borrow_mut()[0].disabled = saved_on;
+            f.backend.outputs.borrow_mut()[0].scale = 1.25;
+            f.backend.outputs.borrow_mut()[0].transform = 0;
+            f.backend.calls.borrow_mut().clear();
+            match recovery {
+                "resume" => {
+                    f.store.record_resume().await;
+                }
+                "restart" => f.runtime = Runtime::default(),
+                _ => f.backend.outputs.borrow_mut()[1].id = 9,
+            }
+            let start = Instant::now();
+            assert!(f.tick(0, start).await.unwrap().1);
+            let (doc, _) = f.tick(5, start + Duration::from_secs(5)).await.unwrap();
+            assert!(!doc.manual_enablement);
+            assert_eq!(
+                f.backend.outputs.borrow()[0].disabled,
+                saved_on,
+                "{recovery} must not undo docking"
+            );
+            for command in f
+                .backend
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c.contains("output = \"eDP-1\""))
+            {
+                assert!(
+                    !saved_on && command.contains("disabled = false"),
+                    "{command}"
+                );
+            }
+            if !saved_on {
+                assert_eq!(f.backend.outputs.borrow()[0].scale, 1.5);
+                assert_eq!(f.backend.outputs.borrow()[0].transform, 1);
+            }
+            let fallback = super::saved_internal_at(&f.path, "eDP-1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                fallback.enabled,
+                "policy recovery can enable a formerly saved-Off laptop"
+            );
+            assert_eq!(fallback.scale, 1.5);
+            assert_eq!(fallback.transform, 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn preview_cannot_race_an_acknowledged_but_unobserved_docking_change() {
+    let mut f = Fixture::new();
+    f.store
+        .update_display_policy(crate::display_policy::DisplayPolicyState {
+            docking_state: crate::display_policy::DockingState::Applying,
+            ..Default::default()
+        })
+        .await;
+    let proposed = Layout::observed(&f.backend.outputs.borrow());
+    assert!(
+        f.preview(proposed)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("docking change")
+    );
+    assert!(f.backend.calls.borrow().is_empty());
+    assert!(f.document().await.trial.is_none());
+}
+
+#[tokio::test]
 async fn external_only_saved_layout_defers_to_fallback_when_undocked() {
     let mut f = Fixture::new();
     f.backend.outputs.borrow_mut()[0].disabled = true;

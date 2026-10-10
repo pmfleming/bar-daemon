@@ -260,6 +260,35 @@ pub(crate) struct Document {
     pub saved: Layout,
     pub trial: Option<Trial>,
 }
+impl Document {
+    fn restoration(&self, outputs: &[Output]) -> Layout {
+        let mut present = self.saved.connected(outputs);
+        if !self.manual_enablement {
+            // Saved geometry is still useful, but automatic docking alone owns
+            // laptop enablement. Never replay a retired manual Off/On first.
+            for setting in &mut present.outputs {
+                if let Some(output) = outputs
+                    .iter()
+                    .find(|o| o.name == setting.name && o.internal())
+                {
+                    setting.enabled = !output.disabled;
+                }
+            }
+            let disabled: HashSet<_> = present
+                .outputs
+                .iter()
+                .filter(|s| !s.enabled)
+                .map(|s| s.name.clone())
+                .collect();
+            for setting in &mut present.outputs {
+                if disabled.contains(&setting.mirror_of) {
+                    setting.mirror_of.clear();
+                }
+            }
+        }
+        present
+    }
+}
 #[derive(Default)]
 pub(super) struct Runtime {
     trial: Option<String>,
@@ -453,6 +482,7 @@ async fn preview_at<B: Backend>(
     runtime: &mut Runtime,
 ) -> Result<Document> {
     backend.eligible().await?;
+    super::ensure_docking_settled(store).await?;
     ensure!(
         !store.read(|s| s.power_sleep.preparing_for_sleep).await,
         "Cannot preview displays during sleep preparation"
@@ -641,7 +671,7 @@ async fn tick_at<B: Backend>(
         runtime.error = None;
     }
     let paused = runtime
-        .apply_saved(backend, &doc.saved, &outputs, store, instant)
+        .apply_saved(backend, &doc, &outputs, store, instant)
         .await?;
     Ok((doc, paused))
 }
@@ -652,12 +682,12 @@ impl Runtime {
     async fn apply_saved<B: Backend>(
         &mut self,
         backend: &B,
-        saved: &Layout,
+        doc: &Document,
         outputs: &[Output],
         store: &StateStore,
         instant: Instant,
     ) -> Result<bool> {
-        if !self.applied && !saved.outputs.is_empty() {
+        if !self.applied && !doc.saved.outputs.is_empty() {
             if self
                 .since
                 .is_some_and(|since| instant.duration_since(since) < Duration::from_secs(5))
@@ -665,7 +695,7 @@ impl Runtime {
                 return Ok(true);
             }
             self.applied = true;
-            let present = saved.connected(outputs);
+            let present = doc.restoration(outputs);
             // A saved external-only layout cannot be applied while its enabled
             // outputs are unplugged. Let reconciliation restore the laptop.
             if present.outputs.iter().any(|s| s.enabled) {
@@ -687,13 +717,19 @@ impl Runtime {
 }
 
 pub(super) async fn saved_internal(name: &str) -> Result<Option<Setting>> {
-    let doc: Document = load_json_or_default(&path(), "display layout").await?;
+    saved_internal_at(&path(), name).await
+}
+async fn saved_internal_at(path: &Path, name: &str) -> Result<Option<Setting>> {
+    let doc: Document = load_json_or_default(path, "display layout").await?;
     Ok(doc
         .saved
         .outputs
         .into_iter()
-        .find(|s| s.name == name && s.enabled)
+        .find(|s| s.name == name)
         .map(|mut setting| {
+            // Policy/fallback asked to enable it; retain geometry even if the
+            // last manual layout saved this laptop as disabled.
+            setting.enabled = true;
             setting.mirror_of.clear();
             setting
         }))

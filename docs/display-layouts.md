@@ -68,6 +68,38 @@ working external modes. Unsupported saved modes surface an error and can be
 replaced by a new preview. Automatic fallback restoration uses the saved internal
 mode when possible and falls back to the compositor's preferred mode on failure.
 
+## Docking ownership and completion
+
+Selecting `displayPolicy.set` relinquishes manual enablement without deleting
+saved geometry. Automatic restoration first builds an effective layout: laptop
+On/Off comes from the current observation, not the retired saved flag. Only the
+docking planner may change it after that. This prevents resume, restart or
+reconnect from replaying saved Off and immediately correcting it to On (or the
+reverse). Manual layouts still restore their explicit enablement. Saved mirrors
+whose projected source is disabled are promoted, never used to re-enable that
+source. Emergency/policy enablement retains saved mode, scale, position and
+rotation even when the saved laptop entry was disabled; it clears mirroring.
+
+The additive `display_policy.docking_state` is `applying`, `settled` or `failed`.
+A preference-save reply reports `applying`: persistence is not hardware readback.
+The daemon publishes `settled` only after the requested enablement is observed
+against the same internal identities and usable external signature. External
+stabilization and saved-layout recovery remain applying; sleep does not declare
+success. The observation window is bounded to 20 seconds of reconciliation, not
+a mandatory delay before success. Compositor/eligibility failures and missing
+readback report `failed` with an explicit diagnostic. Failed policies pause normal
+automatic enablement within the running daemon; emergency laptop recovery still
+runs if no usable independent output remains.
+
+Both policy writes and layout previews reject a concurrent applying transition,
+including requests from other clients. Shelllist keeps conflicting layout controls
+locked through observation, refreshes the baseline before another edit, and shows
+a passive Failed choice so explicitly selecting the same stored preference can
+retry. A failed policy can also be superseded by manual enablement + Preview/Keep;
+preview/revert alone does not silently retry it. Independent focus settings remain
+available. No new timer, automatic write retry or optimistic hardware state lives
+in QML. Deploy the daemon and UI together for this additive state contract.
+
 ## Mirror or extend
 
 In **Settings → Display content**, choose **Extend desktop** or **Mirror <source>**

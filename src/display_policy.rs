@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::XdgRoot;
 use tokio::sync::Mutex;
@@ -20,6 +20,8 @@ use planner::{Output, Planner};
 pub(crate) mod focus;
 pub(crate) mod layout;
 mod planner;
+mod transition;
+use transition::{DockingState, Transition};
 #[cfg(test)]
 mod tests;
 
@@ -45,6 +47,8 @@ pub(crate) struct DisplayPolicyState {
     pub baseline: String,
     pub policy: DisplayPolicy,
     pub status: String,
+    #[serde(default)]
+    pub docking_state: DockingState,
     pub error: Option<String>,
     #[serde(serialize_with = "layout::serialize_outputs")]
     pub outputs: Vec<Output>,
@@ -68,6 +72,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
         bail!("Enable programs.shelllist.displays.enable to manage laptop displays");
     }
     let _guard = POLICY_WRITE.lock().await;
+    ensure_docking_settled(store).await?;
     layout::ensure_policy_change_allowed().await?;
     save_json_atomic(&policy_path(), &policy).await?;
     let layout = layout::use_docking_policy().await?;
@@ -78,6 +83,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
         // Output telemetry remains unchanged until reconciliation observes it.
         layout,
         status: "pending".into(),
+        docking_state: DockingState::Applying,
         error: None,
         ..store.read(|s| s.display_policy.clone()).await
     };
@@ -119,9 +125,24 @@ pub(crate) async fn layout_action(
     state.layout = document;
     state.outputs = backend.outputs().await?;
     state.baseline = layout::baseline(&state.outputs, &state.policy);
-    state.error = None;
+    if state.layout.manual_enablement && state.layout.trial.is_none() {
+        state.docking_state = DockingState::Settled;
+    }
+    if state.docking_state != DockingState::Failed {
+        state.error = None;
+    }
     store.update_display_policy(state.clone()).await;
     Ok(state)
+}
+
+async fn ensure_docking_settled(store: &StateStore) -> Result<()> {
+    ensure!(
+        store
+            .read(|s| s.display_policy.docking_state != DockingState::Applying)
+            .await,
+        "Wait for the docking change to finish before changing display settings"
+    );
+    Ok(())
 }
 
 fn ensure_enabled() -> Result<()> {
@@ -224,6 +245,11 @@ async fn sleep_interrupted(store: &StateStore, generation: u64) -> bool {
         .await
 }
 
+struct Reconciled {
+    status: &'static str,
+    outputs: Option<Vec<Output>>,
+}
+
 async fn reconcile<B: Backend>(
     backend: &B,
     planner: &mut Planner,
@@ -231,7 +257,7 @@ async fn reconcile<B: Backend>(
     preserve_enablement: bool,
     store: &StateStore,
     now: Instant,
-) -> Result<&'static str> {
+) -> Result<Reconciled> {
     let (preparing, generation) = store
         .read(|s| {
             (
@@ -242,7 +268,10 @@ async fn reconcile<B: Backend>(
         .await;
     if preparing {
         planner.reset();
-        return Ok("sleeping");
+        return Ok(Reconciled {
+            status: "sleeping",
+            outputs: None,
+        });
     }
     backend.eligible().await?;
     let outputs = backend.outputs().await?;
@@ -250,7 +279,10 @@ async fn reconcile<B: Backend>(
     // docking policy. Still restore the laptop if the last usable output goes.
     if preserve_enablement && outputs.iter().any(Output::usable) {
         planner.reset();
-        return Ok("layout");
+        return Ok(Reconciled {
+            status: "layout",
+            outputs: Some(outputs),
+        });
     }
     let plan = planner.plan(policy.prefer_external, &outputs, now);
     for target in &plan.targets {
@@ -265,7 +297,19 @@ async fn reconcile<B: Backend>(
         }
         backend.apply(target, plan.disable_internal).await?;
     }
-    Ok(plan.status)
+    let observed = backend.outputs().await?;
+    if sleep_interrupted(store, generation).await {
+        bail!("sleep transition interrupted display reconciliation");
+    }
+    let status = if plan.observed(&observed) {
+        plan.status
+    } else {
+        "pending"
+    };
+    Ok(Reconciled {
+        status,
+        outputs: Some(observed),
+    })
 }
 
 // Keep the layout fallback and docking decision in one transaction. Even when
@@ -285,8 +329,9 @@ async fn refresh<B: Backend>(
         };
         let preserve_enablement = layout_result
             .as_ref()
-            .is_ok_and(|(doc, _)| doc.trial.is_some() || doc.manual_enablement);
-        let status = reconcile(
+            .is_ok_and(|(doc, _)| doc.trial.is_some() || doc.manual_enablement)
+            || state.docking_state == DockingState::Failed;
+        let result = reconcile(
             backend,
             planner,
             &policy,
@@ -294,10 +339,25 @@ async fn refresh<B: Backend>(
             store,
             Instant::now(),
         )
-        .await?;
-        state.outputs = backend.outputs().await?;
+        .await;
+        // Publish the same observation that established completion. On failure,
+        // a fresh read permits manual recovery without inventing a baseline.
+        let (status, outputs) = match result {
+            Ok(observed) => (Ok(observed.status), observed.outputs),
+            Err(error) => (Err(error), backend.outputs().await.ok()),
+        };
+        if let Some(outputs) = outputs {
+            state.outputs = outputs;
+            state.baseline = layout::baseline(&state.outputs, &state.policy);
+        }
         state.layout = layout_result?.0;
-        Ok(if paused { "layout-preview" } else { status })
+        status.map(|status| {
+            if paused && status != "sleeping" {
+                "layout-preview"
+            } else {
+                status
+            }
+        })
     })
     .await
     .context("display reconciliation timed out")?
@@ -318,6 +378,7 @@ pub(crate) async fn monitor(store: StateStore) {
     }
     let backend = HyprlandClient::default();
     let mut planner = Planner::default();
+    let mut transition = Transition::default();
     let mut last_resume = 0;
     let mut events = store.subscribe();
     let mut timer = tokio::time::interval(Duration::from_secs(2));
@@ -342,17 +403,14 @@ pub(crate) async fn monitor(store: StateStore) {
         }
         let mut state = DisplayPolicyState {
             available: true,
-            error: None,
+            baseline: String::new(),
             ..store.read(|s| s.display_policy.clone()).await
         };
-        match refresh(&backend, &mut planner, &mut state, &store).await {
-            Ok(status) => state.status = status.into(),
-            Err(error) => {
-                planner.reset();
-                state.status = "error".into();
-                state.error = Some(format!("{error:#}"));
-            }
+        let result = refresh(&backend, &mut planner, &mut state, &store).await;
+        if result.is_err() {
+            planner.reset();
         }
+        transition.update(&mut state, result, Instant::now());
         if state.layout.trial.is_none() && !store.read(|s| s.power_sleep.preparing_for_sleep).await
         {
             state.focus = focus::tick(&backend, &store).await;
@@ -365,7 +423,6 @@ pub(crate) async fn monitor(store: StateStore) {
         {
             tracing::info!(status = %state.status, error = ?state.error, "laptop display policy");
         }
-        state.baseline = layout::baseline(&state.outputs, &state.policy);
         store.update_display_policy(state).await;
     }
 }

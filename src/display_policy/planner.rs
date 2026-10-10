@@ -151,9 +151,27 @@ pub(super) struct Plan<'a> {
     pub targets: Vec<&'a Output>,
     pub status: &'static str,
     external: Vec<Signature>,
+    internal: Vec<&'a Output>,
 }
 
 impl Plan<'_> {
+    pub fn observed(&self, current: &[Output]) -> bool {
+        external_signature(current) == self.external
+            && current.iter().filter(|o| o.internal()).count() == self.internal.len()
+            && self.internal.iter().all(|previous| {
+                current.iter().any(|o| {
+                    o.name == previous.name
+                        && o.id == previous.id
+                        && if self.disable_internal {
+                            o.disabled
+                        } else {
+                            o.active()
+                        }
+                })
+            })
+            && (self.internal.is_empty() || current.iter().any(Output::usable))
+    }
+
     pub fn validate_disable(&self, target: &Output, current: &[Output]) -> Result<()> {
         if external_signature(current) != self.external
             || !current
@@ -231,6 +249,7 @@ impl Planner {
             targets,
             status,
             external,
+            internal: outputs.iter().filter(|o| o.internal()).collect(),
         }
     }
 }

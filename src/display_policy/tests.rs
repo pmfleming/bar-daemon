@@ -240,6 +240,7 @@ struct FakeBackend {
     calls: RefCell<Vec<(String, bool)>>,
     conflict: Cell<bool>,
     fail: Cell<bool>,
+    ignore_apply: Cell<bool>,
     reads: Cell<usize>,
     resume_on_second_read: Option<StateStore>,
 }
@@ -268,6 +269,19 @@ impl Backend for FakeBackend {
         self.calls.borrow_mut().push((output.name.clone(), disable));
         if self.fail.get() {
             bail!("compositor rejected the rule");
+        }
+        if !self.ignore_apply.get() {
+            for snapshot in self.snapshots.borrow_mut().iter_mut() {
+                if let Some(current) = snapshot
+                    .iter_mut()
+                    .find(|o| o.name == output.name && o.id == output.id)
+                {
+                    current.disabled = disable;
+                    if !disable {
+                        current.mirror_of.clear();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -375,7 +389,8 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
             Instant::now()
         )
         .await
-        .unwrap(),
+        .unwrap()
+        .status,
         "sleeping"
     );
     assert!(backend.calls.borrow().is_empty());
@@ -404,7 +419,8 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
             Instant::now()
         )
         .await
-        .unwrap(),
+        .unwrap()
+        .status,
         "internal"
     );
     assert_eq!(
@@ -439,7 +455,8 @@ async fn manual_enablement_survives_policy_ticks_but_unplug_restores_fallback() 
                         start + Duration::from_secs(seconds)
                     )
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .status,
                     "layout"
                 );
             }
@@ -457,6 +474,210 @@ async fn manual_enablement_survives_policy_ticks_but_unplug_restores_fallback() 
             .unwrap();
             assert_eq!(*backend.calls.borrow(), vec![("eDP-1".into(), false)]);
         }
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_requires_observed_enablement_in_both_directions() {
+    for prefer_external in [false, true] {
+        let start = Instant::now();
+        let outputs = vec![internal(!prefer_external), external()];
+        let backend = FakeBackend {
+            snapshots: RefCell::new(VecDeque::from([outputs.clone()])),
+            ignore_apply: Cell::new(true),
+            ..Default::default()
+        };
+        let store = StateStore::default();
+        let policy = DisplayPolicy { prefer_external };
+        let mut planner = Planner::default();
+        planner.plan(prefer_external, &outputs, start);
+        let mut transition = super::Transition::default();
+        let mut state = super::DisplayPolicyState::default();
+        let observation = reconcile(
+            &backend,
+            &mut planner,
+            &policy,
+            false,
+            &store,
+            start + Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            observation.status, "pending",
+            "ok is not hardware completion"
+        );
+        assert_eq!(observation.outputs.unwrap()[0].disabled, !prefer_external);
+        transition.update(&mut state, Ok(observation.status), start);
+        assert_eq!(state.docking_state, super::DockingState::Applying);
+        // A later native snapshot supplies the requested state.
+        backend.snapshots.borrow_mut().back_mut().unwrap()[0].disabled = prefer_external;
+        let observed = reconcile(
+            &backend,
+            &mut planner,
+            &policy,
+            false,
+            &store,
+            start + Duration::from_secs(6),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            backend.calls.borrow().len(),
+            1,
+            "observed success needs no replay"
+        );
+        assert_eq!(observed.outputs.unwrap()[0].disabled, prefer_external);
+        transition.update(
+            &mut state,
+            Ok(observed.status),
+            start + Duration::from_secs(6),
+        );
+        assert_eq!(state.docking_state, super::DockingState::Settled);
+    }
+}
+
+#[tokio::test]
+async fn unplug_during_readback_keeps_applying_until_the_fallback_is_observed() {
+    let start = Instant::now();
+    let docked = vec![internal(false), external()];
+    let backend = FakeBackend {
+        // External disconnects after the final disable guard but before readback.
+        snapshots: RefCell::new(VecDeque::from([
+            docked.clone(),
+            docked.clone(),
+            vec![internal(true)],
+        ])),
+        ignore_apply: Cell::new(true),
+        ..Default::default()
+    };
+    let store = StateStore::default();
+    let policy = DisplayPolicy::default();
+    let mut planner = Planner::default();
+    planner.plan(true, &docked, start);
+    let pending = reconcile(
+        &backend,
+        &mut planner,
+        &policy,
+        false,
+        &store,
+        start + Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        pending.status, "pending",
+        "a changed topology is not confirmation"
+    );
+    let mut transition = super::Transition::default();
+    let mut state = super::DisplayPolicyState::default();
+    transition.update(&mut state, Ok(pending.status), start);
+    assert_eq!(state.docking_state, super::DockingState::Applying);
+    backend.ignore_apply.set(false);
+    let restored = reconcile(
+        &backend,
+        &mut planner,
+        &policy,
+        false,
+        &store,
+        start + Duration::from_secs(6),
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.status, "internal");
+    assert!(!restored.outputs.unwrap()[0].disabled);
+    transition.update(
+        &mut state,
+        Ok(restored.status),
+        start + Duration::from_secs(6),
+    );
+    assert_eq!(state.docking_state, super::DockingState::Settled);
+    assert_eq!(
+        *backend.calls.borrow(),
+        vec![("eDP-1".into(), true), ("eDP-1".into(), false)]
+    );
+}
+
+#[tokio::test]
+async fn failed_docking_pauses_policy_but_unplug_still_restores_a_fallback() {
+    let start = Instant::now();
+    let backend = FakeBackend {
+        snapshots: RefCell::new(VecDeque::from([vec![internal(true), external()]])),
+        fail: Cell::new(true),
+        ..Default::default()
+    };
+    let store = StateStore::default();
+    let mut planner = Planner::default();
+    let policy = DisplayPolicy {
+        prefer_external: false,
+    };
+    let mut state = super::DisplayPolicyState::default();
+    let mut transition = super::Transition::default();
+    let failure = reconcile(&backend, &mut planner, &policy, false, &store, start).await;
+    transition.update(&mut state, failure.map(|observed| observed.status), start);
+    assert_eq!(state.docking_state, super::DockingState::Failed);
+    backend.fail.set(false);
+    for seconds in [2, 4] {
+        let observed = reconcile(
+            &backend,
+            &mut planner,
+            &policy,
+            state.docking_state == super::DockingState::Failed,
+            &store,
+            start + Duration::from_secs(seconds),
+        )
+        .await
+        .unwrap();
+        transition.update(
+            &mut state,
+            Ok(observed.status),
+            start + Duration::from_secs(seconds),
+        );
+        assert_eq!(state.docking_state, super::DockingState::Failed);
+        assert_eq!(
+            backend.calls.borrow().len(),
+            1,
+            "failed mutations are not silently retried"
+        );
+    }
+    *backend.snapshots.borrow_mut() = VecDeque::from([vec![internal(true)]]);
+    let observed = reconcile(
+        &backend,
+        &mut planner,
+        &policy,
+        true,
+        &store,
+        start + Duration::from_secs(6),
+    )
+    .await
+    .unwrap();
+    assert_eq!(observed.status, "all-displays");
+    assert!(!observed.outputs.unwrap()[0].disabled);
+    assert_eq!(
+        backend.calls.borrow().len(),
+        2,
+        "failure must not suppress emergency enablement"
+    );
+}
+
+#[tokio::test]
+async fn docking_guard_covers_other_clients_and_releases_on_success_or_failure() {
+    let store = StateStore::default();
+    for state in [
+        super::DockingState::Applying,
+        super::DockingState::Settled,
+        super::DockingState::Failed,
+    ] {
+        store
+            .update_display_policy(super::DisplayPolicyState {
+                docking_state: state,
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(
+            super::ensure_docking_settled(&store).await.is_ok(),
+            state != super::DockingState::Applying
+        );
     }
 }
 
