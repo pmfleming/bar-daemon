@@ -70,10 +70,13 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
     let _guard = POLICY_WRITE.lock().await;
     layout::ensure_policy_change_allowed().await?;
     save_json_atomic(&policy_path(), &policy).await?;
-    layout::use_docking_policy().await?;
+    let layout = layout::use_docking_policy().await?;
     let mut state = DisplayPolicyState {
         available: true,
         policy,
+        // Acknowledge the released override now, not at the next monitor tick.
+        // Output telemetry remains unchanged until reconciliation observes it.
+        layout,
         status: "pending".into(),
         error: None,
         ..store.read(|s| s.display_policy.clone()).await

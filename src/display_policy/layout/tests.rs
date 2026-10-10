@@ -292,10 +292,22 @@ async fn any_output_can_be_disabled_but_not_the_last_and_rollback_preserves_enab
         assert!(!f.backend.outputs.borrow()[1 - disabled].disabled);
         // Returning to docking policy preserves saved geometry but relinquishes
         // the explicit enablement override durably.
-        super::use_docking_policy_at(&f.path).await.unwrap();
+        let acknowledged = super::use_docking_policy_at(&f.path).await.unwrap();
         let resumed = f.document().await;
+        assert_eq!(
+            acknowledged, resumed,
+            "the reply must not retain the old override"
+        );
         assert!(!resumed.manual_enablement);
         assert_eq!(resumed.saved, doc.saved);
+        assert_eq!(
+            super::use_docking_policy_at(&f.path).await.unwrap(),
+            resumed
+        );
+        assert!(
+            f.backend.outputs.borrow()[disabled].disabled,
+            "saving a policy does not fabricate changed output telemetry"
+        );
     }
 }
 

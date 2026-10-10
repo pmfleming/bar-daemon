@@ -296,16 +296,16 @@ async fn ensure_policy_change_allowed_at(path: &Path) -> Result<()> {
     );
     Ok(())
 }
-pub(super) async fn use_docking_policy() -> Result<()> {
+pub(super) async fn use_docking_policy() -> Result<Document> {
     use_docking_policy_at(&path()).await
 }
-async fn use_docking_policy_at(path: &Path) -> Result<()> {
+async fn use_docking_policy_at(path: &Path) -> Result<Document> {
     let mut doc: Document = load_json_or_default(path, "display layout").await?;
     if doc.manual_enablement {
         doc.manual_enablement = false;
         save_json_atomic(path, &doc).await?;
     }
-    Ok(())
+    Ok(doc)
 }
 
 fn topology(outputs: &[Output]) -> Vec<(String, i64)> {
