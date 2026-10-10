@@ -114,8 +114,9 @@ impl Output {
             if !self.scale.is_finite() || !(0.25..=8.0).contains(&self.scale) {
                 bail!("invalid internal display scale");
             }
+            // Explicitly clear the disabled field retained by Lua rule merging.
             Ok(format!(
-                "eval hl.monitor({{ output = \"{}\", mode = \"preferred\", position = \"auto\", scale = {}, mirror = \"\" }})",
+                "eval hl.monitor({{ output = \"{}\", disabled = false, mode = \"preferred\", position = \"auto\", scale = {}, mirror = \"\" }})",
                 self.name, self.scale
             ))
         }

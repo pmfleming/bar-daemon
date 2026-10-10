@@ -32,7 +32,8 @@ impl Backend for Fake {
         unreachable!()
     }
     async fn configure(&self, setting: &Setting) -> Result<()> {
-        self.calls.borrow_mut().push(setting.command()?);
+        let command = setting.command()?;
+        self.calls.borrow_mut().push(command.clone());
         if self.fail.get() {
             bail!("compositor failure")
         }
@@ -55,7 +56,13 @@ impl Backend for Fake {
             None
         };
         let output = outputs.iter_mut().find(|o| o.name == setting.name).unwrap();
-        output.disabled = !setting.enabled;
+        // hl.monitor merges fields into the previous rule. Omitting disabled
+        // does not undo an earlier disable, even if mode/position are supplied.
+        if command.contains("disabled = true") {
+            output.disabled = true;
+        } else if command.contains("disabled = false") {
+            output.disabled = false;
+        }
         let (width, height, refresh) = mode(&setting.mode).unwrap();
         output.width = width;
         output.height = height;
@@ -147,6 +154,28 @@ impl Fixture {
     }
     async fn document(&self) -> Document {
         load_json_or_default(&self.path, "test").await.unwrap()
+    }
+}
+
+#[test]
+fn enable_commands_clear_persistent_disabled_rules_for_every_connector() {
+    for name in ["eDP-1", "DP-1", "HDMI-A-1"] {
+        let mut setting = Setting {
+            name: name.into(),
+            mode: "1920x1200@60.00Hz".into(),
+            x: 0,
+            y: 0,
+            scale: 1.25,
+            transform: 0,
+            enabled: false,
+            mirror_of: String::new(),
+        };
+        assert!(setting.command().unwrap().contains("disabled = true"));
+        setting.enabled = true;
+        let command = setting.command().unwrap();
+        assert!(command.contains("disabled = false"), "{command}");
+        assert!(command.contains("mirror = \"\""));
+        assert!(command.contains("mode = \"1920x1200@60.00\""));
     }
 }
 
@@ -308,6 +337,17 @@ async fn any_output_can_be_disabled_but_not_the_last_and_rollback_preserves_enab
             f.backend.outputs.borrow()[disabled].disabled,
             "saving a policy does not fabricate changed output telemetry"
         );
+        // Exercise the user's actual disable -> enable -> Keep path, not only
+        // command acceptance or reverting an enable attempt.
+        let mut enabled = Layout::observed(&f.backend.outputs.borrow());
+        enabled.outputs[disabled].enabled = true;
+        let trial = f.preview(enabled.clone()).await.unwrap().trial.unwrap();
+        assert!(!f.backend.outputs.borrow()[disabled].disabled);
+        let kept = f.finish(&trial.id, true).await.unwrap();
+        assert_eq!(kept.saved, enabled);
+        assert!(kept.manual_enablement);
+        assert!(kept.trial.is_none());
+        assert_eq!(f.document().await, kept);
     }
 }
 

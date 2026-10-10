@@ -148,6 +148,16 @@ fn dpms_off_is_not_output_loss_and_preference_off_restores_internal() {
 }
 
 #[test]
+fn docking_restore_explicitly_reenables_a_previously_disabled_rule() {
+    let output = internal(true);
+    assert!(output.command(true).unwrap().contains("disabled = true"));
+    let command = output.command(false).unwrap();
+    assert!(command.contains("disabled = false"), "{command}");
+    assert!(command.contains("mode = \"preferred\""));
+    assert!(command.contains("mirror = \"\""));
+}
+
+#[test]
 fn docking_preserves_mirror_sources_and_restores_only_independent_fallbacks() {
     let start = Instant::now();
     let mut copy = external();

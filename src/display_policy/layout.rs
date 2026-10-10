@@ -62,8 +62,10 @@ impl Setting {
                 self.name
             ));
         }
+        // Lua monitor rules are merged, not replaced. Mode/geometry alone
+        // would preserve disabled=true from a previous disable operation.
         Ok(format!(
-            "eval hl.monitor({{ output = \"{}\", mode = \"{}\", position = \"{}x{}\", scale = {}, transform = {}, mirror = \"{}\" }})",
+            "eval hl.monitor({{ output = \"{}\", disabled = false, mode = \"{}\", position = \"{}x{}\", scale = {}, transform = {}, mirror = \"{}\" }})",
             self.name,
             self.mode.trim_end_matches("Hz"),
             self.x,
