@@ -148,13 +148,45 @@ fn dpms_off_is_not_output_loss_and_preference_off_restores_internal() {
 }
 
 #[test]
-fn docking_restore_explicitly_reenables_a_previously_disabled_rule() {
-    let output = internal(true);
-    assert!(output.command(true).unwrap().contains("disabled = true"));
-    let command = output.command(false).unwrap();
-    assert!(command.contains("disabled = false"), "{command}");
-    assert!(command.contains("mode = \"preferred\""));
-    assert!(command.contains("mirror = \"\""));
+fn docking_commands_use_shared_rules_without_relaxing_internal_output_guards() {
+    use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
+    let mut output = internal(true);
+    assert_eq!(
+        output.command(true).unwrap(),
+        monitor::command("eDP-1", Rule::Disable).unwrap()
+    );
+    assert_eq!(
+        output.command(false).unwrap(),
+        monitor::command(
+            "eDP-1",
+            Rule::Enable {
+                mode: Mode::Preferred,
+                position: Position::Auto,
+                scale: 1.25,
+                transform: None,
+                mirror: "",
+            }
+        )
+        .unwrap()
+    );
+    for scale in [0.24, 8.01, f64::NAN] {
+        output.scale = scale;
+        assert!(
+            output.command(false).is_err(),
+            "docking retains its scale bounds"
+        );
+        assert!(
+            output.command(true).is_ok(),
+            "disable does not require a usable scale"
+        );
+    }
+    for name in ["DP-1", "HDMI-A-1", "HEADLESS-1"] {
+        output.name = name.into();
+        assert!(
+            output.command(true).is_err(),
+            "automatic policy cannot disable {name}"
+        );
+    }
 }
 
 #[test]

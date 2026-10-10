@@ -158,24 +158,38 @@ impl Fixture {
 }
 
 #[test]
-fn enable_commands_clear_persistent_disabled_rules_for_every_connector() {
+fn layout_commands_map_domain_values_to_shared_monitor_rules() {
+    use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
     for name in ["eDP-1", "DP-1", "HDMI-A-1"] {
         let mut setting = Setting {
             name: name.into(),
             mode: "1920x1200@60.00Hz".into(),
-            x: 0,
-            y: 0,
+            x: -1536,
+            y: 120,
             scale: 1.25,
-            transform: 0,
+            transform: 3,
             enabled: false,
-            mirror_of: String::new(),
+            mirror_of: "DP-2".into(),
         };
-        assert!(setting.command().unwrap().contains("disabled = true"));
+        assert_eq!(
+            setting.command().unwrap(),
+            monitor::command(name, Rule::Disable).unwrap()
+        );
         setting.enabled = true;
-        let command = setting.command().unwrap();
-        assert!(command.contains("disabled = false"), "{command}");
-        assert!(command.contains("mirror = \"\""));
-        assert!(command.contains("mode = \"1920x1200@60.00\""));
+        assert_eq!(
+            setting.command().unwrap(),
+            monitor::command(
+                name,
+                Rule::Enable {
+                    mode: Mode::Exact("1920x1200@60.00Hz"),
+                    position: Position::Exact { x: -1536, y: 120 },
+                    scale: 1.25,
+                    transform: Some(3),
+                    mirror: "DP-2",
+                }
+            )
+            .unwrap()
+        );
     }
 }
 

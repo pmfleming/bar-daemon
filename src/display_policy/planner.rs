@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
 
 const SETTLE: Duration = Duration::from_secs(5);
 const MAX_OBSERVATION_GAP: Duration = Duration::from_secs(6);
@@ -95,8 +96,8 @@ impl Output {
         self.active() && !self.mirrored()
     }
     pub fn command(&self, disable: bool) -> Result<String> {
-        // Only compositor-reported internal connectors can be mutated. No
-        // untrusted connector name is interpolated into executable Lua.
+        // Automatic docking may mutate only compositor-reported internal
+        // connectors. Syntax encoding belongs to the shared Hyprland adapter.
         if !self.internal()
             || !self
                 .name
@@ -105,21 +106,21 @@ impl Output {
         {
             bail!("invalid internal connector name");
         }
-        if disable {
-            Ok(format!(
-                "eval hl.monitor({{ output = \"{}\", disabled = true }})",
-                self.name
-            ))
+        let rule = if disable {
+            Rule::Disable
         } else {
             if !self.scale.is_finite() || !(0.25..=8.0).contains(&self.scale) {
                 bail!("invalid internal display scale");
             }
-            // Explicitly clear the disabled field retained by Lua rule merging.
-            Ok(format!(
-                "eval hl.monitor({{ output = \"{}\", disabled = false, mode = \"preferred\", position = \"auto\", scale = {}, mirror = \"\" }})",
-                self.name, self.scale
-            ))
-        }
+            Rule::Enable {
+                mode: Mode::Preferred,
+                position: Position::Auto,
+                scale: self.scale,
+                transform: None,
+                mirror: "",
+            }
+        };
+        monitor::command(&self.name, rule)
     }
 }
 

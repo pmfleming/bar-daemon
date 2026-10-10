@@ -35,6 +35,7 @@ protocol prevents overload-induced loss, not disk-failure or crash recovery.
 | --- | --- | --- |
 | Activity | Local ICS sources and XDG todo state; provider adapters are staged behind normalized models | Bounded range queries, last-known-good source state, todo validation, world clocks |
 | Workspaces | Direct Hyprland command/event sockets | Positive IDs, active-window normalization, Lua-aware focus dispatch |
+| Displays | Shared `shelllist-hyprland::monitor` encoding over bounded native IPC | Docking policy, validated saved layouts, last-screen/mirror guards, Preview/Keep/revert and observed confirmation |
 | Media | MPRIS session D-Bus | Playing → Spotify → controllable → first selection; artwork and timing normalization |
 | Audio | Native PipeWire default sink/source metadata and node properties | Output cubic/linear conversion and 0–100% clamp; output and microphone mute |
 | Brightness | sysfs discovery and file watching | 1–100% clamp, direct write with `brightnessctl` permission fallback |
@@ -44,6 +45,20 @@ protocol prevents overload-induced loss, not disk-failure or crash recovery.
 | Notifications | Native `org.freedesktop.Notifications` server with SQLite WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
 | Timezone | systemd-timedated system D-Bus | IANA city, abbreviation, and current offset |
+
+### Hyprland monitor ownership
+
+Both manual display layouts and automatic laptop restoration use the framework's
+`monitor::command` with typed enable/disable, mode and position variants. The
+framework owns Lua syntax validation and rule-merging details, including explicit
+`disabled = false` on enable and clearing the mirror field for an extended screen.
+It does not choose outputs, execute policy or claim that a command changed hardware.
+
+Bar retains its domain schemas and limits, advertised modes, eligible/internal
+connector checks, topology and last-usable-screen protection, mirror promotion,
+serialized IPC effects, saved configuration and preview rollback. Confirmation
+still requires matching observed outputs. Wire-encoding regressions live in the
+framework; Bar tests check mapping plus the full guarded enable/disable/Keep path.
 
 ### Hyprland events
 

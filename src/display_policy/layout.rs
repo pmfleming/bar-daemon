@@ -8,6 +8,7 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::XdgRoot;
+use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -56,24 +57,21 @@ impl Setting {
     }
     pub(super) fn command(&self) -> Result<String> {
         self.validate()?;
-        if !self.enabled {
-            return Ok(format!(
-                "eval hl.monitor({{ output = \"{}\", disabled = true }})",
-                self.name
-            ));
-        }
-        // Lua monitor rules are merged, not replaced. Mode/geometry alone
-        // would preserve disabled=true from a previous disable operation.
-        Ok(format!(
-            "eval hl.monitor({{ output = \"{}\", disabled = false, mode = \"{}\", position = \"{}x{}\", scale = {}, transform = {}, mirror = \"{}\" }})",
-            self.name,
-            self.mode.trim_end_matches("Hz"),
-            self.x,
-            self.y,
-            self.scale,
-            self.transform,
-            self.mirror_of
-        ))
+        let rule = if self.enabled {
+            Rule::Enable {
+                mode: Mode::Exact(&self.mode),
+                position: Position::Exact {
+                    x: self.x,
+                    y: self.y,
+                },
+                scale: self.scale,
+                transform: Some(self.transform),
+                mirror: &self.mirror_of,
+            }
+        } else {
+            Rule::Disable
+        };
+        monitor::command(&self.name, rule)
     }
     fn observed_mode(output: &Output) -> String {
         format!(
