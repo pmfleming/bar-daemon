@@ -86,6 +86,11 @@ impl HyprlandClient {
         self.ipc.request(command).await
     }
 
+    /// Mutations must not fall back to a different compositor session.
+    pub(crate) async fn request_exact(&self, command: &str) -> Result<String> {
+        self.ipc.request_exact(command).await
+    }
+
     pub(crate) async fn snapshot(&self) -> Result<WorkspaceState> {
         let (workspaces, monitors, active_window) = tokio::try_join!(
             self.request("j/workspaces"),
@@ -109,7 +114,7 @@ impl HyprlandClient {
             ""
         };
         let command = format!("dispatch hl.dsp.focus({{ workspace = {workspace_id}{current} }})");
-        let response = self.request(&command).await?;
+        let response = self.request_exact(&command).await?;
         if response.trim_start().starts_with("ok") {
             Ok(())
         } else {
@@ -203,9 +208,23 @@ where
         let mut connected = false;
         while let Some(event) = events.recv().await {
             let refresh = match event {
-                Event::Connected | Event::Disconnected => {
-                    connected = event == Event::Connected;
+                Event::Connected => {
+                    connected = true;
                     store.set_hyprland_connected(connected);
+                    true
+                }
+                Event::Disconnected(cause) => {
+                    connected = false;
+                    store.set_hyprland_connected(connected);
+                    if let Some(cause) = cause {
+                        tracing::warn!(%cause, "Hyprland event stream failed; continuing reconciliation");
+                    }
+                    true
+                }
+                Event::ConnectFailed(cause) => {
+                    connected = false;
+                    store.set_hyprland_connected(connected);
+                    tracing::warn!(%cause, "Hyprland event connection failed; continuing reconciliation");
                     true
                 }
                 Event::Message(event) => {
@@ -291,6 +310,57 @@ mod tests {
     };
     use tokio::sync::{Semaphore, mpsc, watch};
 
+    #[tokio::test]
+    async fn workspace_mutations_require_a_reachable_configured_instance() -> anyhow::Result<()> {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::UnixListener,
+            time::timeout,
+        };
+
+        let root = tempfile::tempdir()?;
+        let signature = root.path().file_name().unwrap().to_str().unwrap();
+        let instance = root.path().join("hypr").join(signature);
+        std::fs::create_dir_all(&instance)?;
+        let listener = UnixListener::bind(instance.join(".socket.sock"))?;
+        let client = super::HyprlandClient {
+            ipc: shelllist_hyprland::Client::new(root.path().into(), Some(signature.into())),
+        };
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = String::new();
+            stream.read_to_string(&mut request).await.unwrap();
+            assert_eq!(
+                request,
+                "dispatch hl.dsp.focus({ workspace = 2, on_current_monitor = true })"
+            );
+            stream.write_all(b"ok").await.unwrap();
+        });
+        client.focus_workspace(2, true).await?;
+        server.await?; // leaves a stale socket for the configured instance
+
+        let fallback = root.path().join("hypr/fallback");
+        std::fs::create_dir_all(&fallback)?;
+        let fallback = UnixListener::bind(fallback.join(".socket.sock"))?;
+        for signature in [
+            None,
+            Some(signature.into()),
+            Some(format!("{signature}-missing")),
+            Some("../invalid".into()),
+        ] {
+            let client = super::HyprlandClient {
+                ipc: shelllist_hyprland::Client::new(root.path().into(), signature),
+            };
+            assert!(client.focus_workspace(2, true).await.is_err());
+        }
+        assert!(
+            timeout(Duration::from_millis(50), fallback.accept())
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
     #[tokio::test(start_paused = true)]
     async fn slow_snapshots_do_not_block_invalidations_and_bursts_coalesce() {
         let store = StateStore::default();
@@ -337,11 +407,26 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(store.snapshot().await.workspaces.available);
-        events.send(Event::Disconnected).await.unwrap();
+        for failure in [
+            Event::Disconnected(None),
+            Event::ConnectFailed("connection refused".into()),
+            Event::Disconnected(Some("invalid UTF-8".into())),
+        ] {
+            events.send(failure).await.unwrap();
+            store.compositor_changed.notified().await;
+            store.work_area_changed.notified().await;
+            started.acquire().await.unwrap().forget();
+            assert!(!store.hyprland_connected());
+        }
+        events.send(Event::Connected).await.unwrap();
         store.compositor_changed.notified().await;
         store.work_area_changed.notified().await;
         started.acquire().await.unwrap().forget();
-        assert!(!store.hyprland_connected());
+        assert!(store.hyprland_connected());
+        let recovered_calls = calls.load(Ordering::SeqCst);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), recovered_calls);
         drop(events);
         task.await.unwrap();
     }

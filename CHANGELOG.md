@@ -6,6 +6,14 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Require a valid `HYPRLAND_INSTANCE_SIGNATURE` and a reachable socket for that
+  exact instance before changing monitor layouts, output enablement, workspace
+  focus, or compositor focus settings. Stale sessions cannot redirect mutations
+  to another compositor; read-only discovery retains fallback.
+- Report Hyprland event connection/read failures, including startup failures,
+  and invalidate compositor caches while retaining recovery polling. Repeated
+  identical connection failures are deduplicated by the shared transport.
+
 - Preserve bounded image-path and desktop-entry hints in notification-center
   previews, so app lists and compact headers can resolve sender artwork for
   both live and archived notifications instead of falling back to a bell.

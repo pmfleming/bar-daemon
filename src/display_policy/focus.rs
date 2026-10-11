@@ -176,7 +176,7 @@ impl Backend for HyprlandClient {
         parse(&self.request(&query()).await?)
     }
     async fn configure(&self, values: &Values) -> Result<()> {
-        let response = self.request(&command(values)?).await?;
+        let response = self.request_exact(&command(values)?).await?;
         ensure!(
             response.trim() == "ok",
             "Hyprland rejected focus settings: {}",
