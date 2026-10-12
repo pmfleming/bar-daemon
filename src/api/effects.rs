@@ -1,4 +1,3 @@
-use super::{error, success};
 use crate::{
     audio::controller::{AudioCommand, AudioController},
     brightness::BrightnessService,
@@ -10,31 +9,13 @@ use crate::{
         ProfileRequest,
     },
     protocol::display_wire::{self, Failure as DisplayFailure},
+    protocol::session_controls::{self, ErrorCode, MediaRequest, WorkspaceRequest},
     protocol::sleep_wire::{self, Action, Failure, IdleRequest, KeepAwakeRequest},
     sleep,
     state::StateStore,
     updates,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-#[derive(Deserialize)]
-struct MediaRequest {
-    operation: String,
-    #[serde(default)]
-    player_id: Option<String>,
-    #[serde(default)]
-    offset_seconds: Option<i64>,
-    #[serde(default)]
-    mode: Option<crate::model::MediaControlMode>,
-}
-
-#[derive(Deserialize)]
-struct WorkspaceRequest {
-    workspace_id: i64,
-    #[serde(default)]
-    on_current_monitor: bool,
-}
+use serde_json::Value;
 
 pub(super) struct DesktopEffects {
     state: StateStore,
@@ -144,10 +125,7 @@ impl DesktopEffects {
     }
 
     pub(super) async fn updates_refresh(&self) -> Value {
-        match updates::refresh_default(&self.state).await {
-            Ok(state) => success(json!({"updates": state})),
-            Err(value) => error("update-refresh-failed", value.to_string()),
-        }
+        session_controls::updates(updates::refresh_default(&self.state).await)
     }
     pub(super) async fn power_profile_set(&self, params: Value) -> Value {
         let request = request!(params, ProfileRequest, "powerProfile.set");
@@ -218,30 +196,21 @@ impl DesktopEffects {
             "automatic" => Some(self.media.select(&self.state, None).await),
             "select" => {
                 let Some(id) = request.player_id.as_deref() else {
-                    return error("validation-error", "media.select requires player_id");
+                    return ErrorCode::Validation.reply("media.select requires player_id");
                 };
                 Some(self.media.select(&self.state, Some(id)).await)
             }
             "set-mode" => {
                 let (Some(id), Some(mode)) = (request.player_id.as_deref(), request.mode) else {
-                    return error(
-                        "validation-error",
-                        "media.set-mode requires player_id and mode",
-                    );
+                    return ErrorCode::Validation
+                        .reply("media.set-mode requires player_id and mode");
                 };
                 Some(self.media.set_mode(&self.state, id, mode).await)
             }
             _ => None,
         };
         if let Some(result) = policy_result {
-            return match result {
-                Ok(state) => success(json!({
-                    "operation": request.operation,
-                    "player_id": state.active_player,
-                    "media": state,
-                })),
-                Err(value) => error("media-operation-failed", value.to_string()),
-            };
+            return session_controls::preference(&request.operation, result);
         }
         let player_id = match request.player_id {
             Some(player_id) => Some(player_id),
@@ -249,41 +218,28 @@ impl DesktopEffects {
         };
         if request.operation == "seek" {
             let Some(offset_seconds) = request.offset_seconds else {
-                return error("validation-error", "media.seek requires offset_seconds");
+                return ErrorCode::Validation.reply("media.seek requires offset_seconds");
             };
-            return match self.media.seek(player_id.as_deref(), offset_seconds).await {
-                Ok(player_id) => success(json!({
-                    "operation": request.operation,
-                    "player_id": player_id,
-                    "offset_seconds": offset_seconds,
-                })),
-                Err(value) => error("media-operation-failed", value.to_string()),
-            };
+            return session_controls::seek(
+                &request.operation,
+                offset_seconds,
+                self.media.seek(player_id.as_deref(), offset_seconds).await,
+            );
         }
-        match self
-            .media
-            .operation(player_id.as_deref(), &request.operation)
-            .await
-        {
-            Ok(player_id) => {
-                success(json!({"operation": request.operation, "player_id": player_id}))
-            }
-            Err(value) => error("media-operation-failed", value.to_string()),
-        }
+        session_controls::playback(
+            &request.operation,
+            self.media
+                .operation(player_id.as_deref(), &request.operation)
+                .await,
+        )
     }
     pub(super) async fn focus_workspace(&self, params: Value) -> Value {
         let request = request!(params, WorkspaceRequest, "workspace.focus");
-        match self
-            .hyprland
-            .focus_workspace(request.workspace_id, request.on_current_monitor)
-            .await
-        {
-            Ok(()) => success(json!({
-                "operation": "workspace.focus",
-                "workspace_id": request.workspace_id,
-                "on_current_monitor": request.on_current_monitor
-            })),
-            Err(value) => error("workspace-focus-failed", value.to_string()),
-        }
+        session_controls::workspace(
+            &request,
+            self.hyprland
+                .focus_workspace(request.workspace_id, request.on_current_monitor)
+                .await,
+        )
     }
 }
