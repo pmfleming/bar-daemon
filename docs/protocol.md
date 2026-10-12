@@ -168,6 +168,20 @@ shared two-reader limit as `queryHistory`. It does not change read status or
 notification lifecycle. The response envelope is `notification_center`; every
 snapshot has `view`, `epoch`, string `revision` and normalized `query`.
 
+The daemon owns bounded read recovery. One three-second deadline covers reader
+admission, the mutation boundary and the worker reply. Admission exhaustion is
+`history-busy`; completion timeout is `history-unavailable`. Center reads retry
+only SQLite BUSY/LOCKED errors, at most three attempts, with a 50ms SQLite busy
+wait per attempt and 50/100ms backoff. Normal write busy handling is restored
+afterward. Other storage errors, invalid queries and stale cursors return without
+this retry; prior failed writes still fence the worker for its lifetime. No
+mutation is replayed. A cancelled/timed-out caller prevents queued reads and
+further attempts; an already-running blocking read may finish but cannot publish
+to its abandoned receiver. Epoch/revision checks are made after admission and
+remain authoritative; clients restart stale windows rather than merge them.
+Clients should retain their last published window and surface exhausted failures,
+with explicit Refresh available—not run their own storage retry timers.
+
 - `{view: "apps", query: "", offset: 0, epoch: null, revision: null,
   app_anchor: null}` returns up to 50 `apps`, `total_apps`, `offset`, nullable
   `next_offset` and `anchor_reached`. Each app has `key`, matching `count`,

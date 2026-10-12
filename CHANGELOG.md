@@ -6,6 +6,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Recover notification-center read contention natively: wait for reader capacity
+  within one three-second deadline and retry only SQLite BUSY/LOCKED reads up to
+  three attempts. Exhausted/permanent failures remain explicit; cancellation,
+  failed-write fences, revisions and all mutation no-replay guards are preserved.
 - Require a valid `HYPRLAND_INSTANCE_SIGNATURE` and a reachable socket for that
   exact instance before changing monitor layouts, output enablement, workspace
   focus, or compositor focus settings. Stale sessions cannot redirect mutations

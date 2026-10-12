@@ -23,6 +23,8 @@ use super::{
     policy::NotificationPolicy,
 };
 
+const CENTER_READ_TIMEOUT: Duration = Duration::from_secs(3);
+
 struct EngineData {
     active: BTreeMap<u32, ActiveNotification>,
     dnd: bool,
@@ -631,10 +633,26 @@ impl NotificationEngine {
         mut query: super::center::CenterQuery,
     ) -> Result<super::center::CenterPage, HistoryError> {
         query.normalize()?;
-        let _reader = self
-            .history_readers
-            .try_acquire()
+        // Brief contention is native-owned recovery, not a frontend retry loop.
+        // One deadline covers admission, the mutation boundary and storage read.
+        let deadline = tokio::time::Instant::now() + CENTER_READ_TIMEOUT;
+        let _reader = tokio::time::timeout_at(deadline, self.history_readers.acquire())
+            .await
+            .map_err(|_| HistoryError::Busy)?
             .map_err(|_| HistoryError::Busy)?;
+        tokio::time::timeout_at(deadline, self.query_center_admitted(query))
+            .await
+            .map_err(|_| {
+                HistoryError::Unavailable(anyhow::anyhow!(
+                    "Notification history read timed out; refresh to try again"
+                ))
+            })?
+    }
+
+    async fn query_center_admitted(
+        &self,
+        query: super::center::CenterQuery,
+    ) -> Result<super::center::CenterPage, HistoryError> {
         let _mutation = self.mutations.lock().await;
         let (revision, active) = self.catalog_snapshot().await;
         query.validate_revision(&self.history_epoch, revision)?;
@@ -1059,6 +1077,47 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn center_waits_for_capacity_but_bounds_reads_and_releases_cancelled_owners() {
+        use super::HistoryError;
+        let engine = NotificationEngine::new(StateStore::default()).await;
+        let query = || serde_json::from_value(serde_json::json!({"view":"apps"})).unwrap();
+        let permits = engine.history_readers.acquire_many(2).await.unwrap();
+        let reader = Arc::clone(&engine);
+        let task = tokio::spawn(async move { reader.query_center(query()).await });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "brief contention should wait natively");
+        drop(permits);
+        assert!(task.await.unwrap().is_ok());
+        assert_eq!(engine.history_readers.available_permits(), 2);
+
+        let permits = engine.history_readers.acquire_many(2).await.unwrap();
+        assert!(matches!(
+            engine.query_center(query()).await,
+            Err(HistoryError::Busy)
+        ));
+        drop(permits);
+        let mutation = engine.mutations.lock().await;
+        assert!(matches!(
+            engine.query_center(query()).await,
+            Err(HistoryError::Unavailable(_))
+        ));
+        assert_eq!(
+            engine.history_readers.available_permits(),
+            2,
+            "deadline releases read admission"
+        );
+        let reader = Arc::clone(&engine);
+        let task = tokio::spawn(async move { reader.query_center(query()).await });
+        tokio::task::yield_now().await;
+        assert_eq!(engine.history_readers.available_permits(), 1);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(mutation);
+        assert_eq!(engine.history_readers.available_permits(), 2);
+        assert!(engine.query_center(query()).await.is_ok());
     }
 
     #[tokio::test]

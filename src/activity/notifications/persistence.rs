@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -309,9 +309,12 @@ fn persistence_worker(
                 epoch,
                 revision,
                 response,
-            } => reply(response, history_error.as_deref(), || {
-                store.center(&query, &active, &epoch, revision)
-            }),
+            } => reply_center(
+                &store.connection,
+                response,
+                history_error.as_deref(),
+                || store.center(&query, &active, &epoch, revision),
+            ),
             PersistenceCommand::Query {
                 query,
                 before,
@@ -367,6 +370,64 @@ fn reply<T>(
         None => read(),
     };
     let _ = response.send(result);
+}
+
+// Only catalog reads retry. Keep SQLite's normal five-second write busy timeout
+// outside this scope; short attempts plus backoff bound read-side contention.
+// A failed write poisons the revision boundary and must never be bypassed here.
+fn reply_center<T>(
+    connection: &Connection,
+    response: oneshot::Sender<Result<T>>,
+    history_error: Option<&str>,
+    read: impl FnMut() -> Result<T>,
+) {
+    if response.is_closed() {
+        return;
+    }
+    let result = match history_error {
+        Some(error) => Err(anyhow!("{error}")),
+        None => recover_center_read(connection, || response.is_closed(), read),
+    };
+    let _ = response.send(result);
+}
+
+fn recover_center_read<T>(
+    connection: &Connection,
+    cancelled: impl Fn() -> bool,
+    mut read: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    connection.busy_timeout(Duration::from_millis(50))?;
+    let result = (|| {
+        let mut delays = [Duration::from_millis(50), Duration::from_millis(100)].into_iter();
+        loop {
+            if cancelled() {
+                return Err(anyhow!("Notification history read cancelled"));
+            }
+            match read() {
+                Err(error) if transient_read_error(&error) => {
+                    let Some(delay) = delays.next() else {
+                        return Err(error);
+                    };
+                    std::thread::sleep(delay);
+                }
+                result => return result,
+            }
+        }
+    })();
+    let restored = connection.busy_timeout(Duration::from_secs(5));
+    let value = result?;
+    restored?;
+    Ok(value)
+}
+
+fn transient_read_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(code, _))
+                if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    })
 }
 
 struct NotificationStore {
@@ -835,6 +896,99 @@ mod tests {
     use super::{NotificationPersistence, NotificationStore, persistence_worker, reply};
     use crate::activity::notifications::model::ActiveNotification;
     use tokio::sync::{mpsc, oneshot};
+
+    #[test]
+    fn center_read_recovers_real_sqlite_contention_and_restores_write_timeout() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("history.db");
+        let store = NotificationStore::open(&path).unwrap();
+        store.save(&notification(7, false)).unwrap();
+        // DELETE journal mode permits a reproducible exclusive read blocker.
+        store
+            .connection
+            .execute_batch("PRAGMA journal_mode=DELETE")
+            .unwrap();
+        let blocker = rusqlite::Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let query = serde_json::from_value(serde_json::json!({"view":"apps"})).unwrap();
+        let mut attempts = 0;
+        let (response, mut receiver) = oneshot::channel();
+        super::reply_center(&store.connection, response, None, || {
+            attempts += 1;
+            let result = store.center(&query, &[], "epoch", 1);
+            if attempts == 1 {
+                assert!(super::transient_read_error(result.as_ref().unwrap_err()));
+                blocker.execute_batch("ROLLBACK").unwrap();
+            }
+            result
+        });
+        let super::CenterPage::Apps { apps, .. } = receiver.try_recv().unwrap().unwrap() else {
+            panic!("expected apps");
+        };
+        assert_eq!(attempts, 2);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].count, 1);
+        let timeout: u64 = store
+            .connection
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5_000);
+    }
+
+    #[test]
+    fn center_recovery_is_bounded_and_never_retries_permanent_or_poisoned_reads() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for (code, expected) in [
+            (rusqlite::ffi::SQLITE_BUSY, 3),
+            (rusqlite::ffi::SQLITE_LOCKED, 3),
+            (rusqlite::ffi::SQLITE_CORRUPT, 1),
+        ] {
+            let mut attempts = 0;
+            let result: anyhow::Result<()> = super::recover_center_read(
+                &connection,
+                || false,
+                || {
+                    attempts += 1;
+                    Err(anyhow::Error::new(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(code),
+                        None,
+                    ))
+                    .context("catalog read"))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(attempts, expected);
+        }
+        let (response, mut receiver) = oneshot::channel::<anyhow::Result<()>>();
+        super::reply_center(&connection, response, Some("prior write failed"), || {
+            panic!("must not read stale storage")
+        });
+        assert_eq!(
+            receiver.try_recv().unwrap().unwrap_err().to_string(),
+            "prior write failed"
+        );
+
+        let attempts = std::cell::Cell::new(0);
+        let result: anyhow::Result<()> = super::recover_center_read(
+            &connection,
+            || attempts.get() > 0,
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    None,
+                )
+                .into())
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(attempts.get(), 1);
+        let (response, receiver) = oneshot::channel::<anyhow::Result<()>>();
+        drop(receiver);
+        super::reply_center(&connection, response, None, || {
+            panic!("abandoned reads must not start")
+        });
+    }
 
     #[tokio::test]
     async fn retention_runs_on_writes_and_restart_without_losing_live_rows_or_ids() {
