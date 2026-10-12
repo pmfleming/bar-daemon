@@ -2,6 +2,7 @@
   description = "Status, policy, and action daemon for a Quickshell desktop bar";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+  inputs.updateWorker.url = "git+file:../update-daemon";
   # Co-development: one live sibling framework; no per-daemon revision pins.
   # Use ../daemon-framework/tools/local-build for Nix builds/checks.
   inputs.daemonFramework = {
@@ -14,6 +15,7 @@
       self,
       nixpkgs,
       daemonFramework,
+      updateWorker,
     }:
     let
       systems = [ "x86_64-linux" ];
@@ -45,6 +47,8 @@
             };
             postUnpack = ''
               cp -R --no-preserve=mode ${daemonFramework.lib.daemonSource pkgs} "$(dirname "$sourceRoot")/daemon-framework"
+              mkdir -p "$(dirname "$sourceRoot")/update-daemon/crates"
+              cp -R --no-preserve=mode ${updateWorker.lib.readinessSource pkgs} "$(dirname "$sourceRoot")/update-daemon/crates/shelllist-update-status"
             '';
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [

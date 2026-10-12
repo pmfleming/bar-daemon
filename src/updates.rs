@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use shelllist_update_status::{FILE_NAME, MAX_BYTES, Readiness};
 
 use crate::{
     model::{UpdateLane, UpdateState},
@@ -63,49 +64,53 @@ fn read_state(directory: &Path) -> Result<UpdateState> {
             ..UpdateState::default()
         });
     }
-    let lanes = ["delayed"]
-        .into_iter()
-        .map(|name| read_lane(directory, name))
-        .collect::<Vec<_>>();
+    let (lane, error) = match read_lane(directory, "delayed") {
+        Ok(lane) => (lane, None),
+        Err(error) => (
+            UpdateLane {
+                name: "delayed".into(),
+                ..Default::default()
+            },
+            Some(format!("Update readiness is unavailable: {error:#}")),
+        ),
+    };
     Ok(UpdateState {
         available: true,
-        ready: lanes.iter().any(|lane| lane.ready),
-        lanes,
+        ready: lane.ready,
+        lanes: vec![lane],
         jobs: jobs::read(directory),
         state_directory: directory_display(directory),
-        error: None,
+        error,
     })
 }
 
-fn read_lane(directory: &Path, name: &str) -> UpdateLane {
-    let lane = directory.join(name);
-    // Keep in sync with update-daemon's ready_is_complete predicate.
-    let required = [
-        "ready-flake.lock",
-        "ready-revision",
-        "ready-base-hash",
-        "ready-created-at",
-    ];
-    let ready =
-        required.iter().all(|file| lane.join(file).is_file()) && lane.join("system").is_symlink();
-    UpdateLane {
+fn read_lane(directory: &Path, name: &str) -> Result<UpdateLane> {
+    let bytes = shelllist_daemon_core::read_bytes_bounded(
+        &directory.join(name).join(FILE_NAME),
+        MAX_BYTES as u64,
+    )?
+    .context("readiness.json is missing; update-worker must publish its public status")?;
+    let record = Readiness::decode(&bytes)?;
+    let Some(candidate) = record.candidate else {
+        return Ok(UpdateLane {
+            name: name.into(),
+            ..Default::default()
+        });
+    };
+    // Check the path contained in this record, never the mutable legacy link.
+    ensure!(
+        std::fs::metadata(&candidate.system)?.is_dir(),
+        "Candidate system is not a directory"
+    );
+    Ok(UpdateLane {
         name: name.into(),
-        ready,
-        revision: read_trimmed(&lane.join("ready-revision")),
-        base_hash: read_trimmed(&lane.join("ready-base-hash")),
-        created_at: read_trimmed(&lane.join("ready-created-at"))
-            .and_then(|value| value.parse().ok()),
-        auto_apply: lane.join("auto-apply").exists(),
-        system: std::fs::read_link(lane.join("system"))
-            .ok()
-            .map(|path| directory_display(&path)),
-    }
-}
-
-fn read_trimmed(path: &Path) -> Option<String> {
-    let value = std::fs::read_to_string(path).ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
+        ready: true,
+        revision: Some(candidate.revision),
+        base_hash: Some(candidate.base_hash),
+        created_at: Some(candidate.created_at),
+        auto_apply: candidate.auto_apply,
+        system: Some(directory_display(&candidate.system)),
+    })
 }
 
 fn directory_display(path: &Path) -> String {
