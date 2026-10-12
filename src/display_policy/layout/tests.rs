@@ -157,6 +157,74 @@ impl Fixture {
     }
 }
 
+#[tokio::test]
+async fn real_preview_confirmation_and_rollback_match_control_fixtures() {
+    use crate::protocol::display_wire::{self, Failure};
+    let examples = crate::display_policy::contract_examples::states();
+    let wire = crate::protocol::display_contract_fixture().await;
+    for confirm in [true, false] {
+        let mut f = Fixture::new();
+        let proposed = examples["preview"]
+            .layout
+            .trial
+            .as_ref()
+            .unwrap()
+            .proposed
+            .clone();
+        let document = f.preview(proposed).await.unwrap();
+        let id = document.trial.as_ref().unwrap().id.clone();
+        let mut state = examples["initial"].clone();
+        state.layout = document;
+        state.outputs = f.backend.outputs().await.unwrap();
+        let response = display_wire::reply(Ok(state.clone()), Failure::Layout);
+        let expected =
+            &wire["replies"]["displayLayout.preview"]["success"]["data"]["display_policy"];
+        assert_eq!(
+            response["data"]["display_policy"]["outputs"],
+            expected["outputs"]
+        );
+        assert_eq!(
+            response["data"]["display_policy"]["layout"]["trial"]["proposed"],
+            expected["layout"]["trial"]["proposed"]
+        );
+        assert_eq!(
+            response["data"]["display_policy"]["layout"]["trial"]["previous"],
+            expected["layout"]["trial"]["previous"]
+        );
+        let calls = f.backend.calls.borrow().len();
+        let stale = f.finish("wrong-token", confirm).await.unwrap_err();
+        assert_eq!(
+            f.backend.calls.borrow().len(),
+            calls,
+            "stale tokens cannot mutate the compositor"
+        );
+        let error = display_wire::reply(Err(stale), Failure::Layout);
+        assert_eq!(error["error"]["code"], "display-layout-failed");
+        assert!(error.get("data").is_none());
+        state.layout = f.finish(&id, confirm).await.unwrap();
+        state.outputs = f.backend.outputs().await.unwrap();
+        let response = display_wire::reply(Ok(state), Failure::Layout);
+        let method = if confirm {
+            "displayLayout.confirm"
+        } else {
+            "displayLayout.revert"
+        };
+        let expected = &wire["replies"][method]["success"]["data"]["display_policy"];
+        assert_eq!(
+            response["data"]["display_policy"]["outputs"],
+            expected["outputs"]
+        );
+        assert_eq!(
+            response["data"]["display_policy"]["layout"],
+            expected["layout"]
+        );
+        assert_eq!(
+            f.backend.calls.borrow().len(),
+            if confirm { calls } else { calls + 1 }
+        );
+    }
+}
+
 #[test]
 fn layout_commands_map_domain_values_to_shared_monitor_rules() {
     use shelllist_hyprland::monitor::{self, Mode, Position, Rule};

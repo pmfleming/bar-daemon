@@ -49,6 +49,36 @@ fn fake() -> Fake {
         ..Default::default()
     }
 }
+#[tokio::test]
+async fn verified_focus_change_and_reset_match_control_fixtures() {
+    use crate::protocol::display_wire::{self, Failure};
+    let examples = crate::display_policy::contract_examples::states();
+    let fixture = crate::protocol::display_contract_fixture().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("focus.json");
+    let store = StateStore::default();
+    let backend = fake();
+    *backend.values.borrow_mut() = examples["initial"].focus.values.clone();
+    for (method, patch) in [
+        (
+            "displayFocus.set",
+            Some(examples["focus"].focus.saved.clone()),
+        ),
+        ("displayFocus.reset", None),
+    ] {
+        let focus = change(&backend, patch, &store, &path).await.unwrap();
+        let state = super::super::DisplayPolicyState {
+            focus,
+            ..examples["initial"].clone()
+        };
+        assert_eq!(
+            display_wire::reply(Ok(state), Failure::Focus),
+            fixture["replies"][method]["success"]
+        );
+    }
+    assert_eq!(backend.calls.borrow().len(), 2);
+}
+
 #[test]
 fn closed_schema_rejects_unknown_keys_commands_types_and_ranges() {
     for input in [

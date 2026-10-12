@@ -9,44 +9,14 @@ use crate::{
         self, DeltaRequest, EnabledRequest, MuteRequest, PercentRequest, ProfileActionRequest,
         ProfileRequest,
     },
+    protocol::display_wire::{self, Failure as DisplayFailure},
     protocol::sleep_wire::{self, Action, Failure, IdleRequest, KeepAwakeRequest},
     sleep,
     state::StateStore,
     updates,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
-
-/// Preserve each method's field/error code while sharing envelope construction.
-fn state_response<T: Serialize, E: std::fmt::Display>(
-    field: &str,
-    code: &str,
-    result: Result<T, E>,
-) -> Value {
-    match result {
-        Ok(state) => success(json!({field: state})),
-        Err(error_value) => error(code, format!("{error_value:#}")),
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn state_response_preserves_fields_codes_and_error_chains() {
-    let ok: anyhow::Result<u8> = Ok(42);
-    assert_eq!(
-        state_response("audio", "unused", ok),
-        success(json!({"audio": 42}))
-    );
-    let failed: anyhow::Result<()> = Err(anyhow::anyhow!("cause").context("context"));
-    assert_eq!(
-        state_response("audio", "audio-failed", failed),
-        error("audio-failed", "context: cause")
-    );
-    assert_eq!(
-        state_response::<(), _>("audio", "audio-failed", Err("plain")),
-        error("audio-failed", "plain")
-    );
-}
 
 #[derive(Deserialize)]
 struct MediaRequest {
@@ -109,12 +79,12 @@ impl DesktopEffects {
 
     pub(super) async fn display_layout(&self, method: &str, params: Value) -> Value {
         let result = crate::display_policy::layout_action(method, params, &self.state).await;
-        state_response("display_policy", "display-layout-failed", result)
+        display_wire::reply(result, DisplayFailure::Layout)
     }
 
     pub(super) async fn display_focus(&self, method: &str, params: Value) -> Value {
         let result = crate::display_policy::focus::action(method, params, &self.state).await;
-        state_response("display_policy", "display-focus-failed", result)
+        display_wire::reply(result, DisplayFailure::Focus)
     }
 
     pub(super) async fn display_policy_set(&self, params: Value) -> Value {
@@ -124,7 +94,7 @@ impl DesktopEffects {
             "displayPolicy.set"
         );
         let result = crate::display_policy::set(policy, &self.state).await;
-        state_response("display_policy", "display-policy-failed", result)
+        display_wire::reply(result, DisplayFailure::Policy)
     }
 
     pub(super) async fn sleep_policy_set(&self, params: Value) -> Value {

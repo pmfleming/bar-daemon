@@ -48,6 +48,7 @@ enum DebugCommand {
     ReadContractFixture,
     ControlContractFixture,
     SleepContractFixture,
+    DisplayContractFixture,
     /// Read kernel/swap/ThinkPad sleep evidence without initiating sleep.
     SleepDiagnostics,
     /// Observe compositor lock confirmation without requesting a lock or sleep.
@@ -80,6 +81,7 @@ async fn main() -> Result<()> {
                 DebugCommand::ReadContractFixture => protocol::read_contract_fixture().await?,
                 DebugCommand::ControlContractFixture => protocol::control_contract_fixture(),
                 DebugCommand::SleepContractFixture => protocol::sleep_contract_fixture().await,
+                DebugCommand::DisplayContractFixture => protocol::display_contract_fixture().await,
                 DebugCommand::SleepDiagnostics => bar_daemon::sleep_diagnostics(),
                 DebugCommand::LockState => bar_daemon::inspect_lock().await?,
             };

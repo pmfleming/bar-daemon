@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 
 mod control_fixtures;
 pub(crate) mod control_wire;
+mod display_fixtures;
+pub(crate) mod display_wire;
 mod read_fixtures;
 pub(crate) mod read_wire;
 mod sleep_fixtures;
@@ -20,6 +22,11 @@ pub fn control_contract_fixture() -> Value {
 /// Offline sleep replies and events produced by the live outcome tracker and serializers.
 pub async fn sleep_contract_fixture() -> Value {
     sleep_fixtures::fixture().await
+}
+
+/// Offline display transaction request/reply and state publication examples.
+pub async fn display_contract_fixture() -> Value {
+    display_fixtures::fixture().await
 }
 
 /// Stable protocol family name.

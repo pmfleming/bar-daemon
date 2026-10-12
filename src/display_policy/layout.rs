@@ -423,7 +423,7 @@ async fn apply_setting<B: Backend>(
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Preview {
     pub baseline: String,

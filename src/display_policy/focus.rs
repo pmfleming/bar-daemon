@@ -4,6 +4,7 @@
 use super::{HyprlandClient, POLICY_WRITE, ensure_enabled, layout};
 use crate::{
     paths::{data_file, load_json_or_default, save_json_atomic},
+    protocol::display_wire::{Empty, Patch},
     state::StateStore,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -62,14 +63,6 @@ struct Document {
     saved: Values,
     previous: Values,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Patch {
-    values: Values,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Empty {}
 
 fn kind(key: &str) -> Result<Kind> {
     OPTIONS

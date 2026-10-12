@@ -17,6 +17,7 @@ use crate::{
 };
 use planner::{Output, Planner};
 
+pub(crate) mod contract_examples;
 pub(crate) mod focus;
 pub(crate) mod layout;
 mod planner;
@@ -104,12 +105,7 @@ pub(crate) async fn layout_action(
         if action == "displayLayout.preview" {
             layout::preview(&backend, serde_json::from_value(params)?, store).await
         } else {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Token {
-                id: String,
-            }
-            let token: Token = serde_json::from_value(params)?;
+            let token: crate::protocol::display_wire::Token = serde_json::from_value(params)?;
             layout::finish(
                 &backend,
                 &token.id,
