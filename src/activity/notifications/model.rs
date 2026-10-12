@@ -99,6 +99,15 @@ pub(crate) struct ActiveNotification {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct DeleteConfirmation {
+    pub token: String,
+    pub count: usize,
+    pub app_key: Option<String>,
+    pub selected: Option<super::history::Position>,
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct HistoryNotification {
     pub history_id: i64,
     pub notification: ActiveNotification,

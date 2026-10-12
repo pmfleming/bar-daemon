@@ -98,12 +98,12 @@ async fn confirmed_delete_removes_saved_and_active_records_but_not_arrivals_or_a
         .prepare_delete(Some("desktop:chat".into()), None)
         .await
         .unwrap();
-    assert_eq!(challenge["count"], 2);
+    assert_eq!(challenge.count, 2);
     let arrival = engine
         .notify(0, incoming("chat", "After confirmation"))
         .await
         .unwrap();
-    let token = challenge["token"].as_str().unwrap().to_owned();
+    let token = challenge.token;
     assert_eq!(engine.delete_confirmed(token.clone()).await.unwrap(), 2);
     assert!(
         engine.delete_confirmed(token).await.is_err(),
@@ -160,7 +160,7 @@ async fn cancelled_confirmation_and_single_record_identity_are_safe() {
     let engine = NotificationEngine::new(StateStore::default()).await;
     let id = engine.notify(0, incoming("chat", "Message")).await.unwrap();
     let challenge = engine.prepare_delete(None, None).await.unwrap();
-    let token = challenge["token"].as_str().unwrap();
+    let token = challenge.token.as_str();
     engine.cancel_delete(token).await;
     assert!(engine.delete_confirmed(token.into()).await.is_err());
     assert_eq!(engine.active().await.len(), 1);
@@ -187,13 +187,7 @@ async fn cancelled_confirmation_and_single_record_identity_are_safe() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        engine
-            .delete_confirmed(challenge["token"].as_str().unwrap().into())
-            .await
-            .unwrap(),
-        1
-    );
+    assert_eq!(engine.delete_confirmed(challenge.token).await.unwrap(), 1);
     assert!(engine.active().await.is_empty());
 }
 
@@ -217,11 +211,8 @@ async fn delete_includes_retained_records_older_than_the_search_window() {
         .prepare_delete(Some("desktop:chat".into()), None)
         .await
         .unwrap();
-    assert_eq!(challenge["count"], 5005);
-    engine
-        .delete_confirmed(challenge["token"].as_str().unwrap().into())
-        .await
-        .unwrap();
+    assert_eq!(challenge.count, 5005);
+    engine.delete_confirmed(challenge.token).await.unwrap();
     assert!(
         engine.history(None, 100).await.unwrap().is_empty(),
         "older records must not reappear after deleting the visible search window"

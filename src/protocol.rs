@@ -4,6 +4,8 @@ mod control_fixtures;
 pub(crate) mod control_wire;
 mod display_fixtures;
 pub(crate) mod display_wire;
+mod notification_fixtures;
+pub(crate) mod notification_wire;
 mod read_fixtures;
 pub(crate) mod read_wire;
 mod sleep_fixtures;
@@ -27,6 +29,11 @@ pub async fn sleep_contract_fixture() -> Value {
 /// Offline display transaction request/reply and state publication examples.
 pub async fn display_contract_fixture() -> Value {
     display_fixtures::fixture().await
+}
+
+/// Offline notification mutation request/reply and event examples.
+pub async fn notification_contract_fixture() -> Value {
+    notification_fixtures::fixture().await
 }
 
 /// Stable protocol family name.

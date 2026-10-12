@@ -335,7 +335,7 @@ impl NotificationEngine {
         &self,
         app_key: Option<String>,
         selected: Option<history::Position>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<super::model::DeleteConfirmation> {
         anyhow::ensure!(
             app_key
                 .as_ref()
@@ -376,9 +376,13 @@ impl NotificationEngine {
         );
         data.delete_tickets
             .insert(token.clone(), (expires, records));
-        Ok(
-            serde_json::json!({"token":token, "count":count, "app_key":app_key, "selected":selected, "expires_unix_ms":expires}),
-        )
+        Ok(super::model::DeleteConfirmation {
+            token,
+            count,
+            app_key,
+            selected,
+            expires_unix_ms: expires,
+        })
     }
 
     pub(crate) async fn cancel_delete(&self, token: &str) {
