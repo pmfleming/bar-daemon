@@ -8,8 +8,7 @@ use zbus::{message::Header, object_server::SignalEmitter};
 
 use crate::{
     api::{self, ApiService},
-    model::BarSnapshot,
-    protocol,
+    protocol::{self, read_wire::Event},
     state::StateStore,
 };
 
@@ -108,8 +107,11 @@ async fn forward_events(
         .then(|| state.work_area_interest());
     let (snapshot, events) = state.snapshot_and_subscribe().await;
     for stream in &streams {
-        let data = initial_stream_data(stream, &snapshot);
-        emit_event(&emitter, stream, "subscribed", &subscription_id, data).await;
+        emit_event(
+            &emitter,
+            Event::subscribed(stream, &subscription_id, &snapshot),
+        )
+        .await;
     }
     forward_broadcast(events, |update| {
         let (emitter, subscription_id, streams) = (&emitter, &subscription_id, &streams);
@@ -118,26 +120,12 @@ async fn forward_events(
                 BroadcastEvent::Item(event)
                     if streams.iter().any(|stream| stream == &event.stream) =>
                 {
-                    emit_event(
-                        emitter,
-                        &event.stream,
-                        "changed",
-                        subscription_id,
-                        event.data,
-                    )
-                    .await;
+                    emit_event(emitter, Event::changed(subscription_id, event)).await;
                 }
                 BroadcastEvent::Item(_) => {}
                 BroadcastEvent::Lagged(count) => {
                     for stream in streams {
-                        emit_event(
-                            emitter,
-                            stream,
-                            "lagged",
-                            subscription_id,
-                            json!({ "missed": count }),
-                        )
-                        .await;
+                        emit_event(emitter, Event::lagged(stream, subscription_id, count)).await;
                     }
                 }
             }
@@ -146,69 +134,16 @@ async fn forward_events(
     .await;
 }
 
-fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
-    match stream {
-        protocol::stream::ACTIVITY => serde_json::to_value(&snapshot.activity),
-        protocol::stream::WORKAREA => serde_json::to_value(&snapshot.workarea),
-        protocol::stream::COMPOSITOR => serde_json::to_value(&snapshot.compositor),
-        protocol::stream::WORKSPACES => serde_json::to_value(&snapshot.workspaces),
-        protocol::stream::MEDIA => serde_json::to_value(&snapshot.media),
-        protocol::stream::AUDIO => serde_json::to_value(&snapshot.audio),
-        protocol::stream::BRIGHTNESS => serde_json::to_value(&snapshot.brightness),
-        protocol::stream::BATTERY => serde_json::to_value(&snapshot.battery),
-        protocol::stream::POWER_PROFILE => serde_json::to_value(&snapshot.power_profile),
-        protocol::stream::POWER_SLEEP => serde_json::to_value(&snapshot.power_sleep),
-        protocol::stream::SLEEP_POLICY => serde_json::to_value(&snapshot.sleep_policy),
-        protocol::stream::DISPLAY_POLICY => serde_json::to_value(&snapshot.display_policy),
-        protocol::stream::OSD_HARDWARE => serde_json::to_value(&snapshot.osd_hardware),
-        protocol::stream::NOTIFICATIONS => serde_json::to_value(&snapshot.notifications),
-        protocol::stream::NOTIFICATION_ACTIVE => {
-            serde_json::to_value(&snapshot.notification_active)
-        }
-        protocol::stream::UPDATES => serde_json::to_value(&snapshot.updates),
-        protocol::stream::TIMEZONE => serde_json::to_value(&snapshot.timezone),
-        _ => return Value::Null,
-    }
-    .unwrap_or(Value::Null)
-}
-
-async fn emit_event(
-    emitter: &SignalEmitter<'_>,
-    stream: &str,
-    event: &str,
-    subscription_id: &str,
-    data: Value,
-) {
-    let result = shelllist_daemon_tokio::emit_json_event(
-        emitter,
-        api::INTERFACE,
-        shelllist_daemon_core::ApiIdentity::new(protocol::NAME, protocol::VERSION as u32),
-        stream,
-        event,
-        shelllist_daemon_core::Correlation::Subscription(subscription_id),
-        json!({ "data": data }),
-    )
-    .await;
-    if let Err(error) = result {
+async fn emit_event(emitter: &SignalEmitter<'_>, event: Event) {
+    let stream = event.stream();
+    if let Err(error) = emitter
+        .emit(
+            api::INTERFACE,
+            "Event",
+            &(stream, event.value().to_string()),
+        )
+        .await
+    {
         tracing::warn!(%stream, %error, "bar-api event could not be emitted");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{model::BarSnapshot, protocol};
-
-    use super::initial_stream_data;
-
-    #[test]
-    fn initial_subscription_includes_current_domain_state() {
-        let data = initial_stream_data(protocol::stream::WORKSPACES, &BarSnapshot::default());
-        assert_eq!(data["available"], false);
-        let mut snapshot = BarSnapshot::default();
-        snapshot.compositor.available = true;
-        snapshot.compositor.animations_enabled = Some(false);
-        let data = initial_stream_data(protocol::stream::COMPOSITOR, &snapshot);
-        assert_eq!(data["available"], true);
-        assert_eq!(data["animations_enabled"], false);
     }
 }

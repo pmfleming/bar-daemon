@@ -1,5 +1,13 @@
 use serde_json::{Value, json};
 
+mod read_fixtures;
+pub(crate) mod read_wire;
+
+/// Read-only snapshot and event examples generated through live serialization paths.
+pub async fn read_contract_fixture() -> anyhow::Result<Value> {
+    read_fixtures::fixture().await
+}
+
 /// Stable protocol family name.
 pub const NAME: &str = "bar-api";
 /// Current protocol contract version.

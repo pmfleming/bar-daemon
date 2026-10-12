@@ -7,7 +7,7 @@ use crate::{
     state::StateStore,
 };
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
 use shelllist_daemon_core::{ApiError as EnvelopeError, ApiIdentity};
 
 macro_rules! request {
@@ -85,7 +85,7 @@ impl ApiService {
 
     pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
         match method {
-            "bar.snapshot" => success(json!({ "snapshot": self.state.snapshot().await })),
+            "bar.snapshot" => protocol::read_wire::snapshot(&self.state.snapshot().await),
             "activity.queryRange" => self.activity.activity_query_range(params).await,
             "activity.refresh" => self.activity.activity_refresh().await,
             "todos.create" => self.activity.todo_create(params).await,
