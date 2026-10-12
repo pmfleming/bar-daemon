@@ -209,6 +209,59 @@ impl Tracker {
     }
 }
 
+/// Offline examples run the actual transitions on an isolated tracker, never TRACKER.
+pub(crate) fn contract_operations(action: &str) -> Vec<(String, SleepOperation)> {
+    assert!(!service(action).is_empty());
+    let tracker = Tracker::default();
+    let capture = |name: &str| (name.to_owned(), tracker.state.borrow().operation.clone());
+    tracker.begin(action);
+    let mut examples = vec![capture("requested")];
+    tracker.dispatching();
+    examples.push(capture("dispatching"));
+    tracker.accepted();
+    examples.push(capture("accepted"));
+    tracker.job_new("/org/freedesktop/systemd1/job/42", service(action));
+    tracker.prepared(true);
+    examples.push(capture("preparing"));
+    tracker.prepared(false);
+    examples.push(capture("returned"));
+    tracker.job_removed("/org/freedesktop/systemd1/job/42", service(action), "done");
+    examples.push(capture("completed"));
+
+    tracker.begin(action);
+    tracker.dispatching();
+    tracker.job_new("/org/freedesktop/systemd1/job/43", service(action));
+    tracker.job_removed(
+        "/org/freedesktop/systemd1/job/43",
+        service(action),
+        "failed",
+    );
+    examples.push(capture("job-failed"));
+    tracker.begin(action);
+    tracker.finish_preflight_error(&anyhow::anyhow!(
+        "Keep awake is enabled; turn it off before sleeping"
+    ));
+    examples.push(capture("preflight-failed"));
+    tracker.begin(action);
+    drop(tracker.cancellation_guard());
+    examples.push(capture("cancelled-before-dispatch"));
+    tracker.begin(action);
+    let guard = tracker.cancellation_guard();
+    tracker.dispatching();
+    drop(guard);
+    examples.push(capture("interrupted-dispatch"));
+    tracker.begin(action);
+    tracker.dispatching();
+    tracker.accepted();
+    tracker.lost_monitor("Sleep outcome monitor unavailable; outcome unknown");
+    examples.push(capture("monitor-lost"));
+    tracker.begin(action);
+    tracker.dispatching();
+    tracker.failed("logind reply lost; outcome unknown".into(), true);
+    examples.push(capture("reply-lost"));
+    examples
+}
+
 pub(super) async fn monitor(store: StateStore) {
     tokio::join!(
         async {

@@ -9,6 +9,7 @@ use crate::{
         self, DeltaRequest, EnabledRequest, MuteRequest, PercentRequest, ProfileActionRequest,
         ProfileRequest,
     },
+    protocol::sleep_wire::{self, Action, Failure, IdleRequest, KeepAwakeRequest},
     sleep,
     state::StateStore,
     updates,
@@ -88,32 +89,21 @@ impl DesktopEffects {
         }
     }
 
-    pub(super) async fn power_sleep_action(&self, action: &str) -> Value {
-        match sleep::perform(action).await {
-            Ok(state) => {
-                self.state.update_power_sleep(state).await;
-                success(
-                    json!({"power_sleep": self.state.read(|s| json!(&s.power_sleep)).await, "operation": action}),
-                )
-            }
-            Err(value) => error("power-sleep-operation-failed", format!("{value:#}")),
+    pub(super) async fn power_sleep_action(&self, action: Action) -> Value {
+        match sleep::perform(action.as_str()).await {
+            Ok(state) => sleep_wire::publish(&self.state, state, Some(action)).await,
+            Err(value) => Failure::Operation.reply(&value),
         }
     }
     async fn publish_sleep(&self, state: crate::model::PowerSleepState) -> Value {
-        self.state.update_power_sleep(state).await;
-        success(json!({"power_sleep": self.state.read(|s| json!(&s.power_sleep)).await}))
+        sleep_wire::publish(&self.state, state, None).await
     }
 
     pub(super) async fn set_keep_awake(&self, params: Value) -> Value {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct KeepAwakeRequest {
-            enabled: bool,
-        }
         let request = request!(params, KeepAwakeRequest, "powerSleep.setKeepAwake");
         match sleep::set_keep_awake(request.enabled).await {
             Ok(state) => self.publish_sleep(state).await,
-            Err(value) => error("keep-awake-failed", format!("{value:#}")),
+            Err(value) => Failure::KeepAwake.reply(&value),
         }
     }
 
@@ -144,7 +134,7 @@ impl DesktopEffects {
             "powerSleep.setPolicy"
         );
         let result = crate::sleep_policy::set(policy, &self.state).await;
-        state_response("sleep_policy", "sleep-policy-failed", result)
+        sleep_wire::policy_result(result, Failure::Policy)
     }
 
     pub(super) async fn set_critical_battery(&self, params: Value) -> Value {
@@ -154,26 +144,21 @@ impl DesktopEffects {
             "powerSleep.setCriticalPolicy"
         );
         let result = crate::sleep_policy::critical::set_policy(policy, &self.state).await;
-        state_response("sleep_policy", "critical-battery-policy-failed", result)
+        sleep_wire::policy_result(result, Failure::CriticalPolicy)
     }
 
     pub(super) async fn cancel_critical_battery(&self) -> Value {
         match crate::sleep_policy::critical::cancel(&self.state).await {
             Ok(_) => {
-                success(json!({"sleep_policy": self.state.read(|s| json!(&s.sleep_policy)).await}))
+                self.state
+                    .read(|s| sleep_wire::policy(&s.sleep_policy))
+                    .await
             }
-            Err(error) => super::error("critical-battery-cancel-failed", format!("{error:#}")),
+            Err(error) => Failure::CriticalCancel.reply(&error),
         }
     }
 
     pub(super) async fn idle_sleep(&self, params: Value) -> Value {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct IdleRequest {
-            sleep_minutes: u32,
-            generation: String,
-            episode: u64,
-        }
         let request = request!(params, IdleRequest, "powerSleep.idle");
         match crate::sleep_policy::idle_sleep(
             request.sleep_minutes,
@@ -184,7 +169,7 @@ impl DesktopEffects {
         .await
         {
             Ok(state) => self.publish_sleep(state).await,
-            Err(value) => error("automatic-sleep-failed", format!("{value:#}")),
+            Err(value) => Failure::Automatic.reply(&value),
         }
     }
 

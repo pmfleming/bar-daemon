@@ -116,9 +116,21 @@ impl ApiService {
             "powerProfile.setActionEnabled" => {
                 self.effects.power_profile_set_action_enabled(params).await
             }
-            "powerSleep.lock" => self.effects.power_sleep_action("lock").await,
-            "powerSleep.suspend" => self.effects.power_sleep_action("suspend").await,
-            "powerSleep.hibernate" => self.effects.power_sleep_action("hibernate").await,
+            "powerSleep.lock" => {
+                self.effects
+                    .power_sleep_action(crate::protocol::sleep_wire::Action::Lock)
+                    .await
+            }
+            "powerSleep.suspend" => {
+                self.effects
+                    .power_sleep_action(crate::protocol::sleep_wire::Action::Suspend)
+                    .await
+            }
+            "powerSleep.hibernate" => {
+                self.effects
+                    .power_sleep_action(crate::protocol::sleep_wire::Action::Hibernate)
+                    .await
+            }
             "powerSleep.setKeepAwake" => self.effects.set_keep_awake(params).await,
             "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
             "powerSleep.idle" => self.effects.idle_sleep(params).await,

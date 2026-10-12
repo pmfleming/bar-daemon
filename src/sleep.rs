@@ -10,6 +10,7 @@ pub(crate) mod diagnostics;
 mod keep_awake;
 mod monitoring;
 mod outcome;
+pub(crate) use outcome::contract_operations;
 mod resume;
 mod wayland_lock;
 

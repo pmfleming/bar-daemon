@@ -4,6 +4,8 @@ mod control_fixtures;
 pub(crate) mod control_wire;
 mod read_fixtures;
 pub(crate) mod read_wire;
+mod sleep_fixtures;
+pub(crate) mod sleep_wire;
 
 /// Read-only snapshot and event examples generated through live serialization paths.
 pub async fn read_contract_fixture() -> anyhow::Result<Value> {
@@ -13,6 +15,11 @@ pub async fn read_contract_fixture() -> anyhow::Result<Value> {
 /// Offline audio, brightness and power-profile action request/reply examples.
 pub fn control_contract_fixture() -> Value {
     control_fixtures::fixture()
+}
+
+/// Offline sleep replies and events produced by the live outcome tracker and serializers.
+pub async fn sleep_contract_fixture() -> Value {
+    sleep_fixtures::fixture().await
 }
 
 /// Stable protocol family name.

@@ -311,9 +311,7 @@ pub(crate) async fn cancel(store: &StateStore) -> Result<State> {
     let phase = store
         .read(|s| s.sleep_policy.critical_battery.phase.clone())
         .await;
-    if !matches!(phase.as_str(), "countdown" | "acting") {
-        bail!("no critical battery countdown is pending");
-    }
+    let state = cancellation_state(&phase)?;
     let token = CANCELLATION.fetch_add(1, Ordering::SeqCst) + 1;
     let policy = super::load().await?.critical_battery;
     // Invalidate first, then persist: cancellation never waits for the policy
@@ -326,15 +324,21 @@ pub(crate) async fn cancel(store: &StateStore) -> Result<State> {
         token,
     )
     .await?;
-    let state = State {
+    store.update_critical_battery(state.clone()).await;
+    Ok(state)
+}
+
+pub(crate) fn cancellation_state(phase: &str) -> Result<State> {
+    if !matches!(phase, "countdown" | "acting") {
+        bail!("no critical battery countdown is pending");
+    }
+    Ok(State {
         phase: "cancelled".into(),
         error: Some(
             "Cancellation requested. An already dispatched sleep request cannot be undone.".into(),
         ),
         ..Default::default()
-    };
-    store.update_critical_battery(state.clone()).await;
-    Ok(state)
+    })
 }
 
 pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) {
@@ -481,6 +485,23 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::{Engine, Policy, Recovery, Sample};
+
+    #[test]
+    fn cancellation_acknowledges_only_an_attempt_not_undoing_dispatched_sleep() {
+        for phase in ["countdown", "acting"] {
+            let state = super::cancellation_state(phase).unwrap();
+            assert_eq!(state.phase, "cancelled");
+            assert_eq!(state.remaining_seconds, 0);
+            assert!(state.error.unwrap().contains("cannot be undone"));
+        }
+        for phase in ["", "armed", "cancelled", "disabled", "failed"] {
+            assert_eq!(
+                super::cancellation_state(phase).unwrap_err().to_string(),
+                "no critical battery countdown is pending"
+            );
+        }
+    }
+
     fn low() -> Option<Sample> {
         Some(Sample {
             percent: 4.0,
