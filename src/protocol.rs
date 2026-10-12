@@ -1,11 +1,18 @@
 use serde_json::{Value, json};
 
+mod control_fixtures;
+pub(crate) mod control_wire;
 mod read_fixtures;
 pub(crate) mod read_wire;
 
 /// Read-only snapshot and event examples generated through live serialization paths.
 pub async fn read_contract_fixture() -> anyhow::Result<Value> {
     read_fixtures::fixture().await
+}
+
+/// Offline audio, brightness and power-profile action request/reply examples.
+pub fn control_contract_fixture() -> Value {
+    control_fixtures::fixture()
 }
 
 /// Stable protocol family name.

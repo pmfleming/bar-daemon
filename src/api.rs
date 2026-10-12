@@ -49,7 +49,7 @@ fn unsupported_method(method: &str) -> Value {
     )
 }
 
-fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {
+pub(crate) fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {
     serde_json::from_value(params).map_err(|value| {
         error(
             "validation-error",

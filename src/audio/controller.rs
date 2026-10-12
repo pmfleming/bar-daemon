@@ -134,6 +134,32 @@ mod tests {
     use crate::{model::AudioState, state::StateStore};
     use tokio::sync::oneshot;
 
+    #[tokio::test]
+    async fn failed_readback_preserves_state_and_uses_the_control_error_contract() {
+        let state = StateStore::default();
+        let before = AudioState {
+            available: true,
+            volume_percent: 40,
+            ..Default::default()
+        };
+        state.update_audio(before.clone()).await;
+        let mut events = state.subscribe();
+        let (reply, response) = oneshot::channel();
+        let mut commands = [(AudioCommand::SetMuted(None), Some(reply))];
+        publish_audio_result(
+            &state,
+            &mut commands,
+            Err("PipeWire disconnected before readback".into()),
+        )
+        .await;
+        assert_eq!(
+            crate::protocol::control_wire::audio(response.await.unwrap()),
+            crate::protocol::control_contract_fixture()["audio.setMuted"]["failed"]
+        );
+        assert_eq!(state.snapshot().await.audio, before);
+        assert!(events.try_recv().is_err());
+    }
+
     #[test]
     fn coalesces_queued_repeats_without_reordering_mutes_or_direction_changes() {
         let commands = [

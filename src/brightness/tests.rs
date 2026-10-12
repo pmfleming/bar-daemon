@@ -41,6 +41,27 @@ fn fail_direct_write(path: &Path) {
     fs::create_dir(path.join("brightness")).unwrap();
 }
 
+#[tokio::test]
+async fn control_reply_uses_real_quantized_readback_and_rejection_keeps_committed_state() {
+    let (_root, service, _) = fixture(1, 3);
+    let mut events = service.state.subscribe();
+    let response = crate::protocol::control_wire::brightness(service.set(65).await);
+    assert_eq!(
+        response,
+        crate::protocol::control_contract_fixture()["brightness.set"]["limited"]
+    );
+    assert_eq!(
+        response["data"]["brightness"],
+        events.recv().await.unwrap().data
+    );
+    let before = service.state.snapshot().await.brightness;
+    let rejected = crate::protocol::control_wire::brightness(service.set(0).await);
+    assert_eq!(rejected["error"]["code"], "brightness-operation-failed");
+    assert!(rejected.get("data").is_none());
+    assert_eq!(service.state.snapshot().await.brightness, before);
+    assert!(events.try_recv().is_err());
+}
+
 #[test]
 fn discovery_skips_bad_devices_but_reports_a_completely_unusable_root() {
     let root = tempdir().unwrap();

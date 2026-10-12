@@ -4,7 +4,12 @@ use crate::{
     brightness::BrightnessService,
     hyprland::HyprlandClient,
     media::MediaService,
-    power, sleep,
+    power,
+    protocol::control_wire::{
+        self, DeltaRequest, EnabledRequest, MuteRequest, PercentRequest, ProfileActionRequest,
+        ProfileRequest,
+    },
+    sleep,
     state::StateStore,
     updates,
 };
@@ -40,38 +45,6 @@ fn state_response_preserves_fields_codes_and_error_chains() {
         state_response::<(), _>("audio", "audio-failed", Err("plain")),
         error("audio-failed", "plain")
     );
-}
-
-#[derive(Deserialize)]
-struct ProfileRequest {
-    profile: String,
-}
-
-#[derive(Deserialize)]
-struct EnabledRequest {
-    enabled: bool,
-}
-
-#[derive(Deserialize)]
-struct ProfileActionRequest {
-    action: String,
-    enabled: bool,
-}
-
-#[derive(Deserialize)]
-struct DeltaRequest {
-    delta_percent: i16,
-}
-
-#[derive(Deserialize)]
-struct PercentRequest {
-    percent: u8,
-}
-
-#[derive(Deserialize)]
-struct MuteRequest {
-    #[serde(default)]
-    muted: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -251,24 +224,19 @@ impl DesktopEffects {
         &self,
         value: anyhow::Result<crate::model::PowerProfileState>,
     ) -> Value {
-        match value {
-            Ok(state) => {
-                let response = success(json!({"power_profile": state}));
-                self.state.update_power_profile(state).await;
-                response
-            }
-            Err(value) => error("power-profile-operation-failed", value.to_string()),
+        let response = control_wire::power_profile(&value);
+        if let Ok(state) = value {
+            self.state.update_power_profile(state).await;
         }
+        response
     }
     pub(super) async fn brightness_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "brightness.adjust");
-        let result = self.brightness.adjust(request.delta_percent).await;
-        state_response("brightness", "brightness-operation-failed", result)
+        control_wire::brightness(self.brightness.adjust(request.delta_percent).await)
     }
     pub(super) async fn brightness_set(&self, params: Value) -> Value {
         let request = request!(params, PercentRequest, "brightness.set");
-        let result = self.brightness.set(request.percent).await;
-        state_response("brightness", "brightness-operation-failed", result)
+        control_wire::brightness(self.brightness.set(request.percent).await)
     }
     pub(super) async fn audio_adjust(&self, params: Value) -> Value {
         let request = request!(params, DeltaRequest, "audio.adjust");
@@ -286,8 +254,7 @@ impl DesktopEffects {
             .await
     }
     async fn apply_audio(&self, command: AudioCommand) -> Value {
-        let result = self.audio.execute(command).await;
-        state_response("audio", "audio-operation-failed", result)
+        control_wire::audio(self.audio.execute(command).await)
     }
     pub(super) async fn media_operation(&self, params: Value) -> Value {
         let request = request!(params, MediaRequest, "media.operation");
