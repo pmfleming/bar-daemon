@@ -1,101 +1,178 @@
+use crate::{
+    activity::ActivityService,
+    protocol::activity_wire::{
+        self, CompleteTodoRequest, CreateTodoRequest, Failure, RangeRequest, TodoRequest,
+    },
+    state::StateStore,
+};
+use serde_json::Value;
 use std::sync::Arc;
-
-use super::{error, success};
-use crate::{activity::ActivityService, state::StateStore};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-#[derive(Deserialize)]
-struct RangeRequest {
-    from_unix_ms: i64,
-    to_unix_ms: i64,
-}
-
-#[derive(Deserialize)]
-struct CreateTodoRequest {
-    title: String,
-    due_unix_ms: Option<i64>,
-    due_date: Option<String>,
-    #[serde(default)]
-    priority: u8,
-}
-
-#[derive(Deserialize)]
-struct CompleteTodoRequest {
-    id: String,
-    #[serde(default = "default_true")]
-    completed: bool,
-}
-
-#[derive(Deserialize)]
-struct TodoRequest {
-    id: String,
-}
-
-const fn default_true() -> bool {
-    true
-}
 
 pub(super) struct ActivityApi {
     state: StateStore,
     activity: Arc<ActivityService>,
 }
-
 impl ActivityApi {
     pub(super) fn new(state: StateStore, activity: Arc<ActivityService>) -> Self {
         Self { state, activity }
     }
-
     pub(super) async fn activity_query_range(&self, params: Value) -> Value {
         let request = request!(params, RangeRequest, "activity.queryRange");
-        match self
-            .activity
-            .query_range(request.from_unix_ms, request.to_unix_ms)
-            .await
-        {
-            Ok(range) => success(json!({"activity_range": range})),
-            Err(value) => error("activity-query-failed", value.to_string()),
-        }
+        activity_wire::range(
+            self.activity
+                .query_range(request.from_unix_ms, request.to_unix_ms)
+                .await,
+        )
     }
     pub(super) async fn activity_refresh(&self) -> Value {
         self.activity.request_refresh().await;
-        success(json!({
-            "activity": self.state.read(|s| json!(&s.activity)).await,
-            "operation": { "state": "accepted" }
-        }))
+        activity_wire::refreshed(self.state.read(|s| s.activity.clone()).await)
     }
     pub(super) async fn todo_create(&self, params: Value) -> Value {
         let request = request!(params, CreateTodoRequest, "todos.create");
-        match self
-            .activity
-            .create_todo(
-                request.title,
-                request.due_unix_ms,
-                request.due_date,
-                request.priority,
-            )
-            .await
-        {
-            Ok(todo) => success(json!({"todo": todo})),
-            Err(value) => error("todo-create-failed", value.to_string()),
-        }
+        activity_wire::todo(
+            self.activity
+                .create_todo(
+                    request.title,
+                    request.due_unix_ms,
+                    request.due_date,
+                    request.priority,
+                )
+                .await,
+            Failure::Create,
+        )
     }
     pub(super) async fn todo_complete(&self, params: Value) -> Value {
         let request = request!(params, CompleteTodoRequest, "todos.complete");
-        match self
-            .activity
-            .complete_todo(&request.id, request.completed)
-            .await
-        {
-            Ok(todo) => success(json!({"todo": todo})),
-            Err(value) => error("todo-complete-failed", value.to_string()),
-        }
+        activity_wire::todo(
+            self.activity
+                .complete_todo(&request.id, request.completed)
+                .await,
+            Failure::Complete,
+        )
     }
     pub(super) async fn todo_delete(&self, params: Value) -> Value {
         let request = request!(params, TodoRequest, "todos.delete");
-        match self.activity.delete_todo(&request.id).await {
-            Ok(()) => success(json!({"deleted": request.id})),
-            Err(value) => error("todo-delete-failed", value.to_string()),
+        let result = self.activity.delete_todo(&request.id).await;
+        activity_wire::deleted(request.id, result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn refresh_acknowledges_before_isolated_provider_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = StateStore::default();
+        let service = ActivityService::with_paths(
+            state.clone(),
+            directory.path().join("config.json"),
+            directory.path().join("todos.json"),
+        )
+        .await;
+        let api = ActivityApi::new(state.clone(), service);
+        let mut events = state.subscribe();
+        let reply = api.activity_refresh().await;
+        let fixture = crate::protocol::activity_contract_fixture().await;
+        assert_eq!(
+            reply["data"]["operation"],
+            fixture["cases"]["refresh"]["success"]["data"]["operation"]
+        );
+        assert_eq!(reply["data"]["activity"]["syncing"], true);
+        assert_eq!(events.recv().await.unwrap().data["syncing"], true);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if events.recv().await.unwrap().data["syncing"] == false {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!state.snapshot().await.activity.syncing);
+    }
+
+    #[tokio::test]
+    async fn isolated_live_todo_lifecycle_matches_generated_replies_and_persists_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("todos.json");
+        let state = StateStore::default();
+        let service = ActivityService::with_paths(
+            state.clone(),
+            directory.path().join("config.json"),
+            path.clone(),
+        )
+        .await;
+        let api = ActivityApi::new(state.clone(), service);
+        let fixture = crate::protocol::activity_contract_fixture().await;
+        let cases = &fixture["cases"];
+        let created = api.todo_create(cases["create"]["params"].clone()).await;
+        let mut expected = cases["create"]["success"].clone();
+        // IDs/timestamps are allocated by the live service, not fixture constants.
+        let id = created["data"]["todo"]["id"].as_str().unwrap();
+        let timestamp = &created["data"]["todo"]["created_unix_ms"];
+        assert!(id.starts_with("local-"));
+        assert!(timestamp.as_i64().unwrap() > 0);
+        expected["data"]["todo"]["id"] = json!(id);
+        expected["data"]["todo"]["created_unix_ms"] = timestamp.clone();
+        assert_eq!(created, expected);
+        for (key, completed) in [("complete", true), ("reopen", false)] {
+            let reply = api
+                .todo_complete(json!({"id":id, "completed":completed}))
+                .await;
+            let mut expected = cases[key]["success"].clone();
+            expected["data"]["todo"]["id"] = json!(id);
+            expected["data"]["todo"]["created_unix_ms"] = timestamp.clone();
+            if completed {
+                assert!(
+                    reply["data"]["todo"]["completed_unix_ms"].as_i64().unwrap()
+                        >= timestamp.as_i64().unwrap()
+                );
+                expected["data"]["todo"]["completed_unix_ms"] =
+                    reply["data"]["todo"]["completed_unix_ms"].clone();
+            }
+            assert_eq!(reply, expected);
         }
+        let range = api
+            .activity_query_range(cases["range"]["params"].clone())
+            .await;
+        assert_eq!(
+            range["data"]["activity_range"]["todos"],
+            json!([expected["data"]["todo"].clone()])
+        );
+        assert_eq!(
+            range["data"]["activity_range"]["days"]["2026-01-15"]["todo_ids"],
+            json!([id])
+        );
+        assert_eq!(state.snapshot().await.activity.incomplete_todo_count, 1);
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.as_array().unwrap().len(), 1);
+        assert_eq!(
+            api.todo_delete(json!({"id":id})).await,
+            crate::api::success(json!({"deleted":id}))
+        );
+        assert_eq!(state.snapshot().await.activity.incomplete_todo_count, 0);
+        for key in ["create", "complete", "delete", "range"] {
+            let case = &cases[key];
+            let params = case["failed_params"].clone();
+            let reply = match key {
+                "create" => api.todo_create(params).await,
+                "complete" => api.todo_complete(params).await,
+                "delete" => api.todo_delete(params).await,
+                _ => api.activity_query_range(params).await,
+            };
+            assert_eq!(reply, case["failed"]);
+            let reply = match key {
+                "create" => api.todo_create(Value::Null).await,
+                "complete" => api.todo_complete(Value::Null).await,
+                "delete" => api.todo_delete(Value::Null).await,
+                _ => api.activity_query_range(Value::Null).await,
+            };
+            assert_eq!(reply, case["rejected"]);
+        }
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted, json!([]));
     }
 }

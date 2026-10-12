@@ -52,6 +52,8 @@ enum DebugCommand {
     NotificationContractFixture,
     SessionControlContractFixture,
     BatteryContractFixture,
+    ActivityContractFixture,
+    QueryContractFixture,
     /// Read kernel/swap/ThinkPad sleep evidence without initiating sleep.
     SleepDiagnostics,
     /// Observe compositor lock confirmation without requesting a lock or sleep.
@@ -92,6 +94,10 @@ async fn main() -> Result<()> {
                     protocol::session_control_contract_fixture().await
                 }
                 DebugCommand::BatteryContractFixture => protocol::battery_contract_fixture().await,
+                DebugCommand::ActivityContractFixture => {
+                    protocol::activity_contract_fixture().await
+                }
+                DebugCommand::QueryContractFixture => protocol::query_contract_fixture().await,
                 DebugCommand::SleepDiagnostics => bar_daemon::sleep_diagnostics(),
                 DebugCommand::LockState => bar_daemon::inspect_lock().await?,
             };

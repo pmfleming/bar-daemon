@@ -52,7 +52,11 @@ impl ActivityService {
         Self::with_paths(state, config::config_path(), config::todo_path()).await
     }
 
-    async fn with_paths(state: StateStore, config_path: PathBuf, todo_path: PathBuf) -> Arc<Self> {
+    pub(crate) async fn with_paths(
+        state: StateStore,
+        config_path: PathBuf,
+        todo_path: PathBuf,
+    ) -> Arc<Self> {
         let (todos, todo_error) = match config::load_todos(&todo_path).await {
             Ok(todos) => (todos, None),
             Err(error) => (

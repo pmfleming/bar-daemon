@@ -1,28 +1,16 @@
 use std::sync::Arc;
 
-use super::{decode_request, error, success};
-use crate::activity::notifications::{
-    engine::NotificationEngine, history::HistoryError, service::NotificationService,
-};
+use super::{decode_request, success};
+use crate::activity::notifications::{engine::NotificationEngine, service::NotificationService};
 use crate::protocol::notification_wire::{
     ActionRequest, DeleteRequest, DeleteScope, DndRequest, ErrorCode, GroupRequest,
     NotificationRequest, Operation, PolicyRequest, Reply, ReplyRequest, SnoozeRequest,
     delete_error, not_found, operation_error, positive_id,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use crate::protocol::query_wire::{self, HistoryRequest};
+use serde_json::Value;
 
 type Response = Result<Value, Value>;
-
-#[derive(Deserialize)]
-struct HistoryRequest {
-    before_history_id: Option<i64>,
-    #[serde(default = "default_history_limit")]
-    limit: usize,
-}
-const fn default_history_limit() -> usize {
-    50
-}
 
 pub(super) struct NotificationApi {
     notifications: Arc<NotificationService>,
@@ -129,29 +117,18 @@ impl NotificationApi {
     async fn query_center(&self, params: Value) -> Response {
         let engine = self.engine()?;
         let request = decode_request(params, "notifications.queryCenter")?;
-        let page = engine.query_center(request).await.map_err(history_error)?;
-        Ok(json!({"notification_center":page}))
+        query_wire::center(engine.query_center(request).await)
     }
     async fn query_history(&self, params: Value) -> Response {
         let engine = self.engine()?;
         let request = decode_request(params, "notifications.queryHistory")?;
-        let page = engine.query_history(request).await.map_err(history_error)?;
-        Ok(json!({"notification_page":page}))
+        query_wire::page(engine.query_history(request).await)
     }
     async fn list(&self, params: Value) -> Response {
         let engine = self.engine()?;
         let request: HistoryRequest = decode_request(params, "notifications.list")?;
-        if request.before_history_id.is_some_and(|id| id <= 0) {
-            return Err(error(
-                "validation-error",
-                "before_history_id must be positive or null",
-            ));
-        }
-        let history = engine
-            .history(request.before_history_id, request.limit.min(200))
-            .await
-            .map_err(|e| error("notification-history-failed", e.to_string()))?;
-        Ok(json!({"notification_history":history}))
+        let limit = request.bounded_limit()?;
+        query_wire::list(engine.history(request.before_history_id, limit).await)
     }
     async fn dismiss(&self, params: Value) -> Response {
         let request: NotificationRequest = decode_request(params, "notifications.dismiss")?;
@@ -229,14 +206,176 @@ impl NotificationApi {
         }
     }
 }
-fn history_error(value: HistoryError) -> Value {
-    error(value.code(), value.message())
-}
 
 #[cfg(test)]
 mod tests {
     use super::{NotificationApi, NotificationEngine, NotificationService};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn live_queries_match_projected_pages_without_mutating_notifications() {
+        let fixture = crate::protocol::query_contract_fixture().await;
+        let cases = &fixture["cases"];
+        let records = serde_json::from_value(
+            fixture["snapshot"]["data"]["snapshot"]["notification_active"]["notifications"].clone(),
+        )
+        .unwrap();
+        let engine = NotificationEngine::catalog_fixture(records, "contract-epoch".into(), 7).await;
+        let before = engine.active().await;
+        let mut signals = engine.subscribe_signals();
+        let api = NotificationApi::new(NotificationService::native(engine.clone()));
+        let mut period_day = serde_json::Value::Null;
+        for key in [
+            "apps",
+            "apps-next",
+            "app",
+            "app-next",
+            "resolve",
+            "apps-anchor",
+            "apps-anchor-next",
+            "search",
+            "empty",
+            "timeline",
+            "timeline-next",
+        ] {
+            let case = &cases[key];
+            let mut params = case["params"].clone();
+            if key == "timeline-next" {
+                params["period_day"] = period_day.clone();
+            }
+            let result = api.dispatch("notifications.queryCenter", params).await;
+            let mut expected = case["success"].clone();
+            if key.starts_with("timeline") {
+                period_day = result["data"]["notification_center"]["period_day"].clone();
+                assert_eq!(period_day, chrono::Local::now().date_naive().to_string());
+                expected["data"]["notification_center"]["period_day"] = period_day.clone();
+            }
+            assert_eq!(result, expected, "{key}");
+        }
+        let mut cursor = serde_json::Value::Null;
+        for key in ["history", "history-next"] {
+            let mut params = cases[key]["params"].clone();
+            params["cursor"] = cursor;
+            let result = api.dispatch("notifications.queryHistory", params).await;
+            cursor = result["data"]["notification_page"]["next_cursor"].clone();
+            let actual_cursor: serde_json::Value =
+                serde_json::from_str(cursor.as_str().unwrap()).unwrap();
+            assert!(actual_cursor["expires"].as_u64().unwrap() > crate::time::unix_ms());
+            let mut expected = cases[key]["success"].clone();
+            let mut expected_cursor: serde_json::Value = serde_json::from_str(
+                expected["data"]["notification_page"]["next_cursor"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            expected_cursor["expires"] = actual_cursor["expires"].clone();
+            assert_eq!(actual_cursor, expected_cursor);
+            expected["data"]["notification_page"]["next_cursor"] = cursor.clone();
+            assert_eq!(result, expected);
+        }
+        for (method, key) in [
+            ("notifications.queryCenter", "centerRejected"),
+            ("notifications.queryHistory", "historyRejected"),
+            ("notifications.list", "listRejected"),
+        ] {
+            assert_eq!(
+                api.dispatch(method, serde_json::Value::Null).await,
+                fixture["errors"][key]
+            );
+        }
+        assert_eq!(
+            api.dispatch("notifications.queryCenter", json!({"view":"unknown"}))
+                .await,
+            fixture["errors"]["invalid"]
+        );
+        assert_eq!(
+            api.dispatch(
+                "notifications.queryCenter",
+                json!({"view":"apps", "offset":50, "epoch":"old", "revision":"0"})
+            )
+            .await,
+            fixture["errors"]["stale"]
+        );
+        assert_eq!(
+            api.dispatch("notifications.list", json!({"before_history_id":0}))
+                .await,
+            fixture["errors"]["listInvalid"]
+        );
+        assert_eq!(
+            api.dispatch("notifications.list", json!({})).await,
+            crate::api::success(json!({"notification_history":[]}))
+        );
+        assert_eq!(engine.active().await, before);
+        assert!(matches!(
+            signals.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_list_serializes_persisted_closed_records_and_honors_before_id() {
+        use crate::{
+            activity::notifications::model::{ActiveNotification, IncomingNotification},
+            state::StateStore,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let engine = NotificationEngine::persistent(
+            StateStore::default(),
+            directory.path().join("history.db"),
+        )
+        .await
+        .unwrap();
+        let fixture = crate::protocol::query_contract_fixture().await;
+        let case = &fixture["cases"]["list"];
+        let record: ActiveNotification = serde_json::from_value(
+            case["success"]["data"]["notification_history"][0]["notification"].clone(),
+        )
+        .unwrap();
+        let id = engine
+            .notify(
+                0,
+                IncomingNotification {
+                    app_name: record.app_name,
+                    app_icon: record.app_icon,
+                    summary: record.summary,
+                    body: record.body,
+                    actions: record.actions,
+                    hints: record.hints,
+                    expire_timeout: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(engine.dismiss(id).await.unwrap());
+        let api = NotificationApi::new(NotificationService::native(engine));
+        let reply = api
+            .dispatch("notifications.list", case["params"].clone())
+            .await;
+        let row = &reply["data"]["notification_history"][0];
+        assert_eq!(row["notification"]["id"], id);
+        assert!(row["notification"]["created_unix_ms"].as_u64().unwrap() > 0);
+        assert!(
+            row["closed_unix_ms"].as_u64().unwrap()
+                >= row["notification"]["created_unix_ms"].as_u64().unwrap()
+        );
+        let mut expected = case["success"].clone();
+        let expected_row = &mut expected["data"]["notification_history"][0];
+        for key in ["created_unix_ms", "updated_unix_ms", "identity_icon"] {
+            expected_row["notification"][key] = row["notification"][key].clone();
+        }
+        expected_row["closed_unix_ms"] = row["closed_unix_ms"].clone();
+        assert_eq!(reply, expected);
+        let before = api
+            .dispatch(
+                "notifications.list",
+                json!({"before_history_id":row["history_id"], "limit":50}),
+            )
+            .await;
+        assert_eq!(
+            before,
+            crate::api::success(json!({"notification_history":[]}))
+        );
+    }
 
     #[tokio::test]
     async fn live_mutations_match_fixtures_and_stale_actions_emit_no_signals() {

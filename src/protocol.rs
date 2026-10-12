@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 
+mod activity_fixtures;
+pub(crate) mod activity_wire;
 mod battery_fixtures;
 pub(crate) mod battery_wire;
 mod control_fixtures;
@@ -8,6 +10,8 @@ mod display_fixtures;
 pub(crate) mod display_wire;
 mod notification_fixtures;
 pub(crate) mod notification_wire;
+mod query_fixtures;
+pub(crate) mod query_wire;
 mod read_fixtures;
 pub(crate) mod read_wire;
 mod session_control_fixtures;
@@ -48,6 +52,16 @@ pub async fn session_control_contract_fixture() -> Value {
 /// Battery contracts generated without hardware or persistent writes.
 pub async fn battery_contract_fixture() -> Value {
     battery_fixtures::fixture().await
+}
+
+/// Offline activity/todo examples using production serializers and day projection.
+pub async fn activity_contract_fixture() -> Value {
+    activity_fixtures::fixture().await
+}
+
+/// Offline notification catalog examples using production pagination and serializers.
+pub async fn query_contract_fixture() -> Value {
+    query_fixtures::fixture().await
 }
 
 /// Stable protocol family name.

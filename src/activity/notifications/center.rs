@@ -202,10 +202,28 @@ pub(crate) enum CenterPage {
 }
 
 pub(crate) fn project(
+    rows: Vec<Preview>,
+    query: &CenterQuery,
+    epoch: &str,
+    revision: u64,
+    lookup: impl FnOnce(&Preview) -> anyhow::Result<CatalogRecord>,
+) -> Result<CenterPage, HistoryError> {
+    project_at(
+        rows,
+        query,
+        epoch,
+        revision,
+        chrono::Local::now().date_naive(),
+        lookup,
+    )
+}
+
+pub(crate) fn project_at(
     mut rows: Vec<Preview>,
     query: &CenterQuery,
     epoch: &str,
     revision: u64,
+    today: chrono::NaiveDate,
     lookup: impl FnOnce(&Preview) -> anyhow::Result<CatalogRecord>,
 ) -> Result<CenterPage, HistoryError> {
     query.validate_revision(epoch, revision)?;
@@ -231,8 +249,8 @@ pub(crate) fn project(
     let total_count = rows.len();
     rows.retain(|p| p.matches);
     if query.view == "timeline" {
-        return checked(CenterPage::Timeline(super::timeline::project(
-            rows, query, epoch, revision,
+        return checked(CenterPage::Timeline(super::timeline::project_at(
+            rows, query, epoch, revision, today,
         )?));
     }
     let count = rows.len();

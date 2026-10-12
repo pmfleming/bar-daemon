@@ -72,15 +72,7 @@ fn period(created: u64, today: NaiveDate) -> &'static str {
         "older"
     }
 }
-pub(crate) fn project(
-    rows: Vec<Preview>,
-    query: &CenterQuery,
-    epoch: &str,
-    revision: u64,
-) -> Result<Timeline, HistoryError> {
-    project_at(rows, query, epoch, revision, Local::now().date_naive())
-}
-fn project_at(
+pub(crate) fn project_at(
     rows: Vec<Preview>,
     query: &CenterQuery,
     epoch: &str,

@@ -150,6 +150,26 @@ impl NotificationEngine {
         Self::build(state, None, 0, false, None).await.unwrap()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn catalog_fixture(
+        records: Vec<ActiveNotification>,
+        epoch: String,
+        revision: u64,
+    ) -> Arc<Self> {
+        let mut engine = Self::new(StateStore::default()).await;
+        let owned = Arc::get_mut(&mut engine).unwrap();
+        owned.history_epoch = epoch;
+        owned.next_id.store(
+            records.iter().map(|n| n.id).max().unwrap_or(0),
+            Ordering::Relaxed,
+        );
+        let data = owned.data.get_mut();
+        data.history_revision = revision;
+        data.active = records.into_iter().map(|n| (n.id, n)).collect();
+        engine.publish_summary().await;
+        engine
+    }
+
     /// Keep the directory guard alive for the entire persistence/restart test.
     #[cfg(test)]
     pub(super) async fn persistent_fixture() -> (tempfile::TempDir, PathBuf, Arc<Self>) {

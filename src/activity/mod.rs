@@ -1,5 +1,6 @@
 pub(crate) mod astronomy;
 pub(crate) mod config;
+pub(crate) mod contract_examples;
 mod day;
 mod ics;
 pub(crate) mod locations;
