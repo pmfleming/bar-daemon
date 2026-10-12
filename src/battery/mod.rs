@@ -642,7 +642,7 @@ async fn load_policy_data() -> (
     (config, runtime, error)
 }
 
-fn decorate(
+pub(crate) fn decorate(
     mut state: BatteryState,
     config: &config::BatteryConfig,
     runtime: &config::BatteryRuntimeState,
@@ -721,7 +721,12 @@ fn decorate_protection(
     }
 }
 
-fn update_observed_thresholds(state: &mut BatteryState, battery_id: &str, start: u8, end: u8) {
+pub(crate) fn update_observed_thresholds(
+    state: &mut BatteryState,
+    battery_id: &str,
+    start: u8,
+    end: u8,
+) {
     if let Some(device) = state
         .devices
         .iter_mut()
@@ -733,7 +738,11 @@ fn update_observed_thresholds(state: &mut BatteryState, battery_id: &str, start:
     }
 }
 
-fn update_observed_behaviour(state: &mut BatteryState, battery_id: &str, behaviour: String) {
+pub(crate) fn update_observed_behaviour(
+    state: &mut BatteryState,
+    battery_id: &str,
+    behaviour: String,
+) {
     if let Some(device) = state
         .devices
         .iter_mut()

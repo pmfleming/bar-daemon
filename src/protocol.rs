@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 
+mod battery_fixtures;
+pub(crate) mod battery_wire;
 mod control_fixtures;
 pub(crate) mod control_wire;
 mod display_fixtures;
@@ -41,6 +43,11 @@ pub async fn notification_contract_fixture() -> Value {
 /// Offline media, workspace and update-refresh examples.
 pub async fn session_control_contract_fixture() -> Value {
     session_control_fixtures::fixture().await
+}
+
+/// Battery contracts generated without hardware or persistent writes.
+pub async fn battery_contract_fixture() -> Value {
+    battery_fixtures::fixture().await
 }
 
 /// Stable protocol family name.

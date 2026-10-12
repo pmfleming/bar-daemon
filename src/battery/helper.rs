@@ -426,6 +426,20 @@ mod tests {
         (directory, ThresholdWriter::new(root))
     }
 
+    #[tokio::test]
+    async fn threshold_contract_uses_actual_isolated_helper_readback() {
+        let (_directory, writer) = writer(75, 80);
+        let result = writer.set_thresholds("BAT0", 60, 80).unwrap();
+        let fixture = crate::protocol::battery_contract_fixture().await;
+        let expected = &fixture["cases"]["battery.setThresholds"]["success"];
+        let state = serde_json::from_value(expected["data"]["battery"].clone()).unwrap();
+        assert_eq!(
+            crate::protocol::battery_wire::response(Ok(state), Some(("BAT0", result))),
+            *expected
+        );
+        assert_eq!(writer.get_thresholds("BAT0").unwrap(), (60, 80));
+    }
+
     #[test]
     fn validates_targets_and_thresholds() {
         let (_directory, writer) = writer(75, 80);
