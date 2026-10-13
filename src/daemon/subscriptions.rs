@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub(super) struct BarDaemon {
+    boundary: shelllist_daemon_tokio::ServiceBoundary,
     api: Arc<ApiService>,
     operations: super::battery_operations::Operations,
     state: StateStore,
@@ -21,6 +22,9 @@ pub(super) struct BarDaemon {
 impl BarDaemon {
     pub(super) fn new(api: ApiService, state: StateStore) -> Self {
         Self {
+            boundary: shelllist_daemon_tokio::ServiceBoundary::new(
+                shelllist_daemon_core::ApiIdentity::new(protocol::NAME, protocol::VERSION as u32),
+            ),
             api: Arc::new(api),
             operations: super::battery_operations::Operations::default(),
             state,
@@ -38,6 +42,14 @@ impl BarDaemon {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> String {
+        let admitted =
+            match self
+                .boundary
+                .call(header.sender().map(|s| s.as_str()), method, params_json)
+            {
+                Ok(admitted) => admitted,
+                Err(response) => return response,
+            };
         let params: Value = match serde_json::from_str(params_json) {
             Ok(value) => value,
             Err(error) => {
@@ -52,12 +64,15 @@ impl BarDaemon {
             let Some(owner) = header.sender() else {
                 return api::error("owner-required", "operation requires a bus owner").to_string();
             };
-            return self
-                .operations
-                .call(method, params, owner.as_str(), connection, self.api.clone())
-                .to_string();
+            return admitted.encode(&self.operations.call(
+                method,
+                params,
+                owner.as_str(),
+                connection,
+                self.api.clone(),
+            ));
         }
-        self.api.dispatch(method, params).await.to_string()
+        admitted.encode(&self.api.dispatch(method, params).await)
     }
 
     async fn subscribe(
@@ -66,6 +81,13 @@ impl BarDaemon {
         #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> String {
+        let _admitted = match self
+            .boundary
+            .subscribe(header.sender().map(|s| s.as_str()), &streams)
+        {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
         if let Some(stream) = streams
             .iter()
             .find(|stream| !protocol::STREAMS.contains(&stream.as_str()))
@@ -93,6 +115,13 @@ impl BarDaemon {
     }
 
     async fn cancel(&self, request_id: &str, #[zbus(header)] header: Header<'_>) -> String {
+        let _admitted = match self
+            .boundary
+            .cancel(header.sender().map(|s| s.as_str()), request_id)
+        {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
         let owner = header.sender().map(ToString::to_string);
         if self
             .subscriptions

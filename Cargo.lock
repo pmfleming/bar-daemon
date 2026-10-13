@@ -1908,6 +1908,7 @@ dependencies = [
  "anyhow",
  "futures",
  "rustix",
+ "serde",
  "serde_json",
  "shelllist-daemon-core",
  "tokio",
