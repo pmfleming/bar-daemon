@@ -889,7 +889,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "activity.changed",
@@ -907,7 +907,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "workspaces.changed",
@@ -925,7 +925,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "workarea.changed",
@@ -943,7 +943,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "compositor.changed",
@@ -961,7 +961,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "media.changed",
@@ -979,7 +979,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "audio.changed",
@@ -997,7 +997,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "brightness.changed",
@@ -1015,7 +1015,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "battery.changed",
@@ -1033,7 +1033,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "power-profile.changed",
@@ -1051,7 +1051,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "power-sleep.changed",
@@ -1069,7 +1069,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "sleep-policy.changed",
@@ -1087,7 +1087,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "display-policy.changed",
@@ -1105,7 +1105,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "osd-hardware.changed",
@@ -1123,7 +1123,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "notifications.changed",
@@ -1141,7 +1141,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "notifications.active.changed",
@@ -1159,7 +1159,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "updates.changed",
@@ -1177,7 +1177,7 @@
         "events": [
           "subscribed",
           "changed",
-          "lagged"
+          "gap"
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "timezone.changed",
@@ -1191,7 +1191,7 @@
         }
       }
     ],
-    "version": 1
+    "version": 2
   },
   "snapshot": {
     "activity": {
@@ -2051,5 +2051,5 @@
       ]
     }
   },
-  "version": 1
+  "version": 2
 }

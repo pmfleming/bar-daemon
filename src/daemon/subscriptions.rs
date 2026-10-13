@@ -29,7 +29,7 @@ impl BarDaemon {
     }
 }
 
-#[zbus::interface(name = "org.laufan.BarDaemon1")]
+#[zbus::interface(name = "org.laufan.BarDaemon2")]
 impl BarDaemon {
     async fn call(
         &self,
@@ -182,7 +182,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     struct Peer;
-    #[zbus::interface(name = "org.laufan.BarDaemon1")]
+    #[zbus::interface(name = "org.laufan.BarDaemon2")]
     impl Peer {
         fn ping(&self) {}
     }

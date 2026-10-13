@@ -67,7 +67,7 @@ pub async fn query_contract_fixture() -> Value {
 /// Stable protocol family name.
 pub const NAME: &str = "bar-api";
 /// Current protocol contract version.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = shelllist_daemon_core::CONTRACT_VERSION as u8;
 
 /// Event stream names accepted by subscriptions.
 pub mod stream {
@@ -260,7 +260,7 @@ pub fn registry() -> Value {
 fn stream_metadata(name: &str) -> Value {
     json!({
         "name": name,
-        "events": ["subscribed", "changed", "lagged"],
+        "events": ["subscribed", "changed", "gap"],
         "delivery": crate::state::StateStore::stream_semantics(name),
         "initial": "snapshot-under-commit-lock",
         "recovery": {"method": "bar.snapshot", "params": {"streams": [name]}}

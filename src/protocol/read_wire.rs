@@ -1,7 +1,10 @@
 //! Read-only bar-api v1 envelopes, shared by live dispatch and contract fixtures.
 use serde::Serialize;
 use serde_json::Value;
-use shelllist_daemon_core::{ApiIdentity, Correlation, event_envelope};
+use shelllist_daemon_core::{
+    ApiIdentity, Correlation,
+    wire::{Event as Envelope, Gap},
+};
 
 use super::{NAME, VERSION, stream};
 use crate::{api, model::BarSnapshot, state::DomainEvent};
@@ -17,16 +20,6 @@ pub(crate) fn snapshot(snapshot: &BarSnapshot) -> Value {
     )
 }
 
-#[derive(Serialize)]
-struct Payload<T> {
-    data: T,
-}
-
-#[derive(Serialize)]
-struct Lagged {
-    missed: u64,
-}
-
 enum Kind {
     Subscribed,
     Changed,
@@ -37,7 +30,7 @@ impl Kind {
         match self {
             Self::Subscribed => "subscribed",
             Self::Changed => "changed",
-            Self::Lagged => "lagged",
+            Self::Lagged => "gap",
         }
     }
 }
@@ -50,13 +43,15 @@ pub(crate) struct Event {
 
 impl Event {
     fn new(stream: String, kind: Kind, subscription_id: &str, data: impl Serialize) -> Self {
-        let value = event_envelope(
+        let value = Envelope::new(
             ApiIdentity::new(NAME, VERSION as u32),
             &stream,
             kind.as_str(),
             Correlation::Subscription(subscription_id),
-            serde_json::to_value(Payload { data }).expect("serializable bar event"),
-        );
+            data,
+        )
+        .into_value()
+        .expect("serializable bar event");
         Self { stream, value }
     }
 
@@ -78,7 +73,7 @@ impl Event {
             stream.into(),
             Kind::Lagged,
             subscription_id,
-            Lagged { missed },
+            Gap::lagged(missed),
         )
     }
 

@@ -34,7 +34,7 @@ use self::{
 pub(crate) use protocol::{NAME as PROTOCOL, VERSION};
 pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
-pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon1";
+pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon2";
 const API: ApiIdentity = ApiIdentity::new(PROTOCOL, VERSION as u32);
 
 pub(crate) fn success(data: Value) -> Value {
