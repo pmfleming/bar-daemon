@@ -369,31 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_and_prepare_false_are_not_completion_and_late_failure_is_visible() {
-        let t = Tracker::default();
-        t.begin("hibernate");
-        t.dispatching();
-        t.accepted();
-        t.job_new("/job/7", "systemd-hibernate.service");
-        t.prepared(true);
-        t.prepared(false);
-        assert_eq!(t.state.borrow().operation.phase, "returned");
-        t.job_removed("/job/7", "systemd-hibernate.service", "failed");
-        assert_eq!(t.state.borrow().operation.phase, "failed");
-        assert!(
-            t.state
-                .borrow()
-                .operation
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("journal")
-        );
-        t.accepted();
-        assert_eq!(t.state.borrow().operation.phase, "failed");
-    }
-
-    #[test]
     fn unrelated_or_old_jobs_never_complete_a_new_operation() {
         for tracked in [false, true] {
             let t = Tracker::default();

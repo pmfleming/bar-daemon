@@ -112,7 +112,7 @@ fn weather_location(weather: &WeatherState, clock: Option<&WorldClockState>) -> 
 mod tests {
     use super::{ActivityState, TimezoneState, WeatherState, WorldClockState, project};
     #[test]
-    fn reordering_and_duplicate_clocks_do_not_change_identities() {
+    fn locations_have_stable_identities_and_weather_supersedes_duplicate_clocks() {
         let mut activity = ActivityState {
             world_clocks: vec![
                 WorldClockState::new("Etc/UTC", "Zulu").unwrap(),
@@ -126,13 +126,7 @@ mod tests {
         assert_eq!(before.len(), 1);
         assert_eq!(before[0].id, "clock:Etc/UTC");
         assert_eq!(before[0].clock.label, "Alpha");
-    }
-    #[test]
-    fn distinct_weather_places_in_one_timezone_survive_and_suppress_duplicate_clock() {
-        let mut activity = ActivityState::default();
-        activity
-            .world_clocks
-            .push(WorldClockState::new("Etc/UTC", "Clock").unwrap());
+
         for id in ["one", "two"] {
             activity.weather_locations.push(WeatherState {
                 id: id.into(),

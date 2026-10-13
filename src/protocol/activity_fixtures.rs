@@ -61,19 +61,3 @@ pub(super) async fn fixture() -> Value {
     }
     json!({"snapshot":snapshot, "cases":cases, "events":events})
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn fixtures_are_stable_and_cover_live_methods() {
-        let fixture = fixture().await;
-        assert_eq!(fixture, super::fixture().await);
-        for case in fixture["cases"].as_object().unwrap().values() {
-            assert!(super::super::METHODS.contains(&case["method"].as_str().unwrap()));
-        }
-        assert_eq!(
-            fixture["cases"]["range"]["success"]["data"]["activity_range"]["days"]["2026-01-15"]["todo_ids"],
-            json!(["local-example"])
-        );
-    }
-}

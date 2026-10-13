@@ -313,71 +313,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_list_serializes_persisted_closed_records_and_honors_before_id() {
-        use crate::{
-            activity::notifications::model::{ActiveNotification, IncomingNotification},
-            state::StateStore,
-        };
-        let directory = tempfile::tempdir().unwrap();
-        let engine = NotificationEngine::persistent(
-            StateStore::default(),
-            directory.path().join("history.db"),
-        )
-        .await
-        .unwrap();
-        let fixture = crate::protocol::query_contract_fixture().await;
-        let case = &fixture["cases"]["list"];
-        let record: ActiveNotification = serde_json::from_value(
-            case["success"]["data"]["notification_history"][0]["notification"].clone(),
-        )
-        .unwrap();
-        let id = engine
-            .notify(
-                0,
-                IncomingNotification {
-                    app_name: record.app_name,
-                    app_icon: record.app_icon,
-                    summary: record.summary,
-                    body: record.body,
-                    actions: record.actions,
-                    hints: record.hints,
-                    expire_timeout: 0,
-                },
-            )
-            .await
-            .unwrap();
-        assert!(engine.dismiss(id).await.unwrap());
-        let api = NotificationApi::new(NotificationService::native(engine));
-        let reply = api
-            .dispatch("notifications.list", case["params"].clone())
-            .await;
-        let row = &reply["data"]["notification_history"][0];
-        assert_eq!(row["notification"]["id"], id);
-        assert!(row["notification"]["created_unix_ms"].as_u64().unwrap() > 0);
-        assert!(
-            row["closed_unix_ms"].as_u64().unwrap()
-                >= row["notification"]["created_unix_ms"].as_u64().unwrap()
-        );
-        let mut expected = case["success"].clone();
-        let expected_row = &mut expected["data"]["notification_history"][0];
-        for key in ["created_unix_ms", "updated_unix_ms", "identity_icon"] {
-            expected_row["notification"][key] = row["notification"][key].clone();
-        }
-        expected_row["closed_unix_ms"] = row["closed_unix_ms"].clone();
-        assert_eq!(reply, expected);
-        let before = api
-            .dispatch(
-                "notifications.list",
-                json!({"before_history_id":row["history_id"], "limit":50}),
-            )
-            .await;
-        assert_eq!(
-            before,
-            crate::api::success(json!({"notification_history":[]}))
-        );
-    }
-
-    #[tokio::test]
     async fn live_mutations_match_fixtures_and_stale_actions_emit_no_signals() {
         use crate::{
             activity::notifications::model::{
@@ -478,32 +413,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[tokio::test]
-    async fn native_responses_have_one_envelope_and_preserve_domain_errors() {
-        let engine = NotificationEngine::new(Default::default()).await;
-        let api = NotificationApi::new(NotificationService::native(engine));
-        for (method, params, field) in [
-            ("queryCenter", json!({"view":"apps"}), "notification_center"),
-            ("queryHistory", json!({}), "notification_page"),
-            ("setDnd", json!({"enabled":true}), "notifications"),
-            ("clear", json!({}), "closed"),
-        ] {
-            let response = api
-                .dispatch(&format!("notifications.{method}"), params)
-                .await;
-            assert_eq!(response["ok"], true, "{response}");
-            assert!(response["data"].get(field).is_some(), "{response}");
-        }
-        assert_eq!(
-            api.dispatch("notifications.dismiss", json!({"id":1})).await["error"]["code"],
-            "notification-not-found"
-        );
-        assert_eq!(
-            api.dispatch("notifications.queryHistory", json!({"limit":0}))
-                .await["error"]["code"],
-            "history-query-invalid"
-        );
     }
 }

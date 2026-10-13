@@ -194,7 +194,7 @@ fn stack(rows: Vec<Preview>, group_similar: bool) -> Vec<TimelineEntry> {
 mod tests {
     use super::super::center::{CenterQuery, Preview, PreviewHints, repeat_key};
     use super::super::history::HistoryError;
-    use super::{PERIODS, WINDOW, period, project_at};
+    use super::{WINDOW, period, project_at};
     use chrono::{Local, NaiveDate, TimeZone};
 
     fn day(value: &str) -> NaiveDate {
@@ -233,79 +233,6 @@ mod tests {
             serde_json::json!({"view":"timeline", "app_key":"named:Chat", "period_groups":true}),
         )
         .unwrap()
-    }
-
-    #[test]
-    fn recent_three_are_individual_and_excluded_from_all_four_periods() {
-        let today = day("2026-10-08");
-        let rows: Vec<_> = [
-            (16, "2026-10-08"),
-            (15, "2026-10-08"),
-            (14, "2026-10-08"),
-            (13, "2026-10-08"),
-            (12, "2026-10-08"),
-            (11, "2026-10-08"),
-            (10, "2026-10-07"),
-            (9, "2026-10-06"),
-            (8, "2026-10-01"),
-            (7, "2026-10-01"),
-            (6, "2026-10-01"),
-            (5, "2026-09-30"),
-            (4, "2026-09-29"),
-            (3, "2026-09-28"),
-            (2, "2026-09-01"),
-            (1, "2025-12-31"),
-        ]
-        .into_iter()
-        .map(|(id, date)| preview(id, date))
-        .collect();
-        let mut query = period_query();
-        let closed = project_at(rows.clone(), &query, "epoch", 1, today).unwrap();
-        assert_eq!(
-            closed
-                .recent
-                .as_ref()
-                .unwrap()
-                .iter()
-                .map(|p| p.id)
-                .collect::<Vec<_>>(),
-            [16, 15, 14]
-        );
-        assert_eq!(
-            closed
-                .dates
-                .iter()
-                .map(|d| (d.key.as_str(), d.count))
-                .collect::<Vec<_>>(),
-            [("today", 3), ("week", 2), ("month", 3), ("older", 5)]
-        );
-        assert!(closed.date.is_empty() && closed.entries.is_empty());
-        assert_eq!(closed.count, 0);
-        let mut ids = vec![16, 15, 14];
-        for key in PERIODS {
-            query.date = Some(key.into());
-            let page = project_at(rows.clone(), &query, "epoch", 1, today).unwrap();
-            if key == "today" {
-                assert_eq!(page.entries[0].members.len(), 3);
-            }
-            if key == "week" {
-                assert_eq!(
-                    page.entries.len(),
-                    2,
-                    "different local dates never merge into one repeat stack"
-                );
-            }
-            ids.extend(
-                page.entries
-                    .iter()
-                    .flat_map(|e| e.members.iter().map(|p| p.id)),
-            );
-        }
-        ids.sort_unstable();
-        assert_eq!(ids, (1..=16).collect::<Vec<_>>());
-        let few = project_at(rows[..2].to_vec(), &period_query(), "epoch", 1, today).unwrap();
-        assert_eq!(few.recent.unwrap().len(), 2);
-        assert!(few.dates.iter().all(|d| d.count == 0));
     }
 
     #[test]

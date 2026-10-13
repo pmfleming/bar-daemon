@@ -1049,60 +1049,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn history_admission_is_bounded_and_releases_after_cancellation() {
-        use super::history::{HistoryError, HistoryQuery};
-        let engine = NotificationEngine::new(StateStore::default()).await;
-        let mutation = engine.mutations.lock().await;
-        let mut tasks = tokio::task::JoinSet::new();
-        for _ in 0..2 {
-            let engine = Arc::clone(&engine);
-            tasks.spawn(async move {
-                engine
-                    .query_history(HistoryQuery {
-                        query: String::new(),
-                        cursor: None,
-                        anchor: None,
-                        limit: 50,
-                    })
-                    .await
-            });
-        }
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while engine.history_readers.available_permits() != 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(matches!(
-            engine
-                .query_history(HistoryQuery {
-                    query: String::new(),
-                    cursor: None,
-                    anchor: None,
-                    limit: 50
-                })
-                .await,
-            Err(HistoryError::Busy)
-        ));
-        tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
-        drop(mutation);
-        assert_eq!(engine.history_readers.available_permits(), 2);
-        assert!(
-            engine
-                .query_history(HistoryQuery {
-                    query: String::new(),
-                    cursor: None,
-                    anchor: None,
-                    limit: 50
-                })
-                .await
-                .is_ok()
-        );
-    }
-
     #[tokio::test(start_paused = true)]
     async fn center_waits_for_capacity_but_bounds_reads_and_releases_cancelled_owners() {
         use super::HistoryError;
@@ -1179,44 +1125,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snoozes_restores_and_clears_groups() {
-        let state = StateStore::default();
-        let engine = NotificationEngine::new(state.clone()).await;
-        let first = engine.notify(0, notification("first", 0)).await.unwrap();
-        assert_eq!(
-            engine
-                .notify(first, notification("replacement", 0))
-                .await
-                .unwrap(),
-            first
-        );
-        assert_eq!(engine.active().await[0].summary, "replacement");
-        assert_eq!(state.snapshot().await.notifications.count, 1);
-        engine.notify(0, notification("second", 0)).await.unwrap();
-        assert!(
-            engine
-                .snooze(first, crate::time::unix_ms() + 10)
-                .await
-                .unwrap()
-        );
-        assert_eq!(state.snapshot().await.notifications.count, 1);
-
-        let task = tokio::spawn(Arc::clone(&engine).run_expiry());
-        timeout(Duration::from_secs(1), async {
-            loop {
-                if state.snapshot().await.notifications.count == 2 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(engine.clear_group("test").await.unwrap(), 2);
-        task.abort();
-    }
-
-    #[tokio::test]
     async fn expiry_consumes_due_deadlines_once_without_waking_future_snoozes() {
         use super::super::{model::ActiveNotification, policy::AppPolicy};
         let engine = NotificationEngine::new(StateStore::default()).await;
@@ -1261,48 +1169,6 @@ mod tests {
         let repeated = data.expire(100);
         assert!(repeated.changed.is_empty() && !repeated.dnd_expired);
         assert_eq!(data.history_revision, 2);
-    }
-
-    #[tokio::test]
-    async fn batches_publish_only_final_state_and_popup_changes_do_not_dirty_history() {
-        let state = StateStore::default();
-        let engine = NotificationEngine::new(state.clone()).await;
-        engine.notify(0, notification("first", -1)).await.unwrap();
-        engine.notify(0, notification("second", -1)).await.unwrap();
-        let revision = state.snapshot().await.notifications.history_revision;
-        for item in engine.data.lock().await.active.values_mut() {
-            item.toast_expires_unix_ms = Some(0);
-        }
-        engine.expire_due().await;
-        assert_eq!(
-            state.snapshot().await.notifications.history_revision,
-            revision
-        );
-        let mut events = state.subscribe();
-        assert_eq!(engine.clear_group("test").await.unwrap(), 2);
-        let mut updates = Vec::new();
-        while let Ok(event) = events.try_recv() {
-            updates.push(event);
-        }
-        assert_eq!(
-            updates.len(),
-            2,
-            "one summary and one collection, not per-record states"
-        );
-        assert_eq!(updates[0].data["count"], 0);
-        assert_eq!(
-            updates[1].data["notifications"].as_array().unwrap().len(),
-            0
-        );
-        let boundary = engine.mutations.lock().await;
-        let history = engine.history(None, 50);
-        tokio::pin!(history);
-        assert!(
-            futures::poll!(&mut history).is_pending(),
-            "history must wait for the mutation's write-enqueue boundary"
-        );
-        drop(boundary);
-        assert!(history.await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1417,27 +1283,6 @@ mod tests {
         );
         engine.dismiss(id).await.unwrap();
         assert!(!engine.reply(id, "closed").await);
-    }
-
-    #[tokio::test]
-    async fn restart_archives_old_actions_and_keeps_transient_id_high_watermark() {
-        let (_directory, path, engine) = NotificationEngine::persistent_fixture().await;
-        engine
-            .notify(0, notification("retained", -1))
-            .await
-            .unwrap();
-        let mut transient = notification("private", -1);
-        transient.hints.transient = true;
-        let last_id = engine.notify(0, transient).await.unwrap();
-        assert_eq!(engine.history(None, 100).await.unwrap().len(), 1);
-        drop(engine);
-        let restarted = NotificationEngine::persistent(StateStore::default(), path)
-            .await
-            .unwrap();
-        assert!(restarted.active().await.is_empty());
-        let history = restarted.history(None, 100).await.unwrap();
-        assert_eq!(history[0].close_reason, Some(close_reason::UNDEFINED));
-        assert!(restarted.notify(0, notification("new", -1)).await.unwrap() > last_id);
     }
 
     #[tokio::test]

@@ -133,9 +133,14 @@ impl FakeCompositor {
 
 #[tokio::test]
 async fn observes_actual_lock_completion_and_does_not_reuse_an_unlocked_hint() {
-    for initially_locked in [false, true] {
-        let (server, connection) = FakeCompositor::start(true, initially_locked);
-        let mut observer = LockObserver::from_connection(connection).await.unwrap();
+    for (supported, initially_locked) in [(false, false), (true, false), (true, true)] {
+        let (server, connection) = FakeCompositor::start(supported, initially_locked);
+        let observer = LockObserver::from_connection(connection).await;
+        if !supported {
+            assert!(observer.is_err(), "missing protocol must fail closed");
+            continue;
+        }
+        let mut observer = observer.unwrap();
         assert_eq!(observer.locked().await.unwrap(), initially_locked);
         server.set_locked(true).await;
         assert!(observer.locked().await.unwrap());
@@ -152,18 +157,4 @@ async fn observes_actual_lock_completion_and_does_not_reuse_an_unlocked_hint() {
         }
         assert!(observer.locked().await.is_err());
     }
-}
-
-#[tokio::test]
-async fn missing_protocol_fails_closed_instead_of_trusting_process_presence() {
-    let (_server, connection) = FakeCompositor::start(false, false);
-    let error = LockObserver::from_connection(connection)
-        .await
-        .err()
-        .unwrap();
-    assert!(
-        error
-            .to_string()
-            .contains("does not support hyprland-lock-notify-v1")
-    );
 }

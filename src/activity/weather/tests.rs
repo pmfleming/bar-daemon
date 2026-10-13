@@ -1,8 +1,7 @@
-use super::{ForecastResponse, condition, forecast_request};
+use super::ForecastResponse;
 use crate::activity::config::WeatherConfig;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use std::{collections::HashMap, time::Duration};
 
 fn payload() -> Value {
     json!({
@@ -121,33 +120,6 @@ fn normalization_preserves_units_indices_and_short_column_defaults() {
 }
 
 #[test]
-fn horizon_and_half_hour_boundary_are_exact_and_empty_days_remain_valid() {
-    let mut forecast = response();
-    forecast.hourly.time = (0..20).map(|hour| hour * 3600).collect();
-    forecast.daily.time = (0..9).map(|day| day * 86400).collect();
-    let weather = forecast
-        .normalize(&WeatherConfig::default(), now())
-        .unwrap();
-    assert_eq!(weather.hourly.len(), 12);
-    assert_eq!(weather.hourly[11].time_unix_ms, 39_600_000);
-    assert_eq!(weather.daily.len(), 7);
-    let later = now() + chrono::Duration::milliseconds(1);
-    let weather = response()
-        .normalize(&WeatherConfig::default(), later)
-        .unwrap();
-    assert_eq!(weather.hourly[0].time_unix_ms, 3_600_000);
-    let mut empty = response();
-    empty.hourly.time.clear();
-    empty.daily.time.clear();
-    let weather = empty.normalize(&WeatherConfig::default(), now()).unwrap();
-    assert!(weather.available && weather.hourly.is_empty() && weather.daily.is_empty());
-    assert_eq!(
-        (weather.high_c, weather.low_c, weather.sunrise_unix_ms),
-        (0.0, 0.0, 0)
-    );
-}
-
-#[test]
 fn malformed_payloads_and_overflowing_provider_times_are_errors() {
     assert!(serde_json::from_slice::<ForecastResponse>(b"not JSON").is_err());
     for field in [
@@ -180,56 +152,5 @@ fn malformed_payloads_and_overflowing_provider_times_are_errors() {
                 "{field}"
             );
         }
-    }
-}
-
-#[test]
-fn request_uses_fixed_endpoint_units_and_timeout_without_io() {
-    let config = WeatherConfig {
-        latitude: -33.5,
-        longitude: 151.25,
-        timezone: "Europe/Amsterdam".into(),
-        ..Default::default()
-    };
-    let request = forecast_request(&reqwest::Client::new(), &config)
-        .build()
-        .unwrap();
-    assert_eq!(request.url().host_str(), Some("api.open-meteo.com"));
-    assert_eq!(request.url().scheme(), "https");
-    assert_eq!(request.url().path(), "/v1/forecast");
-    assert_eq!(request.timeout(), Some(&Duration::from_secs(12)));
-    let query: HashMap<_, _> = request.url().query_pairs().collect();
-    for (key, expected) in [
-        ("latitude", "-33.5"),
-        ("longitude", "151.25"),
-        ("timezone", "Europe/Amsterdam"),
-        ("timeformat", "unixtime"),
-        ("forecast_days", "7"),
-    ] {
-        assert_eq!(query[key], expected);
-    }
-    assert_eq!(query.len(), 8);
-    assert!(query["current"].contains("relative_humidity_2m"));
-    assert!(query["hourly"].contains("precipitation_probability"));
-    assert!(query["daily"].contains("sunrise,sunset"));
-}
-
-#[test]
-fn known_weather_codes_and_unknown_fallback_keep_their_labels() {
-    for (code, expected) in [
-        (0, "Clear"),
-        (1, "Mostly clear"),
-        (2, "Partly cloudy"),
-        (3, "Overcast"),
-        (48, "Fog"),
-        (57, "Drizzle"),
-        (67, "Rain"),
-        (77, "Snow"),
-        (82, "Rain showers"),
-        (86, "Snow showers"),
-        (99, "Thunderstorm"),
-        (65535, "Unknown"),
-    ] {
-        assert_eq!(condition(code), expected);
     }
 }

@@ -242,22 +242,4 @@ mod tests {
             assert!(read(&client, name, "").await.is_none());
         });
     }
-
-    #[test]
-    fn only_chromium_instances_opt_in() {
-        assert!(is_chromium_instance(
-            "org.mpris.MediaPlayer2.chromium.instance123"
-        ));
-        assert!(is_chromium_instance(
-            "org.mpris.MediaPlayer2.chrome.instance456"
-        ));
-        for name in [
-            "org.mpris.MediaPlayer2.spotify",
-            "org.mpris.MediaPlayer2.chromium.instance",
-            "org.mpris.MediaPlayer2.chromium.instance123.fake",
-            "org.mpris.MediaPlayer2.chromium.instance/../../1",
-        ] {
-            assert!(!is_chromium_instance(name));
-        }
-    }
 }

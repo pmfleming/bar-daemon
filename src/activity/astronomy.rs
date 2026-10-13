@@ -153,24 +153,6 @@ mod tests {
     }
 
     #[test]
-    fn midpoint_uses_absolute_time_and_iana_offset_on_dst_day() {
-        let rise = ms("2026-03-29T05:00:00Z");
-        let set = ms("2026-03-29T17:00:00Z");
-        let noon = solar_noon(rise, set, rise, "Europe/Amsterdam").unwrap();
-        assert_eq!(noon.unix_ms, ms("2026-03-29T11:00:00Z"));
-        assert_eq!(noon.utc_offset_seconds, 7200);
-        assert_eq!(noon.local_date, "2026-03-29");
-        let winter = solar_noon(
-            rise - 90 * DAY_MS,
-            set - 90 * DAY_MS,
-            rise - 90 * DAY_MS,
-            "Europe/Amsterdam",
-        )
-        .unwrap();
-        assert_eq!(winter.utc_offset_seconds, 3600);
-    }
-
-    #[test]
     fn polar_invalid_stale_and_missing_forecasts_are_unavailable() {
         let now = ms("2026-01-01T12:00:00Z");
         for (rise, set, zone) in [

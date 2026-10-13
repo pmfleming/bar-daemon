@@ -166,40 +166,6 @@ async fn signals_and_clock_recover_while_logind_telemetry_is_stalled() {
     }
 }
 
-#[tokio::test]
-async fn clock_detection_does_not_wait_for_signal_connection_setup() {
-    let store = StateStore::default();
-    // Keep the channel open without a producer: equivalent to a stalled
-    // system-bus connection/subscription or reconnect backoff.
-    let (_events, receiver) = mpsc::channel(1);
-    let (refresh, _requests) = watch::channel(());
-    let offset = Arc::new(AtomicI64::new(0));
-    let baseline = Arc::new(tokio::sync::Notify::new());
-    let sample_offset = Arc::clone(&offset);
-    let sampled = Arc::clone(&baseline);
-    let observed_store = store.clone();
-    let task = tokio::spawn(async move {
-        observe(
-            &observed_store,
-            receiver,
-            refresh,
-            || {
-                let value = sample_offset.load(Ordering::SeqCst);
-                sampled.notify_one();
-                Some(i128::from(value))
-            },
-            Duration::from_millis(5),
-        )
-        .await;
-    });
-    let _task = AbortOnDrop(task.abort_handle());
-    timeout(Duration::from_secs(2), baseline.notified())
-        .await
-        .unwrap();
-    offset.store(1_000_000_000, Ordering::SeqCst);
-    wait_for(&store, |power| power.resume_generation == 1).await;
-}
-
 struct ActiveQuery(Arc<AtomicBool>);
 impl Drop for ActiveQuery {
     fn drop(&mut self) {

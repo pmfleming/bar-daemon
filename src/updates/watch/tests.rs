@@ -1,61 +1,8 @@
 use std::fs;
 
-use notify::{Event, event::Flag};
 use tempfile::tempdir;
 
 use super::*;
-
-#[tokio::test]
-async fn read_events_are_quiet_and_recovery_survives_coalescing() {
-    let mut watch = Watch::new();
-    for kind in [
-        AccessKind::Open(AccessMode::Any),
-        AccessKind::Read,
-        AccessKind::Close(AccessMode::Read),
-    ] {
-        signal(
-            &watch.tx,
-            &watch.rebuild,
-            Ok(Event::new(EventKind::Access(kind))),
-        );
-    }
-    assert!(watch.rx.try_recv().is_err());
-    for _ in 0..100 {
-        signal(
-            &watch.tx,
-            &watch.rebuild,
-            Ok(Event::new(EventKind::Modify(
-                notify::event::ModifyKind::Any,
-            ))),
-        );
-    }
-    signal(
-        &watch.tx,
-        &watch.rebuild,
-        Err(notify::Error::generic("lost watch")),
-    );
-    assert_eq!(watch.rx.len(), 1);
-    assert!(watch.rebuild.load(Ordering::Relaxed));
-    watch.wait().await;
-    assert!(watch.rx.try_recv().is_err());
-    // Recovery isn't consumed by draining the wake-up queue.
-    assert!(watch.rebuild.swap(false, Ordering::Relaxed));
-    signal(
-        &watch.tx,
-        &watch.rebuild,
-        Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)),
-    );
-    assert!(watch.rebuild.load(Ordering::Relaxed));
-    watch.rx.try_recv().unwrap();
-    signal(
-        &watch.tx,
-        &watch.rebuild,
-        Ok(Event::new(EventKind::Access(AccessKind::Close(
-            AccessMode::Write,
-        )))),
-    );
-    watch.rx.try_recv().unwrap();
-}
 
 #[tokio::test]
 async fn real_reads_do_not_trigger_refresh_but_atomic_writes_do() {

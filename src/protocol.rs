@@ -190,7 +190,7 @@ pub const STREAMS: &[&str] = &[
 
 /// Returns machine-readable method and stream metadata.
 pub fn registry() -> Value {
-    let mut registry = json!({
+    json!({
         "protocol": NAME,
         "version": VERSION,
         "methods": [
@@ -253,36 +253,18 @@ pub fn registry() -> Value {
             { "name": "notifications.reply", "params": { "id": 1, "text": "Reply" }, "result": "operation" },
             { "name": "updates.refresh", "params": {}, "result": "updates" }
         ],
-        "streams": [
-            { "name": stream::ACTIVITY, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::WORKSPACES, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::WORKAREA, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::COMPOSITOR, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::MEDIA, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::AUDIO, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::BRIGHTNESS, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::BATTERY, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::POWER_PROFILE, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::POWER_SLEEP, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::SLEEP_POLICY, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::DISPLAY_POLICY, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::OSD_HARDWARE, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::NOTIFICATIONS, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::NOTIFICATION_ACTIVE, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] },
-            { "name": stream::TIMEZONE, "events": ["subscribed", "changed", "lagged"] }
-        ]
-    });
-    for entry in registry["streams"]
-        .as_array_mut()
-        .expect("registry streams")
-    {
-        let name = entry["name"].as_str().expect("stream name").to_owned();
-        entry["delivery"] = json!(crate::state::StateStore::stream_semantics(&name));
-        entry["initial"] = json!("snapshot-under-commit-lock");
-        entry["recovery"] = json!({"method": "bar.snapshot", "params": {"streams": [name]}});
-    }
-    registry
+        "streams": STREAMS.iter().map(|name| stream_metadata(name)).collect::<Vec<_>>()
+    })
+}
+
+fn stream_metadata(name: &str) -> Value {
+    json!({
+        "name": name,
+        "events": ["subscribed", "changed", "lagged"],
+        "delivery": crate::state::StateStore::stream_semantics(name),
+        "initial": "snapshot-under-commit-lock",
+        "recovery": {"method": "bar.snapshot", "params": {"streams": [name]}}
+    })
 }
 
 #[cfg(test)]

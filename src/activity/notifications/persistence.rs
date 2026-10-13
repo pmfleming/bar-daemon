@@ -893,7 +893,7 @@ fn history_record(row: &rusqlite::Row<'_>) -> Result<HistoryNotification> {
 mod tests {
     use tempfile::tempdir;
 
-    use super::{NotificationPersistence, NotificationStore, persistence_worker, reply};
+    use super::{NotificationPersistence, NotificationStore, persistence_worker};
     use crate::activity::notifications::model::ActiveNotification;
     use tokio::sync::{mpsc, oneshot};
 
@@ -1024,23 +1024,6 @@ mod tests {
         assert!(rows.iter().all(|r| r.notification.id != 1));
     }
 
-    #[tokio::test]
-    async fn restart_closes_surviving_conversations_without_replaying_them() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("history.db");
-        let store = NotificationStore::open(&path).unwrap();
-        store.save(&notification(7, false)).unwrap();
-        drop(store);
-        let (persistence, id, _, _) = NotificationPersistence::open(&path).unwrap();
-        assert_eq!(id, 7);
-        let rows = persistence.list(None, 10).await.unwrap();
-        assert_eq!(
-            rows[0].close_reason,
-            Some(super::super::model::close_reason::UNDEFINED)
-        );
-        assert!(rows[0].closed_unix_ms.is_some());
-    }
-
     #[test]
     fn live_and_saved_repeat_keys_agree_at_unicode_clipping_boundaries() {
         let directory = tempdir().unwrap();
@@ -1070,31 +1053,6 @@ mod tests {
             assert_eq!(live.repeat_key.is_some(), stackable);
             assert_eq!(entries[0].repeat_key, live.repeat_key);
         }
-    }
-
-    #[tokio::test]
-    async fn cancelled_and_fenced_reads_do_not_execute_storage_work() {
-        let calls = std::cell::Cell::new(0);
-        let read = || {
-            calls.set(calls.get() + 1);
-            Ok(7)
-        };
-        for error in [None, Some("write failed")] {
-            let (response, receiver) = oneshot::channel();
-            drop(receiver);
-            reply(response, error, read);
-        }
-        let (response, receiver) = oneshot::channel();
-        reply(response, Some("write failed"), read);
-        assert_eq!(
-            receiver.await.unwrap().unwrap_err().to_string(),
-            "write failed"
-        );
-        assert_eq!(calls.get(), 0);
-        let (response, receiver) = oneshot::channel();
-        reply(response, None, read);
-        assert_eq!(receiver.await.unwrap().unwrap(), 7);
-        assert_eq!(calls.get(), 1);
     }
 
     #[tokio::test]

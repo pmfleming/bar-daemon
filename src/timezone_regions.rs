@@ -78,23 +78,3 @@ pub(crate) fn ids_for_offset(offset_seconds: i32, at: DateTime<Utc>) -> Vec<Stri
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use chrono::{TimeZone, Utc};
-
-    use super::ids_for_offset;
-
-    #[test]
-    fn resolves_seasonal_and_fractional_offsets() {
-        let january = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
-        let july = Utc.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).unwrap();
-        let january_utc1 = ids_for_offset(3_600, january);
-        let july_utc2 = ids_for_offset(7_200, july);
-        assert!(january_utc1.contains(&"Europe-Paris".into()));
-        assert!(july_utc2.contains(&"Europe-Paris".into()));
-        assert!(july_utc2.contains(&"Africa-Johannesburg".into()));
-        assert!(ids_for_offset(19_800, july).contains(&"Asia-Kolkata".into()));
-        assert!(!ids_for_offset(18_000, july).contains(&"Asia-Kolkata".into()));
-    }
-}

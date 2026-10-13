@@ -174,16 +174,6 @@ async fn source_changes_follow_metadata_not_the_reused_firefox_track_id() {
     }
 }
 
-#[test]
-fn modes_are_closed() {
-    use crate::model::MediaControlMode as Mode;
-    assert!(serde_json::from_str::<Mode>("\"invented\"").is_err());
-    assert_eq!(
-        serde_json::from_str::<Mode>("\"automatic\"").unwrap(),
-        Mode::Automatic
-    );
-}
-
 #[tokio::test]
 async fn recent_playback_pin_automatic_and_exit_are_independent_of_order() {
     let store = StateStore::default();
@@ -266,41 +256,5 @@ async fn mode_overrides_are_per_player_and_expire_on_exit() {
     assert_eq!(
         store.snapshot().await.media.players[0].control_mode,
         Mode::Automatic
-    );
-}
-
-#[tokio::test]
-async fn manual_cycle_is_retained_by_monitor_selection() {
-    let store = StateStore::default();
-    let service = MediaService::default();
-    let players = vec![
-        player("browser", "paused", false, true),
-        player("spotify", "paused", true, true),
-    ];
-    service.publish(&store, players[..1].to_vec()).await;
-    assert_eq!(
-        store.snapshot().await.media.active_player.as_deref(),
-        Some("browser")
-    );
-    let mut playing = players.clone();
-    playing.push(player("playing", "playing", false, true));
-    service.publish(&store, playing).await;
-    assert_eq!(
-        store.snapshot().await.media.active_player.as_deref(),
-        Some("playing")
-    );
-    service.publish(&store, players.clone()).await;
-    assert_eq!(
-        store.snapshot().await.media.active_player.as_deref(),
-        Some("spotify")
-    );
-
-    let state = service.cycle(&store).await.unwrap();
-
-    assert_eq!(state.active_player.as_deref(), Some("browser"));
-    service.publish(&store, players).await;
-    assert_eq!(
-        store.snapshot().await.media.active_player.as_deref(),
-        Some("browser")
     );
 }

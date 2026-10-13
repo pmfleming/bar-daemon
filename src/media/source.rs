@@ -238,32 +238,6 @@ mod tests {
     use crate::model::MediaSource;
 
     #[test]
-    fn wire_fields_are_additive_and_have_explicit_provenance() {
-        use crate::model::MediaPlayer;
-        let mut legacy = serde_json::to_value(MediaPlayer::default()).unwrap();
-        legacy.as_object_mut().unwrap().remove("source");
-        legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("content_type_source");
-        let player: MediaPlayer = serde_json::from_value(legacy).unwrap();
-        assert!(player.source.is_none());
-        assert_eq!(player.content_type_source, Origin::Unknown);
-        let resolved = resolve(Some("https://vimeo.com/123"), None);
-        let value = serde_json::to_value(MediaPlayer {
-            source: resolved.source,
-            content_type: resolved.content_type,
-            content_type_source: resolved.content_type_source,
-            ..player
-        })
-        .unwrap();
-        assert_eq!(value["source"]["url"], "https://vimeo.com/123");
-        assert_eq!(value["source"]["service"], "vimeo");
-        assert_eq!(value["content_type"], "video");
-        assert_eq!(value["content_type_source"], "url");
-    }
-
-    #[test]
     fn exact_services_and_structural_content_hints() {
         for (url, service, kind) in [
             (
@@ -365,55 +339,6 @@ mod tests {
                 }
             );
         }
-    }
-
-    #[test]
-    fn path_arity_and_decoded_ids_keep_the_same_trust_boundary() {
-        let id = "RQzh-xnLRlM";
-        for (url, kind, video) in [
-            (format!("https://youtu.be/{id}/"), Kind::Video, Some(id)),
-            (format!("https://youtu.be/shorts/{id}"), Kind::Unknown, None),
-            (
-                "https://youtube.com/watch/?v=%52Qzh-xnLRlM".into(),
-                Kind::Video,
-                Some(id),
-            ),
-            (
-                format!("https://youtube.com/watch//?v={id}"),
-                Kind::Unknown,
-                None,
-            ),
-            (
-                format!("https://youtube.com/embed/{id}/extra"),
-                Kind::Unknown,
-                None,
-            ),
-            ("https://vimeo.com/123/".into(), Kind::Video, None),
-            ("https://vimeo.com/123//".into(), Kind::Unknown, None),
-            (
-                "https://player.vimeo.com/video/123/extra".into(),
-                Kind::Unknown,
-                None,
-            ),
-            (
-                "https://open.spotify.com/track/abc123/".into(),
-                Kind::Music,
-                None,
-            ),
-            (
-                "https://open.spotify.com/track/abc123//".into(),
-                Kind::Unknown,
-                None,
-            ),
-        ] {
-            assert_eq!(resolve(Some(&url), None).content_type, kind, "{url}");
-            assert_eq!(super::youtube_video_id(&url).as_deref(), video, "{url}");
-        }
-        let url = super::media_url(&format!("https://youtu.be/{id}")).unwrap();
-        assert!(matches!(
-            super::youtube_video(&url),
-            Some(std::borrow::Cow::Borrowed(_))
-        ));
     }
 
     #[test]

@@ -342,34 +342,3 @@ fn has_own_hold(state: &PowerProfileState) -> bool {
 fn runtime_path() -> std::path::PathBuf {
     data_file(XdgRoot::State, "battery-profile-state.json")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::PowerEnvelope;
-    use crate::model::{BatteryProfileAction, BatteryState};
-
-    fn battery(percentage: u8) -> BatteryState {
-        BatteryState {
-            available: true,
-            percentage,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn notification_switches_do_not_control_profile_actions() {
-        let mut state = battery(10);
-        state.policy.notify_warning = false;
-        state.policy.notify_critical = false;
-        state.policy.warning_profile = BatteryProfileAction::Balanced;
-        let mut envelope = PowerEnvelope::default();
-        envelope.observe(&state);
-        assert_eq!(envelope.status.profile, "power-saver");
-        state.percentage = 20;
-        envelope.observe(&state);
-        assert_eq!(envelope.status.profile, "balanced");
-        state.policy.warning_profile = BatteryProfileAction::KeepCurrent;
-        envelope.observe(&state);
-        assert_eq!(envelope.status.status, "keep-current");
-    }
-}

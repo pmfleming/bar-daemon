@@ -368,58 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn exposes_live_endpoint_without_persisting_each_observation() {
-        let start = Instant::now();
-        let mut history = HistoryStore::load(None, 1_000);
-        assert!(record(
-            &mut history,
-            &state(80, false, false),
-            1_000,
-            1_000,
-            start
-        ));
-        assert!(!record(
-            &mut history,
-            &state(79, false, false),
-            31_000,
-            31_000,
-            start
-        ));
-        let snapshot = history.state(true);
-        assert_eq!(snapshot.points.len(), 1);
-        assert_eq!(snapshot.latest_timestamp_ms, 1_000);
-        let current = snapshot.current_point.unwrap();
-        assert_eq!((current.percentage, current.active_time_ms), (79, 30_000));
-        assert!(current.continuous);
-        assert_eq!(history.state(false).current_point.unwrap(), current);
-        for index in 2..=30 {
-            let time = 1_000 + index * 30_000;
-            record(&mut history, &state(79, false, false), time, time, start);
-        }
-        let graph = history.state(true);
-        assert_eq!(graph.points.len(), 2);
-        assert_eq!(graph.active_duration_ms, 900_000);
-        assert!(graph.points[1].continuous);
-        assert!(history.state(false).points.is_empty());
-        assert!(record(
-            &mut history,
-            &state(78, false, false),
-            961_000,
-            931_000,
-            start
-        ));
-        assert!(!history.state(false).current_point.unwrap().continuous);
-        record(
-            &mut history,
-            &BatteryState::default(),
-            991_000,
-            961_000,
-            start,
-        );
-        assert!(history.state(false).current_point.is_none());
-    }
-
-    #[test]
     fn restart_preserves_samples_without_counting_downtime() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.json");

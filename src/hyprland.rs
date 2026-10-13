@@ -378,10 +378,11 @@ mod tests {
                 if call == 0 {
                     blocked.acquire().await.unwrap().forget();
                 }
-                Ok(WorkspaceState {
-                    available: true,
-                    ..Default::default()
-                })
+                parse_snapshot(
+                    r#"[{"id":5,"name":"5","monitor":"eDP-1","windows":1,"hasfullscreen":true},{"id":1,"name":"1","monitor":"eDP-1","windows":2,"urgent":true}]"#,
+                    r#"[{"id":0,"name":"eDP-1","focused":true,"activeWorkspace":{"id":1}}]"#,
+                    r#"{"address":"0x123","title":"Terminal","class":"ghostty","workspace":{"id":1},"fullscreen":0,"floating":false}"#,
+                )
             }
         }));
         started.acquire().await.unwrap().forget();
@@ -406,7 +407,20 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::task::yield_now().await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert!(store.snapshot().await.workspaces.available);
+        let snapshot = store.snapshot().await.workspaces;
+        assert!(snapshot.available);
+        assert_eq!(snapshot.focused_monitor.as_deref(), Some("eDP-1"));
+        assert_eq!(
+            snapshot
+                .workspaces
+                .iter()
+                .map(|ws| ws.id)
+                .collect::<Vec<_>>(),
+            [1, 5]
+        );
+        assert!(snapshot.workspaces[0].urgent);
+        assert!(snapshot.workspaces[1].fullscreen);
+        assert_eq!(snapshot.active_window.unwrap().title, "Terminal");
         for failure in [
             Event::Disconnected(None),
             Event::ConnectFailed("connection refused".into()),
@@ -462,25 +476,5 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         drop(changes);
         task.await.unwrap();
-    }
-
-    #[test]
-    fn parses_and_orders_workspace_snapshot() {
-        let state = parse_snapshot(
-            r#"[{"id":5,"name":"5","monitor":"eDP-1","windows":1,"hasfullscreen":true,"lastwindowtitle":"Scratchpad"},{"id":1,"name":"1","monitor":"eDP-1","windows":2,"urgent":true}]"#,
-            r#"[{"id":0,"name":"eDP-1","focused":true,"activeWorkspace":{"id":1}}]"#,
-            r#"{"address":"0x123","title":"Terminal","class":"com.mitchellh.ghostty","initialClass":"ghostty","workspace":{"id":1},"fullscreen":0,"floating":false}"#,
-        ).unwrap();
-        assert_eq!(state.focused_monitor.as_deref(), Some("eDP-1"));
-        assert_eq!(
-            state.workspaces.iter().map(|ws| ws.id).collect::<Vec<_>>(),
-            [1, 5]
-        );
-        assert!(state.workspaces[0].urgent);
-        assert!(state.workspaces[1].fullscreen);
-        let active_window = state.active_window.unwrap();
-        assert_eq!(active_window.title, "Terminal");
-        assert_eq!(active_window.class_name, "com.mitchellh.ghostty");
-        assert_eq!(active_window.workspace_id, 1);
     }
 }

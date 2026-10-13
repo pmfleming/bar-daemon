@@ -718,6 +718,18 @@ mod tests {
 
     #[tokio::test]
     async fn idle_trigger_changes_after_lock_or_during_helper_abort_sleep_setup() {
+        for (active, substate, kind, pid, ready) in [
+            ("active", "running", "simple", 42, false),
+            ("activating", "start", "notify", 42, false),
+            ("failed", "failed", "notify", 0, false),
+            ("active", "running", "notify", 43, false),
+            ("active", "running", "notify", 42, true),
+        ] {
+            assert_eq!(
+                verify_idle_readiness(active, substate, kind, pid, "42-123").is_ok(),
+                ready
+            );
+        }
         use std::cell::Cell;
 
         for change in [
@@ -850,14 +862,5 @@ mod tests {
                 .unwrap(),
             previous
         );
-    }
-
-    #[test]
-    fn generated_config_alone_never_proves_idle_readiness() {
-        assert!(verify_idle_readiness("active", "running", "simple", 42, "42-123").is_err());
-        assert!(verify_idle_readiness("activating", "start", "notify", 42, "42-123").is_err());
-        assert!(verify_idle_readiness("failed", "failed", "notify", 0, "42-123").is_err());
-        assert!(verify_idle_readiness("active", "running", "notify", 43, "42-123").is_err());
-        assert!(verify_idle_readiness("active", "running", "notify", 42, "42-123").is_ok());
     }
 }

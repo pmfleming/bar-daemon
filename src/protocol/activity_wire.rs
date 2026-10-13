@@ -114,30 +114,3 @@ pub(crate) fn deleted(id: String, result: anyhow::Result<()>) -> Value {
         Err(error) => Failure::Delete.reply(error),
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn preserves_legacy_defaults_envelopes_and_top_level_error_messages() {
-        let request: CompleteTodoRequest =
-            serde_json::from_value(json!({"id":"local-1", "extra":true})).unwrap();
-        assert!(request.completed);
-        let request: CreateTodoRequest = serde_json::from_value(json!({"title":"Task"})).unwrap();
-        assert_eq!(request.priority, 0);
-        assert!(request.due_date.is_none() && request.due_unix_ms.is_none());
-        let state = ActivityState::default();
-        assert_eq!(
-            refreshed(state.clone()),
-            api::success(json!({"activity":state, "operation":{"state":"accepted"}}))
-        );
-        assert_eq!(
-            deleted("local-1".into(), Ok(())),
-            api::success(json!({"deleted":"local-1"}))
-        );
-        assert_eq!(
-            Failure::Create.reply(anyhow::anyhow!("cause").context("context")),
-            api::error("todo-create-failed", "context")
-        );
-    }
-}

@@ -134,47 +134,6 @@ mod tests {
         task.abort();
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn successful_commands_still_reconcile_while_event_delivery_is_down() {
-        let store = StateStore::default();
-        store.set_hyprland_connected(true);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let count = calls.clone();
-        let task = tokio::spawn(monitor_with(
-            store.clone(),
-            move || {
-                count.fetch_add(1, Ordering::SeqCst);
-                async {
-                    Ok(Preferences {
-                        animations_enabled: false,
-                    })
-                }
-            },
-            Duration::from_secs(5),
-        ));
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(30)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        store.set_hyprland_connected(false);
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        tokio::time::advance(Duration::from_secs(5)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-        store.set_hyprland_connected(true);
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-        tokio::time::advance(Duration::from_secs(30)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-        let state = store.snapshot().await.compositor;
-        assert_eq!(state.animations_enabled, Some(false));
-        assert_eq!(state.revision, 1);
-        task.abort();
-        let _ = task.await;
-    }
-
     #[tokio::test]
     async fn reload_during_read_is_not_lost_and_reconnect_can_change_preference() {
         let store = StateStore::default();

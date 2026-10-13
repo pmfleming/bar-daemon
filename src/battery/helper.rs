@@ -596,6 +596,10 @@ mod tests {
     #[tokio::test]
     async fn threshold_contract_uses_actual_isolated_helper_readback() {
         let (_directory, writer) = writer(75, 80);
+        assert_eq!(writer.get_charge_behaviour("BAT0").unwrap().0, "auto");
+        assert!(writer.set_charge_behaviour("BAT0", "ship-mode").is_err());
+        assert!(writer.set_thresholds("../../etc", 60, 80).is_err());
+        assert!(writer.set_thresholds("BAT0", 80, 80).is_err());
         let result = writer.set_thresholds("BAT0", 60, 80).unwrap();
         let fixture = crate::protocol::battery_contract_fixture().await;
         let expected = &fixture["cases"]["battery.setThresholds"]["success"];
@@ -605,22 +609,5 @@ mod tests {
             *expected
         );
         assert_eq!(writer.get_thresholds("BAT0").unwrap(), (60, 80));
-    }
-
-    #[test]
-    fn validates_targets_and_thresholds() {
-        let (_directory, writer) = writer(75, 80);
-        assert_eq!(writer.get_charge_behaviour("BAT0").unwrap().0, "auto");
-        assert!(writer.set_charge_behaviour("BAT0", "ship-mode").is_err());
-        assert!(writer.set_thresholds("../../etc", 60, 80).is_err());
-        assert!(writer.set_thresholds("BAT0", 80, 80).is_err());
-        assert_eq!(
-            writer.set_thresholds("BAT0", 60, 80).unwrap(),
-            super::ThresholdWriteResult {
-                actual_start_percent: 60,
-                actual_end_percent: 80,
-                verified: true,
-            }
-        );
     }
 }

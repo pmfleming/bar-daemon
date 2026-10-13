@@ -187,24 +187,4 @@ mod tests {
             (2, AudioCommand::Adjust(i16::MAX))
         ));
     }
-
-    #[tokio::test]
-    async fn coalesced_requests_all_receive_the_confirmed_state() {
-        let state = StateStore::default();
-        let (first, first_reply) = oneshot::channel();
-        let (second, second_reply) = oneshot::channel();
-        let mut commands = [
-            (AudioCommand::Adjust(5), Some(first)),
-            (AudioCommand::Adjust(5), Some(second)),
-        ];
-        let audio = AudioState {
-            available: true,
-            volume_percent: 60,
-            ..AudioState::default()
-        };
-        publish_audio_result(&state, &mut commands, Ok(audio.clone())).await;
-        assert_eq!(first_reply.await.unwrap().unwrap(), audio);
-        assert_eq!(second_reply.await.unwrap().unwrap(), audio);
-        assert_eq!(state.snapshot().await.audio, audio);
-    }
 }

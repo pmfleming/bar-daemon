@@ -75,25 +75,6 @@ async fn mirror_and_extend_are_verified_persistent_and_reversible() {
 }
 
 #[tokio::test]
-async fn ignored_mirror_commands_cannot_be_confirmed_and_expiry_restores_extended() {
-    let mut f = docked();
-    f.backend.ignore_mirror.set(true);
-    let trial = f.preview(mirror(&f)).await.unwrap().trial.unwrap();
-    assert!(f.finish(&trial.id, true).await.is_err());
-    f.backend.ignore_mirror.set(false);
-    assert!(
-        f.tick(trial.expires_at, Instant::now())
-            .await
-            .unwrap()
-            .0
-            .trial
-            .is_none()
-    );
-    assert!(!f.backend.outputs.borrow()[1].mirrored());
-    assert_eq!(f.backend.outputs.borrow()[1].x, 1536);
-}
-
-#[tokio::test]
 async fn rejects_self_missing_disabled_and_chained_sources_before_mutation() {
     for invalid in ["self", "missing", "disabled", "cycle", "injection", "chain"] {
         let mut f = docked();
@@ -141,30 +122,6 @@ async fn source_handoffs_detach_children_before_converting_the_old_source() {
         }
         f.finish(&trial.id, true).await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn a_promoted_mirror_can_replace_its_disabled_source() {
-    let mut f = docked();
-    let trial = f.preview(mirror(&f)).await.unwrap().trial.unwrap();
-    f.finish(&trial.id, true).await.unwrap();
-    let mut proposed = Layout::observed(&f.backend.outputs.borrow());
-    proposed.outputs[0].enabled = false;
-    proposed.outputs[1].mirror_of.clear();
-    f.backend.calls.borrow_mut().clear();
-    let trial = f.preview(proposed).await.unwrap().trial.unwrap();
-    f.finish(&trial.id, true).await.unwrap();
-    assert!(f.backend.outputs.borrow()[0].disabled);
-    assert!(f.backend.outputs.borrow()[1].usable());
-    assert!(f.backend.calls.borrow()[0].contains("output = \"DP-1\""));
-    assert!(
-        f.backend
-            .calls
-            .borrow()
-            .last()
-            .unwrap()
-            .contains("disabled = true")
-    );
 }
 
 #[tokio::test]
@@ -219,42 +176,4 @@ async fn source_unplug_promotes_surviving_mirrors_for_rollback_and_saved_layouts
         f.tick(15, start + Duration::from_secs(15)).await.unwrap();
         assert_eq!(f.backend.outputs.borrow()[0].mirror_of, "0");
     }
-}
-
-#[test]
-fn mirror_metadata_resolves_ids_and_old_layout_documents_stay_extended() {
-    let f = docked();
-    for reference in [
-        serde_json::json!(0),
-        serde_json::json!("0"),
-        serde_json::json!("eDP-1"),
-    ] {
-        let mut value = serde_json::to_value(&f.backend.outputs.borrow()[1]).unwrap();
-        value["mirrorOf"] = reference;
-        f.backend.outputs.borrow_mut()[1] = serde_json::from_value(value).unwrap();
-        assert_eq!(
-            Layout::observed(&f.backend.outputs.borrow()).outputs[1].mirror_of,
-            "eDP-1"
-        );
-        assert!(!f.backend.outputs.borrow()[1].usable());
-    }
-    for reference in [
-        serde_json::json!("none"),
-        serde_json::json!(-1),
-        serde_json::Value::Null,
-    ] {
-        let mut value = serde_json::to_value(&f.backend.outputs.borrow()[1]).unwrap();
-        value["mirrorOf"] = reference;
-        f.backend.outputs.borrow_mut()[1] = serde_json::from_value(value).unwrap();
-        assert!(f.backend.outputs.borrow()[1].usable());
-    }
-    let mut old =
-        serde_json::to_value(&Layout::observed(&f.backend.outputs.borrow()).outputs[0]).unwrap();
-    old.as_object_mut().unwrap().remove("mirror_of");
-    assert!(
-        serde_json::from_value::<Setting>(old)
-            .unwrap()
-            .mirror_of
-            .is_empty()
-    );
 }

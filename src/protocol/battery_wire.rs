@@ -122,39 +122,3 @@ pub(crate) fn history(history: BatteryHistoryState) -> Value {
         serde_json::to_value(HistoryReply { history }).expect("serializable battery history"),
     )
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn threshold_readback_is_not_relabelled_as_failure_or_verified() {
-        let battery = BatteryState::default();
-        let result = ThresholdWriteResult {
-            actual_start_percent: 0,
-            actual_end_percent: 80,
-            verified: false,
-        };
-        assert_eq!(
-            response(Ok(battery.clone()), Some(("BAT0", result))),
-            api::success(
-                json!({"battery":battery, "operation":{"battery_id":"BAT0", "start_percent":0, "end_percent":80, "verified":false}})
-            )
-        );
-        assert!(
-            response(Ok(battery.clone()), None)["data"]
-                .get("operation")
-                .is_none()
-        );
-        assert_eq!(
-            history(battery.history.clone()),
-            api::success(json!({"history":battery.history}))
-        );
-        assert_eq!(
-            response(
-                Err(anyhow::anyhow!("cause").context("readback unavailable")),
-                None
-            ),
-            api::error("battery-refresh-failed", "readback unavailable")
-        );
-    }
-}

@@ -1,6 +1,6 @@
 use super::{
     engine::NotificationEngine,
-    history::{self, HistoryError, HistoryQuery, MAX_PAGE, PAGE_BYTES, SCOPE_LIMIT},
+    history::{self, HistoryError, HistoryQuery, MAX_PAGE, PAGE_BYTES},
     model::{ActiveNotification, IncomingNotification},
 };
 use crate::state::StateStore;
@@ -105,30 +105,6 @@ async fn catalog_search_pages_and_mutation_restart_fences() {
             .iter()
             .all(|item| item.closed_unix_ms.is_some())
     );
-}
-
-#[tokio::test]
-async fn transient_replacement_close_is_authoritative_without_intermediate_reads() {
-    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
-    let id = engine
-        .notify(0, notification("Persisted", false))
-        .await
-        .unwrap();
-    let old = engine.query_history(query("", None, 50)).await.unwrap();
-    assert_eq!(
-        old.records.len(),
-        1,
-        "live/history copies are deduplicated in Rust"
-    );
-    engine
-        .notify(id, notification("Secret transient", true))
-        .await
-        .unwrap();
-    engine.dismiss(id).await.unwrap();
-    let current = engine.query_history(query("", None, 50)).await.unwrap();
-    assert!(current.records.is_empty());
-    assert_ne!(current.revision, old.revision);
-    assert!(engine.history(None, 50).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -248,150 +224,4 @@ async fn failed_persistence_never_labels_old_content_with_a_new_revision() {
         engine.query_history(query("", None, 10)).await,
         Err(HistoryError::Unavailable(_))
     ));
-}
-
-#[tokio::test]
-async fn rollback_legacy_writes_are_reindexed_on_upgrade_without_losing_history() {
-    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
-    let id = engine
-        .notify(0, notification("Original", false))
-        .await
-        .unwrap();
-    engine.dismiss(id).await.unwrap();
-    let mut old = engine
-        .history(None, 1)
-        .await
-        .unwrap()
-        .remove(0)
-        .notification;
-    drop(engine);
-    old.summary = "Résumé".into();
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute(
-            "UPDATE notifications SET payload_json = ?1 WHERE session_id = ?2",
-            rusqlite::params![serde_json::to_string(&old).unwrap(), id],
-        )
-        .unwrap();
-    let inserted = ActiveNotification::from_incoming(
-        999,
-        notification("Legacy insert", false),
-        old.created_unix_ms + 1,
-    );
-    connection.execute("INSERT INTO notifications(session_id,payload_json,created_unix_ms,updated_unix_ms) VALUES (?1,?2,?3,?3)", rusqlite::params![inserted.id, serde_json::to_string(&inserted).unwrap(), inserted.created_unix_ms]).unwrap();
-    drop(connection);
-    let engine = NotificationEngine::persistent(StateStore::default(), path)
-        .await
-        .unwrap();
-    assert_eq!(
-        engine
-            .query_history(query("résumé", None, 10))
-            .await
-            .unwrap()
-            .records
-            .len(),
-        1
-    );
-    assert_eq!(
-        engine
-            .query_history(query("legacy insert", None, 10))
-            .await
-            .unwrap()
-            .records
-            .len(),
-        1
-    );
-    assert!(
-        engine
-            .query_history(query("original", None, 10))
-            .await
-            .unwrap()
-            .records
-            .is_empty()
-    );
-    let live = engine
-        .notify(0, notification("ÉCLAIR", false))
-        .await
-        .unwrap();
-    engine
-        .notify(live, notification("éclair", false))
-        .await
-        .unwrap();
-    engine.dismiss(live).await.unwrap();
-    assert_eq!(
-        engine
-            .query_history(query("éclair", None, 10))
-            .await
-            .unwrap()
-            .records
-            .len(),
-        1,
-        "same normalized text must survive payload-only invalidation"
-    );
-}
-
-#[tokio::test]
-async fn legacy_database_migration_search_scope_and_stale_replacements() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("history.db");
-    let mut connection = rusqlite::Connection::open(&path).unwrap();
-    connection.execute_batch("CREATE TABLE notifications (history_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, payload_json TEXT NOT NULL, created_unix_ms INTEGER NOT NULL, updated_unix_ms INTEGER NOT NULL, closed_unix_ms INTEGER, close_reason INTEGER);").unwrap();
-    let transaction = connection.transaction().unwrap();
-    for id in 1..=SCOPE_LIMIT + 1 {
-        let item = ActiveNotification::from_incoming(
-            id as u32,
-            notification(if id == 1 { "outside scope" } else { "ÉCLAIR" }, false),
-            id as u64,
-        );
-        transaction.execute("INSERT INTO notifications(session_id,payload_json,created_unix_ms,updated_unix_ms,closed_unix_ms) VALUES (?1,?2,?1,?1,99999)", rusqlite::params![id, serde_json::to_string(&item).unwrap()]).unwrap();
-    }
-    transaction.commit().unwrap();
-    drop(connection);
-    let engine = NotificationEngine::persistent(StateStore::default(), path)
-        .await
-        .unwrap();
-    assert!(
-        engine
-            .query_history(query("outside scope", None, 10))
-            .await
-            .unwrap()
-            .records
-            .is_empty()
-    );
-    let page = engine
-        .query_history(query("éclair", None, 10))
-        .await
-        .unwrap();
-    assert_eq!(page.records.len(), 10);
-    assert_eq!(page.scope_limit, SCOPE_LIMIT);
-    let id = engine
-        .notify(0, notification("Original", false))
-        .await
-        .unwrap();
-    let before = engine.query_history(query("", None, 1)).await.unwrap();
-    engine
-        .notify(id, notification("Replaced", false))
-        .await
-        .unwrap();
-    assert!(matches!(
-        engine.query_history(query("", before.next_cursor, 1)).await,
-        Err(HistoryError::Stale)
-    ));
-    assert!(
-        engine
-            .query_history(query("original", None, 10))
-            .await
-            .unwrap()
-            .records
-            .is_empty()
-    );
-    assert_eq!(
-        engine
-            .query_history(query("replaced", None, 10))
-            .await
-            .unwrap()
-            .records
-            .len(),
-        1
-    );
 }

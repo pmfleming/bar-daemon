@@ -9,48 +9,28 @@ use crate::{
     brightness::BrightnessService,
     hyprland,
     media::{self, MediaService},
-    osd_hardware, power, sleep,
+    osd_hardware, power,
+    protocol::stream::{
+        ACTIVITY, AUDIO, BATTERY, BRIGHTNESS, COMPOSITOR, DISPLAY_POLICY, MEDIA,
+        NOTIFICATION_ACTIVE, NOTIFICATIONS, OSD_HARDWARE, POWER_PROFILE, POWER_SLEEP, SLEEP_POLICY,
+        TIMEZONE, UPDATES, WORKAREA, WORKSPACES,
+    },
+    sleep,
     state::StateStore,
     timezone, updates,
 };
 
 pub(super) struct MonitorTasks {
-    tasks: Monitors,
-}
-
-struct Monitors {
     group: TaskGroup,
     state: StateStore,
 }
 
-impl Monitors {
-    fn spawn(&self, name: &'static str, future: impl Future<Output = ()> + Send + 'static) {
-        let state = self.state.clone();
-        self.group.spawn(name, supervise(state, name, future));
-    }
-}
-
-async fn supervise(state: StateStore, name: &'static str, future: impl Future<Output = ()>) {
-    use crate::protocol::stream::*;
-    let domains: &[&str] = match name {
-        "activity" => &[ACTIVITY],
-        "hyprland" => &[WORKSPACES],
-        "work-area" => &[WORKAREA],
-        "compositor-preferences" => &[COMPOSITOR],
-        "media" => &[MEDIA],
-        "audio" => &[AUDIO],
-        "brightness" => &[BRIGHTNESS],
-        "osd-hardware" => &[OSD_HARDWARE],
-        "battery" => &[BATTERY],
-        "power" => &[POWER_PROFILE],
-        "sleep" => &[POWER_SLEEP],
-        "sleep-policy" | "lid" | "critical-battery" => &[SLEEP_POLICY],
-        "display-policy" => &[DISPLAY_POLICY],
-        "updates" => &[UPDATES],
-        "timezone" => &[TIMEZONE],
-        "notifications" => &[NOTIFICATIONS, NOTIFICATION_ACTIVE],
-        _ => unreachable!("monitor must declare its domains"),
-    };
+async fn supervise(
+    state: StateStore,
+    name: &'static str,
+    domains: &'static [&'static str],
+    future: impl Future<Output = ()>,
+) {
     tracing::info!(monitor = name, available = true, "bar monitor started");
     let reason = match AssertUnwindSafe(future).catch_unwind().await {
         Ok(()) => "exited",
@@ -60,6 +40,16 @@ async fn supervise(state: StateStore, name: &'static str, future: impl Future<Ou
 }
 
 impl MonitorTasks {
+    fn add(
+        &self,
+        name: &'static str,
+        domains: &'static [&'static str],
+        future: impl Future<Output = ()> + Send + 'static,
+    ) {
+        self.group
+            .spawn(name, supervise(self.state.clone(), name, domains, future));
+    }
+
     pub(super) fn spawn(
         state: StateStore,
         activity: Arc<ActivityService>,
@@ -68,52 +58,76 @@ impl MonitorTasks {
         brightness: BrightnessService,
         connection: zbus::Connection,
     ) -> Self {
-        let tasks = Monitors {
+        let tasks = Self {
             group: TaskGroup::default(),
             state: state.clone(),
         };
-        tasks.spawn("activity", activity.monitor());
-        tasks.spawn("hyprland", hyprland::monitor(state.clone()));
-        tasks.spawn("work-area", crate::work_area::monitor(state.clone()));
-        tasks.spawn(
+        tasks.add("activity", &[ACTIVITY], activity.monitor());
+        tasks.add("hyprland", &[WORKSPACES], hyprland::monitor(state.clone()));
+        tasks.add(
+            "work-area",
+            &[WORKAREA],
+            crate::work_area::monitor(state.clone()),
+        );
+        tasks.add(
             "compositor-preferences",
+            &[COMPOSITOR],
             crate::compositor::monitor(state.clone()),
         );
-        tasks.spawn("media", media::monitor(state.clone(), media));
-        tasks.spawn("audio", audio::monitor(state.clone()));
-        tasks.spawn("brightness", brightness.monitor());
-        tasks.spawn("osd-hardware", osd_hardware::monitor(state.clone()));
-        tasks.spawn(
+        tasks.add("media", &[MEDIA], media::monitor(state.clone(), media));
+        tasks.add("audio", &[AUDIO], audio::monitor(state.clone()));
+        tasks.add("brightness", &[BRIGHTNESS], brightness.monitor());
+        tasks.add(
+            "osd-hardware",
+            &[OSD_HARDWARE],
+            osd_hardware::monitor(state.clone()),
+        );
+        tasks.add(
             "battery",
+            &[BATTERY],
             battery::monitor(state.clone(), notifications.sink()),
         );
-        tasks.spawn("power", power::monitor(state.clone()));
-        tasks.spawn("sleep", sleep::monitor(state.clone()));
-        tasks.spawn("sleep-policy", crate::sleep_policy::monitor(state.clone()));
-        tasks.spawn("lid", crate::sleep_policy::lid::monitor(state.clone()));
-        tasks.spawn(
+        tasks.add("power", &[POWER_PROFILE], power::monitor(state.clone()));
+        tasks.add("sleep", &[POWER_SLEEP], sleep::monitor(state.clone()));
+        tasks.add(
+            "sleep-policy",
+            &[SLEEP_POLICY],
+            crate::sleep_policy::monitor(state.clone()),
+        );
+        tasks.add(
+            "lid",
+            &[SLEEP_POLICY],
+            crate::sleep_policy::lid::monitor(state.clone()),
+        );
+        tasks.add(
             "critical-battery",
+            &[SLEEP_POLICY],
             crate::sleep_policy::critical::monitor(state.clone(), notifications.sink()),
         );
-        tasks.spawn(
+        tasks.add(
             "display-policy",
+            &[DISPLAY_POLICY],
             crate::display_policy::monitor(state.clone()),
         );
-        tasks.spawn("updates", updates::monitor(state.clone()));
-        tasks.spawn("timezone", timezone::monitor(state.clone()));
-        tasks.spawn("notifications", notifications.monitor(state, connection));
-        Self { tasks }
+        tasks.add("updates", &[UPDATES], updates::monitor(state.clone()));
+        tasks.add("timezone", &[TIMEZONE], timezone::monitor(state.clone()));
+        tasks.add(
+            "notifications",
+            &[NOTIFICATIONS, NOTIFICATION_ACTIVE],
+            notifications.monitor(state, connection),
+        );
+        tasks
     }
 
     pub(super) async fn shutdown(&self) {
-        self.tasks.group.shutdown().await;
+        self.group.shutdown().await;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{model::AudioState, protocol::stream};
+    use super::supervise;
+    use crate::{model::AudioState, protocol::stream, state::StateStore};
 
     #[tokio::test]
     async fn panic_and_early_exit_are_sticky_unavailable_without_killing_other_domains() {
@@ -127,7 +141,7 @@ mod tests {
                 .await;
             let mut audio = state.subscribe_domains(&[stream::AUDIO]);
             let mut battery = state.subscribe_domains(&[stream::BATTERY]);
-            supervise(state.clone(), "audio", async move {
+            supervise(state.clone(), "audio", &[stream::AUDIO], async move {
                 assert!(!panic, "injected monitor panic");
             })
             .await;

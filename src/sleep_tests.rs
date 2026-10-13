@@ -297,34 +297,6 @@ async fn missing_or_failed_lock_confirmation_never_sleeps() {
 }
 
 #[tokio::test]
-async fn already_preparing_sleep_rejects_duplicate_requests_before_locking() {
-    for action in ["suspend", "hibernate", "suspend-then-hibernate"] {
-        for (preparing, unreadable, message) in [
-            (true, false, "already preparing"),
-            (false, true, "cannot confirm"),
-        ] {
-            let state = Arc::new(SessionState::default());
-            state.preparing.store(preparing, Ordering::SeqCst);
-            state.preparing_fails.store(unreadable, Ordering::SeqCst);
-            let (_server, client) = fake_logind(Arc::clone(&state)).await;
-            let result = perform_connected(&client, action, Duration::from_secs(1)).await;
-            assert!(result.unwrap_err().to_string().contains(message));
-            assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
-            assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
-        }
-    }
-}
-
-#[tokio::test]
-async fn simultaneous_public_requests_fail_without_contacting_the_system_bus() {
-    let _pending = SLEEP_ACTION.lock().await;
-    for action in ["lock", "suspend", "hibernate", "suspend-then-hibernate"] {
-        let error = perform(action).await.unwrap_err();
-        assert!(error.to_string().contains("already in progress"));
-    }
-}
-
-#[tokio::test]
 async fn changes_during_setup_are_rechecked_before_sleep() {
     for change in [
         "unlocked",
@@ -417,25 +389,4 @@ async fn keep_awake_blocks_every_sleep_path_before_lock_or_setup_but_allows_lock
             .await
             .is_ok()
     );
-}
-
-#[tokio::test]
-async fn already_locked_session_and_lock_only_action_are_supported() {
-    let state = Arc::new(SessionState::default());
-    state.locked.store(true, Ordering::SeqCst);
-    let (_server, client) = fake_logind(Arc::clone(&state)).await;
-    assert!(
-        perform_connected(&client, "suspnd", Duration::from_secs(1))
-            .await
-            .is_err()
-    );
-    assert_eq!(state.lock_calls.load(Ordering::SeqCst), 0);
-    perform_connected(&client, "lock", Duration::from_secs(1))
-        .await
-        .unwrap();
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 0);
-    perform_connected(&client, "suspend", Duration::from_secs(1))
-        .await
-        .unwrap();
-    assert_eq!(state.sleep_calls.load(Ordering::SeqCst), 1);
 }

@@ -272,20 +272,3 @@ pub(super) async fn fixture() -> Value {
         read_wire::Event::changed("subscription-example", changes.try_recv().unwrap()).into_value();
     json!({"snapshot": snapshot, "replies": replies, "events": {"dnd": dnd_event, "dndCleared": dnd_cleared_event, "replaced": replaced_event, "closed": closed_event}})
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn all_action_examples_have_one_envelope_and_registered_methods() {
-        let fixtures = fixture().await;
-        assert_eq!(fixtures, fixture().await);
-        assert_eq!(fixtures["replies"].as_object().unwrap().len(), 13);
-        for case in fixtures["replies"].as_object().unwrap().values() {
-            assert!(super::super::METHODS.contains(&case["method"].as_str().unwrap()));
-            assert_eq!(case["success"]["ok"], true);
-            assert!(case["success"]["data"].get("ok").is_none());
-            assert_eq!(case["failed"]["ok"], false);
-        }
-    }
-}

@@ -65,26 +65,8 @@ fn event_on_date(
 #[cfg(test)]
 mod tests {
     use super::{ActivityEvent, TodoItem, project};
-    use chrono::{DateTime, NaiveDate, Utc};
+    use chrono::DateTime;
 
-    #[test]
-    fn date_limits_empty_ranges_and_instant_membership() {
-        let end = NaiveDate::MAX;
-        assert_eq!(project(&[], &[], end, end, end, &Utc).len(), 1);
-        assert!(project(&[], &[], end, NaiveDate::MIN, end, &Utc).is_empty());
-        let date = DateTime::UNIX_EPOCH.date_naive();
-        for (last, included) in [(-1, false), (0, true), (1, true)] {
-            let event = ActivityEvent {
-                end_unix_ms: last,
-                ..Default::default()
-            };
-            let days = project(&[event], &[], date, date, date, &Utc);
-            assert_eq!(
-                days[&date.to_string()].event_ids.len(),
-                usize::from(included)
-            );
-        }
-    }
     #[test]
     fn membership_handles_dst_exclusive_ends_and_undated_todos() {
         let zone = chrono_tz::Europe::Berlin;

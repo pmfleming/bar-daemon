@@ -83,26 +83,23 @@ esac
         self.assertFalse((self.out / "status.tsv").exists())
         self.assertFalse((self.out / "complete.txt").exists())
 
-    def test_partial_policy_is_not_certified_but_evidence_is_preserved(self):
-        self.env["POLICY_STATUS"] = "1"
-        self.assertEqual(self.run_script().returncode, 1)
-        self.assertFalse((self.out / "complete.txt").exists())
-        self.assertTrue((self.out / "analysis/policy_report.json").exists())
-        self.assertIn("policy\t1", (self.out / "status.tsv").read_text())
-
-    def test_prior_failure_survives_passing_policy_and_tee(self):
-        for variable in ["FIXTURE_STATUS", "VERIFY_STATUS"]:
-            with self.subTest(variable=variable):
-                self.env[variable] = "7"
+    def test_any_failed_phase_preserves_evidence_without_certifying_success(self):
+        for variable, phase, code in [
+            ("FIXTURE_STATUS", "fixtures", 7),
+            ("VERIFY_STATUS", "verify", 7),
+            ("POLICY_STATUS", "policy", 1),
+        ]:
+            with self.subTest(phase=phase):
+                self.env[variable] = str(code)
                 self.env["QUALITY_EVIDENCE_DIR"] = str(self.root / variable)
                 result = self.run_script()
                 out = Path(self.env["QUALITY_EVIDENCE_DIR"])
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertFalse((out / "complete.txt").exists())
-                statuses = (out / "status.tsv").read_text()
-                self.assertIn("\t7\n", statuses)
-                self.assertIn("policy\t0", statuses)
-                self.assertIn("report\t0", statuses)
+                self.assertTrue((out / "analysis/policy_report.json").exists())
+                self.assertEqual((out / "status.tsv").read_text().splitlines(),
+                                 [f"{name}\t{code if name == phase else 0}" for name in
+                                  ["fixtures", "verify", "measure", "policy", "report"]])
                 del self.env[variable]
 
 

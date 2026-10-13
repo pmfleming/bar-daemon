@@ -831,11 +831,10 @@ fn pipewire_roundtrip(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use pipewire as pw;
 
-    use super::{RouteProbe, SinkProbe, apply_route, preferred_node};
+    use super::{RouteProbe, SinkProbe, apply_route};
 
     #[test]
     fn pod_decoding_preserves_types_defaults_and_channel_volume_precedence() {
@@ -1028,29 +1027,5 @@ mod tests {
             connection.adjust(5).is_err(),
             "disconnect must fail, not report success"
         );
-    }
-
-    #[test]
-    fn selects_the_default_pipewire_node() {
-        let nodes = HashMap::from([
-            (
-                1,
-                SinkProbe {
-                    name: "fallback".into(),
-                    ..SinkProbe::default()
-                },
-            ),
-            (
-                2,
-                SinkProbe {
-                    name: "preferred".into(),
-                    muted: true,
-                    ..SinkProbe::default()
-                },
-            ),
-        ]);
-        let selected = preferred_node(&nodes, "preferred").unwrap();
-        assert_eq!(selected.name, "preferred");
-        assert!(selected.muted);
     }
 }

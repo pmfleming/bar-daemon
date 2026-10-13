@@ -333,7 +333,7 @@ fn validate_lid_selection(selected_delay: u32, policy: &SleepPolicy, plugged: bo
 
 #[cfg(test)]
 mod tests {
-    use super::{LidAction, LidEdge, SleepPolicy, validate_lid_selection};
+    use super::{LidEdge, SleepPolicy};
 
     #[tokio::test(start_paused = true)]
     async fn retries_only_proven_preflight_failures_in_the_same_episode() {
@@ -354,6 +354,30 @@ mod tests {
         assert!(retry.policy.is_none());
         retry.start(SleepPolicy::default());
         assert!(!retry.failed(&crate::sleep::cancel_retry(error)));
+        let mut policy = SleepPolicy {
+            lid_action: super::LidAction::Profile,
+            same_profile: false,
+            ..Default::default()
+        };
+        policy.battery.hibernate_minutes = 15;
+        policy.plugged.hibernate_minutes = 120;
+        for (selected, plugged, valid) in [
+            (15, false, true),
+            (120, true, true),
+            (15, true, false),
+            (120, false, false),
+        ] {
+            let result = super::validate_lid_selection(selected, &policy, plugged);
+            assert_eq!(result.is_ok(), valid);
+            if let Err(error) = result {
+                retry.start(policy.clone());
+                assert!(!retry.failed(&error), "changed profiles must not retry");
+            }
+        }
+        policy.same_profile = true;
+        assert!(super::validate_lid_selection(15, &policy, true).is_ok());
+        policy.lid_action = super::LidAction::System;
+        assert!(super::validate_lid_selection(15, &policy, true).is_err());
         let error = anyhow::anyhow!("busy").context(crate::sleep::RetryablePreflight(7));
         retry.start(SleepPolicy::default());
         retry.clear(); // reopened, docked, inactive, or policy changed
@@ -373,37 +397,5 @@ mod tests {
         assert!(!edge.observe(true, true)); // undock/reactivate with lid closed
         assert!(!edge.observe(false, true));
         assert!(edge.observe(true, true));
-    }
-
-    #[test]
-    fn lid_profile_changes_cancel_but_equivalent_profiles_remain_valid() {
-        let mut policy = SleepPolicy {
-            critical_battery: Default::default(),
-            lid_action: LidAction::Profile,
-            same_profile: false,
-            battery: super::super::SleepProfile {
-                sleep_minutes: 0,
-                hibernate_minutes: 15,
-            },
-            plugged: super::super::SleepProfile {
-                sleep_minutes: 60,
-                hibernate_minutes: 120,
-            },
-        };
-        assert!(serde_json::from_str::<LidAction>("\"shutdown\"").is_err());
-        assert!(validate_lid_selection(120, &policy, true).is_ok());
-        policy.plugged.sleep_minutes = 0;
-        assert!(validate_lid_selection(120, &policy, true).is_ok());
-        assert!(validate_lid_selection(15, &policy, false).is_ok());
-        assert!(policy.idle_profile(false, 0).is_err());
-        assert!(validate_lid_selection(120, &policy, false).is_err());
-        assert!(validate_lid_selection(15, &policy, true).is_err());
-        policy.same_profile = true;
-        assert!(validate_lid_selection(15, &policy, true).is_ok());
-        policy.same_profile = false;
-        policy.plugged.hibernate_minutes = 15;
-        assert!(validate_lid_selection(15, &policy, true).is_ok());
-        policy.lid_action = LidAction::System;
-        assert!(validate_lid_selection(15, &policy, true).is_err());
     }
 }

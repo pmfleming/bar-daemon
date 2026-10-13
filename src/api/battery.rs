@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use super::decode_request;
+
 use crate::{
     battery::{self, config},
     model::BatteryProfileAction,
@@ -10,6 +12,8 @@ use crate::protocol::battery_wire::{
     self, AlertPolicyRequest, BatteryRequest, ErrorCode, InhibitionRequest, ProtectionRequest,
     ThresholdRequest, error,
 };
+
+type Response = Result<Value, Value>;
 
 impl AlertPolicyRequest {
     pub(crate) fn apply_to(self, config: &mut config::BatteryConfig) -> anyhow::Result<()> {
@@ -51,24 +55,32 @@ impl BatteryApi {
         Self { state }
     }
 
-    pub(super) fn battery_history(&self) -> Value {
-        battery_wire::history(battery::history_snapshot())
+    pub(super) async fn dispatch(&self, method: &str, params: Value) -> Value {
+        let result = match method {
+            "battery.history" => Ok(battery_wire::history(battery::history_snapshot())),
+            "battery.setThresholds" => self.battery_set_thresholds(params).await,
+            "battery.setProtection" => self.battery_set_protection(params).await,
+            "battery.chargeOnce" => self.battery_charge_once(params).await,
+            "battery.setChargingInhibited" => self.battery_set_charging_inhibited(params).await,
+            "battery.startCalibration" => self.battery_start_calibration(params).await,
+            "battery.cancelCalibration" => self.battery_cancel_calibration(params).await,
+            "battery.setAlertPolicy" => self.battery_set_alert_policy(params).await,
+            _ => Err(super::unsupported_method(method)),
+        };
+        result.unwrap_or_else(|response| response)
     }
 
-    pub(super) async fn battery_set_thresholds(&self, params: Value) -> Value {
-        let request = request!(params, ThresholdRequest, "battery.setThresholds");
+    async fn battery_set_thresholds(&self, params: Value) -> Response {
+        let request: ThresholdRequest = decode_request(params, "battery.setThresholds")?;
         if !valid_thresholds(request.start_percent, request.end_percent) {
-            return error(
+            return Err(error(
                 ErrorCode::ValidationError,
                 "battery start_percent must be lower than end_percent",
-            );
+            ));
         }
 
         let _guard = battery::lock_effects().await;
-        let previous_config = match editable_policy().await {
-            Ok(config) => config,
-            Err(response) => return response,
-        };
+        let previous_config = editable_policy().await?;
         let mut next_config = previous_config.clone();
         let protection_active = {
             let device = next_config.device_mut(&request.battery_id);
@@ -95,23 +107,13 @@ impl BatteryApi {
         }
     }
 
-    pub(super) async fn battery_set_protection(&self, params: Value) -> Value {
-        let request = request!(params, ProtectionRequest, "battery.setProtection");
-        let requested_thresholds =
-            match optional_thresholds(request.start_percent, request.end_percent) {
-                Ok(value) => value,
-                Err(message) => return error(ErrorCode::ValidationError, message),
-            };
+    async fn battery_set_protection(&self, params: Value) -> Response {
+        let request: ProtectionRequest = decode_request(params, "battery.setProtection")?;
+        let requested_thresholds = optional_thresholds(request.start_percent, request.end_percent)
+            .map_err(|message| error(ErrorCode::ValidationError, message))?;
         let _guard = battery::lock_effects().await;
-        let battery_id =
-            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
-                Ok(id) => id,
-                Err(response) => return response,
-            };
-        let previous_config = match editable_policy().await {
-            Ok(config) => config,
-            Err(response) => return response,
-        };
+        let battery_id = requested_battery_id(request.battery_id.as_deref(), &self.state).await?;
+        let previous_config = editable_policy().await?;
         let mut next_config = previous_config.clone();
         let device = next_config.device_mut(&battery_id);
         if let Some((start, end)) = requested_thresholds {
@@ -131,39 +133,24 @@ impl BatteryApi {
             .await
     }
 
-    pub(super) async fn battery_charge_once(&self, params: Value) -> Value {
-        let request = request!(params, BatteryRequest, "battery.chargeOnce");
+    async fn battery_charge_once(&self, params: Value) -> Response {
+        let request: BatteryRequest = decode_request(params, "battery.chargeOnce")?;
         let _guard = battery::lock_effects().await;
-        let snapshot = self.state.read(|s| s.battery.clone()).await;
-        if !snapshot.plugged {
-            return error(
-                ErrorCode::NotPlugged,
-                "battery.chargeOnce requires external power",
-            );
-        }
-        let device = match requested_device(request.battery_id.as_deref(), &snapshot) {
-            Ok(device) => device,
-            Err(response) => return response,
-        };
-        let battery_id = &device.id;
-        let (Some(restore_start), Some(restore_end)) = (
-            device.protection.start_percent,
-            device.protection.end_percent,
-        ) else {
-            return error(
-                ErrorCode::ProtectionUnsupported,
-                "battery.chargeOnce requires readable charge thresholds",
-            );
-        };
-        let previous_runtime = match config::load_runtime().await {
-            Ok(runtime) => runtime,
-            Err(error_value) => return error(ErrorCode::StateFailed, error_value.to_string()),
-        };
+        let (battery_id, restore_start, restore_end) = self
+            .state
+            .read(|s| {
+                require_power(&s.battery, "battery.chargeOnce")?;
+                let device = requested_device(request.battery_id.as_deref(), &s.battery)?;
+                let (start, end) = restoration_thresholds(device, "battery.chargeOnce")?;
+                Ok::<_, Value>((device.id.clone(), start, end))
+            })
+            .await?;
+        let previous_runtime = load_runtime().await?;
         if previous_runtime.has_durable_operation() {
-            return error(
+            return Err(error(
                 ErrorCode::OperationActive,
                 "another durable battery operation is already active",
-            );
+            ));
         }
         let mut runtime = config::BatteryRuntimeState::start_charge_once(
             crate::time::unix_ms(),
@@ -174,147 +161,108 @@ impl BatteryApi {
         runtime
             .authorization_uncertain_batteries
             .clone_from(&previous_runtime.authorization_uncertain_batteries);
-        if let Err(error_value) = config::save_runtime(&runtime).await {
-            return error(ErrorCode::StateFailed, error_value.to_string());
-        }
-        match battery::helper::set_thresholds(battery_id, 0, 100).await {
-            Ok(result) => self.hardware_response(battery_id, Some(result)).await,
-            Err(value) => rollback_runtime(&previous_runtime, value, "charge-once").await,
+        save_runtime(&runtime).await?;
+        match battery::helper::set_thresholds(&battery_id, 0, 100).await {
+            Ok(result) => self.hardware_response(&battery_id, Some(result)).await,
+            Err(value) => Err(rollback_runtime(&previous_runtime, value, "charge-once").await),
         }
     }
 
-    pub(super) async fn battery_set_charging_inhibited(&self, params: Value) -> Value {
-        let request = request!(params, InhibitionRequest, "battery.setChargingInhibited");
+    async fn battery_set_charging_inhibited(&self, params: Value) -> Response {
+        let request: InhibitionRequest = decode_request(params, "battery.setChargingInhibited")?;
         let _guard = battery::lock_effects().await;
-        let battery_id =
-            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
-                Ok(id) => id,
-                Err(response) => return response,
-            };
-        let snapshot = self.state.read(|s| s.battery.clone()).await;
-        if let Err(response) =
-            require_behaviour(&snapshot, &battery_id, "inhibit-charge", "inhibit charging")
-        {
-            return response;
-        }
-        let previous = match config::load_runtime().await {
-            Ok(runtime) => runtime,
-            Err(error_value) => return error(ErrorCode::StateFailed, error_value.to_string()),
-        };
-        let result = if request.enabled {
+        let battery_id = requested_battery_id(request.battery_id.as_deref(), &self.state).await?;
+        self.state
+            .read(|s| {
+                require_behaviour(
+                    &s.battery,
+                    &battery_id,
+                    "inhibit-charge",
+                    "inhibit charging",
+                )
+                .map(|_| ())
+            })
+            .await?;
+        let previous = load_runtime().await?;
+        if request.enabled {
             start_charging_inhibition(&battery_id, &previous).await
         } else {
             stop_charging_inhibition(&battery_id, previous).await
-        };
-        match result {
-            Ok(()) => self.hardware_response(&battery_id, None).await,
-            Err(response) => response,
-        }
-    }
-
-    pub(super) async fn battery_start_calibration(&self, params: Value) -> Value {
-        let request = request!(params, BatteryRequest, "battery.startCalibration");
-        let _guard = battery::lock_effects().await;
-        let battery_id =
-            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
-                Ok(id) => id,
-                Err(response) => return response,
-            };
-        let snapshot = self.state.read(|s| s.battery.clone()).await;
-        if !snapshot.plugged {
-            return error(
-                ErrorCode::NotPlugged,
-                "battery calibration requires external power",
-            );
-        }
-        let device =
-            match require_behaviour(&snapshot, &battery_id, "force-discharge", "force discharge") {
-                Ok(device) => device,
-                Err(response) => return response,
-            };
-        let (Some(restore_start), Some(restore_end)) = (
-            device.protection.start_percent,
-            device.protection.end_percent,
-        ) else {
-            return error(
-                ErrorCode::ProtectionUnsupported,
-                "battery calibration requires readable charge thresholds",
-            );
-        };
-        let previous = match config::load_runtime().await {
-            Ok(runtime) => runtime,
-            Err(error_value) => return error(ErrorCode::StateFailed, error_value.to_string()),
-        };
-        if let Err(response) =
-            begin_calibration(&battery_id, restore_start, restore_end, &previous).await
-        {
-            return response;
-        }
+        }?;
         self.hardware_response(&battery_id, None).await
     }
 
-    pub(super) async fn battery_cancel_calibration(&self, params: Value) -> Value {
-        let request = request!(params, BatteryRequest, "battery.cancelCalibration");
+    async fn battery_start_calibration(&self, params: Value) -> Response {
+        let request: BatteryRequest = decode_request(params, "battery.startCalibration")?;
         let _guard = battery::lock_effects().await;
-        let battery_id =
-            match requested_battery_id(request.battery_id.as_deref(), &self.state).await {
-                Ok(id) => id,
-                Err(response) => return response,
-            };
-        let mut runtime = match config::load_runtime().await {
-            Ok(runtime) => runtime,
-            Err(error_value) => return error(ErrorCode::StateFailed, error_value.to_string()),
-        };
+        let battery_id = requested_battery_id(request.battery_id.as_deref(), &self.state).await?;
+        let (restore_start, restore_end) = self
+            .state
+            .read(|s| {
+                require_power(&s.battery, "battery calibration")?;
+                let device = require_behaviour(
+                    &s.battery,
+                    &battery_id,
+                    "force-discharge",
+                    "force discharge",
+                )?;
+                restoration_thresholds(device, "battery calibration")
+            })
+            .await?;
+        let previous = load_runtime().await?;
+        begin_calibration(&battery_id, restore_start, restore_end, &previous).await?;
+        self.hardware_response(&battery_id, None).await
+    }
+
+    async fn battery_cancel_calibration(&self, params: Value) -> Response {
+        let request: BatteryRequest = decode_request(params, "battery.cancelCalibration")?;
+        let _guard = battery::lock_effects().await;
+        let battery_id = requested_battery_id(request.battery_id.as_deref(), &self.state).await?;
+        let mut runtime = load_runtime().await?;
         if runtime.operation != config::OperationKind::Calibration
             || runtime.operation_battery_id != battery_id
         {
-            return error(
+            return Err(error(
                 ErrorCode::OperationInactive,
                 format!("battery {battery_id} is not being calibrated"),
-            );
+            ));
         }
         // Persist cancellation before touching hardware. A failed restoration
         // must retry restoration on restart, never resume force-discharge.
         runtime.operation_phase = config::OperationPhase::Restoring;
-        if let Err(error_value) = config::save_runtime(&runtime).await {
-            return error(ErrorCode::StateFailed, error_value.to_string());
-        }
-        if let Err(error_value) = battery::helper::set_charge_behaviour(&battery_id, "auto").await {
-            return helper_error(error_value);
-        }
+        save_runtime(&runtime).await?;
+        battery::helper::set_charge_behaviour(&battery_id, "auto")
+            .await
+            .map_err(helper_error)?;
         let (Some(start), Some(end)) = (
             runtime.operation_restore_start_percent,
             runtime.operation_restore_end_percent,
         ) else {
-            return error(
+            return Err(error(
                 ErrorCode::StateFailed,
                 "calibration restoration thresholds are missing",
-            );
+            ));
         };
-        let result = match battery::helper::set_thresholds(&battery_id, start, end).await {
-            Ok(result) => result,
-            Err(error_value) => return helper_error(error_value),
-        };
-        if let Err(error_value) = runtime.complete_calibration_restoration(
-            result.actual_start_percent,
-            result.actual_end_percent,
-            result.verified,
-        ) {
-            return error(ErrorCode::OperationFailed, error_value.to_string());
-        }
-        if let Err(error_value) = config::save_runtime(&runtime).await {
-            return error(ErrorCode::StateFailed, error_value.to_string());
-        }
+        let result = battery::helper::set_thresholds(&battery_id, start, end)
+            .await
+            .map_err(helper_error)?;
+        runtime
+            .complete_calibration_restoration(
+                result.actual_start_percent,
+                result.actual_end_percent,
+                result.verified,
+            )
+            .map_err(|value| error(ErrorCode::OperationFailed, value.to_string()))?;
+        save_runtime(&runtime).await?;
         self.hardware_response(&battery_id, None).await
     }
 
-    pub(super) async fn battery_set_alert_policy(&self, params: Value) -> Value {
-        let request = request!(params, AlertPolicyRequest, "battery.setAlertPolicy");
+    async fn battery_set_alert_policy(&self, params: Value) -> Response {
+        let request: AlertPolicyRequest = decode_request(params, "battery.setAlertPolicy")?;
         let _guard = battery::lock_effects().await;
-        let mut next_config = match config::load_config().await {
-            Ok(config) => config,
-            Err(error_value) => return error(ErrorCode::ConfigFailed, error_value.to_string()),
-        };
+        let mut next_config = config::load_config()
+            .await
+            .map_err(|value| error(ErrorCode::ConfigFailed, value.to_string()))?;
         let requested_actions = [
             request
                 .warning_profile
@@ -323,30 +271,39 @@ impl BatteryApi {
                 .critical_profile
                 .filter(|action| *action != next_config.critical_profile()),
         ];
-        if let Err(error_value) = request.apply_to(&mut next_config) {
-            return error(ErrorCode::ValidationError, error_value.to_string());
-        }
+        request
+            .apply_to(&mut next_config)
+            .map_err(|value| error(ErrorCode::ValidationError, value.to_string()))?;
         // Keep-current is always valid, even if the profile service is offline.
-        let profiles = self.state.read(|s| s.power_profile.clone()).await;
-        for action in requested_actions.into_iter().flatten() {
-            if let Some(profile) = action.profile()
-                && profiles.available
-                && !profiles.profiles.iter().any(|item| item.name == profile)
-            {
-                return error(
-                    ErrorCode::ValidationError,
-                    format!("power profile is unavailable: {profile}"),
-                );
-            }
+        let unavailable = self
+            .state
+            .read(|s| {
+                requested_actions
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|action| action.profile())
+                    .find(|profile| {
+                        s.power_profile.available
+                            && !s
+                                .power_profile
+                                .profiles
+                                .iter()
+                                .any(|item| item.name == *profile)
+                    })
+            })
+            .await;
+        if let Some(profile) = unavailable {
+            return Err(error(
+                ErrorCode::ValidationError,
+                format!("power profile is unavailable: {profile}"),
+            ));
         }
         self.save_policy_change(next_config).await
     }
 
-    async fn save_policy_change(&self, next_config: config::BatteryConfig) -> Value {
-        if let Err(error_value) = config::save_config(&next_config).await {
-            return error(ErrorCode::ConfigFailed, error_value.to_string());
-        }
-        self.battery_response(None).await
+    async fn save_policy_change(&self, next_config: config::BatteryConfig) -> Response {
+        save_config(&next_config).await?;
+        Ok(self.battery_response(None).await)
     }
 
     async fn apply_policy_change(
@@ -356,35 +313,23 @@ impl BatteryApi {
         end: u8,
         previous_config: config::BatteryConfig,
         mut next_config: config::BatteryConfig,
-    ) -> Value {
-        if let Err(error_value) = config::save_config(&next_config).await {
-            return error(ErrorCode::ConfigFailed, error_value.to_string());
-        }
+    ) -> Response {
+        save_config(&next_config).await?;
         match battery::helper::set_thresholds(battery_id, start, end).await {
             Ok(result) => {
                 let device = next_config.device_mut(battery_id);
                 device.accepted_reported_start_percent = Some(result.actual_start_percent);
                 device.accepted_reported_end_percent = Some(result.actual_end_percent);
-                if let Err(error_value) = config::save_config(&next_config).await {
-                    return error(ErrorCode::ConfigFailed, error_value.to_string());
-                }
+                save_config(&next_config).await?;
                 self.hardware_response(battery_id, Some(result)).await
             }
             Err(error_value) => {
-                let uncertain = battery::authorization::is_unknown(&error_value);
-                if let Err(rollback_error) = config::save_config(&previous_config).await {
-                    return error(
-                        ErrorCode::OperationFailed,
-                        format!(
-                            "{error_value}; battery configuration rollback also failed: {rollback_error}"
-                        ),
-                    );
-                }
-                if uncertain {
-                    crate::api::error("outcome-unknown", error_value.to_string())
-                } else {
-                    error(ErrorCode::OperationFailed, error_value.to_string())
-                }
+                config::save_config(&previous_config).await.map_err(|rollback_error| {
+                    error(ErrorCode::OperationFailed, format!(
+                        "{error_value}; battery configuration rollback also failed: {rollback_error}"
+                    ))
+                })?;
+                Err(helper_error(error_value))
             }
         }
     }
@@ -395,20 +340,15 @@ impl BatteryApi {
         &self,
         battery_id: &str,
         result: Option<battery::helper::ThresholdWriteResult>,
-    ) -> Value {
-        let clear = async {
-            let mut runtime = config::load_runtime().await?;
-            runtime
-                .authorization_uncertain_batteries
-                .retain(|id| id != battery_id);
-            config::save_runtime(&runtime).await
-        }
-        .await;
-        if let Err(failure) = clear {
-            return error(ErrorCode::StateFailed, failure.to_string());
-        }
-        self.battery_response(result.map(|result| (battery_id, result)))
-            .await
+    ) -> Response {
+        let mut runtime = load_runtime().await?;
+        runtime
+            .authorization_uncertain_batteries
+            .retain(|id| id != battery_id);
+        save_runtime(&runtime).await?;
+        Ok(self
+            .battery_response(result.map(|result| (battery_id, result)))
+            .await)
     }
 
     async fn battery_response(
@@ -417,6 +357,49 @@ impl BatteryApi {
     ) -> Value {
         battery_wire::response(battery::refresh_state(&self.state).await, operation)
     }
+}
+
+async fn load_runtime() -> Result<config::BatteryRuntimeState, Value> {
+    config::load_runtime()
+        .await
+        .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))
+}
+
+async fn save_runtime(runtime: &config::BatteryRuntimeState) -> Result<(), Value> {
+    config::save_runtime(runtime)
+        .await
+        .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))
+}
+
+async fn save_config(config: &config::BatteryConfig) -> Result<(), Value> {
+    config::save_config(config)
+        .await
+        .map_err(|value| error(ErrorCode::ConfigFailed, value.to_string()))
+}
+
+fn require_power(battery: &crate::model::BatteryState, action: &str) -> Result<(), Value> {
+    battery.plugged.then_some(()).ok_or_else(|| {
+        error(
+            ErrorCode::NotPlugged,
+            format!("{action} requires external power"),
+        )
+    })
+}
+
+fn restoration_thresholds(
+    device: &crate::model::BatteryDeviceState,
+    action: &str,
+) -> Result<(u8, u8), Value> {
+    device
+        .protection
+        .start_percent
+        .zip(device.protection.end_percent)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::ProtectionUnsupported,
+                format!("{action} requires readable charge thresholds"),
+            )
+        })
 }
 
 fn require_behaviour<'a>(
@@ -484,9 +467,7 @@ async fn begin_calibration(
     );
     next.authorization_uncertain_batteries
         .clone_from(&previous.authorization_uncertain_batteries);
-    config::save_runtime(&next)
-        .await
-        .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))?;
+    save_runtime(&next).await?;
     if let Err(value) = battery::helper::set_thresholds(battery_id, 0, 100).await {
         return Err(rollback_runtime(previous, value, "calibration").await);
     }
@@ -568,9 +549,7 @@ async fn start_charging_inhibition(
         config::BatteryRuntimeState::start_inhibit(crate::time::unix_ms(), battery_id.to_string());
     next.authorization_uncertain_batteries
         .clone_from(&previous.authorization_uncertain_batteries);
-    config::save_runtime(&next)
-        .await
-        .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))?;
+    save_runtime(&next).await?;
     if let Err(value) = battery::helper::set_charge_behaviour(battery_id, "inhibit-charge").await {
         return Err(rollback_runtime(previous, value, "inhibition").await);
     }
@@ -593,9 +572,7 @@ async fn stop_charging_inhibition(
         .await
         .map_err(helper_error)?;
     runtime.clear_operation();
-    config::save_runtime(&runtime)
-        .await
-        .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))
+    save_runtime(&runtime).await
 }
 
 // Caller holds the battery effects lock through persistence and hardware writes.
@@ -603,9 +580,7 @@ async fn editable_policy() -> Result<config::BatteryConfig, Value> {
     let config = config::load_config()
         .await
         .map_err(|value| error(ErrorCode::ConfigFailed, value.to_string()))?;
-    let runtime = config::load_runtime()
-        .await
-        .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))?;
+    let runtime = load_runtime().await?;
     if runtime.has_durable_operation() {
         return Err(error(
             ErrorCode::OperationActive,
@@ -651,20 +626,12 @@ mod tests {
         let api = super::BatteryApi::new(crate::state::StateStore::default());
         for (method, case) in fixture["cases"].as_object().unwrap() {
             let params = serde_json::Value::Null;
-            let reply = match method.as_str() {
-                "battery.setThresholds" => api.battery_set_thresholds(params).await,
-                "battery.setProtection" => api.battery_set_protection(params).await,
-                "battery.chargeOnce" => api.battery_charge_once(params).await,
-                "battery.setChargingInhibited" => api.battery_set_charging_inhibited(params).await,
-                "battery.startCalibration" => api.battery_start_calibration(params).await,
-                "battery.cancelCalibration" => api.battery_cancel_calibration(params).await,
-                "battery.setAlertPolicy" => api.battery_set_alert_policy(params).await,
-                _ => panic!("uncovered battery contract {method}"),
-            };
+            let reply = api.dispatch(method, params).await;
             assert_eq!(reply, case["rejected"], "{method}");
         }
         assert_eq!(
-            api.battery_set_thresholds(
+            api.dispatch(
+                "battery.setThresholds",
                 serde_json::json!({"battery_id":"BAT0", "start_percent":80, "end_percent":60})
             )
             .await,
@@ -674,10 +641,7 @@ mod tests {
             )
         );
     }
-    use super::{
-        AlertPolicyRequest, ProtectionRequest, optional_thresholds, requested_device,
-        require_behaviour,
-    };
+    use super::{AlertPolicyRequest, requested_device, require_behaviour};
     use crate::{
         battery::config::BatteryConfig,
         model::{BatteryDeviceState, BatteryProfileAction, BatteryState},
@@ -764,20 +728,5 @@ mod tests {
             let request: AlertPolicyRequest = serde_json::from_value(value).unwrap();
             assert!(request.apply_to(&mut config).is_err());
         }
-    }
-
-    #[test]
-    fn protection_accepts_an_atomic_optional_range() {
-        let request: ProtectionRequest = serde_json::from_str(
-            r#"{"battery_id":"BAT0","enabled":true,"start_percent":70,"end_percent":85}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            optional_thresholds(request.start_percent, request.end_percent),
-            Ok(Some((70, 85)))
-        );
-        assert!(optional_thresholds(Some(80), Some(80)).is_err());
-        assert!(optional_thresholds(Some(70), None).is_err());
-        assert_eq!(optional_thresholds(None, None), Ok(None));
     }
 }

@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregates_batteries_by_energy() {
+    fn reads_weighted_batteries_and_protection_from_sysfs() {
         let directory = TempDir::new().unwrap();
         for (battery, now, full) in [("BAT0", "100", "200"), ("BAT1", "700", "800")] {
             write(directory.path(), battery, "type", "Battery\n");
@@ -386,19 +386,7 @@ mod tests {
             write(directory.path(), battery, "energy_now", now);
             write(directory.path(), battery, "energy_full", full);
         }
-        let state = PowerSupplyFs::new(directory.path().into())
-            .read_state()
-            .unwrap();
-        assert_eq!(state.percentage, 80);
-        assert_eq!(state.state, "discharging");
-    }
 
-    #[test]
-    fn exposes_thinkpad_protection_capabilities() {
-        let directory = TempDir::new().unwrap();
-        write(directory.path(), "BAT0", "type", "Battery\n");
-        write(directory.path(), "BAT0", "status", "Not charging\n");
-        write(directory.path(), "BAT0", "capacity", "80\n");
         write(
             directory.path(),
             "BAT0",
@@ -420,6 +408,8 @@ mod tests {
         let state = PowerSupplyFs::new(directory.path().into())
             .read_state()
             .unwrap();
+        assert_eq!(state.percentage, 80);
+        assert_eq!(state.state, "discharging");
         assert!(state.protection.supported);
         assert!(state.protection.enabled);
         assert_eq!(state.protection.start_percent, Some(75));

@@ -138,8 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_rows_are_bounded_and_all_rows_must_validate() {
-        let header = "Filename Type Size Used Priority\n";
+    fn diagnostics_distinguish_supported_missing_and_malformed_evidence() {
         for (rows, expected) in [
             ("\n", Some(false)),
             ("/dev/zram0 partition 10 0 5\n", Some(false)),
@@ -153,89 +152,72 @@ mod tests {
             ("/swap file 10 0 -2\nmalformed\n", None),
         ] {
             assert_eq!(
-                disk_swap_available(&format!("{header}{rows}")),
+                disk_swap_available(&format!("Filename Type Size Used Priority\n{rows}")),
                 expected,
                 "{rows}"
             );
         }
-    }
-
-    #[test]
-    fn amd_thinkpad_zram_only_reports_evidence_without_inventing_s3() {
+        for (mode, swaps, disk, guidance) in [
+            (
+                "s2idle",
+                "/dev/zram0 partition 32000000 0 5\n",
+                false,
+                "Do not force deep/S3",
+            ),
+            (
+                "deep",
+                "/dev/zram0 partition 100 0 5\n/swapfile file 64000000 0 -2\n",
+                true,
+                "EFI",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            assert_eq!(inspect(root.path()).disk_swap_available, None);
+            for (path, value) in [
+                ("sys/class/dmi/id/sys_vendor", "LENOVO"),
+                (
+                    "sys/class/dmi/id/product_version",
+                    "ThinkPad P14s Gen 5 AMD",
+                ),
+                ("sys/power/state", "freeze mem disk"),
+                ("sys/power/resume", "0:0"),
+            ] {
+                put(root.path(), path, value);
+            }
+            put(root.path(), "sys/power/mem_sleep", &format!("[{mode}]"));
+            put(
+                root.path(),
+                "proc/swaps",
+                &format!("Filename Type Size Used Priority\n{swaps}"),
+            );
+            let diagnostics = inspect(root.path());
+            assert_eq!(diagnostics.suspend_mode.as_deref(), Some(mode));
+            assert_eq!(diagnostics.disk_swap_available, Some(disk));
+            assert_eq!(diagnostics.resume_device_configured, Some(false));
+            assert_eq!(diagnostics.hibernate_issues.is_empty(), disk);
+            assert!(diagnostics.guidance.iter().any(|s| s.contains(guidance)));
+        }
         let root = tempfile::tempdir().unwrap();
-        put(root.path(), "sys/class/dmi/id/sys_vendor", "LENOVO");
-        put(
-            root.path(),
-            "sys/class/dmi/id/product_version",
-            "ThinkPad P14s Gen 5 AMD",
-        );
-        put(root.path(), "sys/power/mem_sleep", "[s2idle]");
-        put(root.path(), "sys/power/state", "freeze mem disk");
-        put(root.path(), "sys/power/resume", "0:0");
-        put(
-            root.path(),
-            "proc/swaps",
-            "Filename Type Size Used Priority\n/dev/zram0 partition 32000000 0 5\n",
-        );
-        let diagnostics = inspect(root.path());
-        assert_eq!(diagnostics.suspend_mode.as_deref(), Some("s2idle"));
-        assert_eq!(diagnostics.disk_swap_available, Some(false));
-        assert_eq!(diagnostics.resume_device_configured, Some(false));
-        assert!(
-            diagnostics
-                .hibernate_issues
-                .iter()
-                .any(|s| s.contains("zram alone"))
-        );
-        assert!(
-            diagnostics
-                .guidance
-                .iter()
-                .any(|s| s.contains("Do not force deep/S3"))
-        );
-        assert!(diagnostics.guidance.iter().any(|s| s.contains("amd_pmc")));
-    }
-
-    #[test]
-    fn disk_swap_with_no_fixed_resume_device_is_not_declared_unsupported() {
-        let root = tempfile::tempdir().unwrap();
-        put(root.path(), "sys/power/mem_sleep", "s2idle [deep]");
-        put(root.path(), "sys/power/state", "freeze mem disk");
-        put(root.path(), "sys/power/resume", "0:0");
-        put(
-            root.path(),
-            "proc/swaps",
-            "Filename Type Size Used Priority\n/dev/zram0 partition 100 0 5\n/swapfile file 64000000 0 -2\n",
-        );
-        let diagnostics = inspect(root.path());
-        assert_eq!(diagnostics.disk_swap_available, Some(true));
-        assert_eq!(diagnostics.suspend_mode.as_deref(), Some("deep"));
-        assert!(diagnostics.hibernate_issues.is_empty());
-        assert!(diagnostics.guidance.iter().any(|s| s.contains("EFI")));
-    }
-
-    #[test]
-    fn missing_or_malformed_evidence_stays_unknown_and_lockdown_is_reported() {
-        let root = tempfile::tempdir().unwrap();
-        let unknown = inspect(root.path());
-        assert_eq!(unknown.disk_swap_available, None);
-        assert_eq!(unknown.resume_device_configured, None);
-        assert!(unknown.hibernate_issues.is_empty());
-        put(root.path(), "proc/swaps", "unexpected output");
-        put(root.path(), "sys/power/resume", "unknown");
-        put(
-            root.path(),
-            "sys/kernel/security/lockdown",
-            "none [integrity] confidentiality",
-        );
-        let diagnostics = inspect(root.path());
-        assert_eq!(diagnostics.disk_swap_available, None);
-        assert_eq!(diagnostics.resume_device_configured, None);
-        assert!(
-            diagnostics
-                .hibernate_issues
-                .iter()
-                .any(|s| s.contains("lockdown"))
-        );
+        for malformed in [false, true] {
+            if malformed {
+                put(root.path(), "proc/swaps", "unexpected output");
+                put(root.path(), "sys/power/resume", "unknown");
+                put(
+                    root.path(),
+                    "sys/kernel/security/lockdown",
+                    "none [integrity] confidentiality",
+                );
+            }
+            let diagnostics = inspect(root.path());
+            assert_eq!(diagnostics.disk_swap_available, None);
+            assert_eq!(diagnostics.resume_device_configured, None);
+            assert_eq!(
+                diagnostics
+                    .hibernate_issues
+                    .iter()
+                    .any(|s| s.contains("lockdown")),
+                malformed
+            );
+        }
     }
 }

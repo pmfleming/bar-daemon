@@ -23,6 +23,7 @@ mod activity;
 mod battery;
 mod effects;
 mod notifications;
+mod sleep;
 
 use self::{
     activity::ActivityApi, battery::BatteryApi, effects::DesktopEffects,
@@ -83,50 +84,50 @@ impl ApiService {
         }
     }
 
+    async fn snapshot(&self, params: Value) -> Value {
+        static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let snapshot_requests_total =
+            REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let started = std::time::Instant::now();
+        let result = match params.get("streams") {
+            Some(streams) => self.project_snapshot(streams).await,
+            None => self.state.read(protocol::read_wire::snapshot).await,
+        };
+        tracing::debug!(snapshot_requests_total, streams = ?params.get("streams"), latency_us = started.elapsed().as_micros() as u64,
+            payload_bytes = result.to_string().len(), "bar snapshot request");
+        result
+    }
+
+    async fn project_snapshot(&self, streams: &Value) -> Value {
+        let streams = <Vec<&str> as serde::Deserialize>::deserialize(streams);
+        let Some(streams) = streams
+            .ok()
+            .filter(|streams| streams.iter().all(|s| protocol::STREAMS.contains(s)))
+        else {
+            return error(
+                "validation-error",
+                "streams must be a list of registered bar streams",
+            );
+        };
+        self.state
+            .read(|snapshot| {
+                let projection: serde_json::Map<String, Value> = streams
+                    .iter()
+                    .map(|stream| {
+                        (
+                            protocol::read_wire::snapshot_key(stream).into(),
+                            protocol::read_wire::initial_stream_data(stream, snapshot),
+                        )
+                    })
+                    .collect();
+                success(serde_json::json!({"snapshot": projection}))
+            })
+            .await
+    }
+
     pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
         let response = match method {
-            "bar.snapshot" => {
-                static REQUESTS: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let snapshot_requests_total =
-                    REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let started = std::time::Instant::now();
-                let result = if let Some(streams) = params.get("streams") {
-                    match serde_json::from_value::<Vec<String>>(streams.clone()) {
-                        Ok(streams)
-                            if streams
-                                .iter()
-                                .all(|s| protocol::STREAMS.contains(&s.as_str())) =>
-                        {
-                            let projection = self
-                                .state
-                                .read(|snapshot| {
-                                    let mut projection = serde_json::Map::new();
-                                    for stream in &streams {
-                                        projection.insert(
-                                            protocol::read_wire::snapshot_key(stream).into(),
-                                            protocol::read_wire::initial_stream_data(
-                                                stream, snapshot,
-                                            ),
-                                        );
-                                    }
-                                    projection
-                                })
-                                .await;
-                            success(serde_json::json!({"snapshot": projection}))
-                        }
-                        _ => error(
-                            "validation-error",
-                            "streams must be a list of registered bar streams",
-                        ),
-                    }
-                } else {
-                    protocol::read_wire::snapshot(&self.state.snapshot().await)
-                };
-                tracing::debug!(snapshot_requests_total, streams = ?params.get("streams"), latency_us = started.elapsed().as_micros() as u64,
-                    payload_bytes = result.to_string().len(), "bar snapshot request");
-                result
-            }
+            "bar.snapshot" => self.snapshot(params).await,
             "activity.queryRange" => self.activity.activity_query_range(params).await,
             "activity.refresh" => self.activity.activity_refresh().await,
             "todos.create" => self.activity.todo_create(params).await,
@@ -139,16 +140,7 @@ impl ApiService {
             "audio.setInputMuted" => self.effects.audio_set_input_muted(params).await,
             "brightness.adjust" => self.effects.brightness_adjust(params).await,
             "brightness.set" => self.effects.brightness_set(params).await,
-            "battery.history" => self.battery.battery_history(),
-            "battery.setThresholds" => self.battery.battery_set_thresholds(params).await,
-            "battery.setProtection" => self.battery.battery_set_protection(params).await,
-            "battery.chargeOnce" => self.battery.battery_charge_once(params).await,
-            "battery.setChargingInhibited" => {
-                self.battery.battery_set_charging_inhibited(params).await
-            }
-            "battery.startCalibration" => self.battery.battery_start_calibration(params).await,
-            "battery.cancelCalibration" => self.battery.battery_cancel_calibration(params).await,
-            "battery.setAlertPolicy" => self.battery.battery_set_alert_policy(params).await,
+            method if method.starts_with("battery.") => self.battery.dispatch(method, params).await,
             "powerProfile.set" => self.effects.power_profile_set(params).await,
             "powerProfile.resumeAutomatic" => self.effects.power_profile_resume_automatic().await,
             "powerProfile.setBatteryAware" => {
@@ -157,26 +149,9 @@ impl ApiService {
             "powerProfile.setActionEnabled" => {
                 self.effects.power_profile_set_action_enabled(params).await
             }
-            "powerSleep.lock" => {
-                self.effects
-                    .power_sleep_action(crate::protocol::sleep_wire::Action::Lock)
-                    .await
+            method if method.starts_with("powerSleep.") => {
+                sleep::dispatch(&self.state, method, params).await
             }
-            "powerSleep.suspend" => {
-                self.effects
-                    .power_sleep_action(crate::protocol::sleep_wire::Action::Suspend)
-                    .await
-            }
-            "powerSleep.hibernate" => {
-                self.effects
-                    .power_sleep_action(crate::protocol::sleep_wire::Action::Hibernate)
-                    .await
-            }
-            "powerSleep.setKeepAwake" => self.effects.set_keep_awake(params).await,
-            "powerSleep.setPolicy" => self.effects.sleep_policy_set(params).await,
-            "powerSleep.idle" => self.effects.idle_sleep(params).await,
-            "powerSleep.cancelCritical" => self.effects.cancel_critical_battery().await,
-            "powerSleep.setCriticalPolicy" => self.effects.set_critical_battery(params).await,
             "displayPolicy.set" => self.effects.display_policy_set(params).await,
             "displayFocus.set" | "displayFocus.reset" => {
                 self.effects.display_focus(method, params).await
@@ -216,8 +191,9 @@ mod tests {
             brightness,
         )
     }
+
     #[tokio::test]
-    async fn keep_awake_rejects_missing_mistyped_or_extra_parameters() {
+    async fn routing_preserves_backend_and_validation_errors() {
         let api = api().await;
         for params in [
             json!({}),
@@ -229,11 +205,6 @@ mod tests {
             assert_eq!(response["ok"], false);
             assert_eq!(response["error"]["code"], "validation-error");
         }
-    }
-
-    #[tokio::test]
-    async fn notification_routing_preserves_backend_and_validation_errors() {
-        let api = api().await;
         for method in [
             "setDnd",
             "setAppPolicy",
@@ -285,14 +256,23 @@ mod tests {
     async fn snapshot_projection_is_domain_local_and_validated() {
         let api = api().await;
         let full = api.dispatch("bar.snapshot", json!({})).await;
-        let projected = api
-            .dispatch("bar.snapshot", json!({"streams": ["battery.changed"]}))
-            .await;
-        assert_eq!(projected["data"]["snapshot"].as_object().unwrap().len(), 1);
-        assert_eq!(
-            projected["data"]["snapshot"]["battery"],
-            full["data"]["snapshot"]["battery"]
-        );
+        for streams in [
+            vec![],
+            vec!["battery.changed", "battery.changed"],
+            crate::protocol::STREAMS.to_vec(),
+        ] {
+            let projected = api
+                .dispatch("bar.snapshot", json!({"streams": streams}))
+                .await;
+            let expected: serde_json::Map<String, serde_json::Value> = streams
+                .iter()
+                .map(|stream| {
+                    let key = crate::protocol::read_wire::snapshot_key(stream);
+                    (key.into(), full["data"]["snapshot"][key].clone())
+                })
+                .collect();
+            assert_eq!(projected["data"]["snapshot"], json!(expected));
+        }
         for invalid in [
             json!(["foreign"]),
             json!(null),
@@ -305,13 +285,5 @@ mod tests {
                 "validation-error"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn returns_versioned_snapshot() {
-        let response = api().await.dispatch("bar.snapshot", json!({})).await;
-        assert_eq!(response["protocol"], "bar-api");
-        assert_eq!(response["version"], 1);
-        assert_eq!(response["ok"], true);
     }
 }

@@ -325,18 +325,16 @@ mod tests {
     use super::parse_calendar;
     use crate::activity::config::CalendarSourceConfig;
 
-    fn source() -> CalendarSourceConfig {
-        CalendarSourceConfig {
+    #[test]
+    fn calendar_parser_preserves_events_and_rejects_malformed_input() {
+        let source = CalendarSourceConfig {
             id: "work".into(),
             name: "Work".into(),
             color: "#123456".into(),
             ..CalendarSourceConfig::default()
-        }
-    }
-
-    #[test]
-    fn nested_alarm_and_adjacent_events_keep_their_own_properties() {
-        let events = parse_calendar(&source(), Path::new("test.ics"),
+        };
+        let parse = |contents| parse_calendar(&source, Path::new("test.ics"), contents);
+        let events = parse(
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team\n  meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nBEGIN:VEVENT\nSTATUS:CANCELLED\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260116\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].title, "Team meeting");
@@ -346,10 +344,6 @@ mod tests {
         assert_eq!(events[1].end_date.as_deref(), Some("2026-01-17"));
         assert_eq!(events[1].end_unix_ms - events[1].start_unix_ms, 86_400_000);
         assert_eq!(events[1].timezone, None);
-    }
-
-    #[test]
-    fn rejects_malformed_calendars_but_accepts_an_empty_calendar() {
         for contents in [
             "",
             "not a calendar",
@@ -365,19 +359,12 @@ mod tests {
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nDTEND:invalid\nEND:VEVENT\nEND:VCALENDAR\n",
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nEND:VEVENT\nEND:VCALENDAR\n",
         ] {
-            assert!(
-                parse_calendar(&source(), Path::new("test.ics"), contents).is_err(),
-                "{contents}"
-            );
+            assert!(parse(contents).is_err(), "{contents}");
         }
         assert!(
-            parse_calendar(
-                &source(),
-                Path::new("test.ics"),
-                "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n"
-            )
-            .unwrap()
-            .is_empty()
+            parse("BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n")
+                .unwrap()
+                .is_empty()
         );
     }
 }

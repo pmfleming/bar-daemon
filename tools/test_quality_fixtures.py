@@ -50,21 +50,23 @@ exit {status}
     def passing(self):
         return f"test {PIPEWIRE} ... ok\ntest {IDLE} ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored;"
 
-    def test_full_run_and_fresh_output(self):
+    def test_both_modes_require_full_fixtures_and_fresh_output(self):
         self.cargo(self.passing())
-        result = self.run_script()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.out / "complete.txt").exists())
-        self.assertEqual((self.root / "args").read_text().splitlines(),
-                         ["test", "--workspace", "--all-targets", "--locked", "--", "--include-ignored"])
-        self.assertNotEqual(self.run_script().returncode, 0)
-
-    def test_coverage_uses_same_fixture_selection(self):
-        self.cargo(self.passing())
-        result = self.run_script("coverage")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.out / "cobertura.xml").is_file())
-        self.assertIn("--include-ignored", (self.root / "args").read_text())
+        for mode in ["test", "coverage"]:
+            with self.subTest(mode=mode):
+                self.out = self.root / mode
+                self.env["QUALITY_OUTPUT_DIR"] = str(self.out)
+                result = self.run_script(mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.out / "complete.txt").exists())
+                args = (self.root / "args").read_text().splitlines()
+                expected = ["test"] if mode == "test" else ["llvm-cov"]
+                expected += ["--workspace", "--all-targets", "--locked"]
+                if mode == "coverage":
+                    expected += ["--cobertura", "--output-path", str(self.out / "cobertura.xml")]
+                    self.assertTrue((self.out / "cobertura.xml").is_file())
+                self.assertEqual(args, expected + ["--", "--include-ignored"])
+                self.assertNotEqual(self.run_script(mode).returncode, 0)
 
     def test_missing_prerequisite_does_not_execute_cargo(self):
         self.cargo(self.passing())
@@ -72,20 +74,18 @@ exit {status}
         self.assertNotEqual(self.run_script().returncode, 0)
         self.assertFalse((self.root / "args").exists())
 
-    def test_missing_fixture_is_not_success(self):
-        self.cargo(f"test {PIPEWIRE} ... ok")
-        self.assertNotEqual(self.run_script().returncode, 0)
-        self.assertFalse((self.out / "complete.txt").exists())
-
-    def test_ignored_test_is_not_success(self):
-        self.cargo(self.passing() + "\ntest result: ok. 0 passed; 0 failed; 1 ignored;")
-        self.assertNotEqual(self.run_script().returncode, 0)
-        self.assertFalse((self.out / "complete.txt").exists())
-
-    def test_cargo_failure_survives_tee(self):
-        self.cargo(self.passing(), status=7)
-        self.assertEqual(self.run_script().returncode, 7)
-        self.assertFalse((self.out / "complete.txt").exists())
+    def test_incomplete_or_failed_runs_never_certify_success(self):
+        for name, output, status, expected in [
+            ("missing", f"test {PIPEWIRE} ... ok", 0, 1),
+            ("ignored", self.passing() + "\ntest result: ok. 0 passed; 0 failed; 1 ignored;", 0, 1),
+            ("cargo-failed", self.passing(), 7, 7),
+        ]:
+            with self.subTest(failure=name):
+                self.out = self.root / name
+                self.env["QUALITY_OUTPUT_DIR"] = str(self.out)
+                self.cargo(output, status)
+                self.assertEqual(self.run_script().returncode, expected)
+                self.assertFalse((self.out / "complete.txt").exists())
 
 
 if __name__ == "__main__":

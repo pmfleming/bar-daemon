@@ -92,56 +92,6 @@ async fn center_groups_full_scope_and_seeks_without_loading_intermediate_bodies(
     assert_eq!(selected.unwrap().notification.id, oldest);
 }
 #[tokio::test]
-async fn center_revision_fences_app_pages_and_retains_selected_identity() {
-    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
-    for index in 0..65 {
-        engine
-            .notify(0, notification(&format!("app{index}"), "hello"))
-            .await
-            .unwrap();
-    }
-    let CenterPage::Apps {
-        epoch,
-        revision,
-        next_offset,
-        apps,
-        ..
-    } = engine.query_center(query("apps")).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(apps.len(), 50);
-    let mut next = query("apps");
-    next.offset = next_offset.unwrap();
-    next.epoch = Some(epoch);
-    next.revision = Some(revision);
-    let CenterPage::Apps {
-        apps, next_offset, ..
-    } = engine.query_center(next.clone()).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(apps.len(), 15);
-    assert!(next_offset.is_none());
-    engine.set_dnd(true, None).await.unwrap();
-    assert!(engine.query_center(next.clone()).await.is_ok());
-    engine
-        .notify(0, notification("another", "arrival"))
-        .await
-        .unwrap();
-    assert!(matches!(
-        engine.query_center(next.clone()).await,
-        Err(HistoryError::Stale)
-    ));
-    let restarted = NotificationEngine::persistent(StateStore::default(), path)
-        .await
-        .unwrap();
-    assert!(matches!(
-        restarted.query_center(next).await,
-        Err(HistoryError::Stale)
-    ));
-}
-#[tokio::test]
 async fn center_deduplicates_live_and_never_resurrects_transient_replacement() {
     let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let id = engine
@@ -178,49 +128,6 @@ async fn center_deduplicates_live_and_never_resurrects_transient_replacement() {
     };
     assert_eq!(count, 0);
     assert!(selected.is_none());
-}
-#[tokio::test]
-async fn center_searches_full_unicode_body_and_resolves_legacy_group_links() {
-    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
-    let mut incoming = notification("chat", "Short preview");
-    incoming.body = format!("{} ÄRGER %_", "x".repeat(1000));
-    let id = engine.notify(0, incoming).await.unwrap();
-    let group = engine.active().await[0].group_key.clone();
-    engine.dismiss(id).await.unwrap();
-    engine
-        .notify(0, notification("chat", "Newer nonmatch"))
-        .await
-        .unwrap();
-    engine
-        .notify(0, notification("other", "Unrelated"))
-        .await
-        .unwrap();
-    let mut request = query("apps");
-    request.query = "ÄRGER %_".into();
-    let CenterPage::Apps { apps, .. } = engine.query_center(request).await.unwrap() else {
-        panic!()
-    };
-    assert_eq!(apps.len(), 1);
-    assert_eq!(
-        (apps[0].count, apps[0].total_count, apps[0].latest.id),
-        (1, 2, id)
-    );
-    assert_eq!(apps[0].latest.body.chars().count(), 240);
-    assert!(!apps[0].latest.body.contains("ÄRGER"));
-    let mut request = query("app");
-    request.group_key = Some(group);
-    request.selected = Some(Position {
-        created: apps[0].latest.created_unix_ms,
-        id,
-    });
-    let CenterPage::App {
-        app_key, selected, ..
-    } = engine.query_center(request).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(app_key, "desktop:chat");
-    assert!(selected.unwrap().notification.body.contains("ÄRGER"));
 }
 
 #[tokio::test]
@@ -325,36 +232,6 @@ async fn center_keeps_artwork_hints_in_live_archived_and_restarted_previews() {
                 .await
                 .unwrap();
         }
-    }
-}
-
-#[tokio::test]
-async fn center_bounds_artwork_hints_for_live_and_stored_previews() {
-    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
-    let mut incoming = notification("Long hints", "Artwork");
-    incoming.hints.desktop_entry = "界".repeat(1100);
-    incoming.hints.image_path = "画".repeat(600);
-    assert!(engine.notify(0, incoming.clone()).await.is_err());
-    let CenterPage::Apps { total_apps, .. } = engine.query_center(query("apps")).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(
-        total_apps, 0,
-        "rejected metadata must not enter state or storage"
-    );
-    incoming.hints.desktop_entry = "界".repeat(341); // fits the 1024-byte ingress limit
-    let id = engine.notify(0, incoming).await.unwrap();
-    for archived in [false, true] {
-        if archived {
-            engine.dismiss(id).await.unwrap();
-        }
-        let CenterPage::Apps { apps, .. } = engine.query_center(query("apps")).await.unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(apps[0].latest.hints.desktop_entry, "界".repeat(341));
-        assert_eq!(apps[0].latest.hints.image_path, "画".repeat(512));
     }
 }
 

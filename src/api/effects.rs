@@ -10,8 +10,6 @@ use crate::{
     },
     protocol::display_wire::{self, Failure as DisplayFailure},
     protocol::session_controls::{self, ErrorCode, MediaRequest, WorkspaceRequest},
-    protocol::sleep_wire::{self, Action, Failure, IdleRequest, KeepAwakeRequest},
-    sleep,
     state::StateStore,
     updates,
 };
@@ -40,24 +38,6 @@ impl DesktopEffects {
         }
     }
 
-    pub(super) async fn power_sleep_action(&self, action: Action) -> Value {
-        match sleep::perform(action.as_str()).await {
-            Ok(state) => sleep_wire::publish(&self.state, state, Some(action)).await,
-            Err(value) => Failure::Operation.reply(&value),
-        }
-    }
-    async fn publish_sleep(&self, state: crate::model::PowerSleepState) -> Value {
-        sleep_wire::publish(&self.state, state, None).await
-    }
-
-    pub(super) async fn set_keep_awake(&self, params: Value) -> Value {
-        let request = request!(params, KeepAwakeRequest, "powerSleep.setKeepAwake");
-        match sleep::set_keep_awake(request.enabled).await {
-            Ok(state) => self.publish_sleep(state).await,
-            Err(value) => Failure::KeepAwake.reply(&value),
-        }
-    }
-
     pub(super) async fn display_layout(&self, method: &str, params: Value) -> Value {
         let result = crate::display_policy::layout_action(method, params, &self.state).await;
         display_wire::reply(result, DisplayFailure::Layout)
@@ -76,52 +56,6 @@ impl DesktopEffects {
         );
         let result = crate::display_policy::set(policy, &self.state).await;
         display_wire::reply(result, DisplayFailure::Policy)
-    }
-
-    pub(super) async fn sleep_policy_set(&self, params: Value) -> Value {
-        let policy = request!(
-            params,
-            crate::sleep_policy::SleepPolicy,
-            "powerSleep.setPolicy"
-        );
-        let result = crate::sleep_policy::set(policy, &self.state).await;
-        sleep_wire::policy_result(result, Failure::Policy)
-    }
-
-    pub(super) async fn set_critical_battery(&self, params: Value) -> Value {
-        let policy = request!(
-            params,
-            crate::sleep_policy::critical::Policy,
-            "powerSleep.setCriticalPolicy"
-        );
-        let result = crate::sleep_policy::critical::set_policy(policy, &self.state).await;
-        sleep_wire::policy_result(result, Failure::CriticalPolicy)
-    }
-
-    pub(super) async fn cancel_critical_battery(&self) -> Value {
-        match crate::sleep_policy::critical::cancel(&self.state).await {
-            Ok(_) => {
-                self.state
-                    .read(|s| sleep_wire::policy(&s.sleep_policy))
-                    .await
-            }
-            Err(error) => Failure::CriticalCancel.reply(&error),
-        }
-    }
-
-    pub(super) async fn idle_sleep(&self, params: Value) -> Value {
-        let request = request!(params, IdleRequest, "powerSleep.idle");
-        match crate::sleep_policy::idle_sleep(
-            request.sleep_minutes,
-            &request.generation,
-            request.episode,
-            &self.state,
-        )
-        .await
-        {
-            Ok(state) => self.publish_sleep(state).await,
-            Err(value) => Failure::Automatic.reply(&value),
-        }
     }
 
     pub(super) async fn updates_refresh(&self) -> Value {

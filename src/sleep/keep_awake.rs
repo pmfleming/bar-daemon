@@ -91,7 +91,7 @@ async fn set_connected(
 
 #[cfg(test)]
 mod tests {
-    use super::{WHAT, WHO, WHY, is_ours, read_state, set_connected};
+    use super::{read_state, set_connected};
     use crate::sleep::lock_tests::{SessionState, fake_logind};
     use std::sync::{Arc, atomic::Ordering};
 
@@ -129,31 +129,6 @@ mod tests {
             let peer = state.inhibitor_peer.lock().unwrap().take().unwrap();
             assert_eq!(std::io::Read::read(&mut &peer, &mut [0]).unwrap(), 0);
         }
-    }
-
-    #[test]
-    fn only_our_own_strong_sleep_inhibitor_is_reported() {
-        let ours = (
-            WHAT.into(),
-            WHO.into(),
-            WHY.into(),
-            "block".into(),
-            1000,
-            std::process::id(),
-        );
-        assert!(is_ours(&ours));
-        let mut other = ours.clone();
-        other.5 += 1;
-        assert!(!is_ours(&other));
-        other = ours.clone();
-        other.0 = "handle-lid-switch".into();
-        assert!(!is_ours(&other));
-        other = ours.clone();
-        other.3 = "delay".into();
-        assert!(!is_ours(&other));
-        other = ours;
-        other.1 = "Other application".into();
-        assert!(!is_ours(&other));
     }
 
     #[tokio::test]

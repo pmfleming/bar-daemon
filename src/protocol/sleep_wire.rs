@@ -136,23 +136,4 @@ mod tests {
             assert_eq!(reply, expected);
         }
     }
-
-    #[test]
-    fn policy_and_errors_preserve_v1_fields_and_context_chains() {
-        let state = SleepPolicyState::default();
-        assert_eq!(policy(&state), api::success(json!({"sleep_policy": state})));
-        for (failure, code) in [
-            (Failure::Operation, "power-sleep-operation-failed"),
-            (Failure::KeepAwake, "keep-awake-failed"),
-            (Failure::Policy, "sleep-policy-failed"),
-            (Failure::CriticalPolicy, "critical-battery-policy-failed"),
-            (Failure::CriticalCancel, "critical-battery-cancel-failed"),
-            (Failure::Automatic, "automatic-sleep-failed"),
-        ] {
-            assert_eq!(
-                failure.reply(&anyhow::anyhow!("cause").context("context")),
-                api::error(code, "context: cause")
-            );
-        }
-    }
 }

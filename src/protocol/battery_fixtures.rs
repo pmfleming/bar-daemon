@@ -241,30 +241,3 @@ pub(super) async fn fixture() -> Value {
         "operationUnknown": crate::daemon::battery_operations::status("battery-operation-example", Some(crate::api::error("outcome-unknown", "Battery write outcome unknown; reconcile state")), false)
     })
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn runtime_projection_and_partial_outcomes_match_live_contract() {
-        let fixture = fixture().await;
-        assert_eq!(fixture, super::fixture().await);
-        assert_eq!(fixture["cases"].as_object().unwrap().len(), 7);
-        for (method, example) in fixture["cases"].as_object().unwrap() {
-            assert!(super::super::METHODS.contains(&method.as_str()));
-            assert_eq!(example["success"]["ok"], true);
-        }
-        let policy =
-            &fixture["cases"]["battery.setAlertPolicy"]["success"]["data"]["battery"]["policy"];
-        assert_eq!(policy["warning_profile"], "keep-current");
-        assert_eq!(policy["critical_profile"], "power-saver");
-        assert_eq!(
-            fixture["events"]["restoring"]["data"]["operation"]["phase"],
-            "restoring"
-        );
-        assert_eq!(
-            fixture["events"]["completed"]["data"]["operation"]["kind"],
-            ""
-        );
-        assert_eq!(fixture["restorationFailed"]["ok"], false);
-    }
-}

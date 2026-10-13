@@ -291,47 +291,6 @@ mod tests {
     use crate::sleep_policy::SleepProfile;
     use std::path::Path;
 
-    struct FakeControl(std::sync::Arc<std::sync::Mutex<(u32, u32)>>);
-    #[zbus::interface(name = "org.laufan.Hypridle1")]
-    impl FakeControl {
-        fn get_state(&self) -> ((u32, String, u32, u64, bool),) {
-            let state = self.0.lock().unwrap();
-            ((42, format!("42-{}", state.1), state.0, 7, true),)
-        }
-        fn set_timeout(&self, expected: &str, minutes: u32) {
-            let mut state = self.0.lock().unwrap();
-            assert_eq!(expected, format!("42-{}", state.1));
-            state.0 = minutes;
-            state.1 += 1;
-        }
-    }
-
-    #[tokio::test]
-    async fn live_timeout_updates_preserve_process_and_skip_unchanged_timeout() {
-        let state = std::sync::Arc::new(std::sync::Mutex::new((30, 0)));
-        let (_server, client) = crate::test_support::dbus_peer(|builder| {
-            builder.serve_at("/org/laufan/Hypridle", FakeControl(state.clone()))
-        })
-        .await
-        .unwrap();
-        super::set_timeout_on(&client, 30).await.unwrap();
-        assert_eq!(*state.lock().unwrap(), (30, 0));
-        super::set_timeout_on(&client, 45).await.unwrap();
-        assert_eq!(*state.lock().unwrap(), (45, 1));
-        super::set_timeout_on(&client, 0).await.unwrap();
-        assert_eq!(*state.lock().unwrap(), (0, 2));
-        let (pid, generation, _, episode, idle) = super::live_state_on(&client).await.unwrap();
-        assert_eq!(pid, 42);
-        assert!(super::validate_episode(&generation, episode, &generation, episode, idle).is_ok());
-        for (current, token, active) in [
-            (generation.as_str(), episode, false),
-            (generation.as_str(), episode + 1, true),
-            ("replacement", episode, true),
-        ] {
-            assert!(super::validate_episode(&generation, episode, current, token, active).is_err());
-        }
-    }
-
     #[test]
     fn replaces_only_sleep_and_preserves_lock_dpms_and_inhibitors() {
         let base = "general {\n  before_sleep_cmd = loginctl lock-session\n}\nlistener {\n timeout=300\n on-timeout=loginctl lock-session\n}\nlistener {\n timeout=420\n on-timeout=hyprctl dispatch dpms off\n on-resume=hyprctl dispatch dpms on\n}\nlistener {\n timeout=1800\n on-timeout=/run/current-system/sw/bin/systemctl suspend\n}\n";

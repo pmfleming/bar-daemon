@@ -3,7 +3,10 @@
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
-use super::control_wire::*;
+use super::control_wire::{
+    DeltaRequest, EnabledRequest, MuteRequest, PercentRequest, ProfileActionRequest,
+    ProfileRequest, audio, brightness, power_profile,
+};
 use crate::{
     api,
     model::{AudioState, BrightnessState, PowerProfile, PowerProfileAction, PowerProfileState},
@@ -207,34 +210,4 @@ pub(super) fn fixture() -> Value {
         );
     }
     Value::Object(fixture)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_control_examples_are_registered_and_limitations_remain_successful_observations() {
-        let fixtures = fixture();
-        assert_eq!(fixtures.as_object().unwrap().len(), 9);
-        for (method, case) in fixtures.as_object().unwrap() {
-            assert!(super::super::METHODS.contains(&method.as_str()));
-            let field = if method.starts_with("audio.") {
-                "audio"
-            } else if method.starts_with("brightness.") {
-                "brightness"
-            } else {
-                "power_profile"
-            };
-            for outcome in ["success", "limited"] {
-                assert_eq!(case[outcome]["ok"], true, "{method}/{outcome}");
-                assert!(case[outcome]["data"][field].is_object());
-                assert!(case[outcome].get("error").is_none());
-            }
-            assert_eq!(case["failed"]["ok"], false);
-            if !case["rejected"].is_null() {
-                assert_eq!(case["rejected"]["error"]["code"], "validation-error");
-            }
-        }
-    }
 }

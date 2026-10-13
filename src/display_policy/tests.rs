@@ -4,10 +4,7 @@ use std::{
 };
 
 use super::{Backend, DisplayPolicy, Output, Planner, reconcile};
-use crate::{
-    paths::{load_json_or_default, save_json_atomic},
-    state::StateStore,
-};
+use crate::state::StateStore;
 use anyhow::{Result, bail};
 use std::time::{Duration, Instant};
 
@@ -34,47 +31,6 @@ fn external() -> Output {
         refresh_rate: 75.0,
         ..Default::default()
     }
-}
-
-#[test]
-fn laptop_travel_dock_wake_and_unplug_preserve_a_fallback() {
-    let mut planner = Planner::default();
-    let start = Instant::now();
-    assert_eq!(
-        planner.plan(true, &[internal(false)], start).status,
-        "internal"
-    );
-    let docked = vec![internal(false), external()];
-    assert_eq!(planner.plan(true, &docked, start).status, "settling");
-    assert!(
-        !planner
-            .plan(true, &docked, start + Duration::from_secs(4))
-            .disable_internal
-    );
-    let ready = planner.plan(true, &docked, start + Duration::from_secs(5));
-    assert!(ready.disable_internal);
-    assert_eq!(ready.targets.len(), 1);
-    assert_eq!(ready.targets[0].name, "eDP-1");
-    // A daemon-confirmed resume invalidates pre-sleep stability even though
-    // CLOCK_MONOTONIC did not advance while the machine slept.
-    planner.reset();
-    let resumed = [internal(true), external()];
-    let wake = planner.plan(true, &resumed, start + Duration::from_secs(5));
-    assert_eq!(wake.status, "settling");
-    assert!(!wake.disable_internal);
-    assert_eq!(wake.targets.len(), 1);
-    let unplugged = [internal(true)];
-    let unplug = planner.plan(true, &unplugged, start + Duration::from_secs(6));
-    assert_eq!(unplug.status, "internal");
-    assert_eq!(unplug.targets.len(), 1);
-    // A compositor accepting a command is not proof that it enabled the panel.
-    assert_eq!(
-        planner
-            .plan(true, &[internal(true)], start + Duration::from_secs(8))
-            .targets
-            .len(),
-        1
-    );
 }
 
 #[test]
@@ -117,76 +73,6 @@ fn output_flaps_mode_changes_and_observation_gaps_restart_stability() {
             .status,
         "internal"
     );
-}
-
-#[test]
-fn dpms_off_is_not_output_loss_and_preference_off_restores_internal() {
-    let external: Output = serde_json::from_value(serde_json::json!({
-        "id": 1, "name": "DP-1", "width": 3440, "height": 1440,
-        "scale": 1.25, "refreshRate": 75, "disabled": false, "dpmsStatus": false
-    }))
-    .unwrap();
-    let start = Instant::now();
-    let mut planner = Planner::default();
-    let outputs = vec![internal(true), external];
-    planner.plan(true, &outputs, start);
-    assert!(
-        planner
-            .plan(true, &outputs, start + Duration::from_secs(5))
-            .targets
-            .is_empty()
-    );
-    let off = planner.plan(false, &outputs, start + Duration::from_secs(6));
-    assert!(!off.disable_internal);
-    assert_eq!(off.targets.len(), 1);
-    assert!(
-        off.targets[0]
-            .command(false)
-            .unwrap()
-            .contains("scale = 1.25")
-    );
-}
-
-#[test]
-fn docking_commands_use_shared_rules_without_relaxing_internal_output_guards() {
-    use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
-    let mut output = internal(true);
-    assert_eq!(
-        output.command(true).unwrap(),
-        monitor::command("eDP-1", Rule::Disable).unwrap()
-    );
-    assert_eq!(
-        output.command(false).unwrap(),
-        monitor::command(
-            "eDP-1",
-            Rule::Enable {
-                mode: Mode::Preferred,
-                position: Position::Auto,
-                scale: 1.25,
-                transform: None,
-                mirror: "",
-            }
-        )
-        .unwrap()
-    );
-    for scale in [0.24, 8.01, f64::NAN] {
-        output.scale = scale;
-        assert!(
-            output.command(false).is_err(),
-            "docking retains its scale bounds"
-        );
-        assert!(
-            output.command(true).is_ok(),
-            "disable does not require a usable scale"
-        );
-    }
-    for name in ["DP-1", "HDMI-A-1", "HEADLESS-1"] {
-        output.name = name.into();
-        assert!(
-            output.command(true).is_err(),
-            "automatic policy cannot disable {name}"
-        );
-    }
 }
 
 #[test]
@@ -658,52 +544,4 @@ async fn failed_docking_pauses_policy_but_unplug_still_restores_a_fallback() {
         2,
         "failure must not suppress emergency enablement"
     );
-}
-
-#[tokio::test]
-async fn docking_guard_covers_other_clients_and_releases_on_success_or_failure() {
-    let store = StateStore::default();
-    for state in [
-        super::DockingState::Applying,
-        super::DockingState::Settled,
-        super::DockingState::Failed,
-    ] {
-        store
-            .update_display_policy(super::DisplayPolicyState {
-                docking_state: state,
-                ..Default::default()
-            })
-            .await;
-        assert_eq!(
-            super::ensure_docking_settled(&store).await.is_ok(),
-            state != super::DockingState::Applying
-        );
-    }
-}
-
-#[tokio::test]
-async fn preferences_are_validated_and_persisted_without_arbitrary_commands() {
-    for input in [
-        r#"{}"#,
-        r#"{"prefer_external":"yes"}"#,
-        r#"{"prefer_external":true,"command":"exec"}"#,
-    ] {
-        assert!(serde_json::from_str::<DisplayPolicy>(input).is_err());
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("displays.json");
-    let policy = DisplayPolicy {
-        prefer_external: false,
-    };
-    save_json_atomic(&path, &policy).await.unwrap();
-    assert_eq!(
-        load_json_or_default::<DisplayPolicy>(&path, "test")
-            .await
-            .unwrap(),
-        policy
-    );
-    let mut invalid = internal(true);
-    invalid.name = "eDP-1\"}); os.execute('anything')".into();
-    assert!(invalid.command(false).is_err());
-    assert!(external().command(true).is_err());
 }

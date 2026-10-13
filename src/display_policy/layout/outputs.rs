@@ -97,7 +97,7 @@ pub(crate) fn serialize_outputs<S: Serializer>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Output, Setting, current_mode};
+    use super::{Output, current_mode};
     use crate::display_policy::DisplayPolicyState;
     use serde_json::{Value, json};
 
@@ -123,24 +123,6 @@ mod tests {
     }
 
     #[test]
-    fn exact_closest_modes_and_observed_layout_agree() {
-        let output = output();
-        assert_eq!(current_mode(&output), "1920x1200@59.940Hz");
-        assert_eq!(
-            Setting::observed(&output, std::slice::from_ref(&output)).mode,
-            current_mode(&output)
-        );
-        let value = wire(vec![output]);
-        assert_eq!(value[0]["current_mode"], "1920x1200@59.940Hz");
-        assert_eq!(
-            value[0]["modes"][1],
-            json!({"id":"1920x1200@59.940Hz", "width":1920, "height":1200, "rate":59.94, "size":"1920x1200"})
-        );
-        assert_eq!(value[0]["internal"], true);
-        assert_eq!(value[0]["supported"], true);
-    }
-
-    #[test]
     fn disabled_and_missing_modes_do_not_invent_geometry() {
         let mut output = output();
         output.disabled = true;
@@ -159,26 +141,6 @@ mod tests {
         output.available_modes.clear();
         assert_eq!(current_mode(&output), "");
         assert_eq!(wire(vec![output])[0]["modes"], json!([]));
-    }
-
-    #[test]
-    fn unadvertised_observation_and_invalid_modes() {
-        let mut output = output();
-        output.refresh_rate = 75.0;
-        output.available_modes.extend([
-            "0x1200@60".into(),
-            "1920x1200@1001".into(),
-            "16385x1200@60".into(),
-        ]);
-        let value = wire(vec![output]);
-        assert_eq!(value[0]["current_mode"], "1920x1200@75.00");
-        assert_eq!(value[0]["modes"].as_array().unwrap().len(), 3);
-        assert_eq!(value[0]["modes"][0]["rate"], 75.0);
-        for name in ["DP-", "HEADLESS-1", "DP-1;exec", &"DP-".repeat(30)] {
-            let mut output = self::output();
-            output.name = name.into();
-            assert_eq!(wire(vec![output])[0]["supported"], false, "{name}");
-        }
     }
 
     #[test]

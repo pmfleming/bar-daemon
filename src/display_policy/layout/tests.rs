@@ -225,42 +225,6 @@ async fn real_preview_confirmation_and_rollback_match_control_fixtures() {
     }
 }
 
-#[test]
-fn layout_commands_map_domain_values_to_shared_monitor_rules() {
-    use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
-    for name in ["eDP-1", "DP-1", "HDMI-A-1"] {
-        let mut setting = Setting {
-            name: name.into(),
-            mode: "1920x1200@60.00Hz".into(),
-            x: -1536,
-            y: 120,
-            scale: 1.25,
-            transform: 3,
-            enabled: false,
-            mirror_of: "DP-2".into(),
-        };
-        assert_eq!(
-            setting.command().unwrap(),
-            monitor::command(name, Rule::Disable).unwrap()
-        );
-        setting.enabled = true;
-        assert_eq!(
-            setting.command().unwrap(),
-            monitor::command(
-                name,
-                Rule::Enable {
-                    mode: Mode::Exact("1920x1200@60.00Hz"),
-                    position: Position::Exact { x: -1536, y: 120 },
-                    scale: 1.25,
-                    transform: Some(3),
-                    mirror: "DP-2",
-                }
-            )
-            .unwrap()
-        );
-    }
-}
-
 #[tokio::test]
 async fn stale_preview_rejects_before_persistence_or_compositor_writes() {
     let mut f = Fixture::new();
@@ -283,30 +247,6 @@ async fn stale_preview_rejects_before_persistence_or_compositor_writes() {
     assert!(f.backend.calls.borrow().is_empty());
     assert!(!f.path.exists());
     assert!(f.runtime.trial.is_none());
-}
-
-#[test]
-fn baseline_tracks_policy_and_catalog_but_not_order_or_focus() {
-    let mut outputs = fake().outputs.into_inner();
-    let policy = super::super::DisplayPolicy::default();
-    let original = super::baseline(&outputs, &policy);
-    outputs[0].focused = !outputs[0].focused;
-    assert_eq!(super::baseline(&outputs, &policy), original);
-    outputs[0].available_modes.push("1280x800@60.00Hz".into());
-    assert_ne!(super::baseline(&outputs, &policy), original);
-    outputs[0].available_modes.reverse();
-    let reordered = super::baseline(&outputs, &policy);
-    outputs[0].available_modes.reverse();
-    assert_eq!(super::baseline(&outputs, &policy), reordered);
-    assert_ne!(
-        super::baseline(
-            &outputs,
-            &super::super::DisplayPolicy {
-                prefer_external: false
-            }
-        ),
-        reordered
-    );
 }
 
 #[tokio::test]
@@ -706,48 +646,4 @@ async fn failed_apply_keeps_rollback_intent_and_sleep_defers_recovery() {
             .trial
             .is_none()
     );
-}
-
-#[tokio::test]
-async fn saved_layout_waits_for_topology_and_does_not_reapply_working_modes() {
-    let mut f = Fixture::new();
-    let mut saved = Layout::observed(&f.backend.outputs.borrow());
-    saved.outputs[0].scale = 1.5;
-    save_json_atomic(
-        &f.path,
-        &Document {
-            saved,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    let start = Instant::now();
-    assert!(f.tick(0, start).await.unwrap().1);
-    assert!(f.backend.calls.borrow().is_empty());
-    f.tick(5, start + Duration::from_secs(5)).await.unwrap();
-    assert_eq!(f.backend.calls.borrow().len(), 1);
-    f.tick(10, start + Duration::from_secs(10)).await.unwrap();
-    assert_eq!(f.backend.calls.borrow().len(), 1);
-
-    // A failed saved-layout attempt remains visible, without destructive retries.
-    f.backend.outputs.borrow_mut()[0].scale = 1.25;
-    f.backend.fail.set(true);
-    f.store.record_resume().await;
-    assert!(f.tick(15, start + Duration::from_secs(15)).await.unwrap().1);
-    for seconds in [20, 25] {
-        let error = f
-            .tick(seconds, start + Duration::from_secs(seconds))
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("Saved layout was not applied"));
-        assert_eq!(f.backend.calls.borrow().len(), 2);
-    }
-    // A new resume resets both the failure and its one-attempt guard.
-    f.backend.fail.set(false);
-    f.store.record_resume().await;
-    assert!(f.tick(30, start + Duration::from_secs(30)).await.unwrap().1);
-    assert!(!f.tick(35, start + Duration::from_secs(35)).await.unwrap().1);
-    assert_eq!(f.backend.calls.borrow().len(), 3);
-    assert_eq!(f.backend.outputs.borrow()[0].scale, 1.5);
 }

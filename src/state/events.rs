@@ -27,7 +27,7 @@ enum Channel {
 }
 
 pub(super) fn ordered(stream: &str) -> bool {
-    use crate::protocol::stream::*;
+    use crate::protocol::stream::{BATTERY, NOTIFICATION_ACTIVE, OSD_HARDWARE, POWER_SLEEP};
     matches!(
         stream,
         POWER_SLEEP | BATTERY | NOTIFICATION_ACTIVE | OSD_HARDWARE
@@ -97,11 +97,11 @@ pub(crate) struct DomainReceiver {
 impl DomainReceiver {
     pub(crate) async fn recv(&mut self) -> Result<DomainEvent, RecvError> {
         match &mut self.channel {
-            Receiver::State(receiver, _) => {
+            Receiver::State(receiver, previous) => {
                 receiver.changed().await.map_err(|_| RecvError::Closed)?;
                 // changed marks seen, but borrow_and_update below still reads
                 // the latest value atomically and advances the metric cursor.
-                Ok(self.current())
+                Ok(self.metrics.current(receiver, previous))
             }
             Receiver::Transitions(receiver) => {
                 let result = receiver.recv().await;
@@ -112,24 +112,10 @@ impl DomainReceiver {
             }
         }
     }
-    fn current(&mut self) -> DomainEvent {
-        let Receiver::State(receiver, previous) = &mut self.channel else {
-            unreachable!()
-        };
-        let (revision, event) = &*receiver.borrow_and_update();
-        let skipped = revision.saturating_sub(*previous).saturating_sub(1);
-        let coalesced_total =
-            self.metrics.coalesced.fetch_add(skipped, Ordering::Relaxed) + skipped;
-        if skipped > 0 {
-            tracing::debug!(stream = %event.stream, skipped, coalesced_total, "bar replaceable state coalesced");
-        }
-        *previous = *revision;
-        event.clone()
-    }
     pub(crate) fn try_recv(&mut self) -> Result<DomainEvent, TryRecvError> {
         match &mut self.channel {
-            Receiver::State(receiver, _) => match receiver.has_changed() {
-                Ok(true) => Ok(self.current()),
+            Receiver::State(receiver, previous) => match receiver.has_changed() {
+                Ok(true) => Ok(self.metrics.current(receiver, previous)),
                 Ok(false) => Err(TryRecvError::Empty),
                 Err(_) => Err(TryRecvError::Closed),
             },
@@ -141,6 +127,23 @@ impl DomainReceiver {
                 result
             }
         }
+    }
+}
+
+impl Metrics {
+    fn current(
+        &self,
+        receiver: &mut watch::Receiver<(u64, DomainEvent)>,
+        previous: &mut u64,
+    ) -> DomainEvent {
+        let (revision, event) = &*receiver.borrow_and_update();
+        let skipped = revision.saturating_sub(*previous).saturating_sub(1);
+        let coalesced_total = self.coalesced.fetch_add(skipped, Ordering::Relaxed) + skipped;
+        if skipped > 0 {
+            tracing::debug!(stream = %event.stream, skipped, coalesced_total, "bar replaceable state coalesced");
+        }
+        *previous = *revision;
+        event.clone()
     }
 }
 
@@ -169,8 +172,10 @@ impl DomainReceivers {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DomainEvent, RecvError, Source, TryRecvError};
     use serde_json::json;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::broadcast;
 
     #[tokio::test]
     async fn deterministic_shared_ring_baseline_and_domain_isolation() {
@@ -195,7 +200,14 @@ mod tests {
         ));
         assert_eq!(audio_rx.recv().await.unwrap().data["volume_percent"], 1023);
         assert_eq!(audio.metrics.coalesced.load(Ordering::Relaxed), 1023);
-        assert_eq!(audio.metrics.events.load(Ordering::Relaxed), 1024);
+        assert!(matches!(audio_rx.try_recv(), Err(TryRecvError::Empty)));
+        audio.send(DomainEvent {
+            stream: "audio.changed".into(),
+            data: json!(42),
+        });
+        assert_eq!(audio_rx.try_recv().unwrap().data, json!(42));
+        assert_eq!(audio.metrics.coalesced.load(Ordering::Relaxed), 1023);
+        assert_eq!(audio.metrics.events.load(Ordering::Relaxed), 1025);
         assert!(audio.metrics.bytes.load(Ordering::Relaxed) > 1024);
         assert!(matches!(battery_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(matches!(

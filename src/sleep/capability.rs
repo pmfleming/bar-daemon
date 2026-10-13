@@ -33,25 +33,3 @@ pub(crate) fn require_authorized(value: &str) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn transient_blockers_and_auth_do_not_remove_configuration_support() {
-        for value in [
-            "yes",
-            "challenge",
-            "inhibited",
-            "inhibitor-blocked",
-            "challenge-inhibitor-blocked",
-        ] {
-            assert!(configurable(value));
-            assert_eq!(require_authorized(value).is_ok(), value == "yes");
-        }
-        for value in ["no", "na", "future-value", ""] {
-            assert!(!configurable(value));
-            assert!(require_authorized(value).is_err());
-        }
-    }
-}

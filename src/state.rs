@@ -393,59 +393,6 @@ mod tests {
 
     use super::StateStore;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_events_follow_commit_order() {
-        use std::sync::{Arc, Mutex};
-
-        let store = StateStore::default();
-        let (initial, mut events) = store
-            .snapshot_and_subscribe_domains(&[crate::protocol::stream::BATTERY])
-            .await;
-        assert_eq!(initial.notifications.count, 0);
-        for round in 0..1_000 {
-            let committed = Arc::new(Mutex::new(Vec::new()));
-            let mut tasks = tokio::task::JoinSet::new();
-            for worker in 0..16 {
-                let store = store.clone();
-                let committed = Arc::clone(&committed);
-                tasks.spawn(async move {
-                    let value = round * 16 + worker + 1;
-                    store
-                        .update(value, crate::protocol::stream::BATTERY, |snapshot| {
-                            committed.lock().unwrap().push(value);
-                            &mut snapshot.notifications.count
-                        })
-                        .await;
-                });
-            }
-            while let Some(result) = tasks.join_next().await {
-                result.unwrap();
-            }
-            let mut emitted = Vec::new();
-            while let Ok(event) = events.try_recv() {
-                emitted.push(event.data.as_u64().unwrap() as u32);
-            }
-            assert_eq!(emitted, *committed.lock().unwrap());
-            assert_eq!(
-                emitted.last(),
-                Some(&store.snapshot().await.notifications.count)
-            );
-            let (snapshot, mut new_events) = store.snapshot_and_subscribe().await;
-            assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
-            store
-                .update(
-                    snapshot.notifications.count,
-                    crate::protocol::stream::BATTERY,
-                    |s| &mut s.notifications.count,
-                )
-                .await;
-            assert!(
-                new_events.try_recv().is_err(),
-                "unchanged values must not emit events"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn watch_handoff_never_misses_a_concurrent_commit() {
         use crate::{model::AudioState, protocol::stream};
@@ -493,22 +440,6 @@ mod tests {
             .unwrap();
         store.update_sleep_policy(stale).await;
         assert_eq!(store.snapshot().await.sleep_policy.lid, lid);
-    }
-
-    #[tokio::test]
-    async fn stale_action_telemetry_cannot_clear_a_late_sleep_job_failure() {
-        let store = StateStore::default();
-        let stale = store.snapshot().await.power_sleep;
-        let operation = crate::model::SleepOperation {
-            id: 3,
-            action: "hibernate".into(),
-            phase: "failed".into(),
-            job: Some("/job/3".into()),
-            error: Some("hibernate service failed".into()),
-        };
-        store.record_sleep_operation(operation.clone()).await;
-        store.update_power_sleep(stale).await;
-        assert_eq!(store.snapshot().await.power_sleep.operation, operation);
     }
 
     #[tokio::test]

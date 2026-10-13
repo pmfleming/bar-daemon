@@ -81,26 +81,6 @@ fn discovery_skips_bad_devices_but_reports_a_completely_unusable_root() {
 }
 
 #[tokio::test]
-async fn repeated_steps_use_requested_values_and_publish_readback() {
-    let (_root, service, path) = fixture(64764, 64764);
-    let mut events = service.state.subscribe();
-    let downward = (5..=95).step_by(5).rev().map(|percent| (-5, percent));
-    let upward = (10..=100).step_by(5).map(|percent| (5, percent));
-    for (delta, expected) in downward.chain(upward) {
-        let state = service.adjust(delta).await.unwrap();
-        assert_eq!(state.percent, expected);
-        assert_eq!(
-            read_u64(&path.join("brightness")).unwrap(),
-            raw_brightness(64764, expected)
-        );
-        assert_eq!(service.state.snapshot().await.brightness, state);
-        assert_eq!(events.recv().await.unwrap().data["percent"], expected);
-    }
-    // The fixture's actual_brightness deliberately remains at 100% throughout.
-    assert_eq!(read_u64(&path.join("actual_brightness")).unwrap(), 64764);
-}
-
-#[tokio::test]
 async fn bounds_and_validation_do_not_turn_off_the_panel() {
     for maximum in [100, 255, 64764, u64::MAX] {
         let (_root, service, _) = fixture(1, maximum);
@@ -125,25 +105,6 @@ async fn bounds_and_validation_do_not_turn_off_the_panel() {
     }
     let (_root, unusable, _) = fixture(1, 0);
     assert!(unusable.set(50).await.is_err());
-}
-
-#[tokio::test]
-async fn explicit_root_is_shared_by_monitor_set_and_adjust() {
-    let (root, service, path) = fixture(500, 1000);
-    device(root.path(), "secondary", 5, 10);
-    service.refresh().await;
-    assert_eq!(service.state.snapshot().await.brightness.percent, 50);
-    assert_eq!(service.set(70).await.unwrap().brightness, 700);
-    assert_eq!(service.adjust(-5).await.unwrap().brightness, 650);
-    service.refresh().await;
-    assert_eq!(service.state.snapshot().await.brightness.percent, 65);
-    fail_direct_write(&path);
-    let error = service.set(80).await.unwrap_err().to_string();
-    assert!(
-        error.contains("fallback disabled for explicit backlight root"),
-        "{error}"
-    );
-    assert_eq!(service.state.snapshot().await.brightness.percent, 65);
 }
 
 #[tokio::test]

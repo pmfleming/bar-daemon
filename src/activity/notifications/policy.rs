@@ -120,7 +120,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_retained_metadata_field_has_a_utf8_byte_limit() {
+    fn ingress_bounds_utf8_metadata_actions_and_encoded_payloads() {
         type Field = fn(&mut IncomingNotification) -> &mut String;
         let fields: [(Field, usize); 9] = [
             (|n| &mut n.app_name, NAME_BYTES),
@@ -144,35 +144,29 @@ mod tests {
             field(&mut n).push('x');
             assert!(NotificationPolicy::default().validate(&n).is_err());
         }
-    }
-
-    #[test]
-    fn aggregate_limit_includes_actions_and_json_escaping() {
         let policy = NotificationPolicy::default();
         let mut n = incoming("test", "summary", &"x".repeat(policy.maximum_body_bytes));
         assert!(policy.validate(&n).is_ok());
-        n.actions = vec![
-            NotificationAction {
-                key: "key".into(),
-                label: "x".repeat(2048)
+        for escaping in [false, true] {
+            n.actions = if escaping {
+                Vec::new()
+            } else {
+                vec![
+                    NotificationAction {
+                        key: "key".into(),
+                        label: "x".repeat(2048)
+                    };
+                    64
+                ]
             };
-            64
-        ];
-        assert!(
-            policy
-                .validate(&n)
-                .unwrap_err()
-                .to_string()
-                .contains("total")
-        );
-        n.actions.clear();
-        n.body = "\u{0001}".repeat(policy.maximum_body_bytes);
-        assert!(
-            policy
-                .validate(&n)
-                .unwrap_err()
-                .to_string()
-                .contains("total")
-        );
+            n.body = if escaping { "\u{0001}" } else { "x" }.repeat(policy.maximum_body_bytes);
+            assert!(
+                policy
+                    .validate(&n)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("total")
+            );
+        }
     }
 }

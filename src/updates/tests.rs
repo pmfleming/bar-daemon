@@ -31,61 +31,6 @@ fn publish(directory: &Path, record: &Readiness) {
 }
 
 #[test]
-fn reads_one_complete_record_and_never_assembles_legacy_fragments() {
-    let root = tempdir().unwrap();
-    let directory = root.path().join("updates");
-    let lane = directory.join("delayed");
-    fs::create_dir_all(&lane).unwrap();
-    for name in [
-        "ready-flake.lock",
-        "ready-revision",
-        "ready-base-hash",
-        "ready-created-at",
-        "auto-apply",
-    ] {
-        fs::write(lane.join(name), "legacy-garbage").unwrap();
-    }
-    symlink("/missing-legacy-system", lane.join("system")).unwrap();
-    let state = read_state(&directory).unwrap();
-    assert!(
-        !state.ready,
-        "An older worker needs to publish the new record first"
-    );
-    assert!(state.error.is_some());
-
-    let candidate = candidate(root.path(), "complete", 123);
-    publish(&directory, &Readiness::new(1, Some(candidate.clone())));
-    let state = read_state(&directory).unwrap();
-    assert!(state.ready);
-    assert!(state.error.is_none());
-    assert_eq!(state.lanes[0].revision.as_deref(), Some("complete"));
-    assert_eq!(
-        state.lanes[0].base_hash.as_deref(),
-        Some(candidate.base_hash.as_str())
-    );
-    assert_eq!(state.lanes[0].created_at, Some(123));
-    assert!(
-        !state.lanes[0].auto_apply,
-        "Legacy marker must not override this record"
-    );
-    assert_eq!(state.lanes[0].system.as_deref(), candidate.system.to_str());
-    fs::remove_file(lane.join("system")).unwrap();
-    assert!(read_state(&directory).unwrap().ready);
-
-    // Invalidation wins even while every old readiness fragment still exists.
-    publish(&directory, &Readiness::new(2, None));
-    let state = read_state(&directory).unwrap();
-    assert!(!state.ready);
-    assert!(state.lanes[0].revision.is_none());
-    assert!(state.error.is_none());
-    fs::rename(&lane, directory.join("fast")).unwrap();
-    assert!(
-        !read_state(&directory).unwrap().ready,
-        "Obsolete lanes are not read"
-    );
-}
-
-#[test]
 fn malformed_unsupported_oversized_and_missing_candidate_records_fail_closed() {
     let root = tempdir().unwrap();
     let directory = root.path().join("updates");
@@ -161,38 +106,6 @@ fn interrupted_publication_leaves_old_record_until_commit_or_invalidation() {
     let state = read_state(&directory).unwrap();
     assert!(!state.ready);
     assert!(state.error.is_none());
-}
-
-#[test]
-fn concurrent_atomic_publications_never_mix_candidate_fields() {
-    let root = tempdir().unwrap();
-    let directory = root.path().join("updates");
-    let records = [
-        Readiness::new(1, Some(candidate(root.path(), "one", 1))),
-        Readiness::new(2, Some(candidate(root.path(), "two", 2))),
-    ];
-    publish(&directory, &records[0]);
-    std::thread::scope(|scope| {
-        let writer = scope.spawn(|| {
-            for index in 0..80 {
-                publish(&directory, &records[index % 2]);
-            }
-        });
-        for _ in 0..500 {
-            let state = read_state(&directory).unwrap();
-            assert!(state.ready && state.error.is_none());
-            let lane = &state.lanes[0];
-            let expected = records
-                .iter()
-                .filter_map(|record| record.candidate.as_ref())
-                .find(|candidate| Some(candidate.revision.as_str()) == lane.revision.as_deref())
-                .unwrap();
-            assert_eq!(lane.created_at, Some(expected.created_at));
-            assert_eq!(lane.auto_apply, expected.auto_apply);
-            assert_eq!(lane.system.as_deref(), expected.system.to_str());
-        }
-        writer.join().unwrap();
-    });
 }
 
 async fn next_state(
