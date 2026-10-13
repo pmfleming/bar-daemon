@@ -26,12 +26,18 @@ jobs:
           repository: pmfleming/daemon-framework
           ref: main
           path: daemon-framework
+      - name: Check out update-status contract source
+        uses: actions/checkout@v7
+        with:
+          repository: pmfleming/update-daemon
+          ref: main
+          path: update-daemon
       - uses: actions/checkout@v7
         with:
           repository: pmfleming/rust-quality-lens
           path: rust-quality-lens
       - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.95.0
       - name: Format
         run: ../daemon-framework/tools/local-build develop . --command cargo fmt --all -- --check
       - name: Clippy

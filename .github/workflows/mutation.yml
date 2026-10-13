@@ -25,8 +25,14 @@ jobs:
           repository: pmfleming/daemon-framework
           ref: main
           path: daemon-framework
+      - name: Check out update-status contract source
+        uses: actions/checkout@v7
+        with:
+          repository: pmfleming/update-daemon
+          ref: main
+          path: update-daemon
       - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.95.0
       - name: Test battery policy mutations
         run: |
           ../daemon-framework/tools/local-build develop . --command cargo mutants \

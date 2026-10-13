@@ -18,7 +18,10 @@
       updateWorker,
     }:
     let
-      systems = [ "x86_64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in
     {
@@ -150,27 +153,25 @@
       devShells = forAllSystems (
         system: pkgs: {
           default = pkgs.mkShell {
-            packages = with pkgs; [
-              brightnessctl
-              cargo
-              cargo-audit
-              cargo-deny
-              cargo-llvm-cov
-              cargo-mutants
-              cargo-shear
-              clippy
-              dbus
-              jq
-              llvmPackages.libclang
-              llvmPackages.llvm
-              pkg-config
-              pipewire
-              python3Packages.diff-cover
-              rust-analyzer
-              rustc
-              rustfmt
-              systemd
-            ];
+            packages =
+              (daemonFramework.lib.toolchain pkgs).packages
+              ++ (with pkgs; [
+                brightnessctl
+                cargo-audit
+                cargo-deny
+                cargo-llvm-cov
+                cargo-mutants
+                cargo-shear
+                dbus
+                jq
+                llvmPackages.libclang
+                llvmPackages.llvm
+                pkg-config
+                pipewire
+                python3Packages.diff-cover
+                rust-analyzer
+                systemd
+              ]);
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
             LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
