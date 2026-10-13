@@ -18,10 +18,7 @@
       updateWorker,
     }:
     let
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
+      systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in
     {
@@ -108,7 +105,7 @@
               description = "Status, policy, and action daemon for a Quickshell desktop bar";
               mainProgram = "bar-daemon";
               license = pkgs.lib.licenses.mit;
-              platforms = pkgs.lib.platforms.linux;
+              platforms = systems;
             };
           };
         in
