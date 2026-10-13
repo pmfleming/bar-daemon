@@ -12,6 +12,7 @@ use crate::{
 
 use self::{subscriptions::BarDaemon, tasks::MonitorTasks};
 
+pub(crate) mod battery_operations;
 mod subscriptions;
 mod tasks;
 

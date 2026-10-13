@@ -165,17 +165,20 @@ impl BatteryApi {
                 "another durable battery operation is already active",
             );
         }
-        let runtime = config::BatteryRuntimeState::start_charge_once(
+        let mut runtime = config::BatteryRuntimeState::start_charge_once(
             crate::time::unix_ms(),
             battery_id.clone(),
             restore_start,
             restore_end,
         );
+        runtime
+            .authorization_uncertain_batteries
+            .clone_from(&previous_runtime.authorization_uncertain_batteries);
         if let Err(error_value) = config::save_runtime(&runtime).await {
             return error(ErrorCode::StateFailed, error_value.to_string());
         }
         match battery::helper::set_thresholds(battery_id, 0, 100).await {
-            Ok(result) => self.battery_response(Some((battery_id, result))).await,
+            Ok(result) => self.hardware_response(battery_id, Some(result)).await,
             Err(value) => rollback_runtime(&previous_runtime, value, "charge-once").await,
         }
     }
@@ -204,7 +207,7 @@ impl BatteryApi {
             stop_charging_inhibition(&battery_id, previous).await
         };
         match result {
-            Ok(()) => self.battery_response(None).await,
+            Ok(()) => self.hardware_response(&battery_id, None).await,
             Err(response) => response,
         }
     }
@@ -247,7 +250,7 @@ impl BatteryApi {
         {
             return response;
         }
-        self.battery_response(None).await
+        self.hardware_response(&battery_id, None).await
     }
 
     pub(super) async fn battery_cancel_calibration(&self, params: Value) -> Value {
@@ -277,7 +280,7 @@ impl BatteryApi {
             return error(ErrorCode::StateFailed, error_value.to_string());
         }
         if let Err(error_value) = battery::helper::set_charge_behaviour(&battery_id, "auto").await {
-            return error(ErrorCode::OperationFailed, error_value.to_string());
+            return helper_error(error_value);
         }
         let (Some(start), Some(end)) = (
             runtime.operation_restore_start_percent,
@@ -290,7 +293,7 @@ impl BatteryApi {
         };
         let result = match battery::helper::set_thresholds(&battery_id, start, end).await {
             Ok(result) => result,
-            Err(error_value) => return error(ErrorCode::OperationFailed, error_value.to_string()),
+            Err(error_value) => return helper_error(error_value),
         };
         if let Err(error_value) = runtime.complete_calibration_restoration(
             result.actual_start_percent,
@@ -302,7 +305,7 @@ impl BatteryApi {
         if let Err(error_value) = config::save_runtime(&runtime).await {
             return error(ErrorCode::StateFailed, error_value.to_string());
         }
-        self.battery_response(None).await
+        self.hardware_response(&battery_id, None).await
     }
 
     pub(super) async fn battery_set_alert_policy(&self, params: Value) -> Value {
@@ -365,9 +368,10 @@ impl BatteryApi {
                 if let Err(error_value) = config::save_config(&next_config).await {
                     return error(ErrorCode::ConfigFailed, error_value.to_string());
                 }
-                self.battery_response(Some((battery_id, result))).await
+                self.hardware_response(battery_id, Some(result)).await
             }
             Err(error_value) => {
+                let uncertain = battery::authorization::is_unknown(&error_value);
                 if let Err(rollback_error) = config::save_config(&previous_config).await {
                     return error(
                         ErrorCode::OperationFailed,
@@ -376,9 +380,35 @@ impl BatteryApi {
                         ),
                     );
                 }
-                error(ErrorCode::OperationFailed, error_value.to_string())
+                if uncertain {
+                    crate::api::error("outcome-unknown", error_value.to_string())
+                } else {
+                    error(ErrorCode::OperationFailed, error_value.to_string())
+                }
             }
         }
+    }
+
+    // Caller still holds the effects lock: another action cannot install a
+    // newer uncertainty fence between this confirmation and clearing it.
+    async fn hardware_response(
+        &self,
+        battery_id: &str,
+        result: Option<battery::helper::ThresholdWriteResult>,
+    ) -> Value {
+        let clear = async {
+            let mut runtime = config::load_runtime().await?;
+            runtime
+                .authorization_uncertain_batteries
+                .retain(|id| id != battery_id);
+            config::save_runtime(&runtime).await
+        }
+        .await;
+        if let Err(failure) = clear {
+            return error(ErrorCode::StateFailed, failure.to_string());
+        }
+        self.battery_response(result.map(|result| (battery_id, result)))
+            .await
     }
 
     async fn battery_response(
@@ -410,6 +440,14 @@ fn require_behaviour<'a>(
         })
 }
 
+fn helper_error(failure: anyhow::Error) -> Value {
+    if battery::authorization::is_unknown(&failure) {
+        crate::api::error("outcome-unknown", failure.to_string())
+    } else {
+        error(ErrorCode::OperationFailed, failure.to_string())
+    }
+}
+
 fn valid_thresholds(start: u8, end: u8) -> bool {
     start < end && end <= 100
 }
@@ -438,12 +476,14 @@ async fn begin_calibration(
             "another durable battery operation is already active",
         ));
     }
-    let next = config::BatteryRuntimeState::start_calibration(
+    let mut next = config::BatteryRuntimeState::start_calibration(
         crate::time::unix_ms(),
         battery_id.to_string(),
         restore_start,
         restore_end,
     );
+    next.authorization_uncertain_batteries
+        .clone_from(&previous.authorization_uncertain_batteries);
     config::save_runtime(&next)
         .await
         .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))?;
@@ -465,9 +505,14 @@ async fn begin_calibration(
 
 async fn rollback_runtime(
     previous: &config::BatteryRuntimeState,
-    failure: impl std::fmt::Display,
+    failure: anyhow::Error,
     operation: &str,
 ) -> Value {
+    if battery::authorization::is_unknown(&failure) {
+        // The writer persisted a no-replay fence. Preserve restoration data
+        // rather than claiming a failed start could not have touched hardware.
+        return crate::api::error("outcome-unknown", failure.to_string());
+    }
     match config::save_runtime(previous).await {
         Ok(()) => error(ErrorCode::OperationFailed, failure.to_string()),
         Err(rollback_error) => error(
@@ -482,8 +527,11 @@ async fn rollback_calibration_hardware(
     restore_start: u8,
     restore_end: u8,
     previous: &config::BatteryRuntimeState,
-    failure: impl std::fmt::Display,
+    failure: anyhow::Error,
 ) -> Value {
+    if battery::authorization::is_unknown(&failure) {
+        return crate::api::error("outcome-unknown", failure.to_string());
+    }
     let mut message = failure.to_string();
     match battery::helper::set_thresholds(battery_id, restore_start, restore_end).await {
         Ok(result) if !result.verified => message.push_str(&format!(
@@ -491,7 +539,12 @@ async fn rollback_calibration_hardware(
             result.actual_start_percent, result.actual_end_percent
         )),
         Ok(_) => {}
-        Err(error) => message.push_str(&format!("; threshold rollback also failed: {error}")),
+        Err(error) => {
+            message.push_str(&format!("; threshold rollback also failed: {error}"));
+            if battery::authorization::is_unknown(&error) {
+                return crate::api::error("outcome-unknown", message);
+            }
+        }
     }
     if let Err(error) = config::save_runtime(previous).await {
         message.push_str(&format!(
@@ -511,8 +564,10 @@ async fn start_charging_inhibition(
             "another durable battery operation is already active",
         ));
     }
-    let next =
+    let mut next =
         config::BatteryRuntimeState::start_inhibit(crate::time::unix_ms(), battery_id.to_string());
+    next.authorization_uncertain_batteries
+        .clone_from(&previous.authorization_uncertain_batteries);
     config::save_runtime(&next)
         .await
         .map_err(|value| error(ErrorCode::StateFailed, value.to_string()))?;
@@ -536,7 +591,7 @@ async fn stop_charging_inhibition(
     }
     battery::helper::set_charge_behaviour(battery_id, "auto")
         .await
-        .map_err(|value| error(ErrorCode::OperationFailed, value.to_string()))?;
+        .map_err(helper_error)?;
     runtime.clear_operation();
     config::save_runtime(&runtime)
         .await

@@ -233,7 +233,13 @@ pub(super) async fn fixture() -> Value {
         read_wire::Event::changed("subscription-example", receiver.recv().await.unwrap())
             .into_value(),
     );
-    json!({"snapshot":snapshot, "cases":cases, "history":battery_wire::history(base.history), "events":events, "restorationFailed":restoration_failed})
+    json!({"snapshot":snapshot, "cases":cases, "history":battery_wire::history(base.history), "events":events, "restorationFailed":restoration_failed,
+        "operationStarted": crate::daemon::battery_operations::started("battery-operation-example"),
+        "operationCancelled": crate::daemon::battery_operations::status("battery-operation-example", None, true),
+        "operationRestorationFailed": crate::daemon::battery_operations::status("battery-operation-example", Some(restoration_failed.clone()), false),
+        "operationFinished": cases.iter().map(|(method, case)| (method.clone(), Value::Object(case.as_object().unwrap().iter().filter(|(_, response)| response.get("ok").is_some()).map(|(outcome, response)| (outcome.clone(), crate::daemon::battery_operations::status("battery-operation-example", Some(response.clone()), false))).collect()))).collect::<Map<_, _>>(),
+        "operationUnknown": crate::daemon::battery_operations::status("battery-operation-example", Some(crate::api::error("outcome-unknown", "Battery write outcome unknown; reconcile state")), false)
+    })
 }
 #[cfg(test)]
 mod tests {

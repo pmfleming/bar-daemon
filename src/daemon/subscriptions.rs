@@ -12,7 +12,8 @@ use crate::{
 };
 
 pub(super) struct BarDaemon {
-    api: ApiService,
+    api: Arc<ApiService>,
+    operations: super::battery_operations::Operations,
     state: StateStore,
     pub(super) subscriptions: Arc<OwnedTaskRegistry>,
 }
@@ -20,7 +21,8 @@ pub(super) struct BarDaemon {
 impl BarDaemon {
     pub(super) fn new(api: ApiService, state: StateStore) -> Self {
         Self {
-            api,
+            api: Arc::new(api),
+            operations: super::battery_operations::Operations::default(),
             state,
             subscriptions: Arc::new(OwnedTaskRegistry::default()),
         }
@@ -29,7 +31,13 @@ impl BarDaemon {
 
 #[zbus::interface(name = "org.laufan.BarDaemon1")]
 impl BarDaemon {
-    async fn call(&self, method: &str, params_json: &str) -> String {
+    async fn call(
+        &self,
+        method: &str,
+        params_json: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> String {
         let params: Value = match serde_json::from_str(params_json) {
             Ok(value) => value,
             Err(error) => {
@@ -37,6 +45,18 @@ impl BarDaemon {
                     .to_string();
             }
         };
+        if matches!(
+            method,
+            "battery.operation.start" | "battery.operation.status" | "battery.operation.cancel"
+        ) {
+            let Some(owner) = header.sender() else {
+                return api::error("owner-required", "operation requires a bus owner").to_string();
+            };
+            return self
+                .operations
+                .call(method, params, owner.as_str(), connection, self.api.clone())
+                .to_string();
+        }
         self.api.dispatch(method, params).await.to_string()
     }
 

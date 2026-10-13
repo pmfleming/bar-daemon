@@ -113,6 +113,39 @@ impl BatteryHelper {
         ))
     }
 
+    async fn set_thresholds_non_interactive(
+        &self,
+        battery: &str,
+        start_percent: u8,
+        end_percent: u8,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> zbus::fdo::Result<(u8, u8, bool)> {
+        authorize(connection, &header, POLKIT_THRESHOLDS_ACTION, 0).await?;
+        let result = self
+            .writer
+            .set_thresholds(battery, start_percent, end_percent)
+            .map_err(failed)?;
+        Ok((
+            result.actual_start_percent,
+            result.actual_end_percent,
+            result.verified,
+        ))
+    }
+
+    async fn set_charge_behaviour_non_interactive(
+        &self,
+        battery: &str,
+        behaviour: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> zbus::fdo::Result<String> {
+        authorize(connection, &header, POLKIT_BEHAVIOUR_ACTION, 0).await?;
+        self.writer
+            .set_charge_behaviour(battery, behaviour)
+            .map_err(failed)
+    }
+
     async fn get_charge_behaviour(
         &self,
         battery: &str,
@@ -153,10 +186,46 @@ async fn authorize(
     let subject_details = HashMap::from([("name", Value::from(sender.as_str()))]);
     let subject = ("system-bus-name", subject_details);
     let details = HashMap::<&str, &str>::new();
-    let (authorized, _challenge, _details): (bool, bool, HashMap<String, String>) = proxy
-        .call("CheckAuthorization", &(subject, action, details, flags, ""))
-        .await
-        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    // A separate cancellation ID per request; never supplied as caller identity.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let cancellation_id = format!(
+        "battery-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let monitor = shelllist_daemon_tokio::OwnerLossMonitor::new(connection.clone());
+    let budget = if flags == 0 {
+        std::time::Duration::from_secs(3)
+    } else {
+        super::authorization::AUTHORIZATION_BUDGET
+    };
+    let body = (subject, action, details, flags, cancellation_id.as_str());
+    let check =
+        proxy.call::<_, _, (bool, bool, HashMap<String, String>)>("CheckAuthorization", &body);
+    let result = tokio::select! {
+        result = tokio::time::timeout(budget, check) => result.ok(),
+        _ = monitor.wait(sender.as_str()) => None,
+    };
+    let Some(result) = result else {
+        // Dropping a local wait alone does not cancel polkit. Bound cleanup too.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            proxy.call::<_, _, ()>("CancelCheckAuthorization", &(cancellation_id.as_str(),)),
+        )
+        .await;
+        return Err(zbus::fdo::Error::AccessDenied(
+            "authorization cancelled or expired; no write started".into(),
+        ));
+    };
+    let (authorized, _challenge, _details) =
+        result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    // Owner loss may race a successful authorization. No await between this
+    // check returning and the synchronous writer. A write already begun cannot
+    // be rolled back by disconnect/cancellation.
+    if !monitor.has_owner(sender.as_str()).await.map_err(failed)? {
+        return Err(zbus::fdo::Error::AccessDenied(
+            "caller disconnected before write".into(),
+        ));
+    }
     if authorized {
         Ok(())
     } else {
@@ -342,7 +411,7 @@ fn write_percent(path: &Path, value: u8) -> Result<()> {
 pub(crate) async fn run() -> Result<()> {
     let _connection = connection::Builder::system()
         .context("connect battery helper to system D-Bus")?
-        .method_timeout(std::time::Duration::from_secs(3))
+        .method_timeout(super::authorization::HELPER_BUDGET)
         .name(BUS_NAME)
         .context("claim battery helper bus name")?
         .serve_at(OBJECT_PATH, BatteryHelper::default())
@@ -368,14 +437,13 @@ pub(crate) async fn set_thresholds(
     start: u8,
     end: u8,
 ) -> Result<ThresholdWriteResult> {
-    let connection = crate::bus::system().await?;
-    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
-        .await
-        .context("connect to battery helper")?;
-    let (actual_start_percent, actual_end_percent, verified): (u8, u8, bool) = proxy
-        .call("SetThresholds", &(battery, start, end))
-        .await
-        .context("set battery thresholds")?;
+    let (actual_start_percent, actual_end_percent, verified): (u8, u8, bool) = write_call(
+        battery,
+        "SetThresholds",
+        "SetThresholdsNonInteractive",
+        &(battery, start, end),
+    )
+    .await?;
     Ok(ThresholdWriteResult {
         actual_start_percent,
         actual_end_percent,
@@ -384,15 +452,114 @@ pub(crate) async fn set_thresholds(
 }
 
 pub(crate) async fn set_charge_behaviour(battery: &str, behaviour: &str) -> Result<String> {
-    let connection = crate::bus::system().await?;
-    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)
-        .await
-        .context("connect to battery helper")?;
-    proxy
-        .call("SetChargeBehaviour", &(battery, behaviour))
-        .await
-        .context("set battery charge behaviour")
+    write_call(
+        battery,
+        "SetChargeBehaviour",
+        "SetChargeBehaviourNonInteractive",
+        &(battery, behaviour),
+    )
+    .await
 }
+
+async fn write_call<B, R>(
+    battery: &str,
+    interactive_method: &str,
+    automatic_method: &str,
+    body: &B,
+) -> Result<R>
+where
+    B: serde::Serialize + zvariant::DynamicType,
+    R: for<'d> zvariant::DynamicDeserialize<'d>,
+{
+    let cancellation = super::authorization::cancellation();
+    if cancellation.as_ref().is_some_and(|value| *value.borrow()) {
+        bail!("battery operation cancelled before helper dispatch");
+    }
+    // Dedicated connection: closing it cancels only this authorization's owner,
+    // never the shared fast-read/system connection or another operation.
+    let budget = if cancellation.is_some() {
+        super::authorization::HELPER_BUDGET
+    } else {
+        std::time::Duration::from_secs(5)
+    };
+    let connection = connection::Builder::system()?
+        .method_timeout(budget)
+        .build()
+        .await?;
+    let method = if cancellation.is_some() {
+        interactive_method
+    } else {
+        automatic_method
+    };
+    let result = dispatch_write(connection, method, body, cancellation).await;
+    if let Err(error) = &result
+        && super::authorization::is_unknown(error)
+    {
+        // Caller holds the effects lock. Persist before releasing it so the
+        // monitor cannot automatically replay an uncertain start.
+        let mut runtime = super::config::load_runtime().await.map_err(|failure| {
+            anyhow::Error::from(super::authorization::OutcomeUnknown).context(failure)
+        })?;
+        if !runtime
+            .authorization_uncertain_batteries
+            .iter()
+            .any(|id| id == battery)
+        {
+            runtime
+                .authorization_uncertain_batteries
+                .push(battery.into());
+        }
+        super::config::save_runtime(&runtime)
+            .await
+            .map_err(|failure| {
+                anyhow::Error::from(super::authorization::OutcomeUnknown).context(failure)
+            })?;
+    }
+    result
+}
+
+async fn dispatch_write<B, R>(
+    connection: Connection,
+    method: &str,
+    body: &B,
+    mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<R>
+where
+    B: serde::Serialize + zvariant::DynamicType,
+    R: for<'d> zvariant::DynamicDeserialize<'d>,
+{
+    let proxy = zbus::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE).await?;
+    let call = proxy.call(method, body);
+    let result = if let Some(receiver) = cancellation.as_mut() {
+        tokio::select! {
+            biased;
+            _ = super::authorization::cancelled(receiver) => None,
+            result = call => Some(result),
+        }
+    } else {
+        Some(call.await)
+    };
+    drop(proxy);
+    // Explicit close, rather than relying on connection clone drop semantics.
+    let _ = connection.close().await;
+    match result {
+        Some(Ok(value)) => Ok(value),
+        Some(Err(zbus::Error::MethodError(name, message, _)))
+            if name.as_str() == "org.freedesktop.DBus.Error.AccessDenied" =>
+        {
+            bail!(
+                "{}",
+                message.unwrap_or_else(|| "authorization denied".into())
+            )
+        }
+        // Failed replies can include partial writes; never imply rollback.
+        _ => Err(super::authorization::OutcomeUnknown.into()),
+    }
+}
+
+#[cfg(test)]
+#[path = "authorization_tests.rs"]
+pub(crate) mod authorization_tests;
 
 #[cfg(test)]
 mod tests {
@@ -402,7 +569,7 @@ mod tests {
 
     use super::ThresholdWriter;
 
-    fn writer(start: u8, end: u8) -> (TempDir, ThresholdWriter) {
+    pub(super) fn writer(start: u8, end: u8) -> (TempDir, ThresholdWriter) {
         let directory = TempDir::new().unwrap();
         let battery = directory.path().join("BAT0");
         fs::create_dir(&battery).unwrap();

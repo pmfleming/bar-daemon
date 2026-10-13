@@ -211,6 +211,9 @@ impl std::fmt::Display for OperationPhase {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct BatteryRuntimeState {
+    /// Stop automatic replay after an uncertain helper write. Explicit actions
+    /// or safety restoration must reconcile hardware before clearing this.
+    pub authorization_uncertain_batteries: Vec<String>,
     pub charge_once_active: bool,
     pub charge_once_battery_id: String,
     pub charge_once_started_unix_ms: u64,

@@ -17,6 +17,7 @@ use crate::{
     state::StateStore,
 };
 
+pub(crate) mod authorization;
 pub(crate) mod config;
 pub(crate) mod derived;
 mod history;
@@ -188,6 +189,9 @@ async fn reconcile_and_decorate(mut state: BatteryState) -> BatteryState {
     let _guard = lock_effects().await;
     let (mut config, mut runtime, mut policy_error) = load_policy_data().await;
     migrate_charge_once_battery(&state, &mut runtime, &mut policy_error).await;
+    if !runtime.authorization_uncertain_batteries.is_empty() {
+        append_error(&mut policy_error, "Battery write outcome unknown; automatic writes for the affected battery paused. Inspect current state before another action.".into());
+    }
     if reconcile_runtime_operation(&mut state, &mut runtime, &mut policy_error).await {
         save_runtime(&runtime, &mut policy_error).await;
     }
@@ -256,7 +260,10 @@ async fn finish_charge_once_if_due(
         );
         return;
     }
+    let mut uncertain = std::mem::take(&mut runtime.authorization_uncertain_batteries);
+    uncertain.retain(|id| id != &runtime.charge_once_battery_id);
     *runtime = config::BatteryRuntimeState::default();
+    runtime.authorization_uncertain_batteries = uncertain;
     save_runtime(runtime, policy_error).await;
 }
 
@@ -413,6 +420,18 @@ fn reconciliation_target(
     should_finish_charge_once: bool,
     battery_id: &str,
 ) -> Option<(u8, u8)> {
+    let safety_restoration = runtime.charge_once_active
+        && (runtime.charge_once_battery_id.is_empty()
+            || runtime.charge_once_battery_id == battery_id)
+        && should_finish_charge_once;
+    if runtime
+        .authorization_uncertain_batteries
+        .iter()
+        .any(|id| id == battery_id)
+        && !safety_restoration
+    {
+        return None;
+    }
     if runtime.operation == config::OperationKind::Calibration
         && runtime.operation_battery_id == battery_id
     {
@@ -468,6 +487,21 @@ async fn reconcile_runtime_operation(
         );
         return false;
     };
+    if runtime
+        .authorization_uncertain_batteries
+        .contains(&device.id)
+    {
+        if runtime.operation == config::OperationKind::Calibration {
+            // Safety restoration, not a replay of the uncertain start.
+            if finish_runtime_operation(state, runtime, policy_error).await {
+                runtime
+                    .authorization_uncertain_batteries
+                    .retain(|id| id != &device.id);
+                return true;
+            }
+        }
+        return false;
+    }
     match runtime.operation {
         config::OperationKind::Inhibit => {
             ensure_charge_behaviour(state, &device, "inhibit-charge", policy_error).await;
@@ -811,6 +845,33 @@ async fn publish_error(error: impl std::fmt::Display, store: &StateStore) {
 #[cfg(test)]
 mod tests {
     use super::{config, reconciliation_target};
+
+    #[test]
+    fn uncertain_write_fence_survives_restart_and_allows_only_safety_restoration() {
+        let device = config::BatteryDeviceConfig {
+            manage_thresholds: true,
+            protection_enabled: true,
+            ..Default::default()
+        };
+        let mut runtime = config::BatteryRuntimeState::start_charge_once(1, "BAT0".into(), 75, 80);
+        runtime
+            .authorization_uncertain_batteries
+            .push("BAT0".into());
+        let runtime: config::BatteryRuntimeState =
+            serde_json::from_value(serde_json::to_value(runtime).unwrap()).unwrap();
+        assert_eq!(
+            reconciliation_target(&device, &runtime, false, "BAT0"),
+            None
+        );
+        assert_eq!(
+            reconciliation_target(&device, &runtime, true, "BAT0"),
+            Some((75, 80))
+        );
+        assert_eq!(
+            reconciliation_target(&device, &runtime, false, "BAT1"),
+            Some((75, 80))
+        );
+    }
 
     #[test]
     fn pending_calibration_restoration_does_not_reopen_thresholds() {
