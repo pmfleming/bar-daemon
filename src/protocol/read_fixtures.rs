@@ -131,7 +131,8 @@ mod tests {
             assert_eq!(changed["stream"], *stream);
             assert_eq!(changed["subscription_id"], SUBSCRIPTION);
             assert_eq!(fixture["subscribed"][stream]["data"]["available"], false);
-            assert_eq!(fixture["lagged"][stream]["data"]["missed"], 4);
+            assert_eq!(fixture["lagged"][stream]["event"], "gap");
+            assert_eq!(fixture["lagged"][stream]["data"]["dropped_events"], "4");
         }
         assert_eq!(
             snapshot.workarea.revision, 1,
