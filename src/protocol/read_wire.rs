@@ -93,7 +93,30 @@ impl Event {
     }
 }
 
-fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
+pub(crate) fn snapshot_key(stream: &str) -> &'static str {
+    match stream {
+        stream::ACTIVITY => "activity",
+        stream::WORKAREA => "workarea",
+        stream::COMPOSITOR => "compositor",
+        stream::WORKSPACES => "workspaces",
+        stream::MEDIA => "media",
+        stream::AUDIO => "audio",
+        stream::BRIGHTNESS => "brightness",
+        stream::BATTERY => "battery",
+        stream::POWER_PROFILE => "power_profile",
+        stream::POWER_SLEEP => "power_sleep",
+        stream::SLEEP_POLICY => "sleep_policy",
+        stream::DISPLAY_POLICY => "display_policy",
+        stream::OSD_HARDWARE => "osd_hardware",
+        stream::NOTIFICATIONS => "notifications",
+        stream::NOTIFICATION_ACTIVE => "notification_active",
+        stream::UPDATES => "updates",
+        stream::TIMEZONE => "timezone",
+        _ => unreachable!("validated stream"),
+    }
+}
+
+pub(crate) fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
     match stream {
         stream::ACTIVITY => serde_json::to_value(&snapshot.activity),
         stream::WORKAREA => serde_json::to_value(&snapshot.workarea),

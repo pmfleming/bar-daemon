@@ -84,8 +84,49 @@ impl ApiService {
     }
 
     pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
-        match method {
-            "bar.snapshot" => protocol::read_wire::snapshot(&self.state.snapshot().await),
+        let response = match method {
+            "bar.snapshot" => {
+                static REQUESTS: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let snapshot_requests_total =
+                    REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let started = std::time::Instant::now();
+                let result = if let Some(streams) = params.get("streams") {
+                    match serde_json::from_value::<Vec<String>>(streams.clone()) {
+                        Ok(streams)
+                            if streams
+                                .iter()
+                                .all(|s| protocol::STREAMS.contains(&s.as_str())) =>
+                        {
+                            let projection = self
+                                .state
+                                .read(|snapshot| {
+                                    let mut projection = serde_json::Map::new();
+                                    for stream in &streams {
+                                        projection.insert(
+                                            protocol::read_wire::snapshot_key(stream).into(),
+                                            protocol::read_wire::initial_stream_data(
+                                                stream, snapshot,
+                                            ),
+                                        );
+                                    }
+                                    projection
+                                })
+                                .await;
+                            success(serde_json::json!({"snapshot": projection}))
+                        }
+                        _ => error(
+                            "validation-error",
+                            "streams must be a list of registered bar streams",
+                        ),
+                    }
+                } else {
+                    protocol::read_wire::snapshot(&self.state.snapshot().await)
+                };
+                tracing::debug!(snapshot_requests_total, streams = ?params.get("streams"), latency_us = started.elapsed().as_micros() as u64,
+                    payload_bytes = result.to_string().len(), "bar snapshot request");
+                result
+            }
             "activity.queryRange" => self.activity.activity_query_range(params).await,
             "activity.refresh" => self.activity.activity_refresh().await,
             "todos.create" => self.activity.todo_create(params).await,
@@ -148,7 +189,8 @@ impl ApiService {
             }
             "updates.refresh" => self.effects.updates_refresh().await,
             _ => unsupported_method(method),
-        }
+        };
+        self.state.fence_reply(response)
     }
 }
 
@@ -237,6 +279,32 @@ mod tests {
             api.dispatch("notifications.unknown", json!({})).await["error"]["code"],
             "unsupported-method"
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_projection_is_domain_local_and_validated() {
+        let api = api().await;
+        let full = api.dispatch("bar.snapshot", json!({})).await;
+        let projected = api
+            .dispatch("bar.snapshot", json!({"streams": ["battery.changed"]}))
+            .await;
+        assert_eq!(projected["data"]["snapshot"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            projected["data"]["snapshot"]["battery"],
+            full["data"]["snapshot"]["battery"]
+        );
+        for invalid in [
+            json!(["foreign"]),
+            json!(null),
+            json!("battery.changed"),
+            json!([1]),
+        ] {
+            assert_eq!(
+                api.dispatch("bar.snapshot", json!({"streams": invalid}))
+                    .await["error"]["code"],
+                "validation-error"
+            );
+        }
     }
 
     #[tokio::test]

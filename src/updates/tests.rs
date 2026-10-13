@@ -3,10 +3,9 @@ use std::{fs, os::unix::fs::symlink, time::Duration};
 use shelllist_daemon_core::{AtomicFilePolicy, write_bytes_atomic};
 use shelllist_update_status::Candidate;
 use tempfile::tempdir;
-use tokio::{sync::broadcast, time::timeout};
+use tokio::time::timeout;
 
 use super::*;
-use crate::state::DomainEvent;
 
 fn candidate(root: &Path, revision: &str, created_at: u64) -> Candidate {
     let system = root.join(format!("system-{revision}"));
@@ -197,7 +196,7 @@ fn concurrent_atomic_publications_never_mix_candidate_fields() {
 }
 
 async fn next_state(
-    events: &mut broadcast::Receiver<DomainEvent>,
+    events: &mut crate::state::DomainReceivers,
     matches: impl Fn(&UpdateState) -> bool,
 ) -> UpdateState {
     timeout(Duration::from_secs(3), async {

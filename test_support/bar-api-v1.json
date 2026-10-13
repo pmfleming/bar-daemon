@@ -174,6 +174,9 @@
     "methods": [
       {
         "name": "bar.snapshot",
+        "optional_params": {
+          "streams": "registered stream names; omitted means full snapshot"
+        },
         "params": {},
         "result": "snapshot"
       },
@@ -613,140 +616,310 @@
     "protocol": "bar-api",
     "streams": [
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "activity.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "activity.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "activity.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "workspaces.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "workspaces.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "workspaces.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "workarea.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "workarea.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "workarea.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "compositor.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "compositor.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "compositor.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "media.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "media.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "media.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "audio.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "audio.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "audio.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "brightness.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "brightness.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "brightness.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "ordered-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "battery.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "battery.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "battery.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "power-profile.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "power-profile.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "power-profile.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "ordered-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "power-sleep.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "power-sleep.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "power-sleep.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "sleep-policy.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "sleep-policy.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "sleep-policy.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "display-policy.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "display-policy.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "display-policy.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "ordered-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "osd-hardware.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "osd-hardware.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "osd-hardware.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "notifications.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "notifications.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "notifications.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "ordered-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "notifications.active.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "notifications.active.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "notifications.active.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "updates.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "updates.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "updates.changed"
+            ]
+          }
+        }
       },
       {
+        "delivery": "replaceable-state",
         "events": [
           "subscribed",
           "changed",
           "lagged"
         ],
-        "name": "timezone.changed"
+        "initial": "snapshot-under-commit-lock",
+        "name": "timezone.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "timezone.changed"
+            ]
+          }
+        }
       }
     ],
     "version": 1

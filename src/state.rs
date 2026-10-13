@@ -5,7 +5,14 @@ use std::sync::{
 
 use serde::Serialize;
 use serde_json::{Value, to_value};
-use tokio::sync::{RwLock, broadcast};
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::time::Instant;
+use tokio::sync::RwLock;
+
+mod events;
+pub(crate) use events::DomainReceivers;
+use events::Source;
 
 use crate::activity::notifications::model::{NotificationActiveState, NotificationState};
 use crate::model::{
@@ -32,7 +39,8 @@ impl Drop for WorkAreaInterest {
 #[derive(Clone)]
 pub(crate) struct StateStore {
     snapshot: Arc<RwLock<BarSnapshot>>,
-    events: broadcast::Sender<DomainEvent>,
+    events: Arc<BTreeMap<&'static str, Source>>,
+    failed_monitors: Arc<Mutex<BTreeMap<&'static str, String>>>,
     work_area_demand: tokio::sync::watch::Sender<usize>,
     hyprland_connected: Arc<AtomicBool>,
     pub(crate) work_area_changed: Arc<tokio::sync::Notify>,
@@ -41,10 +49,14 @@ pub(crate) struct StateStore {
 
 impl Default for StateStore {
     fn default() -> Self {
-        let (events, _) = broadcast::channel(128);
+        let events = crate::protocol::STREAMS
+            .iter()
+            .map(|stream| (*stream, Source::new(stream)))
+            .collect();
         Self {
             snapshot: Arc::new(RwLock::new(BarSnapshot::default())),
-            events,
+            events: Arc::new(events),
+            failed_monitors: Arc::default(),
             work_area_demand: tokio::sync::watch::channel(0).0,
             hyprland_connected: Arc::new(AtomicBool::new(false)),
             work_area_changed: Arc::new(tokio::sync::Notify::new()),
@@ -64,27 +76,130 @@ macro_rules! state_updates {
 }
 
 impl StateStore {
+    pub(crate) fn stream_semantics(stream: &str) -> &'static str {
+        if events::ordered(stream) {
+            "ordered-state"
+        } else {
+            "replaceable-state"
+        }
+    }
+
     /// Read a projection under the snapshot lock without cloning unrelated domains.
     pub(crate) async fn read<T>(&self, project: impl FnOnce(&BarSnapshot) -> T) -> T {
         let snapshot = self.snapshot.read().await;
-        project(&snapshot)
+        if self.failed_monitors.lock().unwrap().is_empty() {
+            project(&snapshot)
+        } else {
+            project(&self.healthy_snapshot(&snapshot))
+        }
     }
 
     pub(crate) async fn snapshot(&self) -> BarSnapshot {
-        self.snapshot.read().await.clone()
+        let started = Instant::now();
+        let snapshot = self.healthy_snapshot(&*self.snapshot.read().await);
+        tracing::debug!(
+            latency_us = started.elapsed().as_micros() as u64,
+            "bar snapshot read"
+        );
+        snapshot
     }
 
-    /// Keep caller-controlled stream serialization outside the snapshot lock.
-    pub(crate) async fn snapshot_and_subscribe(
+    /// Receiver registration and initial state share the commit lock. No update
+    /// can fall between the initial projection and domain source registration.
+    pub(crate) async fn snapshot_and_subscribe(&self) -> (BarSnapshot, DomainReceivers) {
+        self.snapshot_and_subscribe_domains(crate::protocol::STREAMS)
+            .await
+    }
+
+    pub(crate) async fn snapshot_and_subscribe_domains(
         &self,
-    ) -> (BarSnapshot, broadcast::Receiver<DomainEvent>) {
+        streams: &[&str],
+    ) -> (BarSnapshot, DomainReceivers) {
         let snapshot = self.snapshot.read().await;
-        let events = self.events.subscribe();
-        (snapshot.clone(), events)
+        let events = self.subscribe_domains(streams);
+        (self.healthy_snapshot(&snapshot), events)
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<DomainEvent> {
-        self.events.subscribe()
+    pub(crate) fn subscribe(&self) -> DomainReceivers {
+        self.subscribe_domains(crate::protocol::STREAMS)
+    }
+
+    pub(crate) fn subscribe_domains(&self, streams: &[&str]) -> DomainReceivers {
+        DomainReceivers(
+            streams
+                .iter()
+                .map(|stream| self.events[stream].subscribe())
+                .collect(),
+        )
+    }
+
+    fn unhealthy(&self, stream: &str, data: &mut Value) {
+        if let Some(reason) = self.failed_monitors.lock().unwrap().get(stream) {
+            data["available"] = Value::Bool(false);
+            data["error"] = Value::String(reason.clone());
+        }
+    }
+
+    pub(crate) fn fence_reply(&self, mut response: Value) -> Value {
+        if self.failed_monitors.lock().unwrap().is_empty() {
+            return response;
+        }
+        if let Some(data) = response.get_mut("data") {
+            for stream in crate::protocol::STREAMS {
+                let key = crate::protocol::read_wire::snapshot_key(stream);
+                if let Some(value) = data.get_mut(key) {
+                    self.unhealthy(stream, value);
+                }
+                if let Some(value) = data
+                    .get_mut("snapshot")
+                    .and_then(|snapshot| snapshot.get_mut(key))
+                {
+                    self.unhealthy(stream, value);
+                }
+            }
+        }
+        response
+    }
+
+    fn healthy_snapshot(&self, snapshot: &BarSnapshot) -> BarSnapshot {
+        if self.failed_monitors.lock().unwrap().is_empty() {
+            return snapshot.clone();
+        }
+        let mut value = to_value(snapshot).expect("snapshot serialization");
+        for stream in crate::protocol::STREAMS {
+            self.unhealthy(
+                stream,
+                &mut value[crate::protocol::read_wire::snapshot_key(stream)],
+            );
+        }
+        serde_json::from_value(value).expect("availability overlay preserves snapshot types")
+    }
+
+    /// Sticky until daemon restart. Never blindly restart a policy engine after
+    /// a panic: effects/inhibitors may have unknown outcomes. Other domains live.
+    pub(crate) async fn monitor_failed(&self, name: &str, streams: &[&'static str], reason: &str) {
+        let snapshot = self.snapshot.write().await;
+        {
+            let mut failures = self.failed_monitors.lock().unwrap();
+            for stream in streams {
+                failures.insert(
+                    stream,
+                    format!("{name} monitor {reason}; restart daemon to recover"),
+                );
+            }
+        }
+        for stream in streams {
+            self.publish(
+                stream,
+                &crate::protocol::read_wire::initial_stream_data(stream, &snapshot),
+            );
+        }
+        tracing::error!(
+            monitor = name,
+            available = false,
+            reason,
+            "bar monitor stopped"
+        );
     }
 
     state_updates! {
@@ -263,9 +378,11 @@ impl StateStore {
 
     // Called under the snapshot write lock: subscription and commit order agree.
     fn publish(&self, stream: &str, value: &impl Serialize) {
-        let _ = self.events.send(DomainEvent {
+        let mut data = to_value(value).unwrap_or(Value::Null);
+        self.unhealthy(stream, &mut data);
+        self.events[stream].send(DomainEvent {
             stream: stream.into(),
-            data: to_value(value).unwrap_or(Value::Null),
+            data,
         });
     }
 }
@@ -281,7 +398,9 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let store = StateStore::default();
-        let (initial, mut events) = store.snapshot_and_subscribe().await;
+        let (initial, mut events) = store
+            .snapshot_and_subscribe_domains(&[crate::protocol::stream::BATTERY])
+            .await;
         assert_eq!(initial.notifications.count, 0);
         for round in 0..1_000 {
             let committed = Arc::new(Mutex::new(Vec::new()));
@@ -292,7 +411,7 @@ mod tests {
                 tasks.spawn(async move {
                     let value = round * 16 + worker + 1;
                     store
-                        .update(value, "test", |snapshot| {
+                        .update(value, crate::protocol::stream::BATTERY, |snapshot| {
                             committed.lock().unwrap().push(value);
                             &mut snapshot.notifications.count
                         })
@@ -314,14 +433,49 @@ mod tests {
             let (snapshot, mut new_events) = store.snapshot_and_subscribe().await;
             assert_eq!(snapshot.notifications.count, *emitted.last().unwrap());
             store
-                .update(snapshot.notifications.count, "test", |s| {
-                    &mut s.notifications.count
-                })
+                .update(
+                    snapshot.notifications.count,
+                    crate::protocol::stream::BATTERY,
+                    |s| &mut s.notifications.count,
+                )
                 .await;
             assert!(
                 new_events.try_recv().is_err(),
                 "unchanged values must not emit events"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn watch_handoff_never_misses_a_concurrent_commit() {
+        use crate::{model::AudioState, protocol::stream};
+        let store = StateStore::default();
+        for volume in 1..100 {
+            let writer = store.clone();
+            let task = tokio::spawn(async move {
+                writer
+                    .update_audio(AudioState {
+                        available: true,
+                        volume_percent: volume,
+                        ..Default::default()
+                    })
+                    .await;
+            });
+            let (initial, mut events) =
+                store.snapshot_and_subscribe_domains(&[stream::AUDIO]).await;
+            task.await.unwrap();
+            if initial.audio.volume_percent != volume {
+                assert_eq!(
+                    timeout(Duration::from_secs(1), events.recv())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .data["volume_percent"],
+                    volume
+                );
+            } else {
+                assert!(events.try_recv().is_err());
+            }
         }
     }
 

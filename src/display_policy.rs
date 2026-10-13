@@ -376,7 +376,7 @@ pub(crate) async fn monitor(store: StateStore) {
     let mut planner = Planner::default();
     let mut transition = Transition::default();
     let mut last_resume = 0;
-    let mut events = store.subscribe();
+    let mut events = store.subscribe_domains(&[crate::protocol::stream::POWER_SLEEP]);
     let mut timer = tokio::time::interval(Duration::from_secs(2));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {

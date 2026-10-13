@@ -68,7 +68,7 @@ async fn monitor_attached_connection(
     let mut owner_changes = dbus.receive_name_owner_changed().await?;
     let properties = zbus::Proxy::new(connection, BUS, PATH, PROPERTIES_INTERFACE).await?;
     let mut changes = properties.receive_signal("PropertiesChanged").await?;
-    let mut events = store.subscribe();
+    let mut events = store.subscribe_domains(&[crate::protocol::stream::BATTERY]);
     let mut fallback = interval(Duration::from_secs(60));
     fallback.tick().await;
     reconcile_battery_profile(&store.read(|snapshot| snapshot.battery.clone()).await).await;

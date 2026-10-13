@@ -187,11 +187,11 @@ pub const STREAMS: &[&str] = &[
 
 /// Returns machine-readable method and stream metadata.
 pub fn registry() -> Value {
-    json!({
+    let mut registry = json!({
         "protocol": NAME,
         "version": VERSION,
         "methods": [
-            { "name": "bar.snapshot", "params": {}, "result": "snapshot" },
+            { "name": "bar.snapshot", "params": {}, "optional_params": { "streams": "registered stream names; omitted means full snapshot" }, "result": "snapshot" },
             { "name": "activity.queryRange", "params": { "from_unix_ms": 1767225600000_i64, "to_unix_ms": 1769904000000_i64 }, "result": "activity_range" },
             { "name": "activity.refresh", "params": {}, "result": "activity" },
             { "name": "todos.create", "params": { "title": "Plan release", "due_unix_ms": null, "due_date": "2026-01-20", "priority": 3 }, "result": "todo" },
@@ -266,7 +266,17 @@ pub fn registry() -> Value {
             { "name": stream::UPDATES, "events": ["subscribed", "changed", "lagged"] },
             { "name": stream::TIMEZONE, "events": ["subscribed", "changed", "lagged"] }
         ]
-    })
+    });
+    for entry in registry["streams"]
+        .as_array_mut()
+        .expect("registry streams")
+    {
+        let name = entry["name"].as_str().expect("stream name").to_owned();
+        entry["delivery"] = json!(crate::state::StateStore::stream_semantics(&name));
+        entry["initial"] = json!("snapshot-under-commit-lock");
+        entry["recovery"] = json!({"method": "bar.snapshot", "params": {"streams": [name]}});
+    }
+    registry
 }
 
 #[cfg(test)]

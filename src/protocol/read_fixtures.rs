@@ -95,6 +95,18 @@ pub(super) async fn fixture() -> Result<Value> {
     fixture.insert("subscribed".into(), Value::Object(subscribed));
     fixture.insert("changed".into(), Value::Object(changed));
     fixture.insert("lagged".into(), Value::Object(lagged));
+    state
+        .monitor_failed("audio", &[super::stream::AUDIO], "panicked")
+        .await;
+    let failed = events.try_recv()?;
+    ensure!(
+        failed.stream == super::stream::AUDIO,
+        "monitor failure must stay domain-local"
+    );
+    fixture.insert(
+        "monitor_failed".into(),
+        Event::changed(SUBSCRIPTION, failed).into_value(),
+    );
     Ok(Value::Object(fixture))
 }
 

@@ -240,28 +240,36 @@ async fn concurrent_adjustments_and_refreshes_publish_monotonically() {
     for _ in 0..15 {
         let adjuster = service.clone();
         tasks.push(tokio::spawn(async move {
-            adjuster.adjust(5).await.unwrap();
+            Some(adjuster.adjust(5).await.unwrap().percent)
         }));
         let observer = service.clone();
         tasks.push(tokio::spawn(async move {
             observer.refresh().await;
+            None
         }));
     }
+    let mut acknowledged = Vec::new();
     for task in tasks {
-        task.await.unwrap();
+        if let Some(percent) = task.await.unwrap() {
+            acknowledged.push(percent);
+        }
     }
-    let mut previous = 10;
-    let mut count = 0;
-    while let Ok(event) = events.try_recv() {
-        let current = event.data["percent"].as_u64().unwrap();
-        assert_eq!(
-            current,
-            previous + 5,
-            "no stale publication or lost key repeat"
-        );
-        previous = current;
-        count += 1;
-    }
-    assert_eq!(count, 15);
+    acknowledged.sort_unstable();
+    assert_eq!(
+        acknowledged,
+        (15..=85).step_by(5).collect::<Vec<_>>(),
+        "each adjustment still acknowledges its own serialized result"
+    );
+    // Replaceable state coalesces while this consumer is paused. Every action
+    // must still execute: the latest observation contains all fifteen steps.
+    let latest = events.try_recv().unwrap();
+    assert_eq!(
+        latest.data["percent"], 85,
+        "no stale publication or lost key repeat"
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "intermediate full snapshots coalesce"
+    );
     assert_eq!(service.state.snapshot().await.brightness.percent, 85);
 }

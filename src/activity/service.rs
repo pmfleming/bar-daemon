@@ -107,7 +107,9 @@ impl ActivityService {
     }
 
     pub(crate) async fn monitor(self: Arc<Self>) {
-        let mut events = self.state.subscribe();
+        let mut events = self
+            .state
+            .subscribe_domains(&[crate::protocol::stream::TIMEZONE]);
         self.refresh().await;
         let mut refresh = tokio::time::interval(Duration::from_secs(60));
         refresh.tick().await;

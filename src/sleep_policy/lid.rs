@@ -87,7 +87,7 @@ async fn connected(store: &StateStore) -> Result<()> {
     let mut owner_changes = manager.receive_owner_changed().await?;
     let mut changes = power_sleep::property_changes(&manager).await?;
     let mut session_changes = power_sleep::property_changes(&session).await?;
-    let mut policies = store.subscribe();
+    let mut policies = store.subscribe_domains(&[crate::protocol::stream::SLEEP_POLICY]);
     let mut fallback = interval(Duration::from_secs(2));
     fallback.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut inhibitor: Option<zvariant::OwnedFd> = None;

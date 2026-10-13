@@ -521,7 +521,7 @@ where
 }
 
 pub(crate) async fn monitor(store: StateStore) {
-    let mut events = store.subscribe();
+    let mut events = store.subscribe_domains(&[crate::protocol::stream::BATTERY]);
     let mut timer = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {

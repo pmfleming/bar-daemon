@@ -375,7 +375,7 @@ pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) 
         ..Default::default()
     };
     let mut actions = tokio::task::JoinSet::new();
-    let mut events = store.subscribe();
+    let mut events = store.subscribe_domains(&[crate::protocol::stream::BATTERY]);
     let mut timer = tokio::time::interval(Duration::from_secs(5));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let started = std::time::Instant::now();

@@ -54,14 +54,9 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tokio::{
-        sync::{Semaphore, broadcast},
-        time::timeout,
-    };
+    use tokio::{sync::Semaphore, time::timeout};
 
-    async fn event(
-        events: &mut broadcast::Receiver<crate::state::DomainEvent>,
-    ) -> serde_json::Value {
+    async fn event(events: &mut crate::state::DomainReceivers) -> serde_json::Value {
         let event = timeout(Duration::from_secs(2), events.recv())
             .await
             .unwrap()
@@ -213,8 +208,15 @@ mod tests {
             .forget();
         store.compositor_changed.notify_one();
         finish.add_permits(1);
-        assert_eq!(event(&mut events).await["animations_enabled"], false);
-        assert_eq!(event(&mut events).await["animations_enabled"], true);
+        let mut latest = event(&mut events).await;
+        if latest["animations_enabled"] == false {
+            latest = event(&mut events).await;
+        }
+        assert_eq!(latest["animations_enabled"], true);
+        assert_eq!(
+            latest["revision"], 2,
+            "both observations committed even when delivery coalesces"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         task.abort();
     }
