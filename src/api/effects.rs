@@ -5,8 +5,7 @@ use crate::{
     media::MediaService,
     power,
     protocol::control_wire::{
-        self, DeltaRequest, EnabledRequest, MuteRequest, PercentRequest, ProfileActionRequest,
-        ProfileRequest,
+        self, DeltaRequest, EnabledRequest, PercentRequest, ProfileActionRequest, ProfileRequest,
     },
     protocol::display_wire::{self, Failure as DisplayFailure},
     protocol::session_controls::{self, ErrorCode, MediaRequest, WorkspaceRequest},
@@ -105,23 +104,14 @@ impl DesktopEffects {
         let request = request!(params, PercentRequest, "brightness.set");
         control_wire::brightness(self.brightness.set(request.percent).await)
     }
-    pub(super) async fn audio_adjust(&self, params: Value) -> Value {
-        let request = request!(params, DeltaRequest, "audio.adjust");
-        self.apply_audio(AudioCommand::Adjust(request.delta_percent))
+    pub(super) async fn apply_audio(
+        &self,
+        command: AudioCommand,
+    ) -> Result<crate::model::AudioState, Value> {
+        self.audio
+            .execute(command)
             .await
-    }
-    pub(super) async fn audio_set_muted(&self, params: Value) -> Value {
-        let request = request!(params, MuteRequest, "audio.setMuted");
-        self.apply_audio(AudioCommand::SetMuted(request.muted))
-            .await
-    }
-    pub(super) async fn audio_set_input_muted(&self, params: Value) -> Value {
-        let request = request!(params, MuteRequest, "audio.setInputMuted");
-        self.apply_audio(AudioCommand::SetInputMuted(request.muted))
-            .await
-    }
-    async fn apply_audio(&self, command: AudioCommand) -> Value {
-        control_wire::audio(self.audio.execute(command).await)
+            .map_err(|message| super::error("audio-operation-failed", message))
     }
     pub(super) async fn media_operation(&self, params: Value) -> Value {
         let request = request!(params, MediaRequest, "media.operation");

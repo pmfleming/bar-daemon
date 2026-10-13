@@ -20,6 +20,7 @@ macro_rules! request {
 }
 
 mod activity;
+pub(crate) mod audio;
 mod battery;
 mod effects;
 mod notifications;
@@ -135,9 +136,9 @@ impl ApiService {
             "todos.delete" => self.activity.todo_delete(params).await,
             "workspace.focus" => self.effects.focus_workspace(params).await,
             "media.operation" => self.effects.media_operation(params).await,
-            "audio.adjust" => self.effects.audio_adjust(params).await,
-            "audio.setMuted" => self.effects.audio_set_muted(params).await,
-            "audio.setInputMuted" => self.effects.audio_set_input_muted(params).await,
+            method if audio::Method::parse(method).is_some() => {
+                audio::dispatch(self, method, params).await
+            }
             "brightness.adjust" => self.effects.brightness_adjust(params).await,
             "brightness.set" => self.effects.brightness_set(params).await,
             method if method.starts_with("battery.") => self.battery.dispatch(method, params).await,

@@ -20,7 +20,7 @@ pub(crate) struct ProfileActionRequest {
     pub action: String,
     pub enabled: bool,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct DeltaRequest {
     pub delta_percent: i16,
 }
@@ -28,7 +28,7 @@ pub(crate) struct DeltaRequest {
 pub(crate) struct PercentRequest {
     pub percent: u8,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct MuteRequest {
     #[serde(default)]
     pub muted: Option<bool>,

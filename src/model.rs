@@ -393,7 +393,7 @@ pub(crate) struct BrightnessState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct AudioState {
     pub available: bool,
     pub sink_name: String,

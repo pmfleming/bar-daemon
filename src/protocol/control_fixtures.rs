@@ -29,6 +29,13 @@ fn rejection<T: DeserializeOwned>(method: &str, params: Value) -> (Option<Value>
     (Some(params), Some(reply))
 }
 
+fn audio_rejection(method: &str, params: Value) -> (Option<Value>, Option<Value>) {
+    let reply = crate::api::audio::Request::decode(method, params.clone())
+        .err()
+        .expect("invalid audio example");
+    (Some(params), Some(reply))
+}
+
 fn case(
     params: impl Serialize,
     success: Value,
@@ -49,7 +56,7 @@ fn case(
 
 pub(super) fn fixture() -> Value {
     let mut fixture = Map::new();
-    for method in ["audio.adjust", "audio.setMuted", "audio.setInputMuted"] {
+    for method in crate::api::audio::METHODS.iter().copied() {
         let mut state = AudioState {
             available: true,
             volume_percent: 65,
@@ -67,12 +74,12 @@ pub(super) fn fixture() -> Value {
         let (params, rejected) = if method == "audio.adjust" {
             (
                 serde_json::to_value(DeltaRequest { delta_percent: 15 }).unwrap(),
-                rejection::<DeltaRequest>(method, json!({"delta_percent": "loud"})),
+                audio_rejection(method, json!({"delta_percent": "loud"})),
             )
         } else {
             (
                 serde_json::to_value(MuteRequest { muted: None }).unwrap(),
-                rejection::<MuteRequest>(method, json!({"muted": "true"})),
+                audio_rejection(method, json!({"muted": "true"})),
             )
         };
         fixture.insert(
