@@ -38,17 +38,12 @@ fn malformed_unsupported_oversized_and_missing_candidate_records_fail_closed() {
     publish(&directory, &good);
     let path = directory.join("delayed").join(FILE_NAME);
     let value = serde_json::to_value(&good).unwrap();
-    fs::create_dir(directory.join("jobs")).unwrap();
-    fs::write(
-        directory.join("jobs/system.json"),
-        serde_json::json!({
-            "schema_version": 1, "operation": "check", "status": "completed", "phase": "ready",
-            "started_at": 1, "finished_at": 2, "exit_code": 0, "pid": 1,
-            "boot_id": "past-boot", "process_start": "past-process", "error": null,
-        })
-        .to_string(),
-    )
-    .unwrap();
+    use update_worker::job::{Job, Outcome, Phase, Status};
+    let (_held, mut job) = Status::start(&directory, &Job::Check(false))
+        .unwrap()
+        .unwrap();
+    job.phase(Phase::Ready).unwrap();
+    job.finish_report(Outcome::code(0)).unwrap();
     for (pointer, replacement) in [
         ("/schema_version", serde_json::json!(2)),
         ("/generation", serde_json::json!(0)),

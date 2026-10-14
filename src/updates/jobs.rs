@@ -3,24 +3,9 @@
 use std::{fs, io::Read, path::Path};
 
 use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use shelllist_update_status::{JOB_MAX_BYTES, JobState, JobStatus};
 
 use crate::model::UpdateJob;
-
-#[derive(Deserialize)]
-struct Record {
-    schema_version: u32,
-    operation: String,
-    status: String,
-    phase: String,
-    started_at: u64,
-    finished_at: Option<u64>,
-    exit_code: Option<i32>,
-    pid: u32,
-    boot_id: String,
-    process_start: String,
-    error: Option<String>,
-}
 
 pub(super) fn read(directory: &Path) -> Vec<UpdateJob> {
     let mut jobs: Vec<_> = ["system", "ai-tools", "ai-tools-stale"]
@@ -65,30 +50,20 @@ fn read_one(path: &Path, name: &str) -> Result<UpdateJob> {
         "Worker status is not a regular file"
     );
     let mut bytes = Vec::new();
-    fs::File::open(path)?.take(16_385).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 16_384, "Worker status exceeds size limit");
-    let record: Record = serde_json::from_slice(&bytes).context("Decode worker status")?;
-    ensure!(
-        record.schema_version == 1,
-        "Unsupported update-worker status version"
-    );
-    ensure!(
-        matches!(
-            record.status.as_str(),
-            "running" | "completed" | "failed" | "interrupted"
-        ),
-        "Unknown worker status"
-    );
-    let interrupted = record.status == "running" && !is_running(&record);
+    fs::File::open(path)?
+        .take(JOB_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let record = JobStatus::decode(&bytes).context("Decode worker status")?;
+    let interrupted = record.status == JobState::Running && !is_running(&record);
     Ok(UpdateJob {
         name: name.into(),
         operation: record.operation,
         status: if interrupted {
             "interrupted".into()
         } else {
-            record.status
+            record.status.as_str().into()
         },
-        phase: record.phase,
+        phase: record.phase.as_str().into(),
         started_at: record.started_at,
         finished_at: record.finished_at,
         exit_code: record.exit_code,
@@ -100,7 +75,7 @@ fn read_one(path: &Path, name: &str) -> Result<UpdateJob> {
     })
 }
 
-fn is_running(record: &Record) -> bool {
+fn is_running(record: &JobStatus) -> bool {
     if fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .is_none_or(|boot| boot.trim() != record.boot_id)
@@ -129,7 +104,7 @@ mod tests {
     use serde_json::json;
 
     fn record() -> serde_json::Value {
-        json!({ "schema_version": 1, "operation": "run-delayed", "status": "running", "phase": "building",
+        json!({ "schema_version": 1, "id": "test-job", "updated_at": 1, "operation": "run-delayed", "status": "running", "phase": "building",
             "started_at": 1, "finished_at": null, "exit_code": null, "pid": std::process::id(),
             "boot_id": fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),
             "process_start": fs::read_to_string("/proc/self/stat").unwrap().rsplit_once(')').unwrap().1.split_whitespace().nth(19).unwrap(), "error": null })

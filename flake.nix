@@ -47,8 +47,8 @@
             };
             postUnpack = ''
               cp -R --no-preserve=mode ${daemonFramework.lib.daemonSource pkgs} "$(dirname "$sourceRoot")/daemon-framework"
-              mkdir -p "$(dirname "$sourceRoot")/update-daemon/crates"
-              cp -R --no-preserve=mode ${updateWorker.lib.readinessSource pkgs} "$(dirname "$sourceRoot")/update-daemon/crates/shelllist-update-status"
+              # The worker is a test-only dependency for real publisher/reader checks.
+              cp -R --no-preserve=mode ${updateWorker} "$(dirname "$sourceRoot")/update-daemon"
             '';
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [

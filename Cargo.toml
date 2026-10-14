@@ -35,6 +35,8 @@ wayland-client = "0.31"
 wayland-scanner = "0.31"
 
 [dev-dependencies]
+# Producer-to-reader tests link the actual worker, never its privileged entrypoint.
+update-worker = { path = "../update-daemon" }
 tokio = { version = "1", features = ["test-util"] }
 wayland-server = "0.31"
 zbus = { version = "5.18", features = ["p2p"] }

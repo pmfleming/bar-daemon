@@ -118,4 +118,6 @@ fn directory_display(path: &Path) -> String {
 }
 
 #[cfg(test)]
+mod producer_tests;
+#[cfg(test)]
 mod tests;
