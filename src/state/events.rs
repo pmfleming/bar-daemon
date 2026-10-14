@@ -171,6 +171,10 @@ impl DomainReceivers {
 }
 
 #[cfg(test)]
+#[path = "reliability_tests.rs"]
+mod reliability_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{DomainEvent, RecvError, Source, TryRecvError};
     use serde_json::json;
