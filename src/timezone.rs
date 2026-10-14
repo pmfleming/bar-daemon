@@ -4,7 +4,10 @@ use anyhow::{Context, Result, bail};
 use chrono::{Offset, Utc};
 use chrono_tz::Tz;
 use futures::StreamExt;
-use tokio::time::{interval, sleep};
+use tokio::{
+    io::AsyncReadExt,
+    time::{interval, sleep},
+};
 
 use crate::{model::TimezoneState, state::StateStore};
 
@@ -37,6 +40,10 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
     let mut fallback = interval(Duration::from_secs(300));
     fallback.tick().await;
     refresh(connection, store).await;
+    // The system location authority publishes only a concise public status;
+    // coordinates and quota state remain in its private StateDirectory.
+    let mut status_poll = interval(Duration::from_secs(2));
+    let mut previous_status = location_warning().await;
     loop {
         tokio::select! {
             signal = changes.next() => {
@@ -44,6 +51,13 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
                 refresh(connection, store).await;
             }
             _ = fallback.tick() => refresh(connection, store).await,
+            _ = status_poll.tick() => {
+                let status = location_warning().await;
+                if status != previous_status {
+                    previous_status = status;
+                    refresh(connection, store).await;
+                }
+            }
         }
     }
 }
@@ -66,7 +80,64 @@ async fn read_state(connection: &zbus::Connection) -> Result<TimezoneState> {
         .get_property("Timezone")
         .await
         .context("read system timezone")?;
-    state_for_timezone(&timezone)
+    let mut state = state_for_timezone(&timezone)?;
+    state.error = location_warning().await;
+    Ok(state)
+}
+
+async fn location_warning() -> Option<String> {
+    let file = tokio::fs::File::open("/run/location-timezone/status.json")
+        .await
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.take(4097).read_to_end(&mut bytes).await.ok()?;
+    parse_location_warning(&bytes)
+}
+
+fn parse_location_warning(bytes: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Status {
+        message: String,
+    }
+    if bytes.len() > 4096 {
+        return Some("Location status unavailable".into());
+    }
+    match serde_json::from_slice::<Status>(bytes) {
+        Ok(status) if status.message.trim().is_empty() => None,
+        Ok(status) => Some(status.message.chars().take(300).collect()),
+        Err(_) => Some("Location status unavailable".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn location_status_is_optional_bounded_and_can_clear() {
+        assert_eq!(
+            parse_location_warning(br#"{"message":"Sources disagree"}"#),
+            Some("Sources disagree".into())
+        );
+        assert_eq!(parse_location_warning(br#"{"message":""}"#), None);
+        assert_eq!(
+            parse_location_warning(b"broken"),
+            Some("Location status unavailable".into())
+        );
+        assert_eq!(
+            parse_location_warning(&vec![b' '; 4097]),
+            Some("Location status unavailable".into())
+        );
+    }
+
+    #[test]
+    fn fresh_timezone_projection_changes_offset_without_process_restart() {
+        let edmonton = state_for_timezone("America/Edmonton").unwrap();
+        let dublin = state_for_timezone("Europe/Dublin").unwrap();
+        assert_eq!(dublin.city, "Dublin");
+        assert!(edmonton.utc_offset_seconds < dublin.utc_offset_seconds);
+        assert!(dublin.available);
+    }
 }
 
 fn state_for_timezone(timezone: &str) -> Result<TimezoneState> {
