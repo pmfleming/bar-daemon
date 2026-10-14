@@ -160,11 +160,13 @@
                 cargo-mutants
                 cargo-shear
                 dbus
+                git
                 jq
                 llvmPackages.libclang
                 llvmPackages.llvm
                 pkg-config
                 pipewire
+                python3
                 python3Packages.diff-cover
                 rust-analyzer
                 systemd
