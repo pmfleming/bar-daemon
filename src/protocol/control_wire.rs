@@ -7,15 +7,15 @@ use crate::{
     model::{AudioState, BrightnessState, PowerProfileState},
 };
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct ProfileRequest {
     pub profile: String,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct EnabledRequest {
     pub enabled: bool,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct ProfileActionRequest {
     pub action: String,
     pub enabled: bool,
@@ -24,7 +24,7 @@ pub(crate) struct ProfileActionRequest {
 pub(crate) struct DeltaRequest {
     pub delta_percent: i16,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct PercentRequest {
     pub percent: u8,
 }
@@ -51,6 +51,30 @@ impl Reply<'_> {
     fn envelope(self) -> Value {
         api::success(serde_json::to_value(self).expect("serializable control reply"))
     }
+}
+
+/// Reuse the exact live decoder/result DTOs; examples do not define schemas.
+pub(super) fn contract<P: schemars::JsonSchema, R: schemars::JsonSchema>(
+    name: &str,
+    key: &str,
+    params: Value,
+) -> Value {
+    use shelllist_daemon_core::{ExecutionMode, MethodPolicy, Sensitivity};
+    let mut entry = shelllist_daemon_core::method_schemas::<P, R>();
+    entry["name"] = name.into();
+    entry["response_key"] = key.into();
+    entry["params_example"] = params;
+    entry["policy"] = serde_json::to_value(MethodPolicy::new(
+        ExecutionMode::Effect,
+        Sensitivity::Effect,
+        if key == "brightness" {
+            "brightness"
+        } else {
+            "power-profile"
+        },
+    ))
+    .expect("method policy");
+    entry
 }
 
 enum Failure<'a> {

@@ -205,8 +205,8 @@ pub fn registry() -> Value {
             crate::api::audio::Method::Adjust.registry_entry(),
             crate::api::audio::Method::SetMuted.registry_entry(),
             crate::api::audio::Method::SetInputMuted.registry_entry(),
-            { "name": "brightness.adjust", "params": { "delta_percent": 5 }, "result": "brightness" },
-            { "name": "brightness.set", "params": { "percent": 50 }, "result": "brightness" },
+            control_wire::contract::<control_wire::DeltaRequest, crate::model::BrightnessState>("brightness.adjust", "brightness", json!({"delta_percent": 5})),
+            control_wire::contract::<control_wire::PercentRequest, crate::model::BrightnessState>("brightness.set", "brightness", json!({"percent": 50})),
             { "name": "battery.history", "params": {}, "result": "history" },
             { "name": "battery.operation.start", "params": { "method": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true } }, "result": "operation", "execution": { "mode": "operation", "ack_budget_ms": 1000, "budget_ms": 300000, "owner_scoped": true, "replay": "never" } },
             { "name": "battery.operation.status", "params": { "operation_id": "battery-operation-1" }, "result": "operation" },
@@ -218,10 +218,10 @@ pub fn registry() -> Value {
             { "name": "battery.startCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
             { "name": "battery.cancelCalibration", "params": { "battery_id": "BAT0" }, "result": "battery" },
             { "name": "battery.setAlertPolicy", "params": { "warning_percent": 25, "critical_percent": 12, "notify_when_full": true, "notify_warning": true, "notify_critical": true, "warning_profile": "power-saver", "critical_profile": "power-saver" }, "result": "battery" },
-            { "name": "powerProfile.set", "params": { "profile": "balanced" }, "result": "power_profile" },
-            { "name": "powerProfile.resumeAutomatic", "params": {}, "result": "power_profile" },
-            { "name": "powerProfile.setBatteryAware", "params": { "enabled": true }, "result": "power_profile" },
-            { "name": "powerProfile.setActionEnabled", "params": { "action": "amdgpu_panel_power", "enabled": true }, "result": "power_profile" },
+            control_wire::contract::<control_wire::ProfileRequest, crate::model::PowerProfileState>("powerProfile.set", "power_profile", json!({"profile": "balanced"})),
+            control_wire::contract::<Value, crate::model::PowerProfileState>("powerProfile.resumeAutomatic", "power_profile", json!({})),
+            control_wire::contract::<control_wire::EnabledRequest, crate::model::PowerProfileState>("powerProfile.setBatteryAware", "power_profile", json!({"enabled": true})),
+            control_wire::contract::<control_wire::ProfileActionRequest, crate::model::PowerProfileState>("powerProfile.setActionEnabled", "power_profile", json!({"action": "amdgpu_panel_power", "enabled": true})),
             { "name": "powerSleep.lock", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.suspend", "params": {}, "result": "power_sleep" },
             { "name": "powerSleep.hibernate", "params": {}, "result": "power_sleep" },
@@ -258,9 +258,36 @@ pub fn registry() -> Value {
 }
 
 fn stream_metadata(name: &str) -> Value {
+    let schema = match name {
+        stream::AUDIO => Some(shelllist_daemon_core::method_schemas::<
+            Value,
+            crate::model::AudioState,
+        >()),
+        stream::BRIGHTNESS => Some(shelllist_daemon_core::method_schemas::<
+            Value,
+            crate::model::BrightnessState,
+        >()),
+        stream::POWER_PROFILE => Some(shelllist_daemon_core::method_schemas::<
+            Value,
+            crate::model::PowerProfileState,
+        >()),
+        _ => None,
+    };
+    let events = schema.map_or_else(
+        || json!(["subscribed", "changed", "gap"]),
+        |schema| {
+            let gap =
+                shelllist_daemon_core::method_schemas::<Value, shelllist_daemon_core::wire::Gap>();
+            json!([
+                {"name":"subscribed", "data_schema":schema["result_schema"]},
+                {"name":"changed", "data_schema":schema["result_schema"]},
+                {"name":"gap", "data_schema":gap["result_schema"]}
+            ])
+        },
+    );
     json!({
         "name": name,
-        "events": ["subscribed", "changed", "gap"],
+        "events": events,
         "delivery": crate::state::StateStore::stream_semantics(name),
         "initial": "snapshot-under-commit-lock",
         "recovery": {"method": "bar.snapshot", "params": {"streams": [name]}}

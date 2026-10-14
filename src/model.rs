@@ -143,7 +143,7 @@ pub(crate) struct UpdateLane {
     pub system: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PowerProfileState {
     pub available: bool,
     pub profile: String,
@@ -159,21 +159,21 @@ pub(crate) struct PowerProfileState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PowerProfile {
     pub name: String,
     pub driver: String,
     pub platform_driver: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PowerProfileAction {
     pub name: String,
     pub description: String,
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PowerProfileHold {
     pub application_id: String,
     pub profile: String,
@@ -303,7 +303,7 @@ impl BatteryProfileAction {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct BatteryAutomationState {
     pub level: String,
@@ -383,7 +383,7 @@ pub(crate) struct BatteryProtectionState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct BrightnessState {
     pub available: bool,
     pub device: String,

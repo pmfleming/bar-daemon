@@ -495,17 +495,151 @@
       },
       {
         "name": "brightness.adjust",
-        "params": {
+        "params_example": {
           "delta_percent": 5
         },
-        "result": "brightness"
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "delta_percent": {
+              "format": "int16",
+              "maximum": 32767,
+              "minimum": -32768,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "delta_percent"
+          ],
+          "title": "DeltaRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "brightness",
+          "execution": "effect",
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "brightness",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "brightness": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_brightness": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "percent": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "available",
+            "device",
+            "brightness",
+            "max_brightness",
+            "percent",
+            "error"
+          ],
+          "title": "BrightnessState",
+          "type": "object"
+        }
       },
       {
         "name": "brightness.set",
-        "params": {
+        "params_example": {
           "percent": 50
         },
-        "result": "brightness"
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "percent": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "percent"
+          ],
+          "title": "PercentRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "brightness",
+          "execution": "effect",
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "brightness",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "brightness": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_brightness": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "percent": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "available",
+            "device",
+            "brightness",
+            "max_brightness",
+            "percent",
+            "error"
+          ],
+          "title": "BrightnessState",
+          "type": "object"
+        }
       },
       {
         "name": "battery.history",
@@ -608,30 +742,761 @@
       },
       {
         "name": "powerProfile.set",
-        "params": {
+        "params_example": {
           "profile": "balanced"
         },
-        "result": "power_profile"
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "profile": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "profile"
+          ],
+          "title": "ProfileRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "power-profile",
+          "execution": "effect",
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "power_profile",
+        "result_schema": {
+          "$defs": {
+            "BatteryAutomationState": {
+              "properties": {
+                "error": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "level": {
+                  "default": "",
+                  "type": "string"
+                },
+                "profile": {
+                  "default": "",
+                  "type": "string"
+                },
+                "status": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "status",
+                "profile",
+                "error"
+              ],
+              "type": "object"
+            },
+            "PowerProfile": {
+              "properties": {
+                "driver": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "platform_driver": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "driver",
+                "platform_driver"
+              ],
+              "type": "object"
+            },
+            "PowerProfileAction": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "enabled"
+              ],
+              "type": "object"
+            },
+            "PowerProfileHold": {
+              "properties": {
+                "application_id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "application_id",
+                "profile",
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "actions": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileAction"
+              },
+              "type": "array"
+            },
+            "active_holds": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileHold"
+              },
+              "type": "array"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "battery_automation": {
+              "$ref": "#/$defs/BatteryAutomationState",
+              "default": {
+                "error": null,
+                "level": "",
+                "profile": "",
+                "status": ""
+              }
+            },
+            "battery_aware": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "driver": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "performance_degraded": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "profiles": {
+              "items": {
+                "$ref": "#/$defs/PowerProfile"
+              },
+              "type": "array"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "available",
+            "profile",
+            "driver",
+            "profiles",
+            "performance_degraded",
+            "version",
+            "battery_aware",
+            "actions",
+            "active_holds",
+            "battery_automation",
+            "error"
+          ],
+          "title": "PowerProfileState",
+          "type": "object"
+        }
       },
       {
         "name": "powerProfile.resumeAutomatic",
-        "params": {},
-        "result": "power_profile"
+        "params_example": {},
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "power-profile",
+          "execution": "effect",
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "power_profile",
+        "result_schema": {
+          "$defs": {
+            "BatteryAutomationState": {
+              "properties": {
+                "error": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "level": {
+                  "default": "",
+                  "type": "string"
+                },
+                "profile": {
+                  "default": "",
+                  "type": "string"
+                },
+                "status": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "status",
+                "profile",
+                "error"
+              ],
+              "type": "object"
+            },
+            "PowerProfile": {
+              "properties": {
+                "driver": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "platform_driver": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "driver",
+                "platform_driver"
+              ],
+              "type": "object"
+            },
+            "PowerProfileAction": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "enabled"
+              ],
+              "type": "object"
+            },
+            "PowerProfileHold": {
+              "properties": {
+                "application_id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "application_id",
+                "profile",
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "actions": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileAction"
+              },
+              "type": "array"
+            },
+            "active_holds": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileHold"
+              },
+              "type": "array"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "battery_automation": {
+              "$ref": "#/$defs/BatteryAutomationState",
+              "default": {
+                "error": null,
+                "level": "",
+                "profile": "",
+                "status": ""
+              }
+            },
+            "battery_aware": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "driver": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "performance_degraded": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "profiles": {
+              "items": {
+                "$ref": "#/$defs/PowerProfile"
+              },
+              "type": "array"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "available",
+            "profile",
+            "driver",
+            "profiles",
+            "performance_degraded",
+            "version",
+            "battery_aware",
+            "actions",
+            "active_holds",
+            "battery_automation",
+            "error"
+          ],
+          "title": "PowerProfileState",
+          "type": "object"
+        }
       },
       {
         "name": "powerProfile.setBatteryAware",
-        "params": {
+        "params_example": {
           "enabled": true
         },
-        "result": "power_profile"
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "title": "EnabledRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "power-profile",
+          "execution": "effect",
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "power_profile",
+        "result_schema": {
+          "$defs": {
+            "BatteryAutomationState": {
+              "properties": {
+                "error": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "level": {
+                  "default": "",
+                  "type": "string"
+                },
+                "profile": {
+                  "default": "",
+                  "type": "string"
+                },
+                "status": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "status",
+                "profile",
+                "error"
+              ],
+              "type": "object"
+            },
+            "PowerProfile": {
+              "properties": {
+                "driver": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "platform_driver": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "driver",
+                "platform_driver"
+              ],
+              "type": "object"
+            },
+            "PowerProfileAction": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "enabled"
+              ],
+              "type": "object"
+            },
+            "PowerProfileHold": {
+              "properties": {
+                "application_id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "application_id",
+                "profile",
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "actions": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileAction"
+              },
+              "type": "array"
+            },
+            "active_holds": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileHold"
+              },
+              "type": "array"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "battery_automation": {
+              "$ref": "#/$defs/BatteryAutomationState",
+              "default": {
+                "error": null,
+                "level": "",
+                "profile": "",
+                "status": ""
+              }
+            },
+            "battery_aware": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "driver": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "performance_degraded": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "profiles": {
+              "items": {
+                "$ref": "#/$defs/PowerProfile"
+              },
+              "type": "array"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "available",
+            "profile",
+            "driver",
+            "profiles",
+            "performance_degraded",
+            "version",
+            "battery_aware",
+            "actions",
+            "active_holds",
+            "battery_automation",
+            "error"
+          ],
+          "title": "PowerProfileState",
+          "type": "object"
+        }
       },
       {
         "name": "powerProfile.setActionEnabled",
-        "params": {
+        "params_example": {
           "action": "amdgpu_panel_power",
           "enabled": true
         },
-        "result": "power_profile"
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "enabled"
+          ],
+          "title": "ProfileActionRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "power-profile",
+          "execution": "effect",
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "power_profile",
+        "result_schema": {
+          "$defs": {
+            "BatteryAutomationState": {
+              "properties": {
+                "error": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "level": {
+                  "default": "",
+                  "type": "string"
+                },
+                "profile": {
+                  "default": "",
+                  "type": "string"
+                },
+                "status": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "status",
+                "profile",
+                "error"
+              ],
+              "type": "object"
+            },
+            "PowerProfile": {
+              "properties": {
+                "driver": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "platform_driver": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "driver",
+                "platform_driver"
+              ],
+              "type": "object"
+            },
+            "PowerProfileAction": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "enabled"
+              ],
+              "type": "object"
+            },
+            "PowerProfileHold": {
+              "properties": {
+                "application_id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "application_id",
+                "profile",
+                "reason"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "properties": {
+            "actions": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileAction"
+              },
+              "type": "array"
+            },
+            "active_holds": {
+              "items": {
+                "$ref": "#/$defs/PowerProfileHold"
+              },
+              "type": "array"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "battery_automation": {
+              "$ref": "#/$defs/BatteryAutomationState",
+              "default": {
+                "error": null,
+                "level": "",
+                "profile": "",
+                "status": ""
+              }
+            },
+            "battery_aware": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "driver": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "performance_degraded": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "profiles": {
+              "items": {
+                "$ref": "#/$defs/PowerProfile"
+              },
+              "type": "array"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "available",
+            "profile",
+            "driver",
+            "profiles",
+            "performance_degraded",
+            "version",
+            "battery_aware",
+            "actions",
+            "active_holds",
+            "battery_automation",
+            "error"
+          ],
+          "title": "PowerProfileState",
+          "type": "object"
+        }
       },
       {
         "name": "powerSleep.lock",
@@ -977,9 +1842,153 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "available": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "input_available": {
+                  "type": "boolean"
+                },
+                "input_muted": {
+                  "type": "boolean"
+                },
+                "muted": {
+                  "type": "boolean"
+                },
+                "sink_description": {
+                  "type": "string"
+                },
+                "sink_name": {
+                  "type": "string"
+                },
+                "source_description": {
+                  "type": "string"
+                },
+                "source_name": {
+                  "type": "string"
+                },
+                "volume_percent": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "available",
+                "sink_name",
+                "sink_description",
+                "volume_percent",
+                "muted",
+                "input_available",
+                "source_name",
+                "source_description",
+                "input_muted",
+                "error"
+              ],
+              "title": "AudioState",
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "available": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "input_available": {
+                  "type": "boolean"
+                },
+                "input_muted": {
+                  "type": "boolean"
+                },
+                "muted": {
+                  "type": "boolean"
+                },
+                "sink_description": {
+                  "type": "string"
+                },
+                "sink_name": {
+                  "type": "string"
+                },
+                "source_description": {
+                  "type": "string"
+                },
+                "source_name": {
+                  "type": "string"
+                },
+                "volume_percent": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "available",
+                "sink_name",
+                "sink_description",
+                "volume_percent",
+                "muted",
+                "input_available",
+                "source_name",
+                "source_description",
+                "input_muted",
+                "error"
+              ],
+              "title": "AudioState",
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "audio.changed",
@@ -995,9 +2004,129 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "available": {
+                  "type": "boolean"
+                },
+                "brightness": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "device": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max_brightness": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "percent": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "available",
+                "device",
+                "brightness",
+                "max_brightness",
+                "percent",
+                "error"
+              ],
+              "title": "BrightnessState",
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "available": {
+                  "type": "boolean"
+                },
+                "brightness": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "device": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max_brightness": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "percent": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "available",
+                "device",
+                "brightness",
+                "max_brightness",
+                "percent",
+                "error"
+              ],
+              "title": "BrightnessState",
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "brightness.changed",
@@ -1031,9 +2160,369 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "$defs": {
+                "BatteryAutomationState": {
+                  "properties": {
+                    "error": {
+                      "default": null,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "level": {
+                      "default": "",
+                      "type": "string"
+                    },
+                    "profile": {
+                      "default": "",
+                      "type": "string"
+                    },
+                    "status": {
+                      "default": "",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "level",
+                    "status",
+                    "profile",
+                    "error"
+                  ],
+                  "type": "object"
+                },
+                "PowerProfile": {
+                  "properties": {
+                    "driver": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "platform_driver": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "driver",
+                    "platform_driver"
+                  ],
+                  "type": "object"
+                },
+                "PowerProfileAction": {
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "PowerProfileHold": {
+                  "properties": {
+                    "application_id": {
+                      "type": "string"
+                    },
+                    "profile": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "application_id",
+                    "profile",
+                    "reason"
+                  ],
+                  "type": "object"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "actions": {
+                  "items": {
+                    "$ref": "#/$defs/PowerProfileAction"
+                  },
+                  "type": "array"
+                },
+                "active_holds": {
+                  "items": {
+                    "$ref": "#/$defs/PowerProfileHold"
+                  },
+                  "type": "array"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "battery_automation": {
+                  "$ref": "#/$defs/BatteryAutomationState",
+                  "default": {
+                    "error": null,
+                    "level": "",
+                    "profile": "",
+                    "status": ""
+                  }
+                },
+                "battery_aware": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "driver": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "performance_degraded": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "profiles": {
+                  "items": {
+                    "$ref": "#/$defs/PowerProfile"
+                  },
+                  "type": "array"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "available",
+                "profile",
+                "driver",
+                "profiles",
+                "performance_degraded",
+                "version",
+                "battery_aware",
+                "actions",
+                "active_holds",
+                "battery_automation",
+                "error"
+              ],
+              "title": "PowerProfileState",
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "BatteryAutomationState": {
+                  "properties": {
+                    "error": {
+                      "default": null,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "level": {
+                      "default": "",
+                      "type": "string"
+                    },
+                    "profile": {
+                      "default": "",
+                      "type": "string"
+                    },
+                    "status": {
+                      "default": "",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "level",
+                    "status",
+                    "profile",
+                    "error"
+                  ],
+                  "type": "object"
+                },
+                "PowerProfile": {
+                  "properties": {
+                    "driver": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "platform_driver": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "driver",
+                    "platform_driver"
+                  ],
+                  "type": "object"
+                },
+                "PowerProfileAction": {
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "PowerProfileHold": {
+                  "properties": {
+                    "application_id": {
+                      "type": "string"
+                    },
+                    "profile": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "application_id",
+                    "profile",
+                    "reason"
+                  ],
+                  "type": "object"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "actions": {
+                  "items": {
+                    "$ref": "#/$defs/PowerProfileAction"
+                  },
+                  "type": "array"
+                },
+                "active_holds": {
+                  "items": {
+                    "$ref": "#/$defs/PowerProfileHold"
+                  },
+                  "type": "array"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "battery_automation": {
+                  "$ref": "#/$defs/BatteryAutomationState",
+                  "default": {
+                    "error": null,
+                    "level": "",
+                    "profile": "",
+                    "status": ""
+                  }
+                },
+                "battery_aware": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "driver": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "performance_degraded": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "profiles": {
+                  "items": {
+                    "$ref": "#/$defs/PowerProfile"
+                  },
+                  "type": "array"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "available",
+                "profile",
+                "driver",
+                "profiles",
+                "performance_degraded",
+                "version",
+                "battery_aware",
+                "actions",
+                "active_holds",
+                "battery_automation",
+                "error"
+              ],
+              "title": "PowerProfileState",
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "power-profile.changed",
