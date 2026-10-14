@@ -42,14 +42,18 @@ impl BarDaemon {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> String {
-        let admitted =
-            match self
+        let policy = protocol::method_policy(method);
+        let owner = header.sender().map(|s| s.as_str());
+        let admission = match policy {
+            Some(policy) => self
                 .boundary
-                .call(header.sender().map(|s| s.as_str()), method, params_json)
-            {
-                Ok(admitted) => admitted,
-                Err(response) => return response,
-            };
+                .call_policy(owner, method, params_json, policy),
+            None => self.boundary.call(owner, method, params_json),
+        };
+        let admitted = match admission {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
         let params: Value = match serde_json::from_str(params_json) {
             Ok(value) => value,
             Err(error) => {
@@ -72,7 +76,15 @@ impl BarDaemon {
                 self.api.clone(),
             ));
         }
-        admitted.encode(&self.api.dispatch(method, params).await)
+        if policy.is_some() {
+            let api = self.api.clone();
+            let method = method.to_owned();
+            admitted
+                .run(async move { api.dispatch(&method, params).await })
+                .await
+        } else {
+            admitted.encode(&self.api.dispatch(method, params).await)
+        }
     }
 
     async fn subscribe(

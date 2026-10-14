@@ -59,12 +59,17 @@ pub(super) fn contract<P: schemars::JsonSchema, R: schemars::JsonSchema>(
     key: &str,
     params: Value,
 ) -> Value {
-    use shelllist_daemon_core::{ExecutionMode, MethodPolicy, Sensitivity};
     let mut entry = shelllist_daemon_core::method_schemas::<P, R>();
     entry["name"] = name.into();
     entry["response_key"] = key.into();
     entry["params_example"] = params;
-    entry["policy"] = serde_json::to_value(MethodPolicy::new(
+    entry["policy"] = serde_json::to_value(policy(key)).expect("method policy");
+    entry
+}
+
+pub(crate) fn policy(key: &str) -> shelllist_daemon_core::MethodPolicy {
+    use shelllist_daemon_core::{ExecutionMode, MethodPolicy, Sensitivity};
+    MethodPolicy::new(
         ExecutionMode::Effect,
         Sensitivity::Effect,
         if key == "brightness" {
@@ -72,9 +77,7 @@ pub(super) fn contract<P: schemars::JsonSchema, R: schemars::JsonSchema>(
         } else {
             "power-profile"
         },
-    ))
-    .expect("method policy");
-    entry
+    )
 }
 
 enum Failure<'a> {

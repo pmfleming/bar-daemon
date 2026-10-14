@@ -188,6 +188,21 @@ pub const STREAMS: &[&str] = &[
     stream::TIMEZONE,
 ];
 
+/// Only declared policies participate in deadline enforcement during migration.
+pub(crate) fn method_policy(name: &str) -> Option<shelllist_daemon_core::MethodPolicy> {
+    if let Some(method) = crate::api::audio::Method::parse(name) {
+        return Some(method.policy());
+    }
+    match name {
+        "brightness.adjust" | "brightness.set" => Some(control_wire::policy("brightness")),
+        "powerProfile.set"
+        | "powerProfile.resumeAutomatic"
+        | "powerProfile.setBatteryAware"
+        | "powerProfile.setActionEnabled" => Some(control_wire::policy("power_profile")),
+        _ => None,
+    }
+}
+
 /// Returns machine-readable method and stream metadata.
 pub fn registry() -> Value {
     json!({

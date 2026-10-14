@@ -261,6 +261,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "audio",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -346,6 +348,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "audio",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -431,6 +435,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "audio",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -518,6 +524,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "brightness",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -592,6 +600,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "brightness",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -762,6 +772,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "power-profile",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -942,6 +954,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "power-profile",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -1133,6 +1147,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "power-profile",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
@@ -1329,6 +1345,8 @@
           "ack_budget_ms": 30000,
           "conflict_domain": "power-profile",
           "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
           "request_bytes": 1048576,
           "result_bytes": 16777216,
           "sensitivity": "effect"
