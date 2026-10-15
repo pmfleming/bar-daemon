@@ -376,57 +376,62 @@ impl ActivityService {
                 .with_context(|| format!("parse todo due date {date}"))?;
         }
         let now = unix_ms();
-        let _guard = self.todo_guard.lock().await;
-        let mut todos = self.writable_todos().await?;
-        let todo = TodoItem {
-            id: format!(
-                "local-{now}-{}",
-                self.todo_sequence.fetch_add(1, Ordering::Relaxed)
-            ),
-            source_id: "local".into(),
-            title: title.into(),
-            completed: false,
-            priority,
-            due_unix_ms,
-            due_date,
-            created_unix_ms: now,
-            completed_unix_ms: None,
-        };
-        todos.push(todo.clone());
-        config::save_todos(&self.todo_path, &todos).await?;
-        self.data.write().await.todos = todos;
-        self.publish_state(None).await;
-        Ok(todo)
+        self.mutate_todos(|todos| {
+            let todo = TodoItem {
+                id: format!(
+                    "local-{now}-{}",
+                    self.todo_sequence.fetch_add(1, Ordering::Relaxed)
+                ),
+                source_id: "local".into(),
+                title: title.into(),
+                completed: false,
+                priority,
+                due_unix_ms,
+                due_date,
+                created_unix_ms: now,
+                completed_unix_ms: None,
+            };
+            todos.push(todo.clone());
+            Ok(todo)
+        })
+        .await
     }
 
     pub(crate) async fn complete_todo(&self, id: &str, completed: bool) -> Result<TodoItem> {
+        self.mutate_todos(|todos| {
+            let todo = todos
+                .iter_mut()
+                .find(|todo| todo.id == id)
+                .with_context(|| format!("todo {id} was not found"))?;
+            todo.completed = completed;
+            todo.completed_unix_ms = completed.then(unix_ms);
+            Ok(todo.clone())
+        })
+        .await
+    }
+
+    pub(crate) async fn delete_todo(&self, id: &str) -> Result<()> {
+        self.mutate_todos(|todos| {
+            let previous = todos.len();
+            todos.retain(|todo| todo.id != id);
+            anyhow::ensure!(todos.len() != previous, "todo {id} was not found");
+            Ok(())
+        })
+        .await
+    }
+
+    // Keep the published snapshot intact until the candidate is durably saved.
+    async fn mutate_todos<T>(
+        &self,
+        mutate: impl FnOnce(&mut Vec<TodoItem>) -> Result<T>,
+    ) -> Result<T> {
         let _guard = self.todo_guard.lock().await;
         let mut todos = self.writable_todos().await?;
-        let todo = todos
-            .iter_mut()
-            .find(|todo| todo.id == id)
-            .with_context(|| format!("todo {id} was not found"))?;
-        todo.completed = completed;
-        todo.completed_unix_ms = completed.then(unix_ms);
-        let result = todo.clone();
+        let result = mutate(&mut todos)?;
         config::save_todos(&self.todo_path, &todos).await?;
         self.data.write().await.todos = todos;
         self.publish_state(None).await;
         Ok(result)
-    }
-
-    pub(crate) async fn delete_todo(&self, id: &str) -> Result<()> {
-        let _guard = self.todo_guard.lock().await;
-        let mut todos = self.writable_todos().await?;
-        let previous = todos.len();
-        todos.retain(|todo| todo.id != id);
-        if todos.len() == previous {
-            bail!("todo {id} was not found");
-        }
-        config::save_todos(&self.todo_path, &todos).await?;
-        self.data.write().await.todos = todos;
-        self.publish_state(None).await;
-        Ok(())
     }
 
     async fn publish_state(&self, error: Option<String>) {
@@ -505,15 +510,19 @@ mod tests {
 
     use super::ActivityService;
 
+    async fn service_in(directory: &tempfile::TempDir) -> std::sync::Arc<ActivityService> {
+        ActivityService::with_paths(
+            StateStore::default(),
+            directory.path().join("activity.json"),
+            directory.path().join("todos.json"),
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn zero_duration_events_belong_to_their_day_including_range_start() {
         let directory = tempdir().unwrap();
-        let service = ActivityService::with_paths(
-            StateStore::default(),
-            directory.path().join("config.json"),
-            directory.path().join("todos.json"),
-        )
-        .await;
+        let service = service_in(&directory).await;
         service.data.write().await.events_by_source.insert(
             "source".into(),
             vec![super::ActivityEvent {
@@ -551,13 +560,8 @@ mod tests {
             } else {
                 std::fs::write(&path, original).unwrap();
             }
-            let state = StateStore::default();
-            let service = ActivityService::with_paths(
-                state.clone(),
-                directory.path().join("activity.json"),
-                path.clone(),
-            )
-            .await;
+            let service = service_in(&directory).await;
+            let state = &service.state;
             assert!(state.snapshot().await.activity.error.is_some());
             assert!(
                 service
@@ -601,6 +605,35 @@ mod tests {
             assert_eq!(stored[0].id, "recoverable-task");
             assert!(state.snapshot().await.activity.error.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn failed_todo_save_never_publishes_a_candidate() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("todos.json");
+        let service = service_in(&directory).await;
+        let state = &service.state;
+        let todo = service
+            .create_todo("Keep".into(), None, None, 0)
+            .await
+            .unwrap();
+        let before = state.snapshot().await.activity;
+        // Replacing the file with a directory makes atomic replacement fail, even as root.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            service
+                .create_todo("Lost".into(), None, None, 0)
+                .await
+                .is_err()
+        );
+        assert!(service.complete_todo(&todo.id, true).await.is_err());
+        assert!(service.delete_todo(&todo.id).await.is_err());
+        assert_eq!(service.data.read().await.todos, std::slice::from_ref(&todo));
+        assert_eq!(state.snapshot().await.activity, before);
+        std::fs::remove_dir(&path).unwrap();
+        service.complete_todo(&todo.id, true).await.unwrap();
+        assert!(super::config::load_todos(&path).await.unwrap()[0].completed);
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@ use tokio::signal::{
 use zbus::{Connection, connection, message::Header};
 use zvariant::Value;
 
+use super::config::{valid_thresholds, validate_battery_id};
+
 pub(crate) const BUS_NAME: &str = "org.laufan.BarBatteryHelper";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarBatteryHelper";
 pub(crate) const INTERFACE: &str = "org.laufan.BarBatteryHelper1";
@@ -270,7 +272,7 @@ impl ThresholdWriter {
         start: u8,
         end: u8,
     ) -> Result<ThresholdWriteResult> {
-        if start >= end || end > 100 {
+        if !valid_thresholds(start, end) {
             bail!("thresholds must satisfy 0 <= start < end <= 100");
         }
         let directory = self.threshold_directory(battery)?;
@@ -380,16 +382,6 @@ fn parse_choices(contents: &str) -> Result<(String, Vec<String>)> {
         .or_else(|| (choices.len() == 1).then(|| choices[0].clone()))
         .context("charge_behaviour does not identify its selected value")?;
     Ok((selected, choices))
-}
-
-fn validate_battery_id(battery: &str) -> Result<()> {
-    let suffix = battery
-        .strip_prefix("BAT")
-        .context("battery id must start with BAT")?;
-    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
-        bail!("battery id must match BAT followed by digits");
-    }
-    Ok(())
 }
 
 fn read_percent(path: &Path) -> Result<u8> {

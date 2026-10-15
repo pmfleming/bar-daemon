@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::XdgRoot;
 
 use crate::{
-    model::BatteryProfileAction,
+    model::{BatteryPolicyState, BatteryProfileAction},
     paths::{data_file, load_json_or_default, save_json_atomic},
 };
 
@@ -76,6 +76,24 @@ impl Default for BatteryConfig {
 }
 
 impl BatteryConfig {
+    // Resolve legacy defaults and their compatibility summary in one projection.
+    pub(crate) fn policy(&self) -> BatteryPolicyState {
+        let warning_profile = self.warning_profile();
+        let critical_profile = self.critical_profile();
+        BatteryPolicyState {
+            warning_percent: self.warning_percent,
+            critical_percent: self.critical_percent,
+            notify_when_full: self.notify_when_full,
+            notify_warning: self.notify_warning,
+            notify_critical: self.notify_critical,
+            warning_profile,
+            critical_profile,
+            recovery_margin_percent: super::levels::RECOVERY_MARGIN,
+            auto_power_saver: warning_profile.profile().is_some()
+                || critical_profile.profile().is_some(),
+        }
+    }
+
     pub(crate) fn warning_profile(&self) -> BatteryProfileAction {
         self.warning_profile
             .unwrap_or_else(|| self.legacy_profile())
@@ -98,9 +116,7 @@ impl BatteryConfig {
         if self.critical_percent > self.warning_percent || self.warning_percent > 100 {
             bail!("alert percentages must satisfy 0 <= critical <= warning <= 100");
         }
-        if self.protected_start_percent >= self.protected_end_percent
-            || self.protected_end_percent > 100
-        {
+        if !valid_thresholds(self.protected_start_percent, self.protected_end_percent) {
             bail!("protection thresholds must satisfy 0 <= start < end <= 100");
         }
         for (battery_id, device) in &self.devices {
@@ -132,10 +148,16 @@ impl BatteryConfig {
 }
 
 impl BatteryDeviceConfig {
+    pub(crate) fn desired_thresholds(&self) -> (u8, u8) {
+        if self.protection_enabled {
+            (self.protected_start_percent, self.protected_end_percent)
+        } else {
+            (0, 100)
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.protected_start_percent >= self.protected_end_percent
-            || self.protected_end_percent > 100
-        {
+        if !valid_thresholds(self.protected_start_percent, self.protected_end_percent) {
             bail!("protection thresholds must satisfy 0 <= start < end <= 100");
         }
         match (
@@ -248,6 +270,11 @@ impl BatteryRuntimeState {
         }
     }
 
+    pub(crate) fn charge_once_targets(&self, battery_id: &str) -> bool {
+        self.charge_once_active
+            && (self.charge_once_battery_id.is_empty() || self.charge_once_battery_id == battery_id)
+    }
+
     pub(crate) fn is_expired(&self, now_unix_ms: u64) -> bool {
         self.charge_once_active
             && self.charge_once_expires_unix_ms != 0
@@ -328,7 +355,11 @@ impl BatteryRuntimeState {
     }
 }
 
-fn validate_battery_id(battery_id: &str) -> Result<()> {
+pub(crate) fn valid_thresholds(start: u8, end: u8) -> bool {
+    start < end && end <= 100
+}
+
+pub(crate) fn validate_battery_id(battery_id: &str) -> Result<()> {
     let suffix = battery_id
         .strip_prefix("BAT")
         .with_context(|| format!("battery id {battery_id} must start with BAT"))?;
@@ -371,7 +402,27 @@ pub(crate) async fn save_runtime(state: &BatteryRuntimeState) -> Result<()> {
 
 #[cfg(test)]
 mod restoration_tests {
-    use super::*;
+    use super::{BatteryRuntimeState, OperationPhase, valid_thresholds, validate_battery_id};
+
+    #[test]
+    fn battery_identifiers_and_threshold_boundaries_are_validated() {
+        for id in ["BAT0", "BAT01", "BAT123"] {
+            assert!(validate_battery_id(id).is_ok(), "{id}");
+        }
+        for id in ["", "BAT", "BAT-1", "bat0", "BAT0/../BAT1", "BAT１"] {
+            assert!(validate_battery_id(id).is_err(), "{id}");
+        }
+        for (start, end, valid) in [
+            (0, 100, true),
+            (99, 100, true),
+            (0, 0, false),
+            (80, 75, false),
+            (100, 101, false),
+            (0, 255, false),
+        ] {
+            assert_eq!(valid_thresholds(start, end), valid);
+        }
+    }
 
     #[test]
     fn restoration_marker_is_cleared_only_after_exact_verified_readback() {

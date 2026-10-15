@@ -1,6 +1,9 @@
 //! Pure policy/runtime transitions and production serializers; never battery helper calls.
 use super::{
-    battery_wire::{self, *},
+    battery_wire::{
+        self, AlertPolicyRequest, BatteryRequest, ErrorCode, InhibitionRequest, ProtectionRequest,
+        ThresholdRequest, error,
+    },
     read_wire,
 };
 use crate::{
@@ -29,7 +32,12 @@ fn observed(
     start: u8,
     end: u8,
 ) -> BatteryState {
-    battery::update_observed_thresholds(&mut base, "BAT0", start, end);
+    let device = base
+        .devices
+        .iter_mut()
+        .find(|device| device.id == "BAT0")
+        .unwrap();
+    battery::update_observed_thresholds(device, start, end);
     let behaviour = match (runtime.operation, runtime.operation_phase) {
         (battery::config::OperationKind::Inhibit, _) => "inhibit-charge",
         (battery::config::OperationKind::Calibration, OperationPhase::Discharging) => {
@@ -37,7 +45,7 @@ fn observed(
         }
         _ => "auto",
     };
-    battery::update_observed_behaviour(&mut base, "BAT0", behaviour.into());
+    device.protection.charge_behaviour = Some(behaviour.into());
     battery::decorate(base, config, runtime, None)
 }
 pub(super) async fn fixture() -> Value {

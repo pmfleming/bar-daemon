@@ -24,7 +24,7 @@ fn decode<T: DeserializeOwned>(params: Value) -> Result<T, Value> {
 const POLICY: MethodPolicy = MethodPolicy::new(ExecutionMode::Effect, Sensitivity::Effect, "audio");
 shelllist_daemon_core::declare_methods! {
     api: ApiService, error: Value, reply: Reply,
-    decode: decode, unsupported: |method| super::unsupported_method(method);
+    decode: decode, unsupported: super::unsupported_method;
     Adjust {
         name: "audio.adjust", params: DeltaRequest, result: AudioState, handler: audio_adjust,
         reply: |audio| Reply::Audio { audio }, response_key: "audio",
@@ -84,7 +84,7 @@ impl ApiService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Adjust, AudioState, METHODS, Method, Request, SetInputMuted, SetMuted};
     use serde_json::json;
     #[test]
     fn declarations_agree_with_live_reply_constructors_and_registry() {

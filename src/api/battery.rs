@@ -3,7 +3,10 @@ use serde_json::Value;
 use super::decode_request;
 
 use crate::{
-    battery::{self, config},
+    battery::{
+        self,
+        config::{self, valid_thresholds},
+    },
     model::BatteryProfileAction,
     state::StateStore,
 };
@@ -38,8 +41,7 @@ impl AlertPolicyRequest {
         }
         config.warning_profile = Some(self.warning_profile.unwrap_or(warning));
         config.critical_profile = Some(self.critical_profile.unwrap_or(critical));
-        config.auto_power_saver = config.warning_profile().profile().is_some()
-            || config.critical_profile().profile().is_some();
+        config.auto_power_saver = config.policy().auto_power_saver;
         config.notify_warning = self.notify_warning.unwrap_or(config.notify_warning);
         config.notify_critical = self.notify_critical.unwrap_or(config.notify_critical);
         config.validate()
@@ -120,13 +122,9 @@ impl BatteryApi {
             device.protected_start_percent = start;
             device.protected_end_percent = end;
         }
-        let (start, end) = if request.enabled {
-            (device.protected_start_percent, device.protected_end_percent)
-        } else {
-            (0, 100)
-        };
         device.manage_thresholds = true;
         device.protection_enabled = request.enabled;
+        let (start, end) = device.desired_thresholds();
         device.accepted_reported_start_percent = None;
         device.accepted_reported_end_percent = None;
         self.apply_policy_change(&battery_id, start, end, previous_config, next_config)
@@ -429,10 +427,6 @@ fn helper_error(failure: anyhow::Error) -> Value {
     } else {
         error(ErrorCode::OperationFailed, failure.to_string())
     }
-}
-
-fn valid_thresholds(start: u8, end: u8) -> bool {
-    start < end && end <= 100
 }
 
 fn optional_thresholds(

@@ -109,9 +109,33 @@ fn parse_location_warning(bytes: &[u8]) -> Option<String> {
     }
 }
 
+fn state_for_timezone(timezone: &str) -> Result<TimezoneState> {
+    let zone: Tz = timezone
+        .parse()
+        .with_context(|| format!("parse timezone {timezone}"))?;
+    let instant = Utc::now();
+    let now = instant.with_timezone(&zone);
+    Ok(TimezoneState {
+        available: true,
+        timezone: timezone.into(),
+        city: timezone
+            .rsplit('/')
+            .next()
+            .unwrap_or(timezone)
+            .replace('_', " "),
+        abbreviation: now.format("%Z").to_string(),
+        utc_offset_seconds: now.offset().fix().local_minus_utc(),
+        timezone_region_ids: crate::timezone_regions::ids_for_offset(
+            now.offset().fix().local_minus_utc(),
+            instant,
+        ),
+        error: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{parse_location_warning, state_for_timezone};
 
     #[test]
     fn location_status_is_optional_bounded_and_can_clear() {
@@ -138,28 +162,4 @@ mod tests {
         assert!(edmonton.utc_offset_seconds < dublin.utc_offset_seconds);
         assert!(dublin.available);
     }
-}
-
-fn state_for_timezone(timezone: &str) -> Result<TimezoneState> {
-    let zone: Tz = timezone
-        .parse()
-        .with_context(|| format!("parse timezone {timezone}"))?;
-    let instant = Utc::now();
-    let now = instant.with_timezone(&zone);
-    Ok(TimezoneState {
-        available: true,
-        timezone: timezone.into(),
-        city: timezone
-            .rsplit('/')
-            .next()
-            .unwrap_or(timezone)
-            .replace('_', " "),
-        abbreviation: now.format("%Z").to_string(),
-        utc_offset_seconds: now.offset().fix().local_minus_utc(),
-        timezone_region_ids: crate::timezone_regions::ids_for_offset(
-            now.offset().fix().local_minus_utc(),
-            instant,
-        ),
-        error: None,
-    })
 }
