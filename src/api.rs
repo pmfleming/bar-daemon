@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+pub(crate) use crate::protocol::{error, success, unsupported_method};
 use crate::{
     activity::{ActivityService, notifications::service::NotificationService},
     media::MediaService,
@@ -8,7 +9,6 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use shelllist_daemon_core::{ApiError as EnvelopeError, ApiIdentity};
 
 macro_rules! request {
     ($params:expr, $request:ty, $method:literal) => {
@@ -20,7 +20,7 @@ macro_rules! request {
 }
 
 mod activity;
-pub(crate) mod audio;
+mod audio;
 mod battery;
 mod effects;
 mod notifications;
@@ -31,26 +31,9 @@ use self::{
     notifications::NotificationApi,
 };
 
-pub(crate) use protocol::{NAME as PROTOCOL, VERSION};
 pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
 pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon2";
-const API: ApiIdentity = ApiIdentity::new(PROTOCOL, VERSION as u32);
-
-pub(crate) fn success(data: Value) -> Value {
-    shelllist_daemon_core::success(API, data)
-}
-pub(crate) fn error(code: &str, message: impl Into<String>) -> Value {
-    shelllist_daemon_core::error(API, EnvelopeError::new(code, message))
-}
-
-fn unsupported_method(method: &str) -> Value {
-    error(
-        "unsupported-method",
-        format!("Unsupported bar-api method: {method}"),
-    )
-}
-
 pub(crate) fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {
     serde_json::from_value(params).map_err(|value| {
         error(
@@ -136,7 +119,7 @@ impl ApiService {
             "todos.delete" => self.activity.todo_delete(params).await,
             "workspace.focus" => self.effects.focus_workspace(params).await,
             "media.operation" => self.effects.media_operation(params).await,
-            method if audio::Method::parse(method).is_some() => {
+            method if protocol::audio_wire::Method::parse(method).is_some() => {
                 audio::dispatch(self, method, params).await
             }
             "brightness.adjust" => self.effects.brightness_adjust(params).await,

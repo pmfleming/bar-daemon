@@ -30,7 +30,7 @@ fn rejection<T: DeserializeOwned>(method: &str, params: Value) -> (Option<Value>
 }
 
 fn audio_rejection(method: &str, params: Value) -> (Option<Value>, Option<Value>) {
-    let reply = crate::api::audio::Request::decode(method, params.clone())
+    let reply = super::audio_wire::Request::decode(method, params.clone())
         .err()
         .expect("invalid audio example");
     (Some(params), Some(reply))
@@ -56,7 +56,7 @@ fn case(
 
 pub(super) fn fixture() -> Value {
     let mut fixture = Map::new();
-    for method in crate::api::audio::METHODS.iter().copied() {
+    for method in super::audio_wire::METHODS.iter().copied() {
         let mut state = AudioState {
             available: true,
             volume_percent: 65,

@@ -49,7 +49,7 @@ miri = false
 # intentional composition roots; docs/quality-policy.md owns their fan-out baseline.
 [[architecture.rules]]
 id = "protocol-does-not-depend-on-api"
-from = ["bar-daemon::shared::protocol"]
+from = ["bar-daemon::shared::protocol", "bar-daemon::shared::protocol::audio_wire"]
 deny = ["bar-daemon::shared::api", "bar-daemon::shared::api::**"]
 level = "error"
 

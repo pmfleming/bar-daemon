@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 
 mod activity_fixtures;
 pub(crate) mod activity_wire;
+pub(crate) mod audio_wire;
 mod battery_fixtures;
 pub(crate) mod battery_wire;
 mod control_fixtures;
@@ -69,6 +70,22 @@ pub const NAME: &str = "bar-api";
 /// Current protocol contract version.
 pub const VERSION: u8 = shelllist_daemon_core::CONTRACT_VERSION as u8;
 
+const API: shelllist_daemon_core::ApiIdentity =
+    shelllist_daemon_core::ApiIdentity::new(NAME, VERSION as u32);
+
+pub(crate) fn success(data: Value) -> Value {
+    shelllist_daemon_core::success(API, data)
+}
+pub(crate) fn error(code: &str, message: impl Into<String>) -> Value {
+    shelllist_daemon_core::error(API, shelllist_daemon_core::ApiError::new(code, message))
+}
+pub(crate) fn unsupported_method(method: &str) -> Value {
+    error(
+        "unsupported-method",
+        format!("Unsupported bar-api method: {method}"),
+    )
+}
+
 /// Event stream names accepted by subscriptions.
 pub mod stream {
     /// Activity summary changed.
@@ -116,9 +133,9 @@ pub const METHODS: &[&str] = &[
     "todos.delete",
     "workspace.focus",
     "media.operation",
-    crate::api::audio::Method::Adjust.name(),
-    crate::api::audio::Method::SetMuted.name(),
-    crate::api::audio::Method::SetInputMuted.name(),
+    audio_wire::Method::Adjust.name(),
+    audio_wire::Method::SetMuted.name(),
+    audio_wire::Method::SetInputMuted.name(),
     "brightness.adjust",
     "brightness.set",
     "battery.history",
@@ -190,7 +207,7 @@ pub const STREAMS: &[&str] = &[
 
 /// Only declared policies participate in deadline enforcement during migration.
 pub(crate) fn method_policy(name: &str) -> Option<shelllist_daemon_core::MethodPolicy> {
-    if let Some(method) = crate::api::audio::Method::parse(name) {
+    if let Some(method) = audio_wire::Method::parse(name) {
         return Some(method.policy());
     }
     match name {
@@ -217,9 +234,9 @@ pub fn registry() -> Value {
             { "name": "todos.delete", "params": { "id": "local-1" }, "result": "deleted" },
             { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
             { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null, "offset_seconds": null, "mode": null }, "result": "operation" },
-            crate::api::audio::Method::Adjust.registry_entry(),
-            crate::api::audio::Method::SetMuted.registry_entry(),
-            crate::api::audio::Method::SetInputMuted.registry_entry(),
+            audio_wire::Method::Adjust.registry_entry(),
+            audio_wire::Method::SetMuted.registry_entry(),
+            audio_wire::Method::SetInputMuted.registry_entry(),
             control_wire::contract::<control_wire::DeltaRequest, crate::model::BrightnessState>("brightness.adjust", "brightness", json!({"delta_percent": 5})),
             control_wire::contract::<control_wire::PercentRequest, crate::model::BrightnessState>("brightness.set", "brightness", json!({"percent": 50})),
             { "name": "battery.history", "params": {}, "result": "history" },
