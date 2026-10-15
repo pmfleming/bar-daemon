@@ -151,6 +151,18 @@ impl LockObserver {
         Ok(self.state.locked)
     }
 
+    async fn flush(&self) -> Result<()> {
+        loop {
+            match self.connection.flush() {
+                Ok(()) => return Ok(()),
+                Err(WaylandError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.socket.writable().await?.clear_ready();
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     async fn roundtrip(&mut self) -> Result<()> {
         tokio::time::timeout(ROUNDTRIP_TIMEOUT, async {
             self.state.synced = false;
@@ -160,17 +172,9 @@ impl LockObserver {
                 if self.state.synced {
                     return Ok(());
                 }
-                loop {
-                    match self.connection.flush() {
-                        Ok(()) => break,
-                        Err(WaylandError::Io(error))
-                            if error.kind() == io::ErrorKind::WouldBlock =>
-                        {
-                            self.socket.writable().await?.clear_ready();
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
+                // Write backpressure shares the roundtrip's deadline; it must
+                // never leave lock confirmation waiting indefinitely.
+                self.flush().await?;
                 let Some(read) = self.queue.prepare_read() else {
                     continue;
                 };

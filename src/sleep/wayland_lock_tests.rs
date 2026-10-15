@@ -1,5 +1,5 @@
 //! An isolated protocol server; tests never use the desktop display.
-use super::*;
+use super::{Connection, Duration, LockObserver, State, WaylandError};
 use tokio::sync::{mpsc, oneshot};
 use wayland_server::{Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New};
 
@@ -128,6 +128,32 @@ impl FakeCompositor {
         let (done, wait) = oneshot::channel();
         self.commands.send((locked, done)).unwrap();
         wait.await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_reads_and_write_backpressure_share_the_confirmation_deadline() {
+    for congested in [false, true] {
+        // Keep the peer open without ever reading requests or answering syncs.
+        let (_server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(client).unwrap();
+        let queue = connection.new_event_queue::<State>();
+        if congested {
+            let blocked = (0..65_536).any(|_| {
+                connection.display().sync(&queue.handle(), ());
+                matches!(connection.flush(), Err(WaylandError::Io(error))
+                    if error.kind() == std::io::ErrorKind::WouldBlock)
+            });
+            assert!(blocked, "fixture must actually exercise write backpressure");
+        }
+        let error = LockObserver::from_connection(connection)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("lock confirmation timed out"),
+            "{error:#}"
+        );
     }
 }
 
