@@ -34,6 +34,56 @@ fn now() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(1_800_000).unwrap()
 }
 
+#[tokio::test]
+async fn cache_hits_and_failures_reuse_forecast_buffers_without_polling_fresh_fetches() {
+    let config = WeatherConfig {
+        id: "home".into(),
+        location: "Amsterdam".into(),
+        ..Default::default()
+    };
+    let previous = response().normalize(&config, now()).unwrap();
+    let buffers = (previous.hourly.as_ptr(), previous.daily.as_ptr());
+    let updated = previous.updated_unix_ms;
+    let cached = super::cached_or_fetch(&config, Some(previous), updated + 899_999, async {
+        panic!("fresh cache must not poll HTTP")
+    })
+    .await;
+    assert_eq!((cached.hourly.as_ptr(), cached.daily.as_ptr()), buffers);
+    let stale = super::cached_or_fetch(
+        &config,
+        Some(cached),
+        updated + 900_000,
+        std::future::ready(Err(anyhow::anyhow!("offline"))),
+    )
+    .await;
+    assert_eq!((stale.hourly.as_ptr(), stale.daily.as_ptr()), buffers);
+    assert_eq!(stale.updated_unix_ms, updated);
+    assert_eq!(stale.error.as_deref(), Some("offline"));
+    let mut missing = super::cached_or_fetch(
+        &config,
+        None,
+        updated,
+        std::future::ready(Err(anyhow::anyhow!("offline"))),
+    )
+    .await;
+    assert!(!missing.available);
+    assert_eq!(missing.id, config.id);
+    // Unavailable entries must fetch even when their timestamp is fresh.
+    missing.updated_unix_ms = updated;
+    let recovered = super::cached_or_fetch(
+        &config,
+        Some(missing),
+        updated,
+        std::future::ready(Ok(stale)),
+    )
+    .await;
+    assert!(recovered.available);
+    assert_eq!(
+        (recovered.hourly.as_ptr(), recovered.daily.as_ptr()),
+        buffers
+    );
+}
+
 #[test]
 fn normalization_preserves_units_indices_and_short_column_defaults() {
     let config = WeatherConfig {

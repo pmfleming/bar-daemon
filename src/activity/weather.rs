@@ -68,6 +68,32 @@ fn forecast_request(client: &reqwest::Client, config: &WeatherConfig) -> reqwest
         .timeout(std::time::Duration::from_secs(12))
 }
 
+// The fetch future is only polled for stale/missing forecasts. Ownership keeps
+// hourly/daily buffers intact on both cache hits and provider failures.
+pub(super) async fn cached_or_fetch(
+    config: &WeatherConfig,
+    previous: Option<WeatherState>,
+    now: i64,
+    fetch: impl std::future::Future<Output = Result<WeatherState>>,
+) -> WeatherState {
+    match previous {
+        Some(weather)
+            if weather.available
+                && now.saturating_sub(weather.updated_unix_ms) < 15 * 60 * 1_000 =>
+        {
+            weather
+        }
+        previous => fetch.await.unwrap_or_else(|error| WeatherState {
+            id: config.id.clone(),
+            location: config.location.clone(),
+            home: config.home,
+            timezone: config.timezone.clone(),
+            error: Some(error.to_string()),
+            ..previous.unwrap_or_default()
+        }),
+    }
+}
+
 pub(crate) async fn fetch(config: &WeatherConfig) -> Result<WeatherState> {
     forecast_request(&reqwest::Client::new(), config)
         .send()

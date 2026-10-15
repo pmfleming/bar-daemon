@@ -230,29 +230,16 @@ impl ActivityService {
             data.weather_locations.clear();
             return;
         }
-        let cached = self.data.read().await.weather_locations.clone();
+        let mut cached = self.data.read().await.weather_locations.clone();
         let now = unix_ms();
         let forecasts = futures::future::join_all(locations.iter().map(|location| {
-            let previous = cached.iter().find(|weather| weather.id == location.id);
-            async move {
-                if let Some(weather) = previous
-                    && weather.available
-                    && now.saturating_sub(weather.updated_unix_ms) < 15 * 60 * 1_000
-                {
-                    return weather.clone();
-                }
-                match weather::fetch(location).await {
-                    Ok(forecast) => forecast,
-                    Err(error) => WeatherState {
-                        id: location.id.clone(),
-                        location: location.location.clone(),
-                        home: location.home,
-                        timezone: location.timezone.clone(),
-                        error: Some(error.to_string()),
-                        ..previous.cloned().unwrap_or_default()
-                    },
-                }
-            }
+            // Config validation guarantees unique IDs. Move each cached forecast
+            // into its refresh, while readers retain the last published snapshot.
+            let previous = cached
+                .iter()
+                .position(|weather| weather.id == location.id)
+                .map(|index| cached.swap_remove(index));
+            weather::cached_or_fetch(location, previous, now, weather::fetch(location))
         }))
         .await;
         let primary = forecasts
