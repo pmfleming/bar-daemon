@@ -47,6 +47,16 @@ pub(crate) struct ActivityEvent {
     pub url: String,
 }
 
+impl ActivityEvent {
+    pub(super) fn chronological_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.start_unix_ms, self.end_unix_ms, &self.id).cmp(&(
+            other.start_unix_ms,
+            other.end_unix_ms,
+            &other.id,
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TodoItem {
     pub id: String,

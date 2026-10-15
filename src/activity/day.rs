@@ -1,7 +1,65 @@
 //! Calendar membership uses local dates, never a fixed 24-hour duration.
 use super::model::{ActivityDay, ActivityEvent, TodoItem};
+use anyhow::{Context, Result, ensure};
 use chrono::{NaiveDate, TimeZone};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
+
+/// A validated half-open instant range and the local dates it touches.
+pub(super) struct QueryRange {
+    instants: Range<i64>,
+    pub first: NaiveDate,
+    pub last: NaiveDate,
+    date_keys: (String, String),
+}
+
+impl QueryRange {
+    pub fn new<T: TimeZone>(from: i64, to: i64, zone: &T) -> Result<Self> {
+        ensure!(to > from, "to_unix_ms must be greater than from_unix_ms");
+        let duration = to
+            .checked_sub(from)
+            .context("activity range duration overflows")?;
+        ensure!(
+            duration <= 370 * 24 * 60 * 60 * 1_000,
+            "activity range cannot exceed 370 days"
+        );
+        // Include partial days and DST using local dates, not fixed 24-hour steps.
+        let first = zone
+            .timestamp_millis_opt(from)
+            .single()
+            .context("activity range start is outside supported dates")?
+            .date_naive();
+        let last = zone
+            .timestamp_millis_opt(to - 1)
+            .single()
+            .context("activity range end is outside supported dates")?
+            .date_naive();
+        Ok(Self {
+            instants: from..to,
+            first,
+            last,
+            date_keys: (first.to_string(), last.to_string()),
+        })
+    }
+
+    pub fn includes_event(&self, event: &ActivityEvent) -> bool {
+        event.start_unix_ms < self.instants.end
+            && if event.end_unix_ms == event.start_unix_ms {
+                self.instants.contains(&event.start_unix_ms)
+            } else {
+                event.end_unix_ms > self.instants.start
+            }
+    }
+
+    pub fn includes_todo(&self, todo: &TodoItem) -> bool {
+        match (todo.due_unix_ms, todo.due_date.as_deref()) {
+            (Some(due), _) => self.instants.contains(&due),
+            (None, Some(date)) => {
+                date >= self.date_keys.0.as_str() && date <= self.date_keys.1.as_str()
+            }
+            (None, None) => true,
+        }
+    }
+}
 
 pub(super) fn project<T: TimeZone>(
     events: &[ActivityEvent],
@@ -64,8 +122,42 @@ fn event_on_date(
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivityEvent, TodoItem, project};
-    use chrono::DateTime;
+    use super::{ActivityEvent, QueryRange, TodoItem, project};
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn query_interval_distinguishes_instants_and_exclusive_ends() {
+        let range = QueryRange::new(10, 20, &Utc).unwrap();
+        for (start, end, included) in [
+            (0, 10, false),
+            (10, 10, true),
+            (20, 20, false),
+            (20, 30, false),
+            (0, 11, true),
+            (19, 20, true),
+            (0, 0, false),
+        ] {
+            let event = ActivityEvent {
+                start_unix_ms: start,
+                end_unix_ms: end,
+                ..Default::default()
+            };
+            assert_eq!(range.includes_event(&event), included, "{start}..{end}");
+        }
+        let todo = TodoItem {
+            due_unix_ms: Some(20),
+            due_date: Some("1970-01-01".into()),
+            ..Default::default()
+        };
+        assert!(
+            !range.includes_todo(&todo),
+            "an exact due instant takes precedence over its date"
+        );
+        assert!(
+            range.includes_todo(&TodoItem::default()),
+            "undated todos remain in the range"
+        );
+    }
 
     #[test]
     fn membership_handles_dst_exclusive_ends_and_undated_todos() {

@@ -268,54 +268,20 @@ impl ActivityService {
         to_unix_ms: i64,
         timezone: T,
     ) -> Result<ActivityRange> {
-        if to_unix_ms <= from_unix_ms {
-            bail!("to_unix_ms must be greater than from_unix_ms");
-        }
-        const MAX_RANGE_MS: i64 = 370 * 24 * 60 * 60 * 1_000;
-        let duration = to_unix_ms
-            .checked_sub(from_unix_ms)
-            .context("activity range duration overflows")?;
-        if duration > MAX_RANGE_MS {
-            bail!("activity range cannot exceed 370 days");
-        }
+        let range = super::day::QueryRange::new(from_unix_ms, to_unix_ms, &timezone)?;
         let data = self.data.read().await;
         let mut events = data
             .events_by_source
             .values()
             .flatten()
-            .filter(|event| {
-                if event.end_unix_ms == event.start_unix_ms {
-                    event.start_unix_ms >= from_unix_ms && event.start_unix_ms < to_unix_ms
-                } else {
-                    event.end_unix_ms > from_unix_ms && event.start_unix_ms < to_unix_ms
-                }
-            })
+            .filter(|event| range.includes_event(event))
             .cloned()
             .collect::<Vec<_>>();
-        events.sort_by(|a, b| {
-            (a.start_unix_ms, a.end_unix_ms, &a.id).cmp(&(b.start_unix_ms, b.end_unix_ms, &b.id))
-        });
-        // Date-only todos occupy a local calendar day. Include every local date
-        // touched by the half-open interval, including partial days and DST.
-        let from_date = timezone
-            .timestamp_millis_opt(from_unix_ms)
-            .single()
-            .context("activity range start is outside supported dates")?
-            .date_naive();
-        let last_date = timezone
-            .timestamp_millis_opt(to_unix_ms - 1)
-            .single()
-            .context("activity range end is outside supported dates")?
-            .date_naive();
-        let (from_key, last_key) = (from_date.to_string(), last_date.to_string());
+        events.sort_by(ActivityEvent::chronological_cmp);
         let mut todos = data
             .todos
             .iter()
-            .filter(|todo| match (todo.due_unix_ms, todo.due_date.as_deref()) {
-                (Some(due), _) => due >= from_unix_ms && due < to_unix_ms,
-                (None, Some(date)) => date >= from_key.as_str() && date <= last_key.as_str(),
-                (None, None) => true,
-            })
+            .filter(|todo| range.includes_todo(todo))
             .cloned()
             .collect::<Vec<_>>();
         todos.sort_by_key(|todo| {
@@ -327,7 +293,7 @@ impl ActivityService {
             )
         });
         let today = chrono::Utc::now().with_timezone(&timezone).date_naive();
-        let days = super::day::project(&events, &todos, from_date, last_date, today, &timezone);
+        let days = super::day::project(&events, &todos, range.first, range.last, today, &timezone);
         let busy_dates = days
             .iter()
             .filter(|(_, day)| !day.event_ids.is_empty() || !day.todo_ids.is_empty())
