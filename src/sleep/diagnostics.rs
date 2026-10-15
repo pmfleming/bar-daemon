@@ -50,46 +50,58 @@ fn inspect(root: &Path) -> SleepDiagnostics {
         }
         result.supported_suspend_modes.push(name);
     }
-    if text(root, "sys/power/state")
-        .is_some_and(|states| !states.split_whitespace().any(|state| state == "disk"))
-    {
-        result
-            .hibernate_issues
-            .push("The running kernel does not expose disk hibernation.".into());
-    }
-    if result.disk_swap_available == Some(false) {
-        result.hibernate_issues.push("No active disk-backed swap; zram alone cannot store a hibernation image. Configure persistent swap and resume support.".into());
-    }
-    if result.resume_device_configured == Some(false) {
-        // systemd can select swap and record the resume target in EFI at sleep
-        // entry. 0:0 alone is NOT proof of unsupported sleep.
-        result.guidance.push("No kernel resume device is set. Verify initrd resume support or systemd EFI resume discovery; swapfiles also need a correct resume offset.".into());
-    }
-    if text(root, "sys/kernel/security/lockdown").is_some_and(|lockdown| {
-        lockdown.contains("[integrity]") || lockdown.contains("[confidentiality]")
-    }) {
-        result.hibernate_issues.push("Kernel lockdown is enabled and may prohibit hibernation. Check the kernel's Secure Boot/hibernation policy; do not disable security automatically.".into());
-    }
-    let thinkpad = vendor
+    result.hibernate_issues = messages(&[
+        (
+            text(root, "sys/power/state")
+                .is_some_and(|states| !states.split_whitespace().any(|state| state == "disk")),
+            "The running kernel does not expose disk hibernation.",
+        ),
+        (
+            result.disk_swap_available == Some(false),
+            "No active disk-backed swap; zram alone cannot store a hibernation image. Configure persistent swap and resume support.",
+        ),
+        (
+            text(root, "sys/kernel/security/lockdown").is_some_and(|lockdown| {
+                lockdown.contains("[integrity]") || lockdown.contains("[confidentiality]")
+            }),
+            "Kernel lockdown is enabled and may prohibit hibernation. Check the kernel's Secure Boot/hibernation policy; do not disable security automatically.",
+        ),
+    ]);
+    let normalized_model = model.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let thinkpad_s2idle = vendor
         .as_deref()
         .is_some_and(|s| s.eq_ignore_ascii_case("LENOVO"))
-        && model
-            .as_deref()
-            .is_some_and(|s| s.to_ascii_lowercase().contains("thinkpad"));
-    if thinkpad && result.supported_suspend_modes == ["s2idle"] {
-        result.guidance.push("This ThinkPad exposes s2idle only. Do not force deep/S3; use Lenovo BIOS/EC updates and the current kernel for suspend fixes.".into());
-        if model
-            .as_deref()
-            .is_some_and(|s| s.to_ascii_uppercase().contains("AMD"))
-        {
-            result.guidance.push("For AMD ThinkPad sleep drain, inspect amd_pmc S0ix residency and wake sources after a controlled suspend/resume test. Do not blindly disable ACPI or USB wake devices.".into());
-        }
-    }
+        && normalized_model.contains("thinkpad")
+        && result.supported_suspend_modes == ["s2idle"];
+    result.guidance = messages(&[
+        // systemd may record the resume target in EFI at sleep entry: 0:0 is
+        // guidance, not proof of unsupported sleep. Unknown evidence stays unknown.
+        (
+            result.resume_device_configured == Some(false),
+            "No kernel resume device is set. Verify initrd resume support or systemd EFI resume discovery; swapfiles also need a correct resume offset.",
+        ),
+        (
+            thinkpad_s2idle,
+            "This ThinkPad exposes s2idle only. Do not force deep/S3; use Lenovo BIOS/EC updates and the current kernel for suspend fixes.",
+        ),
+        (
+            thinkpad_s2idle && normalized_model.contains("amd"),
+            "For AMD ThinkPad sleep drain, inspect amd_pmc S0ix residency and wake sources after a controlled suspend/resume test. Do not blindly disable ACPI or USB wake devices.",
+        ),
+    ]);
     result.hardware = match (vendor, model) {
         (Some(vendor), Some(model)) => Some(format!("{vendor} {model}")),
         (vendor, model) => model.or(vendor),
     };
     result
+}
+
+fn messages(rules: &[(bool, &str)]) -> Vec<String> {
+    rules
+        .iter()
+        .filter(|(applies, _)| *applies)
+        .map(|(_, message)| (*message).into())
+        .collect()
 }
 
 fn resume_device_configured(resume: &str) -> Option<bool> {
@@ -196,6 +208,10 @@ mod tests {
             assert_eq!(diagnostics.resume_device_configured, Some(false));
             assert_eq!(diagnostics.hibernate_issues.is_empty(), disk);
             assert!(diagnostics.guidance.iter().any(|s| s.contains(guidance)));
+            assert_eq!(
+                diagnostics.guidance.len(),
+                if mode == "s2idle" { 3 } else { 1 }
+            );
         }
         let root = tempfile::tempdir().unwrap();
         for malformed in [false, true] {
@@ -219,5 +235,27 @@ mod tests {
                 malformed
             );
         }
+        put(root.path(), "sys/power/state", "freeze mem");
+        put(
+            root.path(),
+            "proc/swaps",
+            "Filename Type Size Used Priority\n",
+        );
+        put(root.path(), "sys/power/resume", "0:0");
+        let combined = inspect(root.path());
+        assert_eq!(combined.hibernate_issues.len(), 3);
+        for (issue, expected) in
+            combined
+                .hibernate_issues
+                .iter()
+                .zip(["running kernel", "disk-backed swap", "lockdown"])
+        {
+            assert!(issue.contains(expected), "{issue}");
+        }
+        assert_eq!(
+            combined.guidance.len(),
+            1,
+            "missing hardware must not imply ThinkPad guidance"
+        );
     }
 }
