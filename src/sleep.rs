@@ -257,10 +257,10 @@ where
         .await
     }
     .await;
-    if action != "lock" {
-        if let Err(error) = &result {
-            outcome::TRACKER.finish_preflight_error(error);
-        }
+    if action != "lock"
+        && let Err(error) = &result
+    {
+        outcome::TRACKER.finish_preflight_error(error);
     }
     result
 }

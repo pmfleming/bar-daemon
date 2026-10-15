@@ -16,6 +16,11 @@ allow = [
   "Unicode-3.0",
 ]
 
+# Embedded timezone-boundary-builder data, with attribution/license shipped.
+[[licenses.exceptions]]
+name = "tzf-dist"
+allow = ["ODbL-1.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

@@ -73,6 +73,7 @@
             postFixup = ''
               wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl ]}
               wrapProgram $out/bin/bar-battery-helper --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
+              wrapProgram $out/bin/bar-location-daemon --set-default TZDIR ${pkgs.tzdata}/share/zoneinfo
             '';
             postInstall = ''
               install -Dm644 protocols/hyprland-lock-notify-v1.xml \
@@ -81,6 +82,10 @@
                 $out/share/licenses/bar-daemon/ext-idle-notify-v1.xml
               install -Dm644 packaging/licenses/CDLA-Permissive-2.0.txt \
                 $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
+              install -Dm644 packaging/licenses/ODbL-1.0.txt $out/share/licenses/bar-daemon/ODbL-1.0.txt
+              install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
+              install -Dm644 ${./packaging/dbus/org.laufan.LocationTimezone.conf} \
+                $out/share/dbus-1/system.d/org.laufan.LocationTimezone.conf
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service
@@ -104,7 +109,10 @@
             meta = {
               description = "Status, policy, and action daemon for a Quickshell desktop bar";
               mainProgram = "bar-daemon";
-              license = pkgs.lib.licenses.mit;
+              license = with pkgs.lib.licenses; [
+                mit
+                odbl
+              ];
               platforms = systems;
             };
           };
@@ -143,6 +151,11 @@
             systemd.packages = [ self.packages.${pkgs.system}.default ];
           };
         };
+
+      nixosModules.location-timezone = { lib, pkgs, ... }: {
+        imports = [ ./packaging/location-timezone.nix ];
+        services.location-timezone.package = lib.mkDefault self.packages.${pkgs.system}.default;
+      };
 
       checks = forAllSystems (system: pkgs: { default = self.packages.${system}.default; });
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt-tree);

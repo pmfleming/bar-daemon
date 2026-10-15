@@ -16,7 +16,7 @@ fn candidate(root: &Path, revision: &str, created_at: u64) -> Candidate {
         lock_hash: "b".repeat(64),
         base_hash: "c".repeat(64),
         created_at,
-        auto_apply: created_at % 2 == 0,
+        auto_apply: created_at.is_multiple_of(2),
         system,
     }
 }

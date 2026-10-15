@@ -51,7 +51,7 @@ impl NotificationServer {
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> fdo::Result<u32> {
-        if actions.len() % 2 != 0 {
+        if !actions.len().is_multiple_of(2) {
             return Err(fdo::Error::InvalidArgs(
                 "notification actions must contain key/label pairs".into(),
             ));

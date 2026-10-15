@@ -170,10 +170,10 @@ struct PendingOverride {
 }
 impl Drop for PendingOverride {
     fn drop(&mut self) {
-        if self.armed {
-            if let Err(error) = remove_if_unchanged(&self.path, &self.bytes) {
-                tracing::warn!(%error, "cancelled hibernate setup cleanup deferred to maintenance");
-            }
+        if self.armed
+            && let Err(error) = remove_if_unchanged(&self.path, &self.bytes)
+        {
+            tracing::warn!(%error, "cancelled hibernate setup cleanup deferred to maintenance");
         }
     }
 }

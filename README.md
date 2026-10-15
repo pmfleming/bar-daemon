@@ -18,6 +18,13 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Event-driven NixOS delayed-update readiness and read-only worker job status
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
 
+The package also provides **`bar-location-daemon`**, a separate Rust system service
+for fresh Wi-Fi/IP timezone consensus and bounded failure retries. It replaces
+the former Python location updater, not the session daemon's read-only timezone
+observer. Enable `nixosModules.location-timezone` with
+`services.location-timezone.enable = true`; see [location/timezone](docs/location-timezone.md).
+The embedded boundary library requires Rust 1.88+ and ships ODbL data attribution.
+
 ## Usage
 
 ```sh

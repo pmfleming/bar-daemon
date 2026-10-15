@@ -97,10 +97,10 @@ impl Backend for FakeBackend {
     }
     async fn outputs(&self) -> Result<Vec<Output>> {
         self.reads.set(self.reads.get() + 1);
-        if self.reads.get() == 2 {
-            if let Some(store) = &self.resume_on_second_read {
-                store.record_resume().await;
-            }
+        if self.reads.get() == 2
+            && let Some(store) = &self.resume_on_second_read
+        {
+            store.record_resume().await;
         }
         let mut snapshots = self.snapshots.borrow_mut();
         Ok(if snapshots.len() > 1 {

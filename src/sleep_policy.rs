@@ -302,10 +302,8 @@ pub(crate) async fn set(policy: SleepPolicy, store: &StateStore) -> Result<Sleep
     // A missing helper/capability must not be presented as working hibernation.
     let support = hibernate_support().await;
     let timed_hibernation = policy.uses_timed_hibernation();
-    if timed_hibernation {
-        if let Err(error) = &support {
-            bail!("{error:#}");
-        }
+    if timed_hibernation && let Err(error) = &support {
+        bail!("{error:#}");
     }
     persist_and_apply(&policy_path(), &policy, &previous, apply_idle).await?;
     if !timed_hibernation {
@@ -542,11 +540,11 @@ pub(crate) async fn monitor(store: StateStore) {
             timer.reset_immediately();
             continue;
         }
-        if let Some(minutes) = update {
-            if let Err(error) = hypridle::set_timeout(minutes).await {
-                state.available = false;
-                state.error = Some(format!("{error:#}"));
-            }
+        if let Some(minutes) = update
+            && let Err(error) = hypridle::set_timeout(minutes).await
+        {
+            state.available = false;
+            state.error = Some(format!("{error:#}"));
         }
         state.last_error = store.read(|s| s.sleep_policy.last_error.clone()).await;
         store.update_sleep_policy(state).await;

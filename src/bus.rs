@@ -43,10 +43,10 @@ impl ClientBus {
     {
         tokio::time::timeout(TIMEOUT, async {
             let mut cached = self.0.lock().await;
-            if let Some(current) = &*cached {
-                if !current.closed.is_finished() {
-                    return Ok(current.connection.clone());
-                }
+            if let Some(current) = &*cached
+                && !current.closed.is_finished()
+            {
+                return Ok(current.connection.clone());
             }
             // Single-flight reconnect. Cancellation/failure leaves no poisoned
             // initialization state, and callers never hold this mutex for RPCs.

@@ -1,0 +1,333 @@
+//! System-service location authority. Independent of the graphical session daemon.
+mod bus;
+#[cfg(test)]
+mod bus_tests;
+mod http;
+mod policy;
+mod storage;
+#[cfg(test)]
+mod tests;
+
+use anyhow::{Context, Result};
+use policy::{Decision, Fix, Network, Schedule, Zones};
+use std::{path::PathBuf, time::Duration};
+use storage::{Accepted, State, Storage};
+use tokio::{
+    sync::watch,
+    time::{Instant, MissedTickBehavior},
+};
+
+#[derive(Clone, Default)]
+struct Control {
+    epoch: u64,
+    reload: u64,
+    sleeping: bool,
+    shutdown: bool,
+}
+struct Observation {
+    network: Option<Network>,
+    sleeping: bool,
+}
+trait Backend {
+    async fn observe(&self) -> Result<Observation>;
+    async fn timezone(&self) -> Result<String>;
+    async fn set_timezone(&self, zone: &str) -> Result<()>;
+    async fn wifi(&self, started: f64) -> Result<Fix>;
+    async fn ip(&self) -> http::IpResult;
+}
+fn wall_time() -> f64 {
+    chrono::Utc::now().timestamp_millis() as f64 / 1000.0
+}
+
+struct Authority {
+    storage: Storage,
+    state: State,
+    zones: Zones,
+    schedule: Schedule,
+    baseline: String,
+    last_result: String,
+    reload: u64,
+}
+impl Authority {
+    async fn new(storage: Storage, zones: Zones, backend: &impl Backend) -> Result<Self> {
+        let state = storage.load()?;
+        storage.save(&state).await?; // migrate Python quota fields without losing accepted state/cooldowns
+        Ok(Self {
+            storage,
+            state,
+            zones,
+            schedule: Schedule::default(),
+            baseline: backend.timezone().await?,
+            last_result: String::new(),
+            reload: 0,
+        })
+    }
+    async fn run(
+        &mut self,
+        backend: &impl Backend,
+        mut control: watch::Receiver<Control>,
+    ) -> Result<()> {
+        let mut ticks = tokio::time::interval(Duration::from_secs(5));
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            let current = control.borrow_and_update().clone();
+            if current.shutdown {
+                return Ok(());
+            }
+            if current.reload != self.reload {
+                self.baseline = backend.timezone().await?;
+                self.state.paused = false;
+                self.state.write_pending = false;
+                self.storage.save(&self.state).await?;
+                self.schedule = Schedule::default();
+                self.reload = current.reload;
+            }
+            if self.state.paused || self.state.write_pending {
+                self.storage
+                    .status("Automatic location paused · reload to resume")
+                    .await?;
+            } else {
+                match backend.observe().await {
+                    Ok(observation) => {
+                        let network = if observation.sleeping || current.sleeping {
+                            None
+                        } else {
+                            observation.network
+                        };
+                        let changed = self.schedule.observe(network, Instant::now());
+                        if self.schedule.network.is_none() {
+                            self.storage
+                                .status("Waiting for internet or resume · timezone unchanged")
+                                .await?;
+                        } else if self.schedule.ready(Instant::now()) {
+                            self.check(backend, &mut control).await?;
+                        } else if changed {
+                            // Connectivity flicker must not leave an obsolete offline
+                            // warning on a completed, now-online connection.
+                            self.storage
+                                .status(if self.schedule.due.is_some() {
+                                    "Waiting to check current location…"
+                                } else {
+                                    &self.last_result
+                                })
+                                .await?;
+                        }
+                    }
+                    Err(_) => {
+                        self.schedule.observe(None, Instant::now());
+                        self.storage
+                            .status("Network observation unavailable · timezone unchanged")
+                            .await?;
+                    }
+                }
+            }
+            tokio::select! {
+                _ = ticks.tick() => {},
+                changed = control.changed() => changed.context("location control ended")?,
+            }
+        }
+    }
+    async fn finish(&mut self, decision: Decision) -> Result<()> {
+        let message = match decision {
+            Decision::Retry(reason) => {
+                self.schedule
+                    .retry(Instant::now(), self.state.cooldown(wall_time()));
+                format!("{reason} · timezone unchanged · retrying automatically")
+            }
+            Decision::Stop(reason) => {
+                self.schedule.complete();
+                format!("{reason} · no automatic change")
+            }
+        };
+        self.storage.status(&message).await?;
+        self.last_result = message;
+        Ok(())
+    }
+    async fn check(
+        &mut self,
+        backend: &impl Backend,
+        control: &mut watch::Receiver<Control>,
+    ) -> Result<()> {
+        if !self.state.cooldown(wall_time()).is_zero() {
+            return self
+                .finish(Decision::Retry("Location provider rate limited"))
+                .await;
+        }
+        self.storage.status("Checking current location…").await?;
+        let started = wall_time();
+        let epoch = control.borrow().epoch;
+        let acquired = self.acquire(backend, control, started).await?;
+        let (wifi, ip) = match acquired {
+            Ok(evidence) => evidence,
+            Err(reason) => return self.finish(Decision::Retry(reason)).await,
+        };
+        let zone = match self.zones.agree(&wifi, &ip, started, wall_time()) {
+            Ok(zone) => zone,
+            Err(decision) => return self.finish(decision).await,
+        };
+        let current = match backend.timezone().await {
+            Ok(current) => current,
+            Err(_) => {
+                return self
+                    .finish(Decision::Retry("System timezone unavailable"))
+                    .await;
+            }
+        };
+        if current != self.baseline {
+            self.state.paused = true;
+            self.storage.save(&self.state).await?;
+            return self
+                .finish(Decision::Stop(
+                    "Timezone changed manually · automatic location paused",
+                ))
+                .await;
+        }
+        self.state.write_pending = true;
+        self.storage.save(&self.state).await?;
+        // Check after persistence, immediately before the privileged call. Never
+        // accept an acquisition from an old network or across a sleep/reload event.
+        let observed = backend.observe().await;
+        let changed = control.borrow();
+        let valid = observed.is_ok_and(|s| {
+            !s.sleeping && s.network == self.schedule.network && s.network.is_some()
+        }) && changed.epoch == epoch
+            && !changed.sleeping
+            && !changed.shutdown;
+        drop(changed);
+        if !valid {
+            self.state.write_pending = false;
+            self.storage.save(&self.state).await?;
+            return self
+                .finish(Decision::Retry("Location check interrupted"))
+                .await;
+        }
+        let applied = async {
+            if self.zones.canonical(&current).as_deref() != Some(&zone) {
+                backend.set_timezone(&zone).await?;
+            }
+            let actual = backend.timezone().await?;
+            anyhow::ensure!(
+                self.zones.canonical(&actual).as_deref() == Some(&zone),
+                "timezone not verified"
+            );
+            Ok::<_, anyhow::Error>(actual)
+        }
+        .await;
+        match applied {
+            Ok(actual) => {
+                self.baseline = actual;
+                self.state.accepted = Some(Accepted {
+                    timezone: zone,
+                    latitude: wifi.latitude,
+                    longitude: wifi.longitude,
+                    verified_at: wall_time(),
+                });
+                self.state.write_pending = false;
+                self.storage.save(&self.state).await?;
+                self.schedule.complete();
+                self.last_result.clear();
+                self.storage.status("").await
+            }
+            Err(_) => {
+                // Unknown application is not a transient lookup failure. Keep the
+                // durable intent fence across process death; require explicit reload.
+                self.state.paused = true;
+                self.storage.save(&self.state).await?;
+                self.finish(Decision::Stop(
+                    "Timezone change unverified · automatic location paused",
+                ))
+                .await
+            }
+        }
+    }
+    async fn acquire(
+        &mut self,
+        backend: &impl Backend,
+        control: &mut watch::Receiver<Control>,
+        started: f64,
+    ) -> Result<Result<(Fix, Fix), &'static str>> {
+        let wifi = backend.wifi(started);
+        let ip = backend.ip();
+        tokio::pin!(wifi, ip);
+        let mut wifi_fix = None;
+        let mut ip_fix = None;
+        let deadline = tokio::time::sleep(Duration::from_secs(90));
+        tokio::pin!(deadline);
+        let mut poll = tokio::time::interval(Duration::from_secs(5));
+        poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                // Persist a ready 429 before processing a simultaneous cancellation.
+                biased;
+                result = &mut ip, if ip_fix.is_none() => match result {
+                    http::IpResult::Fix(fix) => ip_fix = Some(fix),
+                    http::IpResult::Limited(delay) => {
+                        self.state.ip_not_before = self.state.ip_not_before.max(wall_time() + delay.as_secs_f64());
+                        self.storage.save(&self.state).await?;
+                        return Ok(Err("Location provider rate limited"));
+                    }
+                    http::IpResult::Unavailable => return Ok(Err("IP location unavailable")),
+                },
+                changed = control.changed() => {
+                    changed.context("location control ended")?;
+                    return Ok(Err("Location check interrupted"));
+                }
+                _ = &mut deadline => return Ok(Err("Fresh Wi-Fi location unavailable")),
+                result = &mut wifi, if wifi_fix.is_none() => match result {
+                    Ok(fix) => wifi_fix = Some(fix),
+                    Err(_) => return Ok(Err("Wi-Fi location unavailable")),
+                },
+                _ = poll.tick() => {
+                    let valid = backend.observe().await.is_ok_and(|s|
+                        !s.sleeping && s.network == self.schedule.network && s.network.is_some());
+                    if !valid { return Ok(Err("Network or sleep state changed")); }
+                }
+            }
+            if wifi_fix.is_some() && ip_fix.is_some() {
+                return Ok(Ok((
+                    wifi_fix.take().expect("checked Wi-Fi"),
+                    ip_fix.take().expect("checked IP"),
+                )));
+            }
+        }
+    }
+}
+
+pub async fn run(
+    state_directory: PathBuf,
+    runtime_directory: PathBuf,
+    tzdata: PathBuf,
+) -> Result<()> {
+    let zones = Zones::load(&tzdata).context("load timezone boundaries and country metadata")?;
+    let connection = tokio::time::timeout(
+        Duration::from_secs(10),
+        zbus::connection::Builder::system()?
+            .method_timeout(Duration::from_secs(5))
+            .name("org.laufan.LocationTimezone")?
+            .build(),
+    )
+    .await??;
+    let backend = bus::Bus {
+        connection,
+        http: http::client()?,
+    };
+    let mut authority = Authority::new(
+        Storage::new(state_directory, runtime_directory),
+        zones,
+        &backend,
+    )
+    .await?;
+    let (sender, receiver) = watch::channel(Control::default());
+    let events = bus::events(&backend.connection, sender);
+    tokio::pin!(events);
+    let running = authority.run(&backend, receiver);
+    tokio::pin!(running);
+    tokio::select! {
+        result = &mut running => result,
+        result = &mut events => {
+            result?;
+            // Allow in-flight writes to read back/persist their outcome on SIGTERM.
+            tokio::time::timeout(Duration::from_secs(15), &mut running).await.context("location shutdown deadline")?
+        }
+    }
+}
