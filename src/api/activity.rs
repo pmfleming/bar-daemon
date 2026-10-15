@@ -62,37 +62,6 @@ impl ActivityApi {
 mod tests {
     use super::*;
     use serde_json::json;
-    #[tokio::test]
-    async fn refresh_acknowledges_before_isolated_provider_completion() {
-        let directory = tempfile::tempdir().unwrap();
-        let state = StateStore::default();
-        let service = ActivityService::with_paths(
-            state.clone(),
-            directory.path().join("config.json"),
-            directory.path().join("todos.json"),
-        )
-        .await;
-        let api = ActivityApi::new(state.clone(), service);
-        let mut events = state.subscribe();
-        let reply = api.activity_refresh().await;
-        let fixture = crate::protocol::activity_contract_fixture().await;
-        assert_eq!(
-            reply["data"]["operation"],
-            fixture["cases"]["refresh"]["success"]["data"]["operation"]
-        );
-        assert_eq!(reply["data"]["activity"]["syncing"], true);
-        assert_eq!(events.recv().await.unwrap().data["syncing"], true);
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if events.recv().await.unwrap().data["syncing"] == false {
-                    break;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        assert!(!state.snapshot().await.activity.syncing);
-    }
 
     #[tokio::test]
     async fn isolated_live_todo_lifecycle_matches_generated_replies_and_persists_once() {

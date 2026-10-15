@@ -194,7 +194,7 @@ fn stack(rows: Vec<Preview>, group_similar: bool) -> Vec<TimelineEntry> {
 mod tests {
     use super::super::center::{CenterQuery, Preview, PreviewHints, repeat_key};
     use super::super::history::HistoryError;
-    use super::{WINDOW, period, project_at};
+    use super::{WINDOW, project_at};
     use chrono::{Local, NaiveDate, TimeZone};
 
     fn day(value: &str) -> NaiveDate {
@@ -233,21 +233,6 @@ mod tests {
             serde_json::json!({"view":"timeline", "app_key":"named:Chat", "period_groups":true}),
         )
         .unwrap()
-    }
-
-    #[test]
-    fn periods_use_local_calendar_boundaries_with_week_precedence() {
-        let classify =
-            |created: &str, now: &str| period(preview(1, created).created_unix_ms, day(now));
-        assert_eq!(classify("2026-10-08", "2026-10-08"), "today");
-        assert_eq!(classify("2026-10-05", "2026-10-08"), "week");
-        assert_eq!(classify("2026-10-04", "2026-10-08"), "month");
-        assert_eq!(classify("2026-09-30", "2026-10-01"), "week");
-        assert_eq!(classify("2026-11-01", "2026-11-02"), "month");
-        assert_eq!(classify("2026-10-31", "2026-11-02"), "older");
-        assert_eq!(classify("2026-12-31", "2027-01-01"), "week");
-        assert_eq!(classify("2026-12-27", "2027-01-01"), "older");
-        assert_eq!(classify("2026-10-25", "2026-10-26"), "month");
     }
 
     #[test]

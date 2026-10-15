@@ -196,20 +196,13 @@ mod tests {
         assert_eq!(tracker.observe(&critical, true), None);
         assert_eq!(tracker.observe(&state(9, false), true), None);
         assert_eq!(tracker.observe(&state(20, false), true), None);
-    }
-
-    #[test]
-    fn protected_limit_counts_as_charge_complete() {
-        let mut tracker = AlertTracker::default();
-        let mut below = state(79, true);
-        below.protection.enabled = true;
-        below.protection.end_percent = Some(80);
-        assert_eq!(tracker.observe(&below, true), None);
-        let mut complete = state(80, true);
-        complete.protection.enabled = true;
-        complete.protection.end_percent = Some(80);
+        let mut charging = state(79, true);
+        charging.protection.enabled = true;
+        charging.protection.end_percent = Some(80);
+        assert_eq!(tracker.observe(&charging, true), None);
+        charging.percentage = 80;
         assert_eq!(
-            tracker.observe(&complete, true),
+            tracker.observe(&charging, true),
             Some(BatteryAlert::ChargeComplete(80))
         );
     }

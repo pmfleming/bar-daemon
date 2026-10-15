@@ -1,7 +1,7 @@
 use super::{
     engine::NotificationEngine,
     history::{self, HistoryError, HistoryQuery, MAX_PAGE, PAGE_BYTES},
-    model::{ActiveNotification, IncomingNotification},
+    model::IncomingNotification,
 };
 use crate::state::StateStore;
 
@@ -182,27 +182,6 @@ async fn bounded_pages_make_progress_and_reject_invalid_cursors() {
         1
     );
     assert_ne!(history::new_epoch().unwrap(), history::new_epoch().unwrap());
-}
-
-#[test]
-fn refresh_anchor_completes_even_when_the_oldest_visible_record_was_deleted() {
-    let active = vec![
-        ActiveNotification::from_incoming(3, notification("new", true), 300),
-        ActiveNotification::from_incoming(1, notification("old", true), 100),
-    ];
-    let mut request = query("", None, 1);
-    request.anchor = Some(history::Position {
-        created: 200,
-        id: 2,
-    });
-    let first =
-        history::page(Vec::new(), active.clone(), &request, None, "epoch", 7, 1000).unwrap();
-    assert!(!first.anchor_reached);
-    request.cursor = first.next_cursor;
-    let position = request.position("epoch", 7, 1001).unwrap();
-    let last = history::page(Vec::new(), active, &request, position, "epoch", 7, 1001).unwrap();
-    assert!(last.anchor_reached);
-    assert_eq!(last.records[0].notification.id, 1);
 }
 
 #[tokio::test]

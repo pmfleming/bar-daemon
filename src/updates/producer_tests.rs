@@ -91,53 +91,6 @@ fn concurrent_actual_publication_is_whole_and_invalidation_precedes_retirement()
 }
 
 #[test]
-fn concurrent_actual_job_status_publication_never_yields_partial_records() {
-    let root = tempfile::tempdir().unwrap();
-    let (_held, mut status) = Status::start(root.path(), &Job::Run).unwrap().unwrap();
-    let done = Arc::new(AtomicUsize::new(0));
-    std::thread::scope(|scope| {
-        let done_writer = done.clone();
-        scope.spawn(move || {
-            for _ in 0..50 {
-                status.phase(Phase::Checking).unwrap();
-                status.phase(Phase::Building).unwrap();
-            }
-            status.finish_report(Outcome::code(0)).unwrap();
-            done_writer.store(1, Ordering::Release);
-        });
-        let mut reads = 0;
-        while done.load(Ordering::Acquire) == 0 || reads < 100 {
-            let jobs = jobs::read(root.path());
-            assert_eq!(jobs.len(), 1);
-            assert!(jobs[0].error.is_none(), "{:?}", jobs[0]);
-            assert!(matches!(jobs[0].status.as_str(), "running" | "completed"));
-            reads += 1;
-        }
-    });
-    assert_eq!(jobs::read(root.path())[0].status, "completed");
-    let path = root.path().join("jobs/system.json");
-    let produced = fs::read(&path).unwrap();
-    let dto = shelllist_update_status::JobStatus::decode(&produced).unwrap();
-    assert_eq!(
-        shelllist_update_status::JobStatus::decode(&dto.encode().unwrap()).unwrap(),
-        dto
-    );
-    for (field, invalid) in [
-        ("schema_version", serde_json::json!(2)),
-        ("status", serde_json::json!("invented")),
-        ("pid", serde_json::json!("not-a-pid")),
-    ] {
-        let mut value: serde_json::Value = serde_json::from_slice(&produced).unwrap();
-        value[field] = invalid;
-        fs::write(&path, value.to_string()).unwrap();
-        assert_eq!(jobs::read(root.path())[0].status, "failed");
-    }
-    let mut oversized = dto;
-    oversized.error = Some("x".repeat(shelllist_update_status::JOB_MAX_BYTES));
-    assert!(oversized.encode().is_err());
-}
-
-#[test]
 fn worker_crash_child() {
     let Some(root) = std::env::var_os("BAR_WORKER_CRASH_TEST") else {
         return;

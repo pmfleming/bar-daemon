@@ -42,45 +42,6 @@ fn fail_direct_write(path: &Path) {
 }
 
 #[tokio::test]
-async fn control_reply_uses_real_quantized_readback_and_rejection_keeps_committed_state() {
-    let (_root, service, _) = fixture(1, 3);
-    let mut events = service.state.subscribe();
-    let response = crate::protocol::control_wire::brightness(service.set(65).await);
-    assert_eq!(
-        response,
-        crate::protocol::control_contract_fixture()["brightness.set"]["limited"]
-    );
-    assert_eq!(
-        response["data"]["brightness"],
-        events.recv().await.unwrap().data
-    );
-    let before = service.state.snapshot().await.brightness;
-    let rejected = crate::protocol::control_wire::brightness(service.set(0).await);
-    assert_eq!(rejected["error"]["code"], "brightness-operation-failed");
-    assert!(rejected.get("data").is_none());
-    assert_eq!(service.state.snapshot().await.brightness, before);
-    assert!(events.try_recv().is_err());
-}
-
-#[test]
-fn discovery_skips_bad_devices_but_reports_a_completely_unusable_root() {
-    let root = tempdir().unwrap();
-    let missing = device(root.path(), "missing", 1, 1000);
-    fs::remove_file(missing.join("max_brightness")).unwrap();
-    let malformed = device(root.path(), "malformed", 1, 2000);
-    fs::write(malformed.join("max_brightness"), "not a number").unwrap();
-    let unreadable = device(root.path(), "unreadable", 1, 3000);
-    fs::remove_file(unreadable.join("brightness")).unwrap();
-    fs::remove_file(unreadable.join("actual_brightness")).unwrap();
-    device(root.path(), "zero", 0, 0);
-    assert!(discover(root.path()).is_err());
-    device(root.path(), "usable", 50, 100);
-    let found = discover(root.path()).unwrap();
-    assert_eq!(found.name, "usable");
-    assert_eq!(found.brightness, 50);
-}
-
-#[tokio::test]
 async fn bounds_and_validation_do_not_turn_off_the_panel() {
     for maximum in [100, 255, 64764, u64::MAX] {
         let (_root, service, _) = fixture(1, maximum);

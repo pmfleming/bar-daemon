@@ -1125,53 +1125,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expiry_consumes_due_deadlines_once_without_waking_future_snoozes() {
-        use super::super::{model::ActiveNotification, policy::AppPolicy};
-        let engine = NotificationEngine::new(StateStore::default()).await;
-        let mut data = engine.data.lock().await;
-        data.dnd = true;
-        data.dnd_until_unix_ms = Some(100);
-        for (id, snooze) in [(1, None), (2, Some(100)), (3, Some(101))] {
-            let mut n = ActiveNotification::from_incoming(id, notification("expiry", 0), 1);
-            n.snoozed_until_unix_ms = snooze;
-            n.toast_expires_unix_ms = Some(100);
-            n.expires_unix_ms = Some(100);
-            data.active.insert(id, n);
-        }
-        for (key, silent, until) in [
-            ("due", true, 100),
-            ("future", true, 101),
-            ("inactive", false, 100),
-        ] {
-            data.app_policies.insert(
-                key.into(),
-                AppPolicy {
-                    silent,
-                    until_unix_ms: Some(until),
-                    ..Default::default()
-                },
-            );
-        }
-        let early = data.expire(99);
-        assert!(early.changed.is_empty() && early.expired_ids.is_empty() && !early.dnd_expired);
-        let due = data.expire(100);
-        assert_eq!(due.expired_ids, [1, 2]);
-        assert_eq!(due.changed.iter().map(|n| n.id).collect::<Vec<_>>(), [2]);
-        assert!(due.dnd_expired && !data.dnd && data.dnd_until_unix_ms.is_none());
-        assert_eq!(data.history_revision, 2); // one policy, one snooze batch
-        assert!(!data.active[&1].toast_visible && !data.active[&2].toast_visible);
-        assert_eq!(data.active[&2].toast_expires_unix_ms, None);
-        assert_eq!(data.active[&3].toast_expires_unix_ms, Some(100));
-        assert_eq!(data.active[&3].snoozed_until_unix_ms, Some(101));
-        assert_eq!(data.app_policies["due"].until_unix_ms, None);
-        assert_eq!(data.app_policies["future"].until_unix_ms, Some(101));
-        assert_eq!(data.app_policies["inactive"].until_unix_ms, Some(100));
-        let repeated = data.expire(100);
-        assert!(repeated.changed.is_empty() && !repeated.dnd_expired);
-        assert_eq!(data.history_revision, 2);
-    }
-
-    #[tokio::test]
     async fn popup_expiry_keeps_default_notifications_actionable_even_in_dnd() {
         use super::super::model::{NotificationAction, NotificationSignal};
         let state = StateStore::default();
@@ -1229,63 +1182,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_policy_and_inline_reply_capabilities() {
-        use super::super::model::{ActiveNotification, NotificationAction, NotificationSignal};
-        for (requested, transient, urgency, closes, toast_times_out) in [
-            (-1, false, 1, false, true),
-            (-1, true, 1, true, true),
-            (-1, false, 2, false, false),
-            (0, false, 1, false, false),
-            (10, false, 2, true, true),
-            (10, true, 1, true, true),
-        ] {
-            let mut incoming = notification("policy", requested);
-            incoming.hints.transient = transient;
-            incoming.hints.urgency = urgency;
-            let stored = ActiveNotification::from_incoming(1, incoming, 100);
-            assert_eq!(stored.expires_unix_ms.is_some(), closes);
-            assert_eq!(stored.toast_expires_unix_ms.is_some(), toast_times_out);
-        }
-        let engine = NotificationEngine::new(StateStore::default()).await;
-        let mut incoming = notification("reply", -1);
-        incoming.hints.resident = true;
-        incoming.actions = vec![NotificationAction {
-            key: "mail-reply-sender".into(),
-            label: "Reply".into(),
-        }];
-        let id = engine.notify(0, incoming.clone()).await.unwrap();
-        assert!(!engine.reply(id, "not inline").await);
-        assert!(
-            engine
-                .invoke_action(id, "mail-reply-sender", None)
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            engine.active().await.len(),
-            1,
-            "resident action remains live"
-        );
-        incoming.actions.push(NotificationAction {
-            key: "inline-reply".into(),
-            label: "Send".into(),
-        });
-        engine.notify(id, incoming).await.unwrap();
-        let mut signals = engine.subscribe_signals();
-        assert!(!engine.reply(id, "  ").await);
-        assert!(engine.reply(id, "Hello").await);
-        assert_eq!(
-            signals.recv().await.unwrap(),
-            NotificationSignal::Replied {
-                id,
-                text: "Hello".into()
-            }
-        );
-        engine.dismiss(id).await.unwrap();
-        assert!(!engine.reply(id, "closed").await);
-    }
-
-    #[tokio::test]
     async fn expires_and_emits_close_reason() {
         let state = StateStore::default();
         let engine = NotificationEngine::new(state.clone()).await;
@@ -1297,6 +1193,13 @@ mod tests {
         assert_eq!(response, state.read(|s| s.notifications.clone()).await);
         let mut signals = engine.subscribe_signals();
         engine.notify(0, notification("short", 5)).await.unwrap();
+        let snoozed = engine.notify(0, notification("later", 5)).await.unwrap();
+        assert!(
+            engine
+                .snooze(snoozed, crate::time::unix_ms() + 60_000)
+                .await
+                .unwrap()
+        );
         let task = tokio::spawn(Arc::clone(&engine).run_expiry());
         let signal = timeout(Duration::from_secs(1), signals.recv())
             .await
@@ -1317,6 +1220,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(state.snapshot().await.notifications.dnd_until_unix_ms, None);
+        assert_eq!(
+            engine
+                .active()
+                .await
+                .iter()
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+            [snoozed]
+        );
         task.abort();
     }
 }

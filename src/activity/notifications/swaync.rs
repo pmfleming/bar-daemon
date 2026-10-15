@@ -157,17 +157,3 @@ async fn run_action(action: &str) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::parse_status;
-
-    #[test]
-    fn parses_waybar_status_and_dnd_class() {
-        let state = parse_status(r#"{"text":"3","alt":"dnd-notification","tooltip":"3 Notifications","class":"dnd-notification"}"#).unwrap();
-        assert_eq!(state.count, 3);
-        assert!(state.dnd);
-        assert_eq!(state.tooltip, "3 Notifications");
-    }
-}

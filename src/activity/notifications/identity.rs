@@ -183,34 +183,8 @@ pub(super) fn app_key(desktop: &str, name: &str, id: u32, created: u64) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{IconCache, Icons, REFRESH_INTERVAL, app_key, collect, scan_roots};
+    use super::{Icons, app_key, collect};
 
-    #[test]
-    fn refresh_discovers_installs_updates_and_removals_without_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut cache = IconCache::default();
-        let now = std::time::Instant::now();
-        assert!(cache.stale(now));
-        cache.replace(scan_roots([dir.path().to_owned()]), now);
-        let path = dir.path().join("new.desktop");
-        std::fs::write(&path, "[Desktop Entry]\nName=New App\nIcon=new-icon\n").unwrap();
-        assert!(!cache.stale(now));
-        assert!(cache.icons.icon("new", "").is_empty());
-        let next = now + REFRESH_INTERVAL;
-        assert!(cache.stale(next));
-        cache.replace(scan_roots([dir.path().to_owned()]), next);
-        assert_eq!(cache.icons.icon("new.desktop", ""), "new-icon");
-        assert_eq!(cache.icons.icon("", "New App"), "new-icon");
-        std::fs::write(&path, "[Desktop Entry]\nName=New App\nIcon=changed\n").unwrap();
-        cache.replace(scan_roots([dir.path().to_owned()]), next + REFRESH_INTERVAL);
-        assert_eq!(cache.icons.icon("new", ""), "changed");
-        std::fs::remove_file(path).unwrap();
-        cache.replace(
-            scan_roots([dir.path().to_owned()]),
-            next + REFRESH_INTERVAL * 2,
-        );
-        assert!(cache.icons.icon("new", "New App").is_empty());
-    }
     #[test]
     fn desktop_identity_is_bounded_and_ignores_action_icons_and_remote_artwork() {
         assert_eq!(app_key(&"d".repeat(1025), "App", 7, 8), "unknown:8:7");

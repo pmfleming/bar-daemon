@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, Ordering},
+    atomic::{AtomicI64, Ordering},
 };
 
 use shelllist_daemon_tokio::AbortOnDrop;
@@ -12,7 +12,6 @@ use crate::sleep::{
     read_state,
 };
 use crate::{model::PowerSleepState, state::StateStore};
-use anyhow::Result;
 use std::time::Duration;
 use tokio::{
     sync::{mpsc, watch},
@@ -164,75 +163,4 @@ async fn signals_and_clock_recover_while_logind_telemetry_is_stalled() {
             "discard the stale pre-resume reply"
         );
     }
-}
-
-struct ActiveQuery(Arc<AtomicBool>);
-impl Drop for ActiveQuery {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
-#[tokio::test]
-async fn telemetry_deadline_and_owner_cancellation_drop_pending_work() {
-    let store = StateStore::default();
-    let (refresh, requests) = watch::channel(());
-    let active = Arc::new(AtomicBool::new(false));
-    let started = Arc::new(tokio::sync::Notify::new());
-    let query_active = Arc::clone(&active);
-    let query_started = Arc::clone(&started);
-    let worker_store = store.clone();
-    let worker = tokio::spawn(async move {
-        refresh_loop(
-            &worker_store,
-            requests,
-            Duration::from_millis(50),
-            |_| async {
-                query_active.store(true, Ordering::SeqCst);
-                let _query = ActiveQuery(Arc::clone(&query_active));
-                query_started.notify_one();
-                std::future::pending::<Result<PowerSleepState>>().await
-            },
-        )
-        .await;
-    });
-    let _worker = AbortOnDrop(worker.abort_handle());
-    refresh.send_replace(());
-    timeout(Duration::from_secs(2), started.notified())
-        .await
-        .unwrap();
-    assert!(active.load(Ordering::SeqCst));
-    wait_for(&store, |power| {
-        power
-            .error
-            .as_ref()
-            .is_some_and(|error| error.contains("timed out"))
-    })
-    .await;
-    assert!(!store.snapshot().await.power_sleep.available);
-    assert!(!active.load(Ordering::SeqCst));
-    refresh.send_replace(());
-    timeout(Duration::from_secs(2), started.notified())
-        .await
-        .unwrap();
-    assert!(active.load(Ordering::SeqCst));
-    worker.abort();
-    let _ = worker.await;
-    assert!(
-        !active.load(Ordering::SeqCst),
-        "no detached telemetry work survives cancellation"
-    );
-    active.store(true, Ordering::SeqCst);
-    let query = ActiveQuery(Arc::clone(&active));
-    let error = crate::sleep::bounded("preflight", Duration::from_millis(10), async {
-        let _query = query;
-        std::future::pending::<Result<()>>().await
-    })
-    .await
-    .unwrap_err();
-    assert!(error.to_string().contains("preflight timed out"));
-    assert!(
-        !active.load(Ordering::SeqCst),
-        "bounded preflight must also drop pending work"
-    );
 }

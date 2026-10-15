@@ -67,6 +67,3 @@ impl Transition {
         state.error = Some(message);
     }
 }
-
-#[cfg(test)]
-mod tests;

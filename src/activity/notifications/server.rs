@@ -233,6 +233,11 @@ mod tests {
         let mut tokens = proxy.receive_signal("ActivationToken").await.unwrap();
         let mut replies = proxy.receive_signal("NotificationReplied").await.unwrap();
         let mut closed = proxy.receive_signal("NotificationClosed").await.unwrap();
+        let no_reply = engine
+            .notify(0, super::super::model::incoming("test", "No reply", ""))
+            .await
+            .unwrap();
+        assert!(!engine.reply(no_reply, "Not supported").await);
         let hints = HashMap::from([("resident", OwnedValue::from(true))]);
         let id: u32 = proxy
             .call(
@@ -281,6 +286,7 @@ mod tests {
                 (id, key.into())
             );
         }
+        assert!(!engine.reply(id, "  ").await);
         assert!(engine.reply(id, "Hello").await);
         let signal = timeout(Duration::from_secs(1), replies.next())
             .await

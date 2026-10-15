@@ -153,70 +153,41 @@ async fn confirmed_delete_removes_saved_and_active_records_but_not_arrivals_or_a
             .unwrap()
             .toast_visible
     );
-}
-
-#[tokio::test]
-async fn cancelled_confirmation_and_single_record_identity_are_safe() {
-    let engine = NotificationEngine::new(StateStore::default()).await;
-    let id = engine.notify(0, incoming("chat", "Message")).await.unwrap();
-    let challenge = engine.prepare_delete(None, None).await.unwrap();
-    let token = challenge.token.as_str();
-    engine.cancel_delete(token).await;
-    assert!(engine.delete_confirmed(token.into()).await.is_err());
-    assert_eq!(engine.active().await.len(), 1);
-    let record = engine.active().await.remove(0);
+    let record = restarted
+        .active()
+        .await
+        .into_iter()
+        .find(|n| n.id == after_restart)
+        .unwrap();
+    let position = super::history::Position {
+        id: record.id,
+        created: record.created_unix_ms,
+    };
     assert!(
-        engine
+        restarted
             .prepare_delete(
                 None,
                 Some(super::history::Position {
-                    id,
-                    created: record.created_unix_ms + 1
+                    created: position.created + 1,
+                    ..position
                 })
             )
             .await
             .is_err()
     );
-    let challenge = engine
-        .prepare_delete(
-            None,
-            Some(super::history::Position {
-                id,
-                created: record.created_unix_ms,
-            }),
-        )
+    let selected = restarted
+        .prepare_delete(None, Some(position))
         .await
         .unwrap();
-    assert_eq!(engine.delete_confirmed(challenge.token).await.unwrap(), 1);
-    assert!(engine.active().await.is_empty());
-}
-
-#[tokio::test]
-async fn delete_includes_retained_records_older_than_the_search_window() {
-    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
-    {
-        let mut db = rusqlite::Connection::open(&path).unwrap();
-        let transaction = db.transaction().unwrap();
-        for id in 1..=5005 {
-            let record = super::model::ActiveNotification::from_incoming(
-                id,
-                incoming("chat", "Old history"),
-                u64::from(id) * 1000,
-            );
-            transaction.execute("INSERT INTO notifications(session_id,payload_json,search_text,created_unix_ms,updated_unix_ms,closed_unix_ms) VALUES (?1,?2,'chat',?3,?3,?3)", rusqlite::params![id, serde_json::to_string(&record).unwrap(), record.created_unix_ms]).unwrap();
-        }
-        transaction.commit().unwrap();
-    }
-    let challenge = engine
-        .prepare_delete(Some("desktop:chat".into()), None)
+    assert_eq!(selected.count, 1);
+    restarted.cancel_delete(&selected.token).await;
+    assert!(restarted.delete_confirmed(selected.token).await.is_err());
+    let selected = restarted
+        .prepare_delete(None, Some(position))
         .await
         .unwrap();
-    assert_eq!(challenge.count, 5005);
-    engine.delete_confirmed(challenge.token).await.unwrap();
-    assert!(
-        engine.history(None, 100).await.unwrap().is_empty(),
-        "older records must not reappear after deleting the visible search window"
-    );
+    assert_eq!(restarted.delete_confirmed(selected.token).await.unwrap(), 1);
+    assert_eq!(restarted.history(None, 100).await.unwrap().len(), 2);
 }
 
 #[tokio::test]

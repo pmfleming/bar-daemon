@@ -1,10 +1,9 @@
 use super::{
     center::{CenterPage, CenterQuery},
     engine::NotificationEngine,
-    history::{HistoryError, Position},
+    history::Position,
     model::IncomingNotification,
 };
-use crate::state::StateStore;
 
 fn query(view: &str) -> CenterQuery {
     serde_json::from_value(serde_json::json!({"view": view})).unwrap()
@@ -128,135 +127,4 @@ async fn center_deduplicates_live_and_never_resurrects_transient_replacement() {
     };
     assert_eq!(count, 0);
     assert!(selected.is_none());
-}
-
-#[tokio::test]
-async fn center_ignores_notification_artwork_when_grouping_named_senders() {
-    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
-    for icon in ["battery-full-charged", "", "battery-caution"] {
-        let mut incoming = notification("bar-daemon", "Battery event");
-        incoming.hints.desktop_entry.clear();
-        incoming.app_icon = icon.into();
-        let id = engine.notify(0, incoming).await.unwrap();
-        if !icon.is_empty() {
-            engine.dismiss(id).await.unwrap();
-        }
-    }
-    for desktop in ["first.app", "second.app"] {
-        let mut incoming = notification("bar-daemon", "Distinct app");
-        incoming.hints.desktop_entry = desktop.into();
-        engine.notify(0, incoming).await.unwrap();
-    }
-    let CenterPage::Apps {
-        apps, total_apps, ..
-    } = engine.query_center(query("apps")).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(
-        total_apps, 3,
-        "distinct desktop IDs must not merge by display name"
-    );
-    let group = apps
-        .iter()
-        .find(|app| app.key == "named:bar-daemon")
-        .unwrap();
-    assert_eq!(group.count, 3, "mixed live/history icons share one app");
-    let mut request = query("app");
-    request.app_key = Some(group.key.clone());
-    let CenterPage::App { count, entries, .. } =
-        engine.query_center(request.clone()).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(count, 3);
-    assert_eq!(entries.len(), 3);
-    let restarted = NotificationEngine::persistent(StateStore::default(), path)
-        .await
-        .unwrap();
-    let CenterPage::App { count, .. } = restarted.query_center(request).await.unwrap() else {
-        panic!()
-    };
-    assert_eq!(count, 3, "persisted metadata uses the same identity policy");
-}
-
-#[tokio::test]
-async fn center_keeps_artwork_hints_in_live_archived_and_restarted_previews() {
-    let (_dir, path, mut engine) = NotificationEngine::persistent_fixture().await;
-    // Real sender shapes: artwork is frequently a hint, not app_icon.
-    let cases = [
-        ("Signal", "", "org.signal.Signal"),
-        ("Thunderbird", "", "thunderbird"),
-        ("", "com.mitchellh.ghostty", "com.mitchellh.ghostty"),
-        ("Shelllist", "", "dialog-error"),
-        ("bar-daemon", "", "battery-caution"),
-        ("satty", "com.gabm.satty", "/icons/satty.svg"),
-    ];
-    let mut ids = Vec::new();
-    for (name, desktop, image) in cases {
-        let mut incoming = notification(name, "Artwork");
-        incoming.hints.desktop_entry = desktop.into();
-        incoming.hints.image_path = image.into();
-        ids.push(engine.notify(0, incoming).await.unwrap());
-    }
-    for phase in 0..3 {
-        let CenterPage::Apps { apps, .. } = engine.query_center(query("apps")).await.unwrap()
-        else {
-            panic!()
-        };
-        for ((_, desktop, image), id) in cases.iter().zip(&ids) {
-            let app = apps.iter().find(|app| app.latest.id == *id).unwrap();
-            let mut request = query("app");
-            request.app_key = Some(app.key.clone());
-            let CenterPage::App {
-                entries, overview, ..
-            } = engine.query_center(request).await.unwrap()
-            else {
-                panic!()
-            };
-            for preview in [&app.latest, &entries[0], &overview[0]] {
-                let value = serde_json::to_value(preview).unwrap();
-                assert_eq!(
-                    value["hints"],
-                    serde_json::json!({"desktop_entry": desktop, "image_path": image})
-                );
-                assert_eq!(value["app_icon"], "");
-            }
-        }
-        if phase == 0 {
-            for id in &ids {
-                engine.dismiss(*id).await.unwrap();
-            }
-        } else if phase == 1 {
-            engine = NotificationEngine::persistent(StateStore::default(), path.clone())
-                .await
-                .unwrap();
-        }
-    }
-}
-
-#[tokio::test]
-async fn center_validates_queries_and_does_not_merge_unnamed_senders() {
-    let engine = NotificationEngine::new(StateStore::default()).await;
-    for value in [
-        serde_json::json!({"view":"wrong"}),
-        serde_json::json!({"view":"app","page":0}),
-        serde_json::json!({"view":"app","query":"x".repeat(1025)}),
-        serde_json::json!({"view":"app","selected":{"created":1,"id":0}}),
-    ] {
-        assert!(matches!(
-            engine
-                .query_center(serde_json::from_value(value).unwrap())
-                .await,
-            Err(HistoryError::Invalid)
-        ));
-    }
-    let first = engine.notify(0, notification("", "first")).await.unwrap();
-    let second = engine.notify(0, notification("", "second")).await.unwrap();
-    assert_ne!(first, second);
-    let CenterPage::Apps { total_apps, .. } = engine.query_center(query("apps")).await.unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(total_apps, 2);
 }

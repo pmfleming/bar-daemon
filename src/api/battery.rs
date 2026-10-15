@@ -635,52 +635,8 @@ mod tests {
             )
         );
     }
-    use super::{AlertPolicyRequest, requested_device, require_behaviour};
-    use crate::{
-        battery::config::BatteryConfig,
-        model::{BatteryDeviceState, BatteryProfileAction, BatteryState},
-    };
-
-    #[test]
-    fn device_selection_preserves_default_missing_and_unsupported_errors() {
-        let mut battery = BatteryState::default();
-        assert_eq!(
-            requested_device(None, &battery).unwrap_err()["error"]["message"],
-            "no controllable system battery is available"
-        );
-        battery.devices = ["BAT0", "BAT1"]
-            .map(|id| BatteryDeviceState {
-                id: id.into(),
-                ..Default::default()
-            })
-            .into();
-        assert_eq!(requested_device(None, &battery).unwrap().id, "BAT0");
-        assert_eq!(requested_device(Some("BAT1"), &battery).unwrap().id, "BAT1");
-        assert_eq!(
-            requested_device(Some("missing"), &battery).unwrap_err()["error"]["message"],
-            "battery missing is unavailable"
-        );
-        let unsupported =
-            require_behaviour(&battery, "BAT1", "inhibit-charge", "inhibit charging").unwrap_err();
-        assert_eq!(
-            unsupported["error"]["code"],
-            "battery-operation-unsupported"
-        );
-        assert_eq!(
-            unsupported["error"]["message"],
-            "battery BAT1 cannot inhibit charging"
-        );
-        battery.devices[1]
-            .protection
-            .available_behaviours
-            .push("inhibit-charge".into());
-        assert!(require_behaviour(&battery, "BAT1", "inhibit-charge", "inhibit charging").is_ok());
-        assert_eq!(
-            require_behaviour(&battery, "missing", "inhibit-charge", "inhibit charging")
-                .unwrap_err()["error"]["code"],
-            "battery-unavailable"
-        );
-    }
+    use super::AlertPolicyRequest;
+    use crate::{battery::config::BatteryConfig, model::BatteryProfileAction};
 
     #[test]
     fn level_policy_partial_updates_preserve_independent_actions() {

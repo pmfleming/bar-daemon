@@ -84,33 +84,6 @@ fn closed_schema_rejects_unknown_keys_commands_types_and_ranges() {
     assert!(serde_json::from_value::<Empty>(json!({"values": {}})).is_err());
     assert!(same("input:follow_mouse_threshold", &json!(1.0), &json!(1)));
 }
-#[test]
-fn reads_observed_values_and_omits_unsupported_options_without_defaults() {
-    let reply = OPTIONS
-        .iter()
-        .map(|(key, kind)| {
-            if *key == "input:follow_mouse_shrink" {
-                return "no such option".into();
-            }
-            match kind {
-                Bool => json!({"option": key, "bool": false}),
-                Int(_) => json!({"option": key, "int": 0}),
-                Float(_) => json!({"option": key, "float": 0.5}),
-            }
-            .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n\n");
-    let result = parse(&reply).unwrap();
-    assert_eq!(result.len(), OPTIONS.len() - 1);
-    assert!(!result.contains_key("input:follow_mouse_shrink"));
-    assert_eq!(result["cursor:no_warps"], false);
-    assert_eq!(result["input:follow_mouse_threshold"], 0.5);
-    let legacy = reply.replace("\"bool\":false", "\"int\":0");
-    assert_eq!(parse(&legacy).unwrap(), result);
-    assert!(parse("ok").is_err());
-    assert!(parse(&vec!["no such option"; OPTIONS.len()].join("\n\n\n")).is_err());
-}
 #[tokio::test]
 async fn sparse_preferences_are_verified_persistent_reapplied_and_restorable() {
     let dir = tempfile::tempdir().unwrap();

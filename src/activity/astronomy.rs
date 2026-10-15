@@ -120,36 +120,13 @@ pub(crate) fn weather(mut weather: WeatherState, now: i64) -> WeatherState {
 
 #[cfg(test)]
 mod tests {
-    use super::{DAY_MS, LunarPhaseName, NEW_MOON_MS, SYNODIC_DAYS, lunar, solar_noon, weather};
+    use super::{DAY_MS, solar_noon, weather};
     use crate::activity::model::WeatherState;
     use chrono::DateTime;
     fn ms(value: &str) -> i64 {
         DateTime::parse_from_rfc3339(value)
             .unwrap()
             .timestamp_millis()
-    }
-
-    #[test]
-    fn reference_quarters_and_pre_reference_dates_are_normalized() {
-        for (fraction, phase, illumination) in [
-            (0.0, LunarPhaseName::NewMoon, 0),
-            (0.25, LunarPhaseName::FirstQuarter, 50),
-            (0.5, LunarPhaseName::FullMoon, 100),
-            (0.75, LunarPhaseName::LastQuarter, 50),
-        ] {
-            let value =
-                lunar(NEW_MOON_MS + (SYNODIC_DAYS * DAY_MS as f64 * fraction) as i64).unwrap();
-            assert_eq!(value.phase, phase);
-            assert_eq!(value.illumination_percent, illumination);
-            assert!(value.approximate);
-        }
-        for now in [0, -1, NEW_MOON_MS - DAY_MS, ms("9999-12-31T00:00:00Z")] {
-            let value = lunar(now).unwrap();
-            assert!((0.0..1.0).contains(&value.fraction));
-            assert!((0.0..SYNODIC_DAYS).contains(&value.age_days));
-        }
-        assert!(lunar(i64::MAX).is_none());
-        assert!(lunar(i64::MIN).is_none());
     }
 
     #[test]

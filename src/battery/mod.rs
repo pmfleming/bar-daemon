@@ -757,7 +757,11 @@ mod tests {
             protection_enabled: true,
             ..Default::default()
         };
-        let mut runtime = config::BatteryRuntimeState::start_charge_once(1, "BAT0".into(), 75, 80);
+        let mut runtime = config::BatteryRuntimeState::start_charge_once(1, "BAT0".into(), 60, 85);
+        assert_eq!(
+            reconciliation_target(&device, &runtime, false, "BAT0"),
+            Some((0, 100))
+        );
         runtime
             .authorization_uncertain_batteries
             .push("BAT0".into());
@@ -769,7 +773,7 @@ mod tests {
         );
         assert_eq!(
             reconciliation_target(&device, &runtime, true, "BAT0"),
-            Some((75, 80))
+            Some((60, 85))
         );
         assert_eq!(
             reconciliation_target(&device, &runtime, false, "BAT1"),
@@ -801,24 +805,6 @@ mod tests {
         runtime.operation_phase = config::OperationPhase::Restoring;
         assert_eq!(
             reconciliation_target(&device, &runtime, false, "BAT0"),
-            None
-        );
-    }
-
-    #[test]
-    fn charge_once_restores_the_preexisting_thresholds() {
-        let config = config::BatteryDeviceConfig::default();
-        let runtime = config::BatteryRuntimeState::start_charge_once(1_000, "BAT1".into(), 60, 85);
-        assert_eq!(
-            reconciliation_target(&config, &runtime, false, "BAT1"),
-            Some((0, 100))
-        );
-        assert_eq!(
-            reconciliation_target(&config, &runtime, true, "BAT1"),
-            Some((60, 85))
-        );
-        assert_eq!(
-            reconciliation_target(&config, &runtime, false, "BAT0"),
             None
         );
     }

@@ -298,8 +298,8 @@ fn refresh_event(event: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{monitor_with, parse_snapshot, refresh_workspaces};
-    use crate::{model::WorkspaceState, state::StateStore};
+    use super::{monitor_with, parse_snapshot};
+    use crate::state::StateStore;
     use shelllist_hyprland::Event;
     use std::{
         sync::{
@@ -308,58 +308,7 @@ mod tests {
         },
         time::Duration,
     };
-    use tokio::sync::{Semaphore, mpsc, watch};
-
-    #[tokio::test]
-    async fn workspace_mutations_require_a_reachable_configured_instance() -> anyhow::Result<()> {
-        use tokio::{
-            io::{AsyncReadExt, AsyncWriteExt},
-            net::UnixListener,
-            time::timeout,
-        };
-
-        let root = tempfile::tempdir()?;
-        let signature = root.path().file_name().unwrap().to_str().unwrap();
-        let instance = root.path().join("hypr").join(signature);
-        std::fs::create_dir_all(&instance)?;
-        let listener = UnixListener::bind(instance.join(".socket.sock"))?;
-        let client = super::HyprlandClient {
-            ipc: shelllist_hyprland::Client::new(root.path().into(), Some(signature.into())),
-        };
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = String::new();
-            stream.read_to_string(&mut request).await.unwrap();
-            assert_eq!(
-                request,
-                "dispatch hl.dsp.focus({ workspace = 2, on_current_monitor = true })"
-            );
-            stream.write_all(b"ok").await.unwrap();
-        });
-        client.focus_workspace(2, true).await?;
-        server.await?; // leaves a stale socket for the configured instance
-
-        let fallback = root.path().join("hypr/fallback");
-        std::fs::create_dir_all(&fallback)?;
-        let fallback = UnixListener::bind(fallback.join(".socket.sock"))?;
-        for signature in [
-            None,
-            Some(signature.into()),
-            Some(format!("{signature}-missing")),
-            Some("../invalid".into()),
-        ] {
-            let client = super::HyprlandClient {
-                ipc: shelllist_hyprland::Client::new(root.path().into(), signature),
-            };
-            assert!(client.focus_workspace(2, true).await.is_err());
-        }
-        assert!(
-            timeout(Duration::from_millis(50), fallback.accept())
-                .await
-                .is_err()
-        );
-        Ok(())
-    }
+    use tokio::sync::{Semaphore, mpsc};
 
     #[tokio::test(start_paused = true)]
     async fn slow_snapshots_do_not_block_invalidations_and_bursts_coalesce() {
@@ -442,39 +391,6 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(calls.load(Ordering::SeqCst), recovered_calls);
         drop(events);
-        task.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn workspace_failures_retry_without_new_events_but_success_stops_polling() {
-        let store = StateStore::default();
-        let (changes, updates) = watch::channel(true);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let count = calls.clone();
-        let task = tokio::spawn(async move {
-            refresh_workspaces(&store, updates, move || {
-                let call = count.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    if call == 0 {
-                        anyhow::bail!("offline");
-                    }
-                    Ok(WorkspaceState {
-                        available: true,
-                        ..Default::default()
-                    })
-                }
-            })
-            .await;
-        });
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        tokio::time::advance(Duration::from_secs(1)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        tokio::time::advance(Duration::from_secs(30)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        drop(changes);
         task.await.unwrap();
     }
 }

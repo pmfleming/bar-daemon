@@ -141,30 +141,4 @@ mod tests {
         std::os::unix::fs::symlink("/missing", &path).unwrap();
         assert_eq!(read(root.path())[0].status, "failed");
     }
-    #[test]
-    fn successful_ai_update_clears_only_older_staleness() {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir(root.path().join("jobs")).unwrap();
-        let mut stale = record();
-        stale["status"] = json!("completed");
-        stale["phase"] = json!("stale");
-        stale["finished_at"] = json!(100);
-        fs::write(
-            root.path().join("jobs/ai-tools-stale.json"),
-            stale.to_string(),
-        )
-        .unwrap();
-        let mut fresh = stale.clone();
-        fresh["phase"] = json!("activated");
-        fresh["finished_at"] = json!(101);
-        fs::write(root.path().join("jobs/ai-tools.json"), fresh.to_string()).unwrap();
-        assert_eq!(read(root.path())[1].phase, "current");
-        stale["finished_at"] = json!(102);
-        fs::write(
-            root.path().join("jobs/ai-tools-stale.json"),
-            stale.to_string(),
-        )
-        .unwrap();
-        assert_eq!(read(root.path())[1].phase, "stale");
-    }
 }

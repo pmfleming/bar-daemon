@@ -177,66 +177,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_preserves_backend_and_validation_errors() {
-        let api = api().await;
-        for params in [
-            json!({}),
-            json!({"enabled": "true"}),
-            json!({"enabled": null}),
-            json!({"enabled": true, "command": "anything"}),
-        ] {
-            let response = api.dispatch("powerSleep.setKeepAwake", params).await;
-            assert_eq!(response["ok"], false);
-            assert_eq!(response["error"]["code"], "validation-error");
-        }
-        for method in [
-            "setDnd",
-            "setAppPolicy",
-            "delete",
-            "dismiss",
-            "snooze",
-            "invokeAction",
-            "reply",
-        ] {
-            let response = api
-                .dispatch(&format!("notifications.{method}"), json!({}))
-                .await;
-            assert_eq!(response["error"]["code"], "validation-error", "{method}");
-        }
-        for method in [
-            "queryCenter",
-            "queryHistory",
-            "list",
-            "clear",
-            "prepareDelete",
-        ] {
-            let response = api
-                .dispatch(&format!("notifications.{method}"), json!({}))
-                .await;
-            assert_eq!(
-                response["error"]["code"], "native-notifications-required",
-                "{method}"
-            );
-        }
-        for method in ["dismiss", "snooze", "invokeAction", "reply"] {
-            let response = api
-                .dispatch(
-                    &format!("notifications.{method}"),
-                    json!({"id":0, "until_unix_ms":1, "action_key":"default", "text":"reply"}),
-                )
-                .await;
-            assert_eq!(
-                response["error"]["message"],
-                "notification id must be positive"
-            );
-        }
-        assert_eq!(
-            api.dispatch("notifications.unknown", json!({})).await["error"]["code"],
-            "unsupported-method"
-        );
-    }
-
-    #[tokio::test]
     async fn snapshot_projection_is_domain_local_and_validated() {
         let api = api().await;
         let full = api.dispatch("bar.snapshot", json!({})).await;

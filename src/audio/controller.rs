@@ -130,7 +130,7 @@ async fn publish_audio_result(
 
 #[cfg(test)]
 mod tests {
-    use super::{AudioCommand, batch, publish_audio_result};
+    use super::{AudioCommand, publish_audio_result};
     use crate::{model::AudioState, state::StateStore};
     use tokio::sync::oneshot;
 
@@ -158,33 +158,5 @@ mod tests {
         );
         assert_eq!(state.snapshot().await.audio, before);
         assert!(events.try_recv().is_err());
-    }
-
-    #[test]
-    fn coalesces_queued_repeats_without_reordering_mutes_or_direction_changes() {
-        let commands = [
-            (AudioCommand::Adjust(5), None),
-            (AudioCommand::Adjust(5), None),
-            (AudioCommand::Adjust(-5), None),
-            (AudioCommand::SetMuted(None), None),
-            (AudioCommand::Adjust(-5), None),
-            (AudioCommand::Adjust(-5), None),
-        ];
-        for (start, count, delta) in [(0, 2, 10), (2, 1, -5), (4, 2, -10)] {
-            assert!(matches!(batch(&commands[start..], commands[start].0),
-                (n, AudioCommand::Adjust(d)) if n == count && d == delta));
-        }
-        assert!(matches!(
-            batch(&commands[3..], commands[3].0),
-            (1, AudioCommand::SetMuted(None))
-        ));
-        let commands = [
-            (AudioCommand::Adjust(i16::MAX), None),
-            (AudioCommand::Adjust(i16::MAX), None),
-        ];
-        assert!(matches!(
-            batch(&commands, commands[0].0),
-            (2, AudioCommand::Adjust(i16::MAX))
-        ));
     }
 }

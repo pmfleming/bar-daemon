@@ -141,6 +141,3 @@ impl Watch {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

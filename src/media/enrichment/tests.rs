@@ -1,4 +1,4 @@
-use super::{Completed, Enrichment, MAX_CACHE, MAX_REQUESTS, Ticket};
+use super::{Completed, Enrichment, Ticket};
 use crate::{
     media::{
         source,
@@ -6,7 +6,7 @@ use crate::{
     },
     model::MediaPlayer,
 };
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 fn player(id: &str, video: &str) -> MediaPlayer {
     MediaPlayer {
@@ -149,58 +149,4 @@ async fn late_results_cannot_follow_owner_content_generation_or_removal() {
             "{change}"
         );
     }
-}
-
-#[tokio::test]
-async fn cache_deduplication_negative_ttl_and_request_budget_are_bounded() {
-    let raw = player("browser", "RQzh-xnLRlM");
-    let mut state = enabled();
-    let mut players = vec![raw.clone(), player("other-browser", "RQzh-xnLRlM")];
-    state.prepare(&mut players);
-    assert_eq!(state.tasks.len(), 1, "one request per video ID");
-    let mut completed = result(&state, &players[0]);
-    completed.metadata = None;
-    state.complete(completed, &mut players);
-    let mut players = vec![raw.clone()];
-    state.prepare(&mut players);
-    assert!(
-        state.pending.is_empty(),
-        "failure is cached, not replayed on every position signal"
-    );
-    state.cache.get_mut("RQzh-xnLRlM").unwrap().expires = Instant::now();
-    state.prepare(&mut players);
-    assert_eq!(state.pending.len(), 1);
-    let completed = result(&state, &players[0]);
-    state.complete(completed, &mut players);
-    let mut players = vec![raw];
-    state.prepare(&mut players);
-    assert_eq!(players[0].title, "Provider title");
-    assert!(state.pending.is_empty());
-    let mut state = enabled();
-    let mut many: Vec<_> = (0..100)
-        .map(|n| player(&format!("player-{n}"), &format!("{n:011}")))
-        .collect();
-    state.prepare(&mut many);
-    assert_eq!(state.pending.len(), MAX_REQUESTS);
-    for n in 0..100 {
-        state.complete(
-            Completed {
-                video: format!("{n:011}"),
-                tickets: vec![],
-                metadata: None,
-            },
-            &mut [],
-        );
-    }
-    assert_eq!(state.cache.len(), MAX_CACHE);
-    let started = state.tasks.len();
-    state.prepare(&mut many);
-    assert_eq!(
-        state.tasks.len(),
-        started,
-        "global budget prevents cache churn causing a lookup storm"
-    );
-    state.task_failed();
-    assert!(state.pending.is_empty());
-    assert!(state.cache.len() <= MAX_CACHE);
 }

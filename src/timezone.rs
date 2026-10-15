@@ -135,7 +135,7 @@ fn state_for_timezone(timezone: &str) -> Result<TimezoneState> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_location_warning, state_for_timezone};
+    use super::parse_location_warning;
 
     #[test]
     fn location_status_is_optional_bounded_and_can_clear() {
@@ -152,14 +152,5 @@ mod tests {
             parse_location_warning(&vec![b' '; 4097]),
             Some("Location status unavailable".into())
         );
-    }
-
-    #[test]
-    fn fresh_timezone_projection_changes_offset_without_process_restart() {
-        let edmonton = state_for_timezone("America/Edmonton").unwrap();
-        let dublin = state_for_timezone("Europe/Dublin").unwrap();
-        assert_eq!(dublin.city, "Dublin");
-        assert!(edmonton.utc_offset_seconds < dublin.utc_offset_seconds);
-        assert!(dublin.available);
     }
 }

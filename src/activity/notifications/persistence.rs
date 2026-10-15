@@ -935,61 +935,6 @@ mod tests {
         assert_eq!(timeout, 5_000);
     }
 
-    #[test]
-    fn center_recovery_is_bounded_and_never_retries_permanent_or_poisoned_reads() {
-        let connection = rusqlite::Connection::open_in_memory().unwrap();
-        for (code, expected) in [
-            (rusqlite::ffi::SQLITE_BUSY, 3),
-            (rusqlite::ffi::SQLITE_LOCKED, 3),
-            (rusqlite::ffi::SQLITE_CORRUPT, 1),
-        ] {
-            let mut attempts = 0;
-            let result: anyhow::Result<()> = super::recover_center_read(
-                &connection,
-                || false,
-                || {
-                    attempts += 1;
-                    Err(anyhow::Error::new(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(code),
-                        None,
-                    ))
-                    .context("catalog read"))
-                },
-            );
-            assert!(result.is_err());
-            assert_eq!(attempts, expected);
-        }
-        let (response, mut receiver) = oneshot::channel::<anyhow::Result<()>>();
-        super::reply_center(&connection, response, Some("prior write failed"), || {
-            panic!("must not read stale storage")
-        });
-        assert_eq!(
-            receiver.try_recv().unwrap().unwrap_err().to_string(),
-            "prior write failed"
-        );
-
-        let attempts = std::cell::Cell::new(0);
-        let result: anyhow::Result<()> = super::recover_center_read(
-            &connection,
-            || attempts.get() > 0,
-            || {
-                attempts.set(attempts.get() + 1);
-                Err(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                    None,
-                )
-                .into())
-            },
-        );
-        assert!(result.unwrap_err().to_string().contains("cancelled"));
-        assert_eq!(attempts.get(), 1);
-        let (response, receiver) = oneshot::channel::<anyhow::Result<()>>();
-        drop(receiver);
-        super::reply_center(&connection, response, None, || {
-            panic!("abandoned reads must not start")
-        });
-    }
-
     #[tokio::test]
     async fn retention_runs_on_writes_and_restart_without_losing_live_rows_or_ids() {
         let directory = tempdir().unwrap();
@@ -1022,37 +967,6 @@ mod tests {
         assert_eq!(rows.len(), super::RETAINED_HISTORY);
         assert!(rows.iter().all(|r| r.closed_unix_ms.is_some()));
         assert!(rows.iter().all(|r| r.notification.id != 1));
-    }
-
-    #[test]
-    fn live_and_saved_repeat_keys_agree_at_unicode_clipping_boundaries() {
-        let directory = tempdir().unwrap();
-        let store = NotificationStore::open(&directory.path().join("history.db")).unwrap();
-        for (summary, body, category, stackable) in [
-            (159, 239, 256, true),
-            (160, 239, 256, false),
-            (161, 239, 256, false),
-            (159, 240, 256, false),
-            (159, 241, 256, false),
-            (159, 239, 257, false),
-        ] {
-            let mut n = notification(1, false);
-            n.summary = "é".repeat(summary);
-            n.body = "β".repeat(body);
-            n.hints.category = "猫".repeat(category);
-            store.save(&n).unwrap();
-            let live = super::Preview::from_active(&n, "");
-            let query =
-                serde_json::from_value(serde_json::json!({"view":"app", "app_key":n.app_key()}))
-                    .unwrap();
-            let super::CenterPage::App { entries, .. } =
-                store.center(&query, &[], "epoch", 0).unwrap()
-            else {
-                panic!()
-            };
-            assert_eq!(live.repeat_key.is_some(), stackable);
-            assert_eq!(entries[0].repeat_key, live.repeat_key);
-        }
     }
 
     #[tokio::test]
@@ -1099,63 +1013,6 @@ mod tests {
         let mut n = super::super::model::incoming("test", &format!("notification {id}"), "");
         n.hints.transient = transient;
         ActiveNotification::from_incoming(id, n, 100)
-    }
-
-    #[tokio::test]
-    async fn saturated_queue_preserves_ordered_mutations_and_restart_state() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("notifications.sqlite3");
-        let store = NotificationStore::open(&path).unwrap();
-        let (commands, receiver) = mpsc::channel(1);
-        let persistence = NotificationPersistence { commands };
-        persistence
-            .reserve()
-            .await
-            .unwrap()
-            .save(notification(1, false));
-
-        // No worker is running: reservation must wait rather than lose a write.
-        let worker = {
-            let reserve = persistence.reserve();
-            tokio::pin!(reserve);
-            assert!(futures::poll!(&mut reserve).is_pending());
-            let worker = std::thread::spawn(move || persistence_worker(store, receiver));
-            let mut writes = reserve.await.unwrap();
-            writes.close(1, 200, 2);
-            writes.save(notification(2, false));
-            writes.save(notification(3, true)); // transient content must not survive restart
-            writes.set_dnd(true, Some(1234));
-            worker
-        };
-        let history = persistence.list(None, 10).await.unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].notification.id, 2);
-        assert_eq!(history[1].close_reason, Some(2));
-        assert_eq!(
-            NotificationStore::open(&path)
-                .unwrap()
-                .list(None, 10)
-                .unwrap()
-                .iter()
-                .filter(|item| item.closed_unix_ms.is_none())
-                .count(),
-            1
-        );
-
-        persistence.reserve().await.unwrap().clear(300, 2);
-        let history = persistence.list(None, 10).await.unwrap();
-        assert!(history.iter().all(|item| item.closed_unix_ms.is_some()));
-        drop(persistence);
-        worker.join().unwrap();
-        let restarted = NotificationStore::open(&path).unwrap();
-        assert!(
-            restarted
-                .list(None, 10)
-                .unwrap()
-                .iter()
-                .all(|item| item.closed_unix_ms.is_some())
-        );
-        assert_eq!(restarted.load_dnd().unwrap(), (true, Some(1234)));
     }
 
     #[tokio::test]

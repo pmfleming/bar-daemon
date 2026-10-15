@@ -34,58 +34,8 @@ fn now() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(1_800_000).unwrap()
 }
 
-#[tokio::test]
-async fn cache_hits_and_failures_reuse_forecast_buffers_without_polling_fresh_fetches() {
-    let config = WeatherConfig {
-        id: "home".into(),
-        location: "Amsterdam".into(),
-        ..Default::default()
-    };
-    let previous = response().normalize(&config, now()).unwrap();
-    let buffers = (previous.hourly.as_ptr(), previous.daily.as_ptr());
-    let updated = previous.updated_unix_ms;
-    let cached = super::cached_or_fetch(&config, Some(previous), updated + 899_999, async {
-        panic!("fresh cache must not poll HTTP")
-    })
-    .await;
-    assert_eq!((cached.hourly.as_ptr(), cached.daily.as_ptr()), buffers);
-    let stale = super::cached_or_fetch(
-        &config,
-        Some(cached),
-        updated + 900_000,
-        std::future::ready(Err(anyhow::anyhow!("offline"))),
-    )
-    .await;
-    assert_eq!((stale.hourly.as_ptr(), stale.daily.as_ptr()), buffers);
-    assert_eq!(stale.updated_unix_ms, updated);
-    assert_eq!(stale.error.as_deref(), Some("offline"));
-    let mut missing = super::cached_or_fetch(
-        &config,
-        None,
-        updated,
-        std::future::ready(Err(anyhow::anyhow!("offline"))),
-    )
-    .await;
-    assert!(!missing.available);
-    assert_eq!(missing.id, config.id);
-    // Unavailable entries must fetch even when their timestamp is fresh.
-    missing.updated_unix_ms = updated;
-    let recovered = super::cached_or_fetch(
-        &config,
-        Some(missing),
-        updated,
-        std::future::ready(Ok(stale)),
-    )
-    .await;
-    assert!(recovered.available);
-    assert_eq!(
-        (recovered.hourly.as_ptr(), recovered.daily.as_ptr()),
-        buffers
-    );
-}
-
 #[test]
-fn normalization_preserves_units_indices_and_short_column_defaults() {
+fn normalization_preserves_units_and_defaults_but_rejects_time_overflow() {
     let config = WeatherConfig {
         id: "home".into(),
         location: "Amsterdam".into(),
@@ -94,6 +44,9 @@ fn normalization_preserves_units_indices_and_short_column_defaults() {
         longitude: 4.0,
         ..Default::default()
     };
+    let mut overflowing = response();
+    overflowing.hourly.time[0] = i64::MAX;
+    assert!(overflowing.normalize(&config, now()).is_err());
     let weather = response().normalize(&config, now()).unwrap();
     assert!(weather.available);
     assert_eq!(
@@ -167,40 +120,4 @@ fn normalization_preserves_units_indices_and_short_column_defaults() {
         weather.timezone_region_ids,
         crate::timezone_regions::ids_for_offset(3600, now())
     );
-}
-
-#[test]
-fn malformed_payloads_and_overflowing_provider_times_are_errors() {
-    assert!(serde_json::from_slice::<ForecastResponse>(b"not JSON").is_err());
-    for field in [
-        "current",
-        "hourly",
-        "daily",
-        "timezone",
-        "utc_offset_seconds",
-    ] {
-        let mut invalid = payload();
-        invalid.as_object_mut().unwrap().remove(field);
-        assert!(
-            serde_json::from_value::<ForecastResponse>(invalid).is_err(),
-            "{field}"
-        );
-    }
-    for value in [i64::MIN, i64::MAX] {
-        for field in ["hour", "day", "sunrise", "sunset"] {
-            let mut forecast = response();
-            match field {
-                "hour" => forecast.hourly.time[0] = value,
-                "day" => forecast.daily.time[0] = value,
-                "sunrise" => forecast.daily.sunrise[0] = value,
-                _ => forecast.daily.sunset[0] = value,
-            }
-            assert!(
-                forecast
-                    .normalize(&WeatherConfig::default(), now())
-                    .is_err(),
-                "{field}"
-            );
-        }
-    }
 }

@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_todo_load_blocks_all_mutations_and_recovers_without_data_loss() {
+    async fn failed_todo_storage_blocks_mutations_and_recovers_without_data_loss() {
         for unreadable in [false, true] {
             let directory = tempdir().unwrap();
             let path = directory.path().join("todos.json");
@@ -557,36 +557,33 @@ mod tests {
             assert_eq!(stored.len(), 2);
             assert_eq!(stored[0].id, "recoverable-task");
             assert!(state.snapshot().await.activity.error.is_none());
-        }
-    }
 
-    #[tokio::test]
-    async fn failed_todo_save_never_publishes_a_candidate() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("todos.json");
-        let service = service_in(&directory).await;
-        let state = &service.state;
-        let todo = service
-            .create_todo("Keep".into(), None, None, 0)
-            .await
-            .unwrap();
-        let before = state.snapshot().await.activity;
-        // Replacing the file with a directory makes atomic replacement fail, even as root.
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        assert!(
+            // A recovered load must not allow a later failed save to publish.
+            let before = state.snapshot().await.activity;
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            assert!(
+                service
+                    .create_todo("Lost".into(), None, None, 0)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .complete_todo("recoverable-task", true)
+                    .await
+                    .is_err()
+            );
+            assert!(service.delete_todo("recoverable-task").await.is_err());
+            assert_eq!(service.data.read().await.todos, stored);
+            assert_eq!(state.snapshot().await.activity, before);
+            std::fs::remove_dir(&path).unwrap();
             service
-                .create_todo("Lost".into(), None, None, 0)
+                .complete_todo("recoverable-task", true)
                 .await
-                .is_err()
-        );
-        assert!(service.complete_todo(&todo.id, true).await.is_err());
-        assert!(service.delete_todo(&todo.id).await.is_err());
-        assert_eq!(service.data.read().await.todos, std::slice::from_ref(&todo));
-        assert_eq!(state.snapshot().await.activity, before);
-        std::fs::remove_dir(&path).unwrap();
-        service.complete_todo(&todo.id, true).await.unwrap();
-        assert!(super::config::load_todos(&path).await.unwrap()[0].completed);
+                .unwrap();
+            assert!(super::config::load_todos(&path).await.unwrap()[0].completed);
+        }
     }
 
     #[tokio::test]

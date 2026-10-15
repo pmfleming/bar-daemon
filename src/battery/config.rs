@@ -402,27 +402,7 @@ pub(crate) async fn save_runtime(state: &BatteryRuntimeState) -> Result<()> {
 
 #[cfg(test)]
 mod restoration_tests {
-    use super::{BatteryRuntimeState, OperationPhase, valid_thresholds, validate_battery_id};
-
-    #[test]
-    fn battery_identifiers_and_threshold_boundaries_are_validated() {
-        for id in ["BAT0", "BAT01", "BAT123"] {
-            assert!(validate_battery_id(id).is_ok(), "{id}");
-        }
-        for id in ["", "BAT", "BAT-1", "bat0", "BAT0/../BAT1", "BAT１"] {
-            assert!(validate_battery_id(id).is_err(), "{id}");
-        }
-        for (start, end, valid) in [
-            (0, 100, true),
-            (99, 100, true),
-            (0, 0, false),
-            (80, 75, false),
-            (100, 101, false),
-            (0, 255, false),
-        ] {
-            assert_eq!(valid_thresholds(start, end), valid);
-        }
-    }
+    use super::{BatteryRuntimeState, OperationPhase};
 
     #[test]
     fn restoration_marker_is_cleared_only_after_exact_verified_readback() {

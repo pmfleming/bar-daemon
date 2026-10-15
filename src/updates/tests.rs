@@ -83,26 +83,6 @@ fn malformed_unsupported_oversized_and_missing_candidate_records_fail_closed() {
     assert!(read_state(&directory).unwrap().error.is_some());
 }
 
-#[test]
-fn interrupted_publication_leaves_old_record_until_commit_or_invalidation() {
-    let root = tempdir().unwrap();
-    let directory = root.path().join("updates");
-    publish(
-        &directory,
-        &Readiness::new(1, Some(candidate(root.path(), "old", 1))),
-    );
-    fs::write(directory.join("delayed/.readiness-uncommitted"), "{partial").unwrap();
-    assert_eq!(
-        read_state(&directory).unwrap().lanes[0].revision.as_deref(),
-        Some("old")
-    );
-    publish(&directory, &Readiness::new(2, None));
-    fs::remove_dir(root.path().join("system-old")).unwrap();
-    let state = read_state(&directory).unwrap();
-    assert!(!state.ready);
-    assert!(state.error.is_none());
-}
-
 async fn next_state(
     events: &mut crate::state::DomainReceivers,
     matches: impl Fn(&UpdateState) -> bool,

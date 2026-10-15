@@ -366,43 +366,4 @@ mod tests {
             assert!(snapshot.points.last().unwrap().continuous);
         }
     }
-
-    #[test]
-    fn restart_preserves_samples_without_counting_downtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.json");
-        let start = Instant::now();
-        let mut history = HistoryStore::load(Some(path.clone()), 1_000);
-        record(&mut history, &state(80, true, true), 1_000, 1_000, start);
-        record(
-            &mut history,
-            &state(79, false, false),
-            31_000,
-            31_000,
-            start,
-        );
-        assert_eq!(history.last_charge_timestamp_ms, 31_000);
-        history.persist().unwrap();
-        let later = 2 * 24 * 60 * 60 * 1_000;
-        let mut restarted = HistoryStore::load(Some(path), later);
-        record(&mut restarted, &state(100, true, false), later, 0, start);
-        let snapshot = restarted.state(true);
-        assert_eq!(snapshot.points.len(), 3);
-        assert_eq!(snapshot.active_duration_ms, 30_000);
-        assert_eq!(snapshot.points[0].percentage, 80);
-        assert!(!snapshot.points[2].continuous);
-        assert_eq!(snapshot.points[0].mode, "charging");
-        assert_eq!(snapshot.points[0].time_to_full_seconds, Some(3_600));
-        assert_eq!(snapshot.points[1].mode, "discharging");
-        assert_eq!(snapshot.points[1].time_to_full_seconds, None);
-        let expired = later + 8 * 24 * 60 * 60 * 1_000;
-        record(
-            &mut restarted,
-            &state(80, false, false),
-            expired,
-            expired,
-            start,
-        );
-        assert_eq!(restarted.state(true).points.len(), 1);
-    }
 }

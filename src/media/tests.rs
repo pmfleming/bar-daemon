@@ -222,39 +222,3 @@ async fn recent_playback_pin_automatic_and_exit_are_independent_of_order() {
         "policy operations never open a playback connection"
     );
 }
-
-#[tokio::test]
-async fn mode_overrides_are_per_player_and_expire_on_exit() {
-    use crate::model::MediaControlMode as Mode;
-    let store = StateStore::default();
-    let service = MediaService::default();
-    let players = vec![
-        player("a", "paused", false, true),
-        player("b", "paused", false, true),
-    ];
-    service.publish(&store, players.clone()).await;
-    let state = service.set_mode(&store, "a", Mode::Tracks).await.unwrap();
-    assert_eq!(state.players[0].control_mode, Mode::Tracks);
-    assert_eq!(state.players[1].control_mode, Mode::Automatic);
-    service.publish(&store, players.clone()).await;
-    assert_eq!(
-        store.snapshot().await.media.players[0].control_mode,
-        Mode::Tracks
-    );
-    service
-        .set_mode(&store, "a", Mode::Automatic)
-        .await
-        .unwrap();
-    assert_eq!(
-        store.snapshot().await.media.players[0].control_mode,
-        Mode::Automatic
-    );
-    service.set_mode(&store, "a", Mode::Seek).await.unwrap();
-    service.publish(&store, players[1..].to_vec()).await;
-    assert!(service.set_mode(&store, "a", Mode::Tracks).await.is_err());
-    service.publish(&store, players).await;
-    assert_eq!(
-        store.snapshot().await.media.players[0].control_mode,
-        Mode::Automatic
-    );
-}

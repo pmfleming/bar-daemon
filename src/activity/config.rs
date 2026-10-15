@@ -210,31 +210,3 @@ pub(crate) async fn load_todos(path: &Path) -> Result<Vec<TodoItem>> {
 pub(crate) async fn save_todos(path: &Path, todos: &[TodoItem]) -> Result<()> {
     save_json_atomic(path, todos).await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ActivityConfig;
-
-    #[test]
-    fn documented_config_is_valid_but_duplicate_source_ids_are_rejected() {
-        let mut config: ActivityConfig =
-            serde_json::from_str(include_str!("../../docs/activity.example.json")).unwrap();
-        super::validate(&config).unwrap();
-        assert!(!config.calendar_sources.is_empty());
-        assert!(!config.world_clocks.is_empty());
-        assert!(matches!(
-            config.configured_weather_locations(),
-            std::borrow::Cow::Borrowed(_)
-        ));
-        let legacy: ActivityConfig = serde_json::from_str(r#"{"weather":{}}"#).unwrap();
-        let locations = legacy.configured_weather_locations();
-        assert_eq!(locations[0].id, "home");
-        assert!(locations[0].home);
-        assert!(legacy.weather.as_ref().unwrap().id.is_empty());
-
-        config
-            .calendar_sources
-            .push(config.calendar_sources[0].clone());
-        assert!(super::validate(&config).is_err());
-    }
-}

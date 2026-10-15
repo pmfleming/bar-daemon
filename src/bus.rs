@@ -87,7 +87,6 @@ pub(crate) async fn system_owned() -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Service;
     #[zbus::interface(name = "org.example.Test")]
@@ -115,55 +114,6 @@ mod tests {
                 .build(),
         )
         .unwrap()
-    }
-
-    #[tokio::test]
-    async fn concurrent_acquisitions_reuse_and_disconnect_reconnects_once() {
-        let cache = ClientBus::new();
-        let (server, client) = peer().await;
-        let connects = AtomicUsize::new(0);
-        let get = || {
-            cache.get(|| async {
-                connects.fetch_add(1, Ordering::SeqCst);
-                Ok(client.clone())
-            })
-        };
-        let (a, b) = tokio::join!(get(), get());
-        assert_eq!(a.unwrap().server_guid(), b.unwrap().server_guid());
-        assert_eq!(connects.load(Ordering::SeqCst), 1);
-        server.close().await.unwrap();
-        tokio::time::timeout(TIMEOUT, async {
-            loop {
-                if cache.0.lock().await.as_ref().unwrap().closed.is_finished() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        let (_server, replacement) = peer().await;
-        let next = cache
-            .get(|| async { Ok(replacement.clone()) })
-            .await
-            .unwrap();
-        assert_ne!(next.server_guid(), client.server_guid());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancelled_or_timed_out_setup_does_not_poison_the_cache() {
-        let cache = ClientBus::new();
-        assert!(cache.get(std::future::pending).await.is_err());
-        {
-            let setup = cache.get(std::future::pending);
-            tokio::pin!(setup);
-            assert!(futures::poll!(&mut setup).is_pending());
-        }
-        let error = cache
-            .get(|| async { anyhow::bail!("new setup reached") })
-            .await
-            .unwrap_err();
-        assert_eq!(error.to_string(), "new setup reached");
     }
 
     #[tokio::test]

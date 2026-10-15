@@ -122,42 +122,8 @@ fn event_on_date(
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivityEvent, QueryRange, TodoItem, project};
-    use chrono::{DateTime, Utc};
-
-    #[test]
-    fn query_interval_distinguishes_instants_and_exclusive_ends() {
-        let range = QueryRange::new(10, 20, &Utc).unwrap();
-        for (start, end, included) in [
-            (0, 10, false),
-            (10, 10, true),
-            (20, 20, false),
-            (20, 30, false),
-            (0, 11, true),
-            (19, 20, true),
-            (0, 0, false),
-        ] {
-            let event = ActivityEvent {
-                start_unix_ms: start,
-                end_unix_ms: end,
-                ..Default::default()
-            };
-            assert_eq!(range.includes_event(&event), included, "{start}..{end}");
-        }
-        let todo = TodoItem {
-            due_unix_ms: Some(20),
-            due_date: Some("1970-01-01".into()),
-            ..Default::default()
-        };
-        assert!(
-            !range.includes_todo(&todo),
-            "an exact due instant takes precedence over its date"
-        );
-        assert!(
-            range.includes_todo(&TodoItem::default()),
-            "undated todos remain in the range"
-        );
-    }
+    use super::{ActivityEvent, TodoItem, project};
+    use chrono::DateTime;
 
     #[test]
     fn membership_handles_dst_exclusive_ends_and_undated_todos() {

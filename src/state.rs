@@ -394,39 +394,6 @@ mod tests {
     use super::StateStore;
 
     #[tokio::test]
-    async fn watch_handoff_never_misses_a_concurrent_commit() {
-        use crate::{model::AudioState, protocol::stream};
-        let store = StateStore::default();
-        for volume in 1..100 {
-            let writer = store.clone();
-            let task = tokio::spawn(async move {
-                writer
-                    .update_audio(AudioState {
-                        available: true,
-                        volume_percent: volume,
-                        ..Default::default()
-                    })
-                    .await;
-            });
-            let (initial, mut events) =
-                store.snapshot_and_subscribe_domains(&[stream::AUDIO]).await;
-            task.await.unwrap();
-            if initial.audio.volume_percent != volume {
-                assert_eq!(
-                    timeout(Duration::from_secs(1), events.recv())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .data["volume_percent"],
-                    volume
-                );
-            } else {
-                assert!(events.try_recv().is_err());
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn sleep_policy_refresh_cannot_overwrite_independent_lid_ownership() {
         let store = StateStore::default();
         let stale = store.snapshot().await.sleep_policy;

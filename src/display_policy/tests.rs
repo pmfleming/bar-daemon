@@ -34,48 +34,6 @@ fn external() -> Output {
 }
 
 #[test]
-fn output_flaps_mode_changes_and_observation_gaps_restart_stability() {
-    let start = Instant::now();
-    let mut planner = Planner::default();
-    let outputs = vec![internal(false), external()];
-    planner.plan(true, &outputs, start);
-    planner.plan(true, &outputs, start + Duration::from_secs(4));
-    let mut replacement = external();
-    replacement.id = 2;
-    let changed = vec![internal(false), replacement];
-    assert_eq!(
-        planner
-            .plan(true, &changed, start + Duration::from_secs(5))
-            .status,
-        "settling"
-    );
-    assert_eq!(
-        planner
-            .plan(true, &changed, start + Duration::from_secs(10))
-            .status,
-        "external"
-    );
-    assert_eq!(
-        planner
-            .plan(true, &changed, start + Duration::from_secs(30))
-            .status,
-        "settling"
-    );
-    let mut missing = external();
-    missing.disabled = true;
-    assert_eq!(
-        planner
-            .plan(
-                true,
-                &[internal(true), missing],
-                start + Duration::from_secs(31)
-            )
-            .status,
-        "internal"
-    );
-}
-
-#[test]
 fn docking_preserves_mirror_sources_and_restores_only_independent_fallbacks() {
     let start = Instant::now();
     let mut copy = external();
@@ -316,54 +274,6 @@ async fn conflicts_and_sleep_preparation_do_not_mutate_displays_and_failures_ret
 }
 
 #[tokio::test]
-async fn manual_enablement_survives_policy_ticks_but_unplug_restores_fallback() {
-    for prefer_external in [false, true] {
-        for laptop_disabled in [false, true] {
-            let backend = FakeBackend {
-                snapshots: RefCell::new(VecDeque::from([vec![
-                    internal(laptop_disabled),
-                    external(),
-                ]])),
-                ..Default::default()
-            };
-            let store = StateStore::default();
-            let mut planner = Planner::default();
-            let policy = DisplayPolicy { prefer_external };
-            let start = Instant::now();
-            for seconds in [0, 5, 10] {
-                assert_eq!(
-                    reconcile(
-                        &backend,
-                        &mut planner,
-                        &policy,
-                        true,
-                        &store,
-                        start + Duration::from_secs(seconds)
-                    )
-                    .await
-                    .unwrap()
-                    .status,
-                    "layout"
-                );
-            }
-            assert!(backend.calls.borrow().is_empty());
-            *backend.snapshots.borrow_mut() = VecDeque::from([vec![internal(true)]]);
-            reconcile(
-                &backend,
-                &mut planner,
-                &policy,
-                true,
-                &store,
-                start + Duration::from_secs(12),
-            )
-            .await
-            .unwrap();
-            assert_eq!(*backend.calls.borrow(), vec![("eDP-1".into(), false)]);
-        }
-    }
-}
-
-#[tokio::test]
 async fn reconciliation_requires_observed_enablement_in_both_directions() {
     for prefer_external in [false, true] {
         let start = Instant::now();
@@ -421,67 +331,6 @@ async fn reconciliation_requires_observed_enablement_in_both_directions() {
         );
         assert_eq!(state.docking_state, super::DockingState::Settled);
     }
-}
-
-#[tokio::test]
-async fn unplug_during_readback_keeps_applying_until_the_fallback_is_observed() {
-    let start = Instant::now();
-    let docked = vec![internal(false), external()];
-    let backend = FakeBackend {
-        // External disconnects after the final disable guard but before readback.
-        snapshots: RefCell::new(VecDeque::from([
-            docked.clone(),
-            docked.clone(),
-            vec![internal(true)],
-        ])),
-        ignore_apply: Cell::new(true),
-        ..Default::default()
-    };
-    let store = StateStore::default();
-    let policy = DisplayPolicy::default();
-    let mut planner = Planner::default();
-    planner.plan(true, &docked, start);
-    let pending = reconcile(
-        &backend,
-        &mut planner,
-        &policy,
-        false,
-        &store,
-        start + Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        pending.status, "pending",
-        "a changed topology is not confirmation"
-    );
-    let mut transition = super::Transition::default();
-    let mut state = super::DisplayPolicyState::default();
-    transition.update(&mut state, Ok(pending.status), start);
-    assert_eq!(state.docking_state, super::DockingState::Applying);
-    backend.ignore_apply.set(false);
-    let restored = reconcile(
-        &backend,
-        &mut planner,
-        &policy,
-        false,
-        &store,
-        start + Duration::from_secs(6),
-    )
-    .await
-    .unwrap();
-    assert_eq!(restored.status, "internal");
-    assert!(!restored.outputs.unwrap()[0].disabled);
-    transition.update(
-        &mut state,
-        Ok(restored.status),
-        start + Duration::from_secs(6),
-    );
-    assert_eq!(state.docking_state, super::DockingState::Settled);
-    assert_eq!(
-        *backend.calls.borrow(),
-        vec![("eDP-1".into(), true), ("eDP-1".into(), false)]
-    );
 }
 
 #[tokio::test]

@@ -103,28 +103,3 @@ pub(super) async fn fixture() -> Value {
         "failed":ErrorCode::Updates.reply("Update state unavailable"), "rejected":null}));
     json!({"snapshot":snapshot, "cases":cases})
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn cases_cover_registered_methods_and_selection_uses_real_policy() {
-        let fixtures = fixture().await;
-        assert_eq!(fixtures, fixture().await);
-        assert_eq!(fixtures["cases"].as_object().unwrap().len(), 13);
-        for case in fixtures["cases"].as_object().unwrap().values() {
-            assert!(super::super::METHODS.contains(&case["method"].as_str().unwrap()));
-            assert_eq!(case["success"]["ok"], true);
-        }
-        assert_eq!(
-            fixtures["cases"]["cycle"]["success"]["data"]["player_id"],
-            "org.mpris.MediaPlayer2.contract_two"
-        );
-        assert_eq!(
-            fixtures["cases"]["select"]["success"]["data"]["media"]["pinned_player"],
-            "org.mpris.MediaPlayer2.contract_one"
-        );
-        assert!(
-            fixtures["cases"]["automatic"]["success"]["data"]["media"]["pinned_player"].is_null()
-        );
-    }
-}

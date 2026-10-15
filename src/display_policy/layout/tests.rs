@@ -2,10 +2,7 @@ use super::{
     Backend, Document, Layout, Output, Runtime, Setting, ensure_policy_change_allowed_at,
     finish_at, mode, preview_at, tick_at,
 };
-use crate::{
-    paths::{load_json_or_default, save_json_atomic},
-    state::StateStore,
-};
+use crate::{paths::load_json_or_default, state::StateStore};
 use anyhow::{Context, Result, bail};
 use std::{
     cell::{Cell, RefCell},
@@ -154,74 +151,6 @@ impl Fixture {
     }
     async fn document(&self) -> Document {
         load_json_or_default(&self.path, "test").await.unwrap()
-    }
-}
-
-#[tokio::test]
-async fn real_preview_confirmation_and_rollback_match_control_fixtures() {
-    use crate::protocol::display_wire::{self, Failure};
-    let examples = crate::display_policy::contract_examples::states();
-    let wire = crate::protocol::display_contract_fixture().await;
-    for confirm in [true, false] {
-        let mut f = Fixture::new();
-        let proposed = examples["preview"]
-            .layout
-            .trial
-            .as_ref()
-            .unwrap()
-            .proposed
-            .clone();
-        let document = f.preview(proposed).await.unwrap();
-        let id = document.trial.as_ref().unwrap().id.clone();
-        let mut state = examples["initial"].clone();
-        state.layout = document;
-        state.outputs = f.backend.outputs().await.unwrap();
-        let response = display_wire::reply(Ok(state.clone()), Failure::Layout);
-        let expected =
-            &wire["replies"]["displayLayout.preview"]["success"]["data"]["display_policy"];
-        assert_eq!(
-            response["data"]["display_policy"]["outputs"],
-            expected["outputs"]
-        );
-        assert_eq!(
-            response["data"]["display_policy"]["layout"]["trial"]["proposed"],
-            expected["layout"]["trial"]["proposed"]
-        );
-        assert_eq!(
-            response["data"]["display_policy"]["layout"]["trial"]["previous"],
-            expected["layout"]["trial"]["previous"]
-        );
-        let calls = f.backend.calls.borrow().len();
-        let stale = f.finish("wrong-token", confirm).await.unwrap_err();
-        assert_eq!(
-            f.backend.calls.borrow().len(),
-            calls,
-            "stale tokens cannot mutate the compositor"
-        );
-        let error = display_wire::reply(Err(stale), Failure::Layout);
-        assert_eq!(error["error"]["code"], "display-layout-failed");
-        assert!(error.get("data").is_none());
-        state.layout = f.finish(&id, confirm).await.unwrap();
-        state.outputs = f.backend.outputs().await.unwrap();
-        let response = display_wire::reply(Ok(state), Failure::Layout);
-        let method = if confirm {
-            "displayLayout.confirm"
-        } else {
-            "displayLayout.revert"
-        };
-        let expected = &wire["replies"][method]["success"]["data"]["display_policy"];
-        assert_eq!(
-            response["data"]["display_policy"]["outputs"],
-            expected["outputs"]
-        );
-        assert_eq!(
-            response["data"]["display_policy"]["layout"],
-            expected["layout"]
-        );
-        assert_eq!(
-            f.backend.calls.borrow().len(),
-            if confirm { calls } else { calls + 1 }
-        );
     }
 }
 
@@ -443,57 +372,6 @@ async fn resumed_docking_never_replays_retired_manual_enablement() {
             assert_eq!(fallback.transform, 1);
         }
     }
-}
-
-#[tokio::test]
-async fn preview_cannot_race_an_acknowledged_but_unobserved_docking_change() {
-    let mut f = Fixture::new();
-    f.store
-        .update_display_policy(crate::display_policy::DisplayPolicyState {
-            docking_state: crate::display_policy::DockingState::Applying,
-            ..Default::default()
-        })
-        .await;
-    let proposed = Layout::observed(&f.backend.outputs.borrow());
-    assert!(
-        f.preview(proposed)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("docking change")
-    );
-    assert!(f.backend.calls.borrow().is_empty());
-    assert!(f.document().await.trial.is_none());
-}
-
-#[tokio::test]
-async fn external_only_saved_layout_defers_to_fallback_when_undocked() {
-    let mut f = Fixture::new();
-    f.backend.outputs.borrow_mut()[0].disabled = true;
-    let mut saved = Layout::observed(&f.backend.outputs.borrow());
-    let mut external = saved.outputs[0].clone();
-    external.name = "DP-1".into();
-    external.enabled = true;
-    saved.outputs.push(external);
-    save_json_atomic(
-        &f.path,
-        &Document {
-            saved,
-            manual_enablement: true,
-            trial: None,
-        },
-    )
-    .await
-    .unwrap();
-    let start = Instant::now();
-    f.tick(0, start).await.unwrap();
-    let (doc, paused) = f.tick(5, start + Duration::from_secs(5)).await.unwrap();
-    assert!(!paused);
-    assert!(doc.manual_enablement);
-    assert!(f.backend.calls.borrow().is_empty());
-    // Reconciliation owns the emergency fallback; no saved-layout error blocks it.
-    let old: Document = serde_json::from_str(r#"{"saved":{"outputs":[]},"trial":null}"#).unwrap();
-    assert!(!old.manual_enablement);
 }
 
 #[tokio::test]

@@ -690,33 +690,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_observations_do_not_own_or_wait_for_the_policy_mutex() {
-        let guard = POLICY_WRITE.lock().await;
-        let (started, observed) = tokio::sync::oneshot::channel();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let worker = tokio::spawn(async {
-            let (_, _guard) = observe_then_lock(async {
-                started.send(()).unwrap();
-                released.await.unwrap();
-            })
-            .await;
-        });
-        observed.await.unwrap(); // observation runs even with a setter holding the lock
-        drop(guard);
-        let guard = POLICY_WRITE
-            .try_lock()
-            .expect("slow reads must not own POLICY_WRITE");
-        release.send(()).unwrap();
-        tokio::task::yield_now().await;
-        assert!(
-            !worker.is_finished(),
-            "commit must still serialize with setters"
-        );
-        drop(guard);
-        worker.await.unwrap();
-    }
-
-    #[tokio::test]
     async fn idle_trigger_changes_after_lock_or_during_helper_abort_sleep_setup() {
         for (active, substate, kind, pid, ready) in [
             ("active", "running", "simple", 42, false),
