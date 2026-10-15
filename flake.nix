@@ -22,7 +22,7 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
     in
     {
-      # Shared with Shelllist's Home Manager module: one patch set for runtime and tests.
+      # Daemon-owned idle integration: one patch set for runtime and tests.
       lib.mkManagedHypridle = import ./packaging/hypridle;
 
       packages = forAllSystems (
@@ -119,6 +119,11 @@
         in
         {
           default = barDaemon;
+          batteryIntegration = import ./packaging/battery-integration.nix { inherit pkgs; package = barDaemon; };
+          locationIntegration = pkgs.runCommand "bar-location-integration" { } ''
+            install -Dm644 ${./packaging/dbus/org.laufan.LocationTimezone.conf} \
+              $out/share/dbus-1/system.d/org.laufan.LocationTimezone.conf
+          '';
           inherit managedHypridle;
         }
       );
@@ -132,32 +137,19 @@
         }
       );
 
-      nixosModules.default =
-        {
-          config,
-          lib,
-          pkgs,
-          ...
-        }:
-        let
-          cfg = config.services.bar-daemon;
-        in
-        {
-          options.services.bar-daemon.enable = lib.mkEnableOption "bar-daemon services";
-          config = lib.mkIf cfg.enable {
-            environment.systemPackages = [ self.packages.${pkgs.system}.default ];
-            services.dbus.packages = [ self.packages.${pkgs.system}.default ];
-            security.polkit.enable = true;
-            systemd.packages = [ self.packages.${pkgs.system}.default ];
-          };
-        };
+      nixosModules.default = import ./packaging/nixos.nix self;
+      homeManagerModules.default = import ./packaging/home-manager.nix self;
 
       nixosModules.location-timezone = { lib, pkgs, ... }: {
         imports = [ ./packaging/location-timezone.nix ];
         services.location-timezone.package = lib.mkDefault self.packages.${pkgs.system}.default;
+        services.location-timezone.integrationPackage = lib.mkDefault self.packages.${pkgs.system}.locationIntegration;
       };
 
-      checks = forAllSystems (system: pkgs: { default = self.packages.${system}.default; });
+      checks = forAllSystems (system: pkgs: {
+        default = self.packages.${system}.default;
+        modules = import ./packaging/module-check.nix { inherit self nixpkgs system pkgs; };
+      });
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt-tree);
 
       devShells = forAllSystems (

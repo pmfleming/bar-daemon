@@ -14,6 +14,10 @@ in
       type = lib.types.package;
       description = "bar-daemon package providing bar-location-daemon";
     };
+    integrationPackage = lib.mkOption {
+      type = lib.types.package;
+      description = "Location-only D-Bus policy, without unrelated session or battery services.";
+    };
   };
   config = lib.mkIf cfg.enable {
     assertions = [
@@ -44,7 +48,7 @@ in
       group = "automatic-timezoned";
     };
     users.groups.automatic-timezoned.gid = config.ids.gids.automatic-timezoned;
-    services.dbus.packages = [ cfg.package ];
+    services.dbus.packages = [ cfg.integrationPackage ];
     security.polkit.enable = true;
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
