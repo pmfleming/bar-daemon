@@ -6,6 +6,8 @@ pkgs.runCommand "bar-battery-integration" { } ''
     --replace-fail @out@ ${package}
   install -Dm644 ${./dbus/org.laufan.BarBatteryHelper.service} \
     $out/share/dbus-1/system-services/org.laufan.BarBatteryHelper.service
+  substituteInPlace $out/share/dbus-1/system-services/org.laufan.BarBatteryHelper.service \
+    --replace-fail @false@ ${pkgs.coreutils}/bin/false
   install -Dm644 ${./dbus/org.laufan.BarBatteryHelper.conf} \
     $out/share/dbus-1/system.d/org.laufan.BarBatteryHelper.conf
   install -Dm644 ${./polkit/org.laufan.bar-daemon.policy} \

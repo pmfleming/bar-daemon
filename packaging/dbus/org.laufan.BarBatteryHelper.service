@@ -1,4 +1,6 @@
 [D-BUS Service]
 Name=org.laufan.BarBatteryHelper
+# Only systemd may launch the privileged helper with its sandbox.
+Exec=@false@
 SystemdService=bar-battery-helper.service
 User=root
