@@ -14,7 +14,7 @@ in
     idleConfig = lib.mkOption {
       type = lib.types.str;
       default = "%h/.config/hypr/hypridle.conf";
-      description = "Idle configuration for session policy; manage the notify-ready hypridle service separately or through Home Manager.";
+      description = "Idle configuration for the daemon-managed notify-ready hypridle service.";
     };
   };
   config = lib.mkMerge [
@@ -25,6 +25,19 @@ in
         unitConfig = session.Unit;
         serviceConfig = session.Service;
         wantedBy = session.Install.WantedBy;
+      };
+      systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
+        description = "Daemon-managed idle policy";
+        wantedBy = [ cfg.target ];
+        partOf = [ cfg.target ];
+        after = [ cfg.target ];
+        serviceConfig = {
+          Type = "notify";
+          NotifyAccess = "main";
+          TimeoutStartSec = "8s";
+          ExecStart = "${cfg.package}/bin/bar-daemon idle --config ${cfg.idleConfig} --hypridle ${self.lib.mkManagedHypridle pkgs.hypridle}/bin/hypridle";
+          Restart = "on-failure";
+        };
       };
     })
     (lib.mkIf cfg.batteryHelper.enable {

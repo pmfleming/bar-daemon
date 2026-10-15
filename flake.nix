@@ -84,24 +84,13 @@
                 $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
               install -Dm644 packaging/licenses/ODbL-1.0.txt $out/share/licenses/bar-daemon/ODbL-1.0.txt
               install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
-              install -Dm644 ${./packaging/dbus/org.laufan.LocationTimezone.conf} \
-                $out/share/dbus-1/system.d/org.laufan.LocationTimezone.conf
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service
               install -Dm644 ${./packaging/dbus/org.freedesktop.Notifications.service} \
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service
-              install -Dm644 ${./packaging/systemd/bar-battery-helper.service} \
-                $out/lib/systemd/system/bar-battery-helper.service
-              install -Dm644 ${./packaging/dbus/org.laufan.BarBatteryHelper.service} \
-                $out/share/dbus-1/system-services/org.laufan.BarBatteryHelper.service
-              install -Dm644 ${./packaging/dbus/org.laufan.BarBatteryHelper.conf} \
-                $out/share/dbus-1/system.d/org.laufan.BarBatteryHelper.conf
-              install -Dm644 ${./packaging/polkit/org.laufan.bar-daemon.policy} \
-                $out/share/polkit-1/actions/org.laufan.bar-daemon.policy
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
-                $out/lib/systemd/system/bar-battery-helper.service \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service \
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service \
                 --replace-fail @out@ $out

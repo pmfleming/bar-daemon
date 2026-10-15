@@ -8,6 +8,7 @@ let
     services.bar-daemon = {
       enable = true;
       displays.enable = true;
+      suspend.enable = true;
       media.youtubeMetadata.enable = true;
     };
   };
@@ -24,10 +25,15 @@ assert session.systemd.user.services.bar-daemon.serviceConfig.BusName == "org.la
 assert builtins.elem "BAR_DAEMON_DISPLAY_CONTROL=1" session.systemd.user.services.bar-daemon.serviceConfig.Environment;
 assert builtins.elem "BAR_DAEMON_YOUTUBE_METADATA=1" session.systemd.user.services.bar-daemon.serviceConfig.Environment;
 assert builtins.elem "hypr-monitor-auto.service" session.systemd.user.services.bar-daemon.unitConfig.Conflicts;
+assert session.systemd.user.services.hypridle.serviceConfig.Type == "notify";
 assert !(helper.systemd.user.services ? bar-daemon);
 assert !(location.systemd.user.services ? bar-daemon);
 assert !(builtins.elem self.packages.${system}.default location.services.dbus.packages);
 pkgs.runCommand "bar-daemon-module-contract" { } ''
+  runtime=${self.packages.${system}.default}
+  test ! -e "$runtime/share/dbus-1/system-services"
+  test ! -e "$runtime/share/dbus-1/system.d"
+  test ! -e "$runtime/share/polkit-1"
   battery=${self.packages.${system}.batteryIntegration}
   location=${self.packages.${system}.locationIntegration}
   test -f "$battery/share/dbus-1/system-services/org.laufan.BarBatteryHelper.service"
