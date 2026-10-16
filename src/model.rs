@@ -99,6 +99,14 @@ pub(crate) struct SleepInhibitor {
     pub pid: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AcceptedLocation {
+    pub timezone: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub verified_at: f64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TimezoneState {
     pub available: bool,
@@ -107,6 +115,8 @@ pub(crate) struct TimezoneState {
     pub abbreviation: String,
     pub utc_offset_seconds: i32,
     pub timezone_region_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_location: Option<AcceptedLocation>,
     pub error: Option<String>,
 }
 

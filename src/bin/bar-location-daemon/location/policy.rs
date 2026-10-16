@@ -110,20 +110,51 @@ impl Zones {
         Some(name)
     }
     pub fn agree(&self, wifi: &Fix, ip: &Fix, started: f64, now: f64) -> Result<String, Decision> {
-        if !wifi.usable_wifi(started, now)
-            || !ip.fresh(started, now)
-            || (wifi.timestamp - ip.timestamp).abs() > 120.0
-        {
+        let wifi_usable = wifi.usable_wifi(started, now);
+        let ip_fresh = ip.fresh(started, now);
+        let timestamp_difference_seconds = (wifi.timestamp - ip.timestamp).abs();
+        tracing::info!(
+            wifi_usable,
+            ip_fresh,
+            wifi_age_seconds = now - wifi.timestamp,
+            ip_age_seconds = now - ip.timestamp,
+            timestamp_difference_seconds,
+            accuracy_meters = wifi.accuracy,
+            "location evidence freshness"
+        );
+        if !wifi_usable || !ip_fresh || timestamp_difference_seconds > 120.0 {
             return Err(Decision::Retry("Fresh location unavailable"));
         }
-        let zone = self
-            .at(wifi)
-            .ok_or(Decision::Stop("Timezone boundary uncertain"))?;
-        if distance_km(wifi, ip) > 50.0
-            || ip.source != "IP"
-            || self.at(ip).as_deref() != Some(&zone)
-            || self.canonical(&ip.timezone).as_deref() != Some(&zone)
+        let wifi_zone = self.at(wifi);
+        let ip_coordinate_zone = self.at(ip);
+        let ip_reported_zone = self.canonical(&ip.timezone);
+        let distance_km = distance_km(wifi, ip);
+        tracing::info!(wifi_timezone = ?wifi_zone, ip_coordinate_timezone = ?ip_coordinate_zone,
+            ip_reported_timezone = %ip.timezone, ip_canonical_timezone = ?ip_reported_zone,
+            ip_country = %ip.country_code, distance_km, "comparing location evidence");
+        let zone = wifi_zone.ok_or_else(|| {
+            tracing::info!(
+                reason = "geoclue_boundary_uncertain",
+                "location evidence rejected"
+            );
+            Decision::Stop("Timezone boundary uncertain")
+        })?;
+        let distance_exceeded = distance_km > 50.0;
+        let invalid_ip_source = ip.source != "IP";
+        let ip_coordinates_disagree = ip_coordinate_zone.as_deref() != Some(&zone);
+        let ip_timezone_disagrees = ip_reported_zone.as_deref() != Some(&zone);
+        if distance_exceeded
+            || invalid_ip_source
+            || ip_coordinates_disagree
+            || ip_timezone_disagrees
         {
+            tracing::info!(
+                distance_exceeded,
+                invalid_ip_source,
+                ip_coordinates_disagree,
+                ip_timezone_disagrees,
+                "location evidence rejected"
+            );
             return Err(Decision::Stop("Sources disagree"));
         }
         if ip.country_code.len() != 2
@@ -132,8 +163,13 @@ impl Zones {
                 countries.contains(&format!(",{},", ip.country_code.to_ascii_uppercase()))
             })
         {
+            tracing::info!(
+                reason = "ip_country_timezone_mismatch",
+                "location evidence rejected"
+            );
             return Err(Decision::Stop("IP country and timezone disagree"));
         }
+        tracing::info!(timezone = %zone, "location evidence agreed");
         Ok(zone)
     }
 }

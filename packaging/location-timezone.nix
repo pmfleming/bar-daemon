@@ -16,7 +16,7 @@ in
     };
     integrationPackage = lib.mkOption {
       type = lib.types.package;
-      description = "Location-only D-Bus policy, without unrelated session or battery services.";
+      description = "Location-only D-Bus and read-access polkit policies, without unrelated services.";
     };
   };
   config = lib.mkIf cfg.enable {
@@ -50,6 +50,7 @@ in
     users.groups.automatic-timezoned.gid = config.ids.gids.automatic-timezoned;
     services.dbus.packages = [ cfg.integrationPackage ];
     security.polkit.enable = true;
+    environment.systemPackages = [ cfg.integrationPackage ];
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.timedate1.set-timezone"

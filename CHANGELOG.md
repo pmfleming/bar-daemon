@@ -24,6 +24,13 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- A stable **Current location** entry backed by the last verified GeoClue fix,
+  read through an active-local-session-authorized interface without modifying
+  saved locations. Rejected fixes and temporary reader outages retain it.
+- Location-attempt diagnostics for provider acquisition, evidence comparisons,
+  precise disagreement reasons, retry scheduling and verified timezone effects.
+  Coordinates and network identifiers stay out of logs; agreement rules are unchanged.
+
 - Optional notification period view: three newest records followed by disjoint
   Today / This week / This month / Older groups. Previews never duplicate group
   records; calendar-day fencing prevents mixed windows across local midnight.

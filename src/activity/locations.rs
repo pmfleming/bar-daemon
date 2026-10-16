@@ -14,6 +14,8 @@ pub(crate) struct Location {
     pub longitude: f64,
     pub has_coordinates: bool,
     pub home: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub current: bool,
     pub has_weather: bool,
     pub weather: Option<WeatherState>,
     pub lunar: Option<super::astronomy::LunarPhase>,
@@ -36,7 +38,24 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
         ));
         represented.insert(weather.timezone.as_str());
     }
-    if local.available
+    // One stable automatic row, independent of saved weather/home locations.
+    // The authority supplies only verified GeoClue coordinates; rejected fixes
+    // never reach this projection. No user configuration is rewritten.
+    if let Some(fix) = &local.accepted_location
+        && let Ok(clock) = WorldClockState::new(&fix.timezone, "Current location")
+    {
+        locations.push(Location {
+            id: "current-location".into(),
+            clock,
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            has_coordinates: true,
+            current: true,
+            ..Default::default()
+        });
+    }
+    if local.accepted_location.is_none()
+        && local.available
         && !local.timezone.is_empty()
         && !represented.contains(local.timezone.as_str())
         && !locations.iter().any(|location| location.home)

@@ -112,6 +112,8 @@
           locationIntegration = pkgs.runCommand "bar-location-integration" { } ''
             install -Dm644 ${./packaging/dbus/org.laufan.LocationTimezone.conf} \
               $out/share/dbus-1/system.d/org.laufan.LocationTimezone.conf
+            install -Dm644 ${./packaging/polkit/org.laufan.location-timezone.policy} \
+              $out/share/polkit-1/actions/org.laufan.location-timezone.policy
           '';
           inherit managedHypridle;
         }

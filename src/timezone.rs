@@ -9,7 +9,10 @@ use tokio::{
     time::{interval, sleep},
 };
 
-use crate::{model::TimezoneState, state::StateStore};
+use crate::{
+    model::{AcceptedLocation, TimezoneState},
+    state::StateStore,
+};
 
 const BUS: &str = "org.freedesktop.timedate1";
 const PATH: &str = "/org/freedesktop/timedate1";
@@ -26,6 +29,7 @@ pub(crate) async fn monitor(store: StateStore) {
             store
                 .update_timezone(TimezoneState {
                     error: Some(error.to_string()),
+                    accepted_location: store.read(|s| s.timezone.accepted_location.clone()).await,
                     ..TimezoneState::default()
                 })
                 .await;
@@ -37,7 +41,8 @@ pub(crate) async fn monitor(store: StateStore) {
 async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -> Result<()> {
     let properties = zbus::Proxy::new(connection, BUS, PATH, PROPERTIES_INTERFACE).await?;
     let mut changes = properties.receive_signal("PropertiesChanged").await?;
-    let mut fallback = interval(Duration::from_secs(300));
+    // Also discover accepted fixes when the timezone itself has not changed.
+    let mut fallback = interval(Duration::from_secs(10));
     fallback.tick().await;
     refresh(connection, store).await;
     // The system location authority publishes only a concise public status;
@@ -63,13 +68,49 @@ async fn monitor_connection(connection: &zbus::Connection, store: &StateStore) -
 }
 
 async fn refresh(connection: &zbus::Connection, store: &StateStore) {
-    let state = read_state(connection)
+    let mut state = read_state(connection)
         .await
         .unwrap_or_else(|error| TimezoneState {
             error: Some(error.to_string()),
             ..TimezoneState::default()
         });
+    state.accepted_location = match accepted_location(connection).await {
+        Ok(location) => location,
+        // An optional service outage must not discard the last verified fix.
+        Err(error) => {
+            tracing::debug!(error = %error, "accepted location reader unavailable; retaining last verified fix");
+            store.read(|s| s.timezone.accepted_location.clone()).await
+        }
+    };
     store.update_timezone(state).await;
+}
+
+async fn accepted_location(connection: &zbus::Connection) -> Result<Option<AcceptedLocation>> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let proxy = zbus::Proxy::new(
+            connection,
+            "org.laufan.LocationTimezone",
+            "/org/laufan/LocationTimezone",
+            "org.laufan.LocationTimezone",
+        )
+        .await?;
+        let json: String = proxy.call("GetAccepted", &()).await?;
+        anyhow::ensure!(json.len() <= 4096, "accepted location response too large");
+        let location: Option<AcceptedLocation> = serde_json::from_str(&json)?;
+        if let Some(fix) = &location {
+            anyhow::ensure!(
+                (-90.0..=90.0).contains(&fix.latitude)
+                    && (-180.0..=180.0).contains(&fix.longitude)
+                    && fix.verified_at.is_finite()
+                    && fix.verified_at > 0.0
+                    && fix.timezone.parse::<Tz>().is_ok(),
+                "invalid accepted location"
+            );
+        }
+        Ok(location)
+    })
+    .await
+    .context("accepted location read timed out")?
 }
 
 async fn read_state(connection: &zbus::Connection) -> Result<TimezoneState> {
@@ -129,6 +170,7 @@ fn state_for_timezone(timezone: &str) -> Result<TimezoneState> {
             now.offset().fix().local_minus_utc(),
             instant,
         ),
+        accepted_location: None,
         error: None,
     })
 }

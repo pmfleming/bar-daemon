@@ -4,6 +4,7 @@ mod bus;
 mod bus_tests;
 mod http;
 mod policy;
+mod reader;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -132,10 +133,29 @@ impl Authority {
             Decision::Retry(reason) => {
                 self.schedule
                     .retry(Instant::now(), self.state.cooldown(wall_time()));
+                tracing::info!(
+                    reason,
+                    outcome = "retry",
+                    retry_in_seconds = self
+                        .schedule
+                        .due
+                        .map(|due| due.saturating_duration_since(Instant::now()).as_secs()),
+                    "location check finished"
+                );
                 format!("{reason} · timezone unchanged · retrying automatically")
             }
             Decision::Stop(reason) => {
                 self.schedule.complete();
+                tracing::info!(
+                    reason,
+                    outcome = "rejected",
+                    retry = if self.state.paused || self.state.write_pending {
+                        "explicit reload required"
+                    } else {
+                        "new connection or explicit reload"
+                    },
+                    "location check finished"
+                );
                 format!("{reason} · no automatic change")
             }
         };
@@ -143,6 +163,7 @@ impl Authority {
         self.last_result = message;
         Ok(())
     }
+    #[tracing::instrument(skip_all, fields(attempt = wall_time()))]
     async fn check(
         &mut self,
         backend: &impl Backend,
@@ -154,6 +175,7 @@ impl Authority {
                 .await;
         }
         self.storage.status("Checking current location…").await?;
+        tracing::info!("acquiring fresh GeoClue and IP evidence");
         let started = wall_time();
         let epoch = control.borrow().epoch;
         let acquired = self.acquire(backend, control, started).await?;
@@ -174,6 +196,7 @@ impl Authority {
             }
         };
         if current != self.baseline {
+            tracing::info!(baseline = %self.baseline, current_timezone = %current, proposed_timezone = %zone, "manual timezone change detected");
             self.state.paused = true;
             self.storage.save(&self.state).await?;
             return self
@@ -201,8 +224,10 @@ impl Authority {
                 .finish(Decision::Retry("Location check interrupted"))
                 .await;
         }
+        let needs_write = self.zones.canonical(&current).as_deref() != Some(&zone);
+        tracing::info!(current_timezone = %current, proposed_timezone = %zone, needs_write, "verifying accepted timezone");
         let applied = async {
-            if self.zones.canonical(&current).as_deref() != Some(&zone) {
+            if needs_write {
                 backend.set_timezone(&zone).await?;
             }
             let actual = backend.timezone().await?;
@@ -224,11 +249,13 @@ impl Authority {
                 });
                 self.state.write_pending = false;
                 self.storage.save(&self.state).await?;
+                tracing::info!(outcome = "accepted", verified_timezone = %self.baseline, timezone_changed = needs_write, current_location = "updated", retry = "new connection or explicit reload", "location check finished");
                 self.schedule.complete();
                 self.last_result.clear();
                 self.storage.status("").await
             }
-            Err(_) => {
+            Err(error) => {
+                tracing::warn!(error = %error, "timezone application or verification failed");
                 // Unknown application is not a transient lookup failure. Keep the
                 // durable intent fence across process death; require explicit reload.
                 self.state.paused = true;
@@ -260,7 +287,10 @@ impl Authority {
                 // Persist a ready 429 before processing a simultaneous cancellation.
                 biased;
                 result = &mut ip, if ip_fix.is_none() => match result {
-                    http::IpResult::Fix(fix) => ip_fix = Some(fix),
+                    http::IpResult::Fix(fix) => {
+                        tracing::info!(provider = "ipapi.co", reported_timezone = %fix.timezone, country_code = %fix.country_code, "IP evidence received");
+                        ip_fix = Some(fix);
+                    },
                     http::IpResult::Limited(delay) => {
                         self.state.ip_not_before = self.state.ip_not_before.max(wall_time() + delay.as_secs_f64());
                         self.storage.save(&self.state).await?;
@@ -274,8 +304,14 @@ impl Authority {
                 }
                 _ = &mut deadline => return Ok(Err("Fresh Wi-Fi location unavailable")),
                 result = &mut wifi, if wifi_fix.is_none() => match result {
-                    Ok(fix) => wifi_fix = Some(fix),
-                    Err(_) => return Ok(Err("Wi-Fi location unavailable")),
+                    Ok(fix) => {
+                        tracing::info!(source = %fix.source, accuracy_meters = fix.accuracy, age_seconds = wall_time() - fix.timestamp, "fresh GeoClue location found");
+                        wifi_fix = Some(fix);
+                    },
+                    Err(error) => {
+                        tracing::warn!(error = %error, "GeoClue acquisition failed");
+                        return Ok(Err("Wi-Fi location unavailable"));
+                    },
                 },
                 _ = poll.tick() => {
                     let valid = backend.observe().await.is_ok_and(|s|
@@ -303,6 +339,13 @@ pub async fn run(
         Duration::from_secs(10),
         zbus::connection::Builder::system()?
             .method_timeout(Duration::from_secs(5))
+            .serve_at(
+                "/org/laufan/LocationTimezone",
+                reader::Reader(Storage::new(
+                    state_directory.clone(),
+                    runtime_directory.clone(),
+                )),
+            )?
             .name("org.laufan.LocationTimezone")?
             .build(),
     )

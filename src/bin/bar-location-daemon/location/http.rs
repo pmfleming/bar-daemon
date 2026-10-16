@@ -20,16 +20,25 @@ pub(super) fn client() -> Result<Client> {
         .build()?)
 }
 pub(super) async fn lookup(client: &Client) -> IpResult {
-    fetch(client, "https://ipapi.co/json/")
-        .await
-        .unwrap_or(IpResult::Unavailable)
+    match fetch(client, "https://ipapi.co/json/").await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(error = %error, "IP location lookup failed");
+            IpResult::Unavailable
+        }
+    }
 }
 async fn fetch(client: &Client, url: &str) -> Result<IpResult> {
     let mut response = client
         .get(url)
         .header("Accept", "application/json")
         .send()
-        .await?;
+        .await
+        .map_err(reqwest::Error::without_url)?;
+    tracing::info!(
+        http_status = response.status().as_u16(),
+        "IP location response received"
+    );
     if response.status() == StatusCode::TOO_MANY_REQUESTS {
         return Ok(IpResult::Limited(retry_after(
             response
@@ -39,13 +48,21 @@ async fn fetch(client: &Client, url: &str) -> Result<IpResult> {
             wall_time(),
         )));
     }
-    ensure!(response.status().is_success(), "IP lookup rejected");
+    ensure!(
+        response.status().is_success(),
+        "IP lookup rejected: HTTP {}",
+        response.status()
+    );
     ensure!(
         response.content_length().unwrap_or(0) <= 65536,
         "IP response too large"
     );
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(reqwest::Error::without_url)?
+    {
         ensure!(bytes.len() + chunk.len() <= 65536, "IP response too large");
         bytes.extend_from_slice(&chunk);
     }
@@ -61,7 +78,13 @@ fn parse(bytes: &[u8], now: f64) -> Result<Fix> {
         #[serde(default)]
         error: bool,
     }
-    let value: Payload = serde_json::from_slice(bytes)?;
+    let value: Payload = serde_json::from_slice(bytes).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid IP response JSON at line {}, column {}",
+            error.line(),
+            error.column()
+        )
+    })?;
     ensure!(
         !value.error
             && !value.timezone.is_empty()

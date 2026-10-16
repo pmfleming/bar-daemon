@@ -219,6 +219,10 @@ pub(super) async fn wifi_on(connection: &Connection, started: f64) -> Result<Fix
             if micros < 1_000_000 && fix.usable_wifi(started, wall_time()) {
                 return Ok(fix);
             }
+            tracing::debug!(source = %fix.source, accuracy_meters = fix.accuracy,
+                age_seconds = wall_time() - fix.timestamp, predates_attempt = fix.timestamp < started,
+                coordinates_valid = fix.coordinates_valid(), timestamp_micros_valid = micros < 1_000_000,
+                "ignoring unusable GeoClue fix");
         }
         let Some(message) = updates.next().await else {
             bail!("GeoClue stream ended");

@@ -3,9 +3,10 @@
 `bar-location-daemon` is a **separate system daemon built by this repository**.
 It lives in `src/bin/bar-location-daemon/` and shares the Rust HTTP/D-Bus/atomic-file stack with
 bar-daemon, but does not depend on the graphical session. The session
-`bar-daemon` remains a read-only observer of timedated and of the public status
-file. There is only one timezone writer. No Python interpreter, Python DBus
-bindings, or Python timezonefinder package is used by the new service.
+`bar-daemon` remains a read-only observer of timedated, the public status
+file, and the authority's authorized accepted-location reader. There is only one
+timezone writer. No Python interpreter, Python DBus bindings, or Python
+timezonefinder package is used by the new service.
 
 ## Enable / migrate
 
@@ -22,7 +23,11 @@ account. It uses a private state directory, read-only system/home access, no new
 privileges and restricted address families. The daemon owns
 `org.laufan.LocationTimezone` on the system bus to exclude duplicate Rust instances;
 its accompanying D-Bus policy permits only the service account to own that name.
-It exposes no location mutation API.
+It exposes no location mutation API. `GetAccepted` on
+`/org/laufan/LocationTimezone` returns only the last durably verified fix (JSON
+or `null`). The `org.laufan.location-timezone.read` polkit action allows active
+local sessions by default and denies inactive/remote sessions, without prompting.
+The location integration package installs both D-Bus and polkit policies.
 
 NixOS activation restarts the **same** unit, replacing the Python process, rather
 than starting a second writer. A source checkout change alone does not activate
@@ -106,14 +111,44 @@ which could leave an already-attempted connection permanently consumed.
   oversized or symlinked state fails closed rather than silently resetting policy.
 - `/run/location-timezone/status.json`: mode 0644 in a 0755 directory, containing
   only `{ "message": "..." }`. No IP addresses, BSSIDs or coordinates are logged
-  or published. Both files use atomic replacement and parent-directory fsync.
+  or published in this public file. Both files use atomic replacement and
+  parent-directory fsync. Accepted coordinates are available only through the
+  authorized D-Bus reader and the user's session-daemon state.
 
 `src/timezone.rs` still observes `org.freedesktop.timedate1` PropertiesChanged with
-five-minute recovery and polls the bounded public status file every two seconds.
-It exposes the warning in `timezone.error` without invalidating a successfully
-read system offset. Empty messages clear warnings. Missing optional service files
-preserve system-timezone-only behavior. Shelllist uses this observed offset for
-its clock and accessible description; no frontend protocol change is necessary.
+ten-second recovery (including accepted-location reads) and polls the bounded
+public status file every two seconds. It exposes the warning in `timezone.error`
+without invalidating a successfully read system offset. Empty messages clear
+warnings. Missing optional service files preserve system-timezone-only behavior.
+Shelllist uses this observed offset for its clock and accessible description.
+
+The optional `timezone.accepted_location` contains the last verified timezone,
+GeoClue coordinates and verification timestamp. Temporary reader failures retain the last
+known accepted fix. `activity.locations` projects it as one stable
+`current-location` row labelled **Current location**, with `current: true` and
+map coordinates. Subsequent accepted fixes replace that row, including fixes
+that do not require a timezone write. Rejected fixes never replace it. Existing
+saved weather/home/world-clock locations and configuration remain untouched;
+Current location is not relabelled Home and does not imply a weather lookup or
+reverse-geocoded city name. The existing Shelllist location-list renderer needs
+no change. Until a fix is accepted, the previous local-timezone fallback remains.
+
+## Diagnostic logging
+
+Use `journalctl -u location-timezone.service` to inspect attempts. Each check has
+an `attempt` timestamp in its tracing span. INFO events report fresh GeoClue
+acquisition (source, accuracy, age), IP HTTP status, evidence ages/time separation,
+GeoClue and IP coordinate-derived canonical zones, IP-reported zone/country,
+and distance. Rejections identify boundary uncertainty, freshness failure,
+distance over 50 km, invalid source, coordinate-zone mismatch, reported-zone
+mismatch or country mismatch. These diagnostics **do not change agreement rules**.
+
+Final events distinguish retry (with delay), rejection (waiting for a new
+connection/reload), and durable acceptance. Timezone application logs include
+current/proposed/verified zones and whether a write was needed. Provider failures
+are logged without raw HTTP payloads or request URLs. Exact coordinates, public
+IP addresses and Wi-Fi identifiers are not logged. DEBUG GeoClue events also
+explain ignored cached/fallback/imprecise fixes without coordinates.
 
 ## Validation
 
