@@ -15,12 +15,14 @@ Import `bar-daemon.nixosModules.location-timezone` and set
 `services.location-timezone.package` override. It replaces the existing
 `location-timezone.service` executable with `bar-location-daemon`, retains the
 reserved `automatic-timezoned` account/UID and state directory, and conflicts with
-`automatic-timezoned.service`. Do not run both writers. A session-independent
-GeoClue agent is retained. Home/weather settings are not modified.
+`automatic-timezoned.service`. Do not run both writers. The authority no longer
+uses GeoClue or its agent; the module does not configure GeoClue for other apps.
+Home/weather settings are not modified.
 
-The system unit authorizes only `org.freedesktop.timedate1.set-timezone` for that
-account. It uses a private state directory, read-only system/home access, no new
-privileges and restricted address families. The daemon owns
+The system unit authorizes only `org.freedesktop.timedate1.set-timezone` and
+`org.freedesktop.NetworkManager.wifi.scan` for that account (not network editing).
+It uses a private state directory, read-only system/home access, no new privileges
+and restricted address families. The daemon owns
 `org.laufan.LocationTimezone` on the system bus to exclude duplicate Rust instances;
 its accompanying D-Bus policy permits only the service account to own that name.
 It exposes no location mutation API. `GetAccepted` on
@@ -45,32 +47,56 @@ standard system paths. Nix packaging provides tzdata explicitly.
   connection identity, including its unique D-Bus owner. New connections debounce
   for ten seconds. A five-second recovery poll does not recheck successful or
   conclusively rejected connections merely because time passed.
-- Own a separate GeoClue connection/client per attempt. Subscribe before Start,
-  reject cached pre-attempt results, and wait through fallback/imprecise fixes.
-  `No WiFi networks found` concerns geolocation scan evidence, **not internet
-  connectivity**. The acquisition deadline is 90 seconds; individual D-Bus calls
-  and recovery observations are bounded to five seconds.
-- Query `https://ipapi.co/json/` independently, with HTTPS only, no proxy or
-  redirects, a 15-second request timeout and a 64 KiB streaming response limit.
+- Request a fresh NetworkManager scan on managed Wi-Fi devices. Wait for
+  `LastScan` to advance past the request on CLOCK_BOOTTIME; read AP `LastSeen`
+  on that same clock. Never substitute a cached scan after failure/denial.
+  Per-device scans are bounded to 45 seconds, the whole scan phase to 50 seconds,
+  and acquisition to 90 seconds. Individual D-Bus calls are bounded to five seconds.
+- Drop locally administered, multicast/broadcast, zero/malformed BSSIDs, unnamed
+  or `_nomap` SSIDs, weak signals, and stale/future observations. `LastSeen` is
+  whole seconds: an observation from the request's partial first second is
+  conservatively excluded. APs must be seen after the request and within 60 seconds
+  of sending. Deduplicate BSSIDs across devices and send at most 100 strongest APs;
+  fewer than two eligible APs means unavailable, not permission for IP fallback.
+- POST to `https://api.beacondb.net/v1/geolocate` with `considerIp: false` and
+  `fallbacks: {ipf: false, lacf: false}`. Send BSSID, observation age and estimated
+  signal strength only, never SSIDs or cell towers. NM supplies quality percentages;
+  invert its approximate -100..-40 dBm mapping, not a claim of raw RSSI. Reject
+  explicit fallback/error responses, invalid coordinates and inaccurate results.
+  A 404 means insufficient coverage and follows normal bounded retry backoff.
+- Observation time is the scan request's wall-clock time (a conservative lower
+  bound on accepted AP observations), not HTTP reply time. Logs report observation
+  age separately from completion. This guarantees a new scan/request, **not** a
+  current provider database or independent physical APs behind multiple radios.
+- Query `https://ipapi.co/json/` independently. Both HTTP providers use HTTPS
+  only, no proxy or redirects, a 15-second request timeout and a 64 KiB streaming
+  response limit. Wi-Fi input filtering and disabling IP fallback are deliberate
+  safeguards against ambiguous mesh identifiers and correlated IP-only evidence.
 - Missing evidence, setup failures and timeouts retry after **30, 60, 120, 240,
   then 300 seconds**. The delay remains capped at five minutes while failures
   persist. Connectivity flicker preserves pending backoff; a genuinely new
   connection resets it. Offline/sleeping machines and paused automation do not
   issue new checks.
-- Observed HTTP 429 cooldowns are persisted before returning a retry result and
-  survive reconnect/restart. Retry-After supports seconds and HTTP dates, with a
-  minimum of 60 seconds, default of one hour, and defensive maximum of one year.
+- Observed HTTP 429 cooldowns for each provider are persisted separately before
+  returning a retry result and survive reconnect/restart/reload. Neither provider
+  is queried while either cooldown is active. Retry-After supports seconds and
+  HTTP dates, with a minimum of 60 seconds, default of one hour, and defensive
+  maximum of one year.
   The next attempt waits for both the backoff and provider cooldown. There is no
   local daily request quota. Unobserved replies to cancelled HTTP requests cannot
   establish a cooldown.
 - Network change, sleep signals (including a coalesced sleep/resume cycle), reload
   and shutdown cancel the owned acquisition futures. No detached acquisition can
-  later apply a timezone. GeoClue client cleanup is bounded and connection-scoped.
+  later apply a timezone. Dropping the scan/HTTP futures leaves no detached lookup.
+  An already requested radio scan may finish in NetworkManager, but cannot trigger
+  a provider request or timezone write from the cancelled attempt.
 
 ## Agreement and effects
 
-A usable GeoClue fix must be labelled `WiFi`, newer than the attempt, and have
-reported accuracy in `(0, 25 km]`. Both fixes must be finite, within coordinate
+A usable Wi-Fi fix must come from the filtered Wi-Fi-only request, have an
+observation time no earlier than the attempt, and reported accuracy in `(0, 25 km]`.
+The internal `WiFi` source label is assigned by this adapter, not inferred from
+GeoClue's human-readable description. Both fixes must be finite, within coordinate
 bounds, no more than five minutes old, no more than five seconds in the future,
 at most two minutes apart, and within 50 km of each other. Both coordinates and
 the IP-reported timezone must resolve to the same canonical IANA zone. The IP
@@ -105,7 +131,8 @@ which could leave an already-attempted connection permanently consumed.
 ## Files and UI contract
 
 - `/var/lib/location-timezone/state.json`: mode 0600 in a 0700 directory, with
-  `accepted`, `ip_not_before`, `paused`, and `write_pending`. Existing Python JSON
+  `accepted`, `ip_not_before`, `wifi_not_before`, `paused`, and `write_pending`.
+  Missing `wifi_not_before` in older state defaults to zero. Existing Python JSON
   is read directly; obsolete `ip_calls`/`budget_day` fields disappear on durable
   save without losing accepted coordinates, pause state or cooldowns. Corrupt,
   oversized or symlinked state fails closed rather than silently resetting policy.
@@ -123,7 +150,7 @@ warnings. Missing optional service files preserve system-timezone-only behavior.
 Shelllist uses this observed offset for its clock and accessible description.
 
 The optional `timezone.accepted_location` contains the last verified timezone,
-GeoClue coordinates and verification timestamp. Temporary reader failures retain the last
+Wi-Fi coordinates and verification timestamp. Temporary reader failures retain the last
 known accepted fix. `activity.locations` projects it as one stable
 `current-location` row labelled **Current location**, with `current: true` and
 map coordinates. Subsequent accepted fixes replace that row, including fixes
@@ -136,10 +163,10 @@ no change. Until a fix is accepted, the previous local-timezone fallback remains
 ## Diagnostic logging
 
 Use `journalctl -u location-timezone.service` to inspect attempts. Each check has
-an `attempt` timestamp in its tracing span. INFO events report fresh GeoClue
-acquisition (source, accuracy, age), IP HTTP status, evidence ages/time separation,
-GeoClue and IP coordinate-derived canonical zones, IP-reported zone/country,
-and distance. Rejections identify boundary uncertainty, freshness failure,
+an `attempt` timestamp in its tracing span. INFO events report eligible AP counts,
+Wi-Fi acquisition (source, accuracy, observation age), provider HTTP statuses,
+evidence ages/time separation, Wi-Fi and IP coordinate-derived canonical zones,
+IP-reported zone/country, and distance. Rejections identify boundary uncertainty, freshness failure,
 distance over 50 km, invalid source, coordinate-zone mismatch, reported-zone
 mismatch or country mismatch. These diagnostics **do not change agreement rules**.
 
@@ -147,8 +174,9 @@ Final events distinguish retry (with delay), rejection (waiting for a new
 connection/reload), and durable acceptance. Timezone application logs include
 current/proposed/verified zones and whether a write was needed. Provider failures
 are logged without raw HTTP payloads or request URLs. Exact coordinates, public
-IP addresses and Wi-Fi identifiers are not logged. DEBUG GeoClue events also
-explain ignored cached/fallback/imprecise fixes without coordinates.
+IP addresses, SSIDs, BSSIDs and raw HTTP payloads are not logged. DEBUG scan
+failure events do not identify networks. Wi-Fi identifiers are sent only to the
+configured fixed beaconDB endpoint, not to the IP provider.
 
 ## Validation
 
@@ -156,10 +184,12 @@ Run `cargo test --bin bar-location-daemon --locked`. Tests cover real embedded
 Dublin/Alberta boundaries, stale/fallback/broad fixes, disagreement, retry/backoff,
 network/sleep cancellation, restart/cooldown and uncertain-write fences, private
 state migration/permissions, failed durable writes, and bounded HTTP transport.
-Private `dbus-daemon` fixtures exercise real NM/GeoClue/timedated wire calls,
-`Properties.Set(ssv)`, fallback-to-WiFi updates, verified application and cancellation
-cleanup. All service names in these tests belong to the fixture's private bus;
-HTTP tests use a local listener, not live providers.
+Private `dbus-daemon` fixtures exercise real NM/timedated wire calls, scan request
+serialization, waiting for new `LastScan`, stale/ambiguous/opted-out/duplicate AP
+rejection, scan denial, cancellation and verified application. Local HTTP fixtures
+check Wi-Fi-only request fields, response validation, 404/no-coverage, 429 responses,
+redirects, size bounds and deadlines. Authority tests verify persisted cooldowns. No test uses live providers
+or host system services; successful fixtures do not prove coverage at deployment.
 
 The complete fixture suite uses `tools/quality-fixtures.sh test` and includes the
 existing PipeWire/hypridle fixtures. Nix package tests also run all targets. Tests

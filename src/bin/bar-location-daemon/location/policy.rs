@@ -134,7 +134,7 @@ impl Zones {
             ip_country = %ip.country_code, distance_km, "comparing location evidence");
         let zone = wifi_zone.ok_or_else(|| {
             tracing::info!(
-                reason = "geoclue_boundary_uncertain",
+                reason = "wifi_boundary_uncertain",
                 "location evidence rejected"
             );
             Decision::Stop("Timezone boundary uncertain")

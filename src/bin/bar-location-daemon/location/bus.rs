@@ -1,17 +1,11 @@
-use super::{
-    Backend, Control, Observation, http,
-    policy::{Fix, Network},
-    wall_time,
-};
-use anyhow::{Context, Result, bail, ensure};
+use super::{Backend, Control, Observation, http, policy::Network, wifi};
+use anyhow::{Context, Result, ensure};
 use futures::StreamExt;
 use std::{collections::HashMap, time::Duration};
 use zbus::{Connection, Proxy};
 use zvariant::{OwnedObjectPath, OwnedValue};
 
-const NM: &str = "org.freedesktop.NetworkManager";
-const GEO: &str = "org.freedesktop.GeoClue2";
-const GEO_MANAGER: &str = "/org/freedesktop/GeoClue2/Manager";
+pub(super) const NM: &str = "org.freedesktop.NetworkManager";
 const TIME: &str = "org.freedesktop.timedate1";
 const LOGIN: &str = "org.freedesktop.login1";
 const IO: Duration = Duration::from_secs(5);
@@ -20,7 +14,7 @@ pub(super) struct Bus {
     pub connection: Connection,
     pub http: reqwest::Client,
 }
-async fn proxy<'a>(
+pub(super) async fn proxy<'a>(
     connection: &'a Connection,
     name: &'a str,
     path: &'a str,
@@ -34,7 +28,7 @@ async fn proxy<'a>(
         .build()
         .await?)
 }
-async fn properties(
+pub(super) async fn properties(
     connection: &Connection,
     name: &str,
     path: &str,
@@ -47,7 +41,10 @@ async fn properties(
             .await?,
     )
 }
-fn field<'a>(values: &'a HashMap<String, OwnedValue>, name: &str) -> Result<&'a OwnedValue> {
+pub(super) fn field<'a>(
+    values: &'a HashMap<String, OwnedValue>,
+    name: &str,
+) -> Result<&'a OwnedValue> {
     values
         .get(name)
         .with_context(|| format!("missing D-Bus property {name}"))
@@ -124,111 +121,12 @@ impl Backend for Bus {
         .await
         .context("timezone application reply lost")?
     }
-    async fn wifi(&self, started: f64) -> Result<Fix> {
-        // A private bus connection scopes even a GetClient whose reply is lost.
-        // Dropping this attempt never leaves a client tied to the long-lived bus.
-        let connection = tokio::time::timeout(
-            IO,
-            zbus::connection::Builder::system()?
-                .method_timeout(IO)
-                .build(),
-        )
-        .await??;
-        wifi_on(&connection, started).await
+    async fn wifi(&self, started: f64) -> Result<http::LookupResult> {
+        let scan = wifi::scan(&self.connection).await?;
+        wifi::lookup(&self.http, scan, started).await
     }
-    async fn ip(&self) -> http::IpResult {
+    async fn ip(&self) -> http::LookupResult {
         http::lookup(&self.http).await
-    }
-}
-
-struct GeoClient {
-    connection: Connection,
-    path: String,
-}
-impl Drop for GeoClient {
-    fn drop(&mut self) {
-        let connection = self.connection.clone();
-        let path = self.path.clone();
-        // Best effort, bounded cleanup on success, timeout, reload or cancellation.
-        // Closing the dedicated connection is the final GeoClue ownership fence.
-        tokio::spawn(async move {
-            let _ = tokio::time::timeout(IO, async {
-                let manager = proxy(
-                    &connection,
-                    GEO,
-                    GEO_MANAGER,
-                    "org.freedesktop.GeoClue2.Manager",
-                )
-                .await?;
-                manager
-                    .call::<_, _, ()>("DeleteClient", &(OwnedObjectPath::try_from(path)?,))
-                    .await?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .await;
-        });
-    }
-}
-pub(super) async fn wifi_on(connection: &Connection, started: f64) -> Result<Fix> {
-    let manager = proxy(
-        connection,
-        GEO,
-        GEO_MANAGER,
-        "org.freedesktop.GeoClue2.Manager",
-    )
-    .await?;
-    let path: OwnedObjectPath = manager.call("GetClient", &()).await?;
-    let _lease = GeoClient {
-        connection: connection.clone(),
-        path: path.to_string(),
-    };
-    let client = proxy(
-        connection,
-        GEO,
-        path.as_str(),
-        "org.freedesktop.GeoClue2.Client",
-    )
-    .await?;
-    client
-        .set_property("DesktopId", "location-timezone")
-        .await?;
-    client.set_property("RequestedAccuracyLevel", 4_u32).await?;
-    let mut updates = client.receive_signal("LocationUpdated").await?;
-    client.call::<_, _, ()>("Start", &()).await?;
-    let mut location: OwnedObjectPath = client.get_property("Location").await?;
-    loop {
-        if location.as_str() != "/" {
-            let values = properties(
-                connection,
-                GEO,
-                location.as_str(),
-                "org.freedesktop.GeoClue2.Location",
-            )
-            .await?;
-            let (seconds, micros) =
-                <(u64, u64)>::try_from(field(&values, "Timestamp")?.try_clone()?)?;
-            let fix = Fix {
-                latitude: f64::try_from(field(&values, "Latitude")?)?,
-                longitude: f64::try_from(field(&values, "Longitude")?)?,
-                accuracy: f64::try_from(field(&values, "Accuracy")?)?,
-                source: <&str>::try_from(field(&values, "Description")?)?.into(),
-                timestamp: seconds as f64 + micros as f64 / 1_000_000.0,
-                timezone: String::new(),
-                country_code: String::new(),
-            };
-            if micros < 1_000_000 && fix.usable_wifi(started, wall_time()) {
-                return Ok(fix);
-            }
-            tracing::debug!(source = %fix.source, accuracy_meters = fix.accuracy,
-                age_seconds = wall_time() - fix.timestamp, predates_attempt = fix.timestamp < started,
-                coordinates_valid = fix.coordinates_valid(), timestamp_micros_valid = micros < 1_000_000,
-                "ignoring unusable GeoClue fix");
-        }
-        let Some(message) = updates.next().await else {
-            bail!("GeoClue stream ended");
-        };
-        let (_, next): (OwnedObjectPath, OwnedObjectPath) = message.body().deserialize()?;
-        location = next;
     }
 }
 

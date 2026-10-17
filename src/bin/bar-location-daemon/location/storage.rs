@@ -10,6 +10,8 @@ pub(super) struct State {
     #[serde(default)]
     pub ip_not_before: f64,
     #[serde(default)]
+    pub wifi_not_before: f64,
+    #[serde(default)]
     pub accepted: Option<Accepted>,
     // Persist intent before calling timedated: a crash or lost reply must not
     // silently re-arm writes on restart. Explicit reload clears this fence.
@@ -25,7 +27,9 @@ pub(super) struct Accepted {
 }
 impl State {
     pub fn cooldown(&self, now: f64) -> Duration {
-        Duration::from_secs_f64((self.ip_not_before - now).clamp(0.0, 365.0 * 86400.0))
+        Duration::from_secs_f64(
+            (self.ip_not_before.max(self.wifi_not_before) - now).clamp(0.0, 365.0 * 86400.0),
+        )
     }
 }
 pub(super) struct Storage {
@@ -49,7 +53,10 @@ impl Storage {
             None => State::default(),
         };
         anyhow::ensure!(
-            state.ip_not_before.is_finite() && state.ip_not_before >= 0.0,
+            state.ip_not_before.is_finite()
+                && state.ip_not_before >= 0.0
+                && state.wifi_not_before.is_finite()
+                && state.wifi_not_before >= 0.0,
             "invalid provider cooldown"
         );
         Ok(state)

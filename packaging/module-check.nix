@@ -28,6 +28,9 @@ assert builtins.elem "hypr-monitor-auto.service" session.systemd.user.services.b
 assert session.systemd.user.services.hypridle.serviceConfig.Type == "notify";
 assert !(helper.systemd.user.services ? bar-daemon);
 assert !(location.systemd.user.services ? bar-daemon);
+assert !(location.systemd.services ? location-timezone-agent);
+assert !location.services.geoclue2.enable;
+assert nixpkgs.lib.hasInfix "org.freedesktop.NetworkManager.wifi.scan" location.security.polkit.extraConfig;
 assert !(builtins.elem self.packages.${system}.default location.services.dbus.packages);
 pkgs.runCommand "bar-daemon-module-contract" { } ''
   runtime=${self.packages.${system}.default}

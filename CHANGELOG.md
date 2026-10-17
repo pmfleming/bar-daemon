@@ -6,6 +6,13 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Replace the location authority's GeoClue lookup with fresh NetworkManager scans
+  and direct Wi-Fi-only beaconDB requests. Filter ambiguous locally administered
+  and multicast BSSIDs, opt-outs, stale/weak observations and duplicates before
+  lookup; unavailable coverage never falls back to IP. Preserve timezone agreement,
+  cancellation and write verification, persist beaconDB cooldowns, and replace
+  the GeoClue agent dependency with narrowly scoped Wi-Fi scan authorization.
+
 - Recover notification-center read contention natively: wait for reader capacity
   within one three-second deadline and retry only SQLite BUSY/LOCKED reads up to
   three attempts. Exhausted/permanent failures remain explicit; cancellation,
@@ -24,7 +31,7 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
-- A stable **Current location** entry backed by the last verified GeoClue fix,
+- A stable **Current location** entry backed by the last verified Wi-Fi fix,
   read through an active-local-session-authorized interface without modifying
   saved locations. Rejected fixes and temporary reader outages retain it.
 - Location-attempt diagnostics for provider acquisition, evidence comparisons,

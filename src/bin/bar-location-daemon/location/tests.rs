@@ -39,6 +39,7 @@ struct Fake {
     lost_reply: AtomicBool,
     wrong_wifi: AtomicBool,
     limited: AtomicBool,
+    wifi_limited: AtomicBool,
     ip_calls: AtomicUsize,
 }
 impl Default for Fake {
@@ -52,6 +53,7 @@ impl Default for Fake {
             lost_reply: AtomicBool::new(false),
             wrong_wifi: AtomicBool::new(false),
             limited: AtomicBool::new(false),
+            wifi_limited: AtomicBool::new(false),
             ip_calls: AtomicUsize::new(0),
         }
     }
@@ -81,25 +83,28 @@ impl Backend for Fake {
         );
         Ok(())
     }
-    async fn wifi(&self, _: f64) -> Result<Fix> {
+    async fn wifi(&self, _: f64) -> Result<http::LookupResult> {
         self.wifi_live.store(true, Ordering::SeqCst);
         let _live = Live(&self.wifi_live);
         if self.pending_wifi.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
+        }
+        if self.wifi_limited.load(Ordering::SeqCst) {
+            return Ok(http::LookupResult::Limited(Duration::from_secs(7200)));
         }
         let mut result = fix("WiFi");
         if self.wrong_wifi.load(Ordering::SeqCst) {
             result.latitude = 54.6056;
             result.longitude = -112.803852;
         }
-        Ok(result)
+        Ok(http::LookupResult::Fix(result))
     }
-    async fn ip(&self) -> http::IpResult {
+    async fn ip(&self) -> http::LookupResult {
         self.ip_calls.fetch_add(1, Ordering::SeqCst);
         if self.limited.load(Ordering::SeqCst) {
-            http::IpResult::Limited(Duration::from_secs(7200))
+            http::LookupResult::Limited(Duration::from_secs(7200))
         } else {
-            http::IpResult::Fix(fix("IP"))
+            http::LookupResult::Fix(fix("IP"))
         }
     }
 }
@@ -160,6 +165,40 @@ async fn cooldown_and_uncertain_write_fences_survive_restart() {
         1,
         "unverified write requires explicit recovery"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn wifi_cooldown_survives_restart_and_reload() {
+    let backend = Fake::default();
+    backend.wifi_limited.store(true, Ordering::SeqCst);
+    let (dir, mut authority) = authority(&backend).await;
+    let (_sender, mut control) = watch::channel(Control::default());
+    authority.check(&backend, &mut control).await.unwrap();
+    assert!(authority.storage.load().unwrap().wifi_not_before >= wall_time() + 7199.0);
+    let mut restarted = Authority::new(
+        Storage::new(dir.path().join("state"), dir.path().join("run")),
+        zones(),
+        &backend,
+    )
+    .await
+    .unwrap();
+    restarted.state.paused = true;
+    let (sender, receiver) = watch::channel(Control {
+        reload: 1,
+        epoch: 1,
+        ..Control::default()
+    });
+    let stop = async {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        sender.send_modify(|state| state.shutdown = true);
+    };
+    let (result, ()) = tokio::join!(restarted.run(&backend, receiver), stop);
+    result.unwrap();
+    assert_eq!(restarted.reload, 1);
+    assert!(!restarted.state.paused);
+    assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    assert!(restarted.state.cooldown(wall_time()).as_secs() >= 7198);
 }
 
 #[test]

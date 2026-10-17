@@ -8,6 +8,7 @@ mod reader;
 mod storage;
 #[cfg(test)]
 mod tests;
+mod wifi;
 
 use anyhow::{Context, Result};
 use policy::{Decision, Fix, Network, Schedule, Zones};
@@ -33,8 +34,8 @@ trait Backend {
     async fn observe(&self) -> Result<Observation>;
     async fn timezone(&self) -> Result<String>;
     async fn set_timezone(&self, zone: &str) -> Result<()>;
-    async fn wifi(&self, started: f64) -> Result<Fix>;
-    async fn ip(&self) -> http::IpResult;
+    async fn wifi(&self, started: f64) -> Result<http::LookupResult>;
+    async fn ip(&self) -> http::LookupResult;
 }
 fn wall_time() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
@@ -175,7 +176,7 @@ impl Authority {
                 .await;
         }
         self.storage.status("Checking current location…").await?;
-        tracing::info!("acquiring fresh GeoClue and IP evidence");
+        tracing::info!("acquiring filtered Wi-Fi and independent IP evidence");
         let started = wall_time();
         let epoch = control.borrow().epoch;
         let acquired = self.acquire(backend, control, started).await?;
@@ -287,32 +288,38 @@ impl Authority {
                 // Persist a ready 429 before processing a simultaneous cancellation.
                 biased;
                 result = &mut ip, if ip_fix.is_none() => match result {
-                    http::IpResult::Fix(fix) => {
+                    http::LookupResult::Fix(fix) => {
                         tracing::info!(provider = "ipapi.co", reported_timezone = %fix.timezone, country_code = %fix.country_code, "IP evidence received");
                         ip_fix = Some(fix);
                     },
-                    http::IpResult::Limited(delay) => {
+                    http::LookupResult::Limited(delay) => {
                         self.state.ip_not_before = self.state.ip_not_before.max(wall_time() + delay.as_secs_f64());
                         self.storage.save(&self.state).await?;
                         return Ok(Err("Location provider rate limited"));
                     }
-                    http::IpResult::Unavailable => return Ok(Err("IP location unavailable")),
+                    http::LookupResult::Unavailable => return Ok(Err("IP location unavailable")),
+                },
+                result = &mut wifi, if wifi_fix.is_none() => match result {
+                    Ok(http::LookupResult::Fix(fix)) => {
+                        tracing::info!(source = %fix.source, accuracy_meters = fix.accuracy, observation_age_seconds = wall_time() - fix.timestamp, "filtered Wi-Fi location found");
+                        wifi_fix = Some(fix);
+                    },
+                    Ok(http::LookupResult::Limited(delay)) => {
+                        self.state.wifi_not_before = self.state.wifi_not_before.max(wall_time() + delay.as_secs_f64());
+                        self.storage.save(&self.state).await?;
+                        return Ok(Err("Wi-Fi location provider rate limited"));
+                    },
+                    Ok(http::LookupResult::Unavailable) => return Ok(Err("Wi-Fi location unavailable")),
+                    Err(error) => {
+                        tracing::warn!(error = %error, "Wi-Fi acquisition failed");
+                        return Ok(Err("Wi-Fi location unavailable"));
+                    },
                 },
                 changed = control.changed() => {
                     changed.context("location control ended")?;
                     return Ok(Err("Location check interrupted"));
                 }
                 _ = &mut deadline => return Ok(Err("Fresh Wi-Fi location unavailable")),
-                result = &mut wifi, if wifi_fix.is_none() => match result {
-                    Ok(fix) => {
-                        tracing::info!(source = %fix.source, accuracy_meters = fix.accuracy, age_seconds = wall_time() - fix.timestamp, "fresh GeoClue location found");
-                        wifi_fix = Some(fix);
-                    },
-                    Err(error) => {
-                        tracing::warn!(error = %error, "GeoClue acquisition failed");
-                        return Ok(Err("Wi-Fi location unavailable"));
-                    },
-                },
                 _ = poll.tick() => {
                     let valid = backend.observe().await.is_ok_and(|s|
                         !s.sleeping && s.network == self.schedule.network && s.network.is_some());

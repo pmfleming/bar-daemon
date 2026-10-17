@@ -31,16 +31,8 @@ in
       }
     ];
     time.timeZone = null;
-    services.geoclue2 = {
-      enable = true;
-      enableNmea = false;
-      geoProviderUrl = "https://api.beacondb.net/v1/geolocate";
-      appConfig.location-timezone = {
-        isAllowed = true;
-        isSystem = true;
-        users = [ (toString config.ids.uids.automatic-timezoned) ];
-      };
-    };
+    # This authority owns filtered NetworkManager -> beaconDB acquisition.
+    # Do not enable, disable or configure GeoClue for unrelated applications.
     # Preserve the deployed account and state ownership during Python -> Rust migration.
     users.users.automatic-timezoned = {
       isSystemUser = true;
@@ -53,32 +45,20 @@ in
     environment.systemPackages = [ cfg.integrationPackage ];
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
-        if (action.id == "org.freedesktop.timedate1.set-timezone"
+        if ((action.id == "org.freedesktop.timedate1.set-timezone"
+             || action.id == "org.freedesktop.NetworkManager.wifi.scan")
             && subject.user == "automatic-timezoned") {
           return polkit.Result.YES;
         }
       });
     '';
-    systemd.services.location-timezone-agent = {
-      description = "GeoClue agent for timezone consensus";
-      requires = [ "geoclue.service" ];
-      after = [ "geoclue.service" ];
-      serviceConfig = {
-        User = "automatic-timezoned";
-        ExecStart = "${pkgs.geoclue2-with-demo-agent}/libexec/geoclue-2.0/demos/agent";
-        Restart = "on-failure";
-        PrivateTmp = true;
-      };
-    };
     # Same unit replaces the old Python ExecStart: no second timezone writer.
     systemd.services.location-timezone = {
       description = "Rust location authority with fresh Wi-Fi/IP timezone consensus";
       wantedBy = [ "multi-user.target" ];
-      requires = [ "location-timezone-agent.service" ];
       conflicts = [ "automatic-timezoned.service" ];
       after = [
         "automatic-timezoned.service"
-        "location-timezone-agent.service"
         "NetworkManager.service"
       ];
       environment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";

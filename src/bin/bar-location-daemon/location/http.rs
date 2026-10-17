@@ -4,7 +4,7 @@ use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::time::Duration;
 
-pub(super) enum IpResult {
+pub(super) enum LookupResult {
     Fix(Fix),
     Limited(Duration),
     Unavailable,
@@ -16,31 +16,44 @@ pub(super) fn client() -> Result<Client> {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
-        .user_agent("Shelllist-location-timezone/2")
+        .user_agent("Shelllist-location-timezone/3")
         .build()?)
 }
-pub(super) async fn lookup(client: &Client) -> IpResult {
+pub(super) async fn lookup(client: &Client) -> LookupResult {
     match fetch(client, "https://ipapi.co/json/").await {
         Ok(result) => result,
         Err(error) => {
             tracing::warn!(error = %error, "IP location lookup failed");
-            IpResult::Unavailable
+            LookupResult::Unavailable
         }
     }
 }
-async fn fetch(client: &Client, url: &str) -> Result<IpResult> {
-    let mut response = client
+async fn fetch(client: &Client, url: &str) -> Result<LookupResult> {
+    let response = client
         .get(url)
         .header("Accept", "application/json")
         .send()
         .await
         .map_err(reqwest::Error::without_url)?;
+    match response_body(response, "ipapi.co").await? {
+        Body::Bytes(bytes) => Ok(LookupResult::Fix(parse(&bytes, wall_time())?)),
+        Body::Limited(delay) => Ok(LookupResult::Limited(delay)),
+    }
+}
+
+pub(super) enum Body {
+    Bytes(Vec<u8>),
+    Limited(Duration),
+}
+
+pub(super) async fn response_body(mut response: reqwest::Response, provider: &str) -> Result<Body> {
     tracing::info!(
+        provider,
         http_status = response.status().as_u16(),
-        "IP location response received"
+        "Location response received"
     );
     if response.status() == StatusCode::TOO_MANY_REQUESTS {
-        return Ok(IpResult::Limited(retry_after(
+        return Ok(Body::Limited(retry_after(
             response
                 .headers()
                 .get("Retry-After")
@@ -50,12 +63,12 @@ async fn fetch(client: &Client, url: &str) -> Result<IpResult> {
     }
     ensure!(
         response.status().is_success(),
-        "IP lookup rejected: HTTP {}",
+        "location lookup rejected: HTTP {}",
         response.status()
     );
     ensure!(
         response.content_length().unwrap_or(0) <= 65536,
-        "IP response too large"
+        "location response too large"
     );
     let mut bytes = Vec::new();
     while let Some(chunk) = response
@@ -63,10 +76,13 @@ async fn fetch(client: &Client, url: &str) -> Result<IpResult> {
         .await
         .map_err(reqwest::Error::without_url)?
     {
-        ensure!(bytes.len() + chunk.len() <= 65536, "IP response too large");
+        ensure!(
+            bytes.len() + chunk.len() <= 65536,
+            "location response too large"
+        );
         bytes.extend_from_slice(&chunk);
     }
-    Ok(IpResult::Fix(parse(&bytes, wall_time())?))
+    Ok(Body::Bytes(bytes))
 }
 fn parse(bytes: &[u8], now: f64) -> Result<Fix> {
     #[derive(Deserialize)]
@@ -150,8 +166,8 @@ mod tests {
             });
             let result = fetch(&client, &url).await;
             match expected {
-                "fix" => assert!(matches!(result, Ok(IpResult::Fix(_)))),
-                "limit" => assert!(matches!(result, Ok(IpResult::Limited(d)) if d.as_secs() == 7200)),
+                "fix" => assert!(matches!(result, Ok(LookupResult::Fix(_)))),
+                "limit" => assert!(matches!(result, Ok(LookupResult::Limited(d)) if d.as_secs() == 7200)),
                 _ => assert!(result.is_err()),
             }
             server.await.unwrap();
