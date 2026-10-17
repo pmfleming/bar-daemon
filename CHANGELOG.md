@@ -6,6 +6,12 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Stop location checks for the current connection when beaconDB reports no Wi-Fi
+  coverage (404), with an explicit “Wi-Fi location not recognised” status. Reload
+  or a new connection re-arms checks. Query ipapi.co only after usable Wi-Fi
+  evidence and a fresh connection/control check, preserving shared acquisition
+  deadlines, cancellation and independent provider cooldowns.
+
 - Replace the location authority's GeoClue lookup with fresh NetworkManager scans
   and direct Wi-Fi-only beaconDB requests. Filter ambiguous locally administered
   and multicast BSSIDs, opt-outs, stale/weak observations and duplicates before

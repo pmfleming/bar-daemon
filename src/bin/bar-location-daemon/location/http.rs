@@ -7,6 +7,8 @@ use std::time::Duration;
 pub(super) enum LookupResult {
     Fix(Fix),
     Limited(Duration),
+    /// A Wi-Fi-only provider explicitly has no coverage for these observations.
+    NotRecognised,
     Unavailable,
 }
 

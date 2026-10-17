@@ -266,6 +266,14 @@ async fn fetch(
         .send()
         .await
         .map_err(reqwest::Error::without_url)?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        tracing::info!(
+            provider = "beaconDB",
+            http_status = 404,
+            "Wi-Fi location not recognised"
+        );
+        return Ok(http::LookupResult::NotRecognised);
+    }
     match http::response_body(response, "beaconDB").await? {
         http::Body::Limited(delay) => Ok(http::LookupResult::Limited(delay)),
         http::Body::Bytes(bytes) => {

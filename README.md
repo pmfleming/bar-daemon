@@ -25,6 +25,22 @@ observer. Enable `nixosModules.location-timezone` with
 `services.location-timezone.enable = true`; see [location/timezone](docs/location-timezone.md).
 The embedded boundary library requires Rust 1.88+ and ships ODbL data attribution.
 
+## Development builds
+
+The committed `flake.lock` intentionally retains remote pins only; local sibling
+inputs (`daemonFramework`, `updateWorker`, and their transitive inputs) are resolved
+in a disposable snapshot by the workspace build tool. Use:
+
+```sh
+local-build develop . --command cargo test --all-targets --locked
+local-build check .
+```
+
+The source launcher is `../daemon-framework/tools/local-build` (requires Cargo).
+Plain `nix develop` may rewrite the checkout lock, while `--no-update-lock-file`
+can reject its intentionally missing local nodes. Do not commit generated sibling
+revision pins; see [the workspace build contract](../daemon-framework/docs/local-build.md).
+
 ## Usage
 
 ```sh

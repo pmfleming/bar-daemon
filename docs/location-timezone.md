@@ -17,7 +17,10 @@ Import `bar-daemon.nixosModules.location-timezone` and set
 reserved `automatic-timezoned` account/UID and state directory, and conflicts with
 `automatic-timezoned.service`. Do not run both writers. The authority no longer
 uses GeoClue or its agent; the module does not configure GeoClue for other apps.
-Home/weather settings are not modified.
+Home/weather settings are not modified. Hosts needing GeoClue for browsers or
+other applications must enable `services.geoclue2.enable = true` explicitly;
+`enableNmea = false` alone does not enable it. Otherwise remove obsolete host
+settings/comments that describe GeoClue as a timezone dependency.
 
 The system unit authorizes only `org.freedesktop.timedate1.set-timezone` and
 `org.freedesktop.NetworkManager.wifi.scan` for that account (not network editing).
@@ -63,12 +66,20 @@ standard system paths. Nix packaging provides tzdata explicitly.
   signal strength only, never SSIDs or cell towers. NM supplies quality percentages;
   invert its approximate -100..-40 dBm mapping, not a claim of raw RSSI. Reject
   explicit fallback/error responses, invalid coordinates and inaccurate results.
-  A 404 means insufficient coverage and follows normal bounded retry backoff.
+  A 404 is the distinct result **Wi-Fi location not recognised**. It stops checks
+  for this connection rather than periodically retrying missing database coverage.
+  A new connection or explicit reload re-arms acquisition; connectivity flicker
+  does not. After adding coverage (e.g. with NeoStumbler), explicitly reload to
+  try again. Other transport/scan failures still use bounded retry backoff.
 - Observation time is the scan request's wall-clock time (a conservative lower
   bound on accepted AP observations), not HTTP reply time. Logs report observation
   age separately from completion. This guarantees a new scan/request, **not** a
   current provider database or independent physical APs behind multiple radios.
-- Query `https://ipapi.co/json/` independently. Both HTTP providers use HTTPS
+- Query `https://ipapi.co/json/` only after a usable Wi-Fi fix exists, rechecking
+  connection identity and sleep/control state before starting the IP request.
+  Missing coverage, scan failures, invalid fixes and Wi-Fi cooldowns never spend
+  an IP request. Both stages share the 90-second acquisition deadline and existing
+  120-second evidence agreement window. Both HTTP providers use HTTPS
   only, no proxy or redirects, a 15-second request timeout and a 64 KiB streaming
   response limit. Wi-Fi input filtering and disabling IP fallback are deliberate
   safeguards against ambiguous mesh identifiers and correlated IP-only evidence.
@@ -187,8 +198,11 @@ state migration/permissions, failed durable writes, and bounded HTTP transport.
 Private `dbus-daemon` fixtures exercise real NM/timedated wire calls, scan request
 serialization, waiting for new `LastScan`, stale/ambiguous/opted-out/duplicate AP
 rejection, scan denial, cancellation and verified application. Local HTTP fixtures
-check Wi-Fi-only request fields, response validation, 404/no-coverage, 429 responses,
-redirects, size bounds and deadlines. Authority tests verify persisted cooldowns. No test uses live providers
+check Wi-Fi-only request fields, response validation, distinct 404/no-coverage,
+429 responses, redirects, size bounds and deadlines. Authority tests verify
+persisted cooldowns, sequential Wi-Fi-before-IP execution, no IP request on
+Wi-Fi failure/404, connection-scoped no-coverage stops, reload/new-connection
+re-arming and cancellation/timeouts during the IP stage. No test uses live providers
 or host system services; successful fixtures do not prove coverage at deployment.
 
 The complete fixture suite uses `tools/quality-fixtures.sh test` and includes the

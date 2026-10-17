@@ -182,7 +182,7 @@ impl Authority {
         let acquired = self.acquire(backend, control, started).await?;
         let (wifi, ip) = match acquired {
             Ok(evidence) => evidence,
-            Err(reason) => return self.finish(Decision::Retry(reason)).await,
+            Err(decision) => return self.finish(decision).await,
         };
         let zone = match self.zones.agree(&wifi, &ip, started, wall_time()) {
             Ok(zone) => zone,
@@ -273,21 +273,39 @@ impl Authority {
         backend: &impl Backend,
         control: &mut watch::Receiver<Control>,
         started: f64,
-    ) -> Result<Result<(Fix, Fix), &'static str>> {
+    ) -> Result<Result<(Fix, Fix), Decision>> {
         let wifi = backend.wifi(started);
+        // Creating this async future does not issue a request. It is polled only
+        // after usable Wi-Fi evidence and a fresh connection/control check.
         let ip = backend.ip();
         tokio::pin!(wifi, ip);
         let mut wifi_fix = None;
         let mut ip_fix = None;
+        let mut ip_allowed = false;
+        let epoch = control.borrow().epoch;
         let deadline = tokio::time::sleep(Duration::from_secs(90));
         tokio::pin!(deadline);
         let mut poll = tokio::time::interval(Duration::from_secs(5));
         poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
+            if wifi_fix.is_some() && !ip_allowed {
+                let observed = backend.observe().await;
+                let current = control.borrow();
+                let valid = observed.is_ok_and(|s| {
+                    !s.sleeping && s.network == self.schedule.network && s.network.is_some()
+                }) && current.epoch == epoch
+                    && !current.sleeping
+                    && !current.shutdown
+                    && Instant::now() < deadline.deadline();
+                if !valid {
+                    return Ok(Err(Decision::Retry("Location check interrupted")));
+                }
+                ip_allowed = true;
+            }
             tokio::select! {
                 // Persist a ready 429 before processing a simultaneous cancellation.
                 biased;
-                result = &mut ip, if ip_fix.is_none() => match result {
+                result = &mut ip, if ip_allowed && ip_fix.is_none() => match result {
                     http::LookupResult::Fix(fix) => {
                         tracing::info!(provider = "ipapi.co", reported_timezone = %fix.timezone, country_code = %fix.country_code, "IP evidence received");
                         ip_fix = Some(fix);
@@ -295,35 +313,41 @@ impl Authority {
                     http::LookupResult::Limited(delay) => {
                         self.state.ip_not_before = self.state.ip_not_before.max(wall_time() + delay.as_secs_f64());
                         self.storage.save(&self.state).await?;
-                        return Ok(Err("Location provider rate limited"));
+                        return Ok(Err(Decision::Retry("Location provider rate limited")));
                     }
-                    http::LookupResult::Unavailable => return Ok(Err("IP location unavailable")),
+                    http::LookupResult::Unavailable | http::LookupResult::NotRecognised =>
+                        return Ok(Err(Decision::Retry("IP location unavailable"))),
                 },
                 result = &mut wifi, if wifi_fix.is_none() => match result {
                     Ok(http::LookupResult::Fix(fix)) => {
+                        if !fix.usable_wifi(started, wall_time()) {
+                            return Ok(Err(Decision::Retry("Fresh Wi-Fi location unavailable")));
+                        }
                         tracing::info!(source = %fix.source, accuracy_meters = fix.accuracy, observation_age_seconds = wall_time() - fix.timestamp, "filtered Wi-Fi location found");
                         wifi_fix = Some(fix);
                     },
                     Ok(http::LookupResult::Limited(delay)) => {
                         self.state.wifi_not_before = self.state.wifi_not_before.max(wall_time() + delay.as_secs_f64());
                         self.storage.save(&self.state).await?;
-                        return Ok(Err("Wi-Fi location provider rate limited"));
+                        return Ok(Err(Decision::Retry("Wi-Fi location provider rate limited")));
                     },
-                    Ok(http::LookupResult::Unavailable) => return Ok(Err("Wi-Fi location unavailable")),
+                    Ok(http::LookupResult::NotRecognised) =>
+                        return Ok(Err(Decision::Stop("Wi-Fi location not recognised"))),
+                    Ok(http::LookupResult::Unavailable) => return Ok(Err(Decision::Retry("Wi-Fi location unavailable"))),
                     Err(error) => {
                         tracing::warn!(error = %error, "Wi-Fi acquisition failed");
-                        return Ok(Err("Wi-Fi location unavailable"));
+                        return Ok(Err(Decision::Retry("Wi-Fi location unavailable")));
                     },
                 },
                 changed = control.changed() => {
                     changed.context("location control ended")?;
-                    return Ok(Err("Location check interrupted"));
+                    return Ok(Err(Decision::Retry("Location check interrupted")));
                 }
-                _ = &mut deadline => return Ok(Err("Fresh Wi-Fi location unavailable")),
+                _ = &mut deadline => return Ok(Err(Decision::Retry("Location acquisition timed out"))),
                 _ = poll.tick() => {
                     let valid = backend.observe().await.is_ok_and(|s|
                         !s.sleeping && s.network == self.schedule.network && s.network.is_some());
-                    if !valid { return Ok(Err("Network or sleep state changed")); }
+                    if !valid { return Ok(Err(Decision::Retry("Network or sleep state changed"))); }
                 }
             }
             if wifi_fix.is_some() && ip_fix.is_some() {

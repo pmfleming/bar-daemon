@@ -40,6 +40,14 @@ struct Fake {
     wrong_wifi: AtomicBool,
     limited: AtomicBool,
     wifi_limited: AtomicBool,
+    wifi_unrecognised: AtomicBool,
+    wifi_failed: AtomicBool,
+    wifi_invalid: AtomicBool,
+    wifi_changes_network: AtomicBool,
+    wifi_returned: AtomicBool,
+    wifi_calls: AtomicUsize,
+    pending_ip: AtomicBool,
+    ip_live: AtomicBool,
     ip_calls: AtomicUsize,
 }
 impl Default for Fake {
@@ -54,6 +62,14 @@ impl Default for Fake {
             wrong_wifi: AtomicBool::new(false),
             limited: AtomicBool::new(false),
             wifi_limited: AtomicBool::new(false),
+            wifi_unrecognised: AtomicBool::new(false),
+            wifi_failed: AtomicBool::new(false),
+            wifi_invalid: AtomicBool::new(false),
+            wifi_changes_network: AtomicBool::new(false),
+            wifi_returned: AtomicBool::new(false),
+            wifi_calls: AtomicUsize::new(0),
+            pending_ip: AtomicBool::new(false),
+            ip_live: AtomicBool::new(false),
             ip_calls: AtomicUsize::new(0),
         }
     }
@@ -84,6 +100,8 @@ impl Backend for Fake {
         Ok(())
     }
     async fn wifi(&self, _: f64) -> Result<http::LookupResult> {
+        self.wifi_calls.fetch_add(1, Ordering::SeqCst);
+        self.wifi_returned.store(false, Ordering::SeqCst);
         self.wifi_live.store(true, Ordering::SeqCst);
         let _live = Live(&self.wifi_live);
         if self.pending_wifi.load(Ordering::SeqCst) {
@@ -92,15 +110,38 @@ impl Backend for Fake {
         if self.wifi_limited.load(Ordering::SeqCst) {
             return Ok(http::LookupResult::Limited(Duration::from_secs(7200)));
         }
+        if self.wifi_unrecognised.load(Ordering::SeqCst) {
+            return Ok(http::LookupResult::NotRecognised);
+        }
+        anyhow::ensure!(
+            !self.wifi_failed.load(Ordering::SeqCst),
+            "Wi-Fi transport failed"
+        );
+        if self.wifi_changes_network.load(Ordering::SeqCst) {
+            *self.network.lock().unwrap() = network("changed");
+        }
         let mut result = fix("WiFi");
+        if self.wifi_invalid.load(Ordering::SeqCst) {
+            result.accuracy = 0.0;
+        }
         if self.wrong_wifi.load(Ordering::SeqCst) {
             result.latitude = 54.6056;
             result.longitude = -112.803852;
         }
+        self.wifi_returned.store(true, Ordering::SeqCst);
         Ok(http::LookupResult::Fix(result))
     }
     async fn ip(&self) -> http::LookupResult {
+        assert!(
+            self.wifi_returned.load(Ordering::SeqCst),
+            "IP must follow Wi-Fi, never run concurrently"
+        );
         self.ip_calls.fetch_add(1, Ordering::SeqCst);
+        self.ip_live.store(true, Ordering::SeqCst);
+        let _live = Live(&self.ip_live);
+        if self.pending_ip.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         if self.limited.load(Ordering::SeqCst) {
             http::LookupResult::Limited(Duration::from_secs(7200))
         } else {
@@ -196,9 +237,107 @@ async fn wifi_cooldown_survives_restart_and_reload() {
     result.unwrap();
     assert_eq!(restarted.reload, 1);
     assert!(!restarted.state.paused);
-    assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 0);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     assert!(restarted.state.cooldown(wall_time()).as_secs() >= 7198);
+}
+
+#[tokio::test(start_paused = true)]
+async fn unrecognised_wifi_stops_this_connection_without_ip_and_rearms_on_reload_or_new_connection()
+{
+    let backend = Fake::default();
+    backend.wifi_unrecognised.store(true, Ordering::SeqCst);
+    let (_dir, mut a) = authority(&backend).await;
+    let (_sender, mut control) = watch::channel(Control::default());
+    a.check(&backend, &mut control).await.unwrap();
+    assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        a.last_result,
+        "Wi-Fi location not recognised · no automatic change"
+    );
+    let now = Instant::now();
+    assert!(!a.schedule.ready(now + Duration::from_secs(86400)));
+    a.schedule.observe(None, now);
+    a.schedule.observe(Some(network("a")), now);
+    assert!(
+        !a.schedule.ready(now + Duration::from_secs(86400)),
+        "connectivity flicker must not rearm"
+    );
+    *backend.network.lock().unwrap() = network("b");
+    a.schedule.observe(Some(network("b")), now);
+    assert!(a.schedule.ready(now + Duration::from_secs(10)));
+    a.check(&backend, &mut control).await.unwrap();
+    assert_eq!(backend.wifi_calls.load(Ordering::SeqCst), 2);
+    let (sender, receiver) = watch::channel(Control {
+        epoch: 1,
+        reload: 1,
+        ..Control::default()
+    });
+    let stop = async {
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        sender.send_modify(|c| c.shutdown = true);
+    };
+    let (result, ()) = tokio::join!(a.run(&backend, receiver), stop);
+    result.unwrap();
+    assert_eq!(a.reload, 1);
+    assert_eq!(
+        backend.wifi_calls.load(Ordering::SeqCst),
+        3,
+        "one attempt after reload, no periodic retry"
+    );
+    assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unavailable_invalid_or_interrupted_wifi_does_not_query_ip() {
+    for scenario in ["failure", "invalid", "network"] {
+        let backend = Fake::default();
+        match scenario {
+            "failure" => backend.wifi_failed.store(true, Ordering::SeqCst),
+            "invalid" => backend.wifi_invalid.store(true, Ordering::SeqCst),
+            _ => backend.wifi_changes_network.store(true, Ordering::SeqCst),
+        }
+        let (_dir, mut a) = authority(&backend).await;
+        let (_sender, mut control) = watch::channel(Control::default());
+        a.check(&backend, &mut control).await.unwrap();
+        assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 0, "{scenario}");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert!(a.schedule.ready(Instant::now() + Duration::from_secs(31)));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn sequential_ip_stage_remains_cancellable_and_bounded() {
+    for scenario in ["timeout", "sleep", "network"] {
+        let backend = Fake::default();
+        backend.pending_ip.store(true, Ordering::SeqCst);
+        let (_dir, mut a) = authority(&backend).await;
+        let (sender, mut control) = watch::channel(Control::default());
+        let interrupt = async {
+            if scenario == "timeout" {
+                return;
+            }
+            while !backend.ip_live.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            if scenario == "sleep" {
+                sender.send_modify(|c| {
+                    c.epoch += 1;
+                    c.sleeping = true;
+                });
+            } else {
+                *backend.network.lock().unwrap() = network("changed");
+            }
+        };
+        let (result, ()) = tokio::join!(a.check(&backend, &mut control), interrupt);
+        result.unwrap();
+        assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 1);
+        assert!(!backend.ip_live.load(Ordering::SeqCst));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert!(a.schedule.ready(Instant::now() + Duration::from_secs(31)));
+    }
 }
 
 #[test]
@@ -287,6 +426,7 @@ async fn no_wifi_retries_on_same_connection_then_applies_once() {
     a.check(&backend, &mut control).await.unwrap();
     assert!(!backend.wifi_live.load(Ordering::SeqCst));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 0);
     assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(29)));
     assert!(a.schedule.ready(Instant::now() + Duration::from_secs(30)));
     backend.pending_wifi.store(false, Ordering::SeqCst);

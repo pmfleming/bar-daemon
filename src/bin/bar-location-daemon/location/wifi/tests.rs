@@ -154,7 +154,7 @@ async fn transport_sends_wifi_only_and_bounds_failures_cooldowns_and_payloads() 
             "404 Not Found",
             r#"{"error":{"code":404}}"#.into(),
             false,
-            "error",
+            "not_recognised",
         ),
         (
             "429 Limited\r\nRetry-After: 7200",
@@ -208,6 +208,7 @@ async fn transport_sends_wifi_only_and_bounds_failures_cooldowns_and_payloads() 
         let result = fetch(&client, &url, sample_scan(), started).await;
         match expected {
             "fix" => assert!(matches!(result, Ok(LookupResult::Fix(_)))),
+            "not_recognised" => assert!(matches!(result, Ok(LookupResult::NotRecognised))),
             "limit" => {
                 assert!(matches!(result, Ok(LookupResult::Limited(d)) if d.as_secs() == 7200))
             }
