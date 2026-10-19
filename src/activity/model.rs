@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{Offset, Utc};
+use chrono::{DateTime, Offset, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
@@ -82,10 +82,13 @@ pub(crate) struct WorldClockState {
 
 impl WorldClockState {
     pub(super) fn new(timezone: &str, label: &str) -> Result<Self> {
+        Self::at(timezone, label, Utc::now())
+    }
+
+    pub(super) fn at(timezone: &str, label: &str, instant: DateTime<Utc>) -> Result<Self> {
         let zone: Tz = timezone
             .parse()
             .with_context(|| format!("parse world-clock timezone {timezone}"))?;
-        let instant = Utc::now();
         let now = instant.with_timezone(&zone);
         let city = timezone
             .rsplit('/')

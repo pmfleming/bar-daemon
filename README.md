@@ -18,6 +18,12 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Event-driven NixOS delayed-update readiness and read-only worker job status
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
 
+Activity location clocks derive their current offset, abbreviation and map regions
+locally from IANA timezones at one projection instant, independently of weather
+availability or cached forecast offsets. Invalid/missing zones retain row identity
+but publish `clock_unavailable: true`; consumers must not display numeric defaults
+as UTC. Weather cache, retry and availability semantics are unchanged.
+
 The package also provides **`bar-location-daemon`**, a separate Rust system service
 for GeoClue-first timezone updates and bounded failure retries. Confirmed GeoClue
 IP results are accepted directly; other results require matching canonical IP

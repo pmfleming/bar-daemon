@@ -2,6 +2,7 @@
 //! locale sorting, filtering and selection, not cross-source record synthesis.
 use super::model::{ActivityState, WeatherState, WorldClockState};
 use crate::model::{LocationSource, TimezoneState};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,6 +11,9 @@ pub(crate) struct Location {
     pub id: String,
     #[serde(flatten)]
     pub clock: WorldClockState,
+    /// Missing/invalid timezone: numeric defaults must not be presented as UTC.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clock_unavailable: bool,
     pub latitude: f64,
     pub longitude: f64,
     pub has_coordinates: bool,
@@ -26,6 +30,14 @@ pub(crate) struct Location {
 }
 
 pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Location> {
+    project_at(activity, local, Utc::now())
+}
+
+pub(crate) fn project_at(
+    activity: &ActivityState,
+    local: &TimezoneState,
+    instant: DateTime<Utc>,
+) -> Vec<Location> {
     let mut clocks = BTreeMap::new();
     // Deterministic duplicate resolution, independent of source ordering.
     let mut ordered: Vec<_> = activity.world_clocks.iter().collect();
@@ -39,18 +51,19 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
         locations.push(weather_location(
             weather,
             clocks.get(weather.timezone.as_str()).copied(),
+            instant,
         ));
         represented.insert(weather.timezone.as_str());
     }
     // One stable automatic row, independent of saved weather/home locations.
     // The authority supplies accepted GeoClue coordinates (possibly coarse IP
     // estimates), not verified physical position. No configuration is rewritten.
-    if let Some(fix) = &local.accepted_location
-        && let Ok(clock) = WorldClockState::new(&fix.timezone, "Current location")
-    {
+    if let Some(fix) = &local.accepted_location {
+        let (clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
         locations.push(Location {
             id: "current-location".into(),
             clock,
+            clock_unavailable,
             latitude: fix.latitude,
             longitude: fix.longitude,
             has_coordinates: true,
@@ -66,16 +79,11 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
         && !represented.contains(local.timezone.as_str())
         && !locations.iter().any(|location| location.home)
     {
+        let (clock, clock_unavailable) = clock_at(&local.timezone, &local.city, instant);
         locations.push(Location {
             id: format!("local:{}", local.timezone),
-            clock: WorldClockState {
-                timezone: local.timezone.clone(),
-                label: local.city.clone(),
-                city: local.city.clone(),
-                abbreviation: local.abbreviation.clone(),
-                utc_offset_seconds: local.utc_offset_seconds,
-                timezone_region_ids: local.timezone_region_ids.clone(),
-            },
+            clock,
+            clock_unavailable,
             home: true,
             ..Default::default()
         });
@@ -83,9 +91,11 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
     }
     for (timezone, clock) in clocks {
         if !represented.contains(timezone) {
+            let (clock, clock_unavailable) = clock_at(timezone, &clock.label, instant);
             locations.push(Location {
                 id: format!("clock:{timezone}"),
-                clock: clock.clone(),
+                clock,
+                clock_unavailable,
                 ..Default::default()
             });
         }
@@ -97,21 +107,35 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
     locations
 }
 
-fn weather_location(weather: &WeatherState, clock: Option<&WorldClockState>) -> Location {
-    let mut clock = clock.cloned().unwrap_or_default();
-    clock.timezone.clone_from(&weather.timezone);
-    if !weather.location.is_empty() {
-        clock.label.clone_from(&weather.location);
+fn clock_at(timezone: &str, label: &str, instant: DateTime<Utc>) -> (WorldClockState, bool) {
+    match WorldClockState::at(timezone, label, instant) {
+        Ok(clock) => (clock, false),
+        Err(_) => (
+            WorldClockState {
+                timezone: timezone.into(),
+                label: label.into(),
+                city: label.into(),
+                ..Default::default()
+            },
+            true,
+        ),
     }
-    if clock.city.is_empty() {
-        clock.city.clone_from(&clock.label);
-    }
-    clock.utc_offset_seconds = weather.utc_offset_seconds;
-    if !weather.timezone_region_ids.is_empty() {
-        clock
-            .timezone_region_ids
-            .clone_from(&weather.timezone_region_ids);
-    }
+}
+
+fn weather_location(
+    weather: &WeatherState,
+    saved: Option<&WorldClockState>,
+    instant: DateTime<Utc>,
+) -> Location {
+    let label = if weather.location.is_empty() {
+        saved.map(|clock| clock.label.as_str()).unwrap_or("")
+    } else {
+        &weather.location
+    };
+    // Clocks are local timezone calculations, not forecast telemetry. A failed
+    // first fetch has a zero offset; even a successful cached forecast can carry
+    // yesterday's DST offset. Never let either overwrite the current clock.
+    let (clock, clock_unavailable) = clock_at(&weather.timezone, label, instant);
     // Range checks also reject NaN and infinities. Invalid pairs become (0, 0).
     let has_coordinates =
         (-90.0..=90.0).contains(&weather.latitude) && (-180.0..=180.0).contains(&weather.longitude);
@@ -123,6 +147,7 @@ fn weather_location(weather: &WeatherState, clock: Option<&WorldClockState>) -> 
     Location {
         id: format!("weather:{}", weather.id),
         clock,
+        clock_unavailable,
         latitude,
         longitude,
         has_coordinates,
@@ -137,6 +162,99 @@ fn weather_location(weather: &WeatherState, clock: Option<&WorldClockState>) -> 
 mod tests {
     use super::*;
     use crate::model::AcceptedLocation;
+
+    #[test]
+    fn city_clocks_do_not_depend_on_forecast_availability_or_provider_offsets() {
+        let instant = "2026-10-19T12:26:00Z".parse::<DateTime<Utc>>().unwrap();
+        let cities = [
+            ("Amsterdam", "Europe/Amsterdam", 7200),
+            ("Dublin", "Europe/Dublin", 3600),
+            ("Hangzhou", "Asia/Shanghai", 28800),
+            ("Oklahoma City", "America/Chicago", -18000),
+            ("Taipei", "Asia/Taipei", 28800),
+        ];
+        for available in [false, true] {
+            let activity = ActivityState {
+                weather_locations: cities
+                    .iter()
+                    .map(|(name, zone, _)| WeatherState {
+                        id: (*name).into(),
+                        location: (*name).into(),
+                        timezone: (*zone).into(),
+                        available,
+                        utc_offset_seconds: 0,
+                        timezone_region_ids: vec!["stale-provider-region".into()],
+                        error: (!available).then(|| "Forecast unavailable".into()),
+                        ..Default::default()
+                    })
+                    .collect(),
+                // Matching saved clocks must not override current timezone data either.
+                world_clocks: vec![WorldClockState {
+                    timezone: "Europe/Amsterdam".into(),
+                    label: "Saved name".into(),
+                    utc_offset_seconds: -999,
+                    abbreviation: "stale".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let rows = project_at(&activity, &TimezoneState::default(), instant);
+            assert_eq!(rows.len(), cities.len());
+            for (name, zone, offset) in cities {
+                let row = rows
+                    .iter()
+                    .find(|r| r.id == format!("weather:{name}"))
+                    .unwrap();
+                let expected = WorldClockState::at(zone, name, instant).unwrap();
+                assert_eq!(row.clock, expected);
+                assert_eq!(row.clock.utc_offset_seconds, offset);
+                assert!(!row.clock_unavailable);
+                assert_eq!(row.weather.as_ref().unwrap().available, available);
+            }
+        }
+    }
+
+    #[test]
+    fn cached_forecasts_cannot_freeze_dst_and_invalid_zones_are_not_utc() {
+        let mut activity = ActivityState {
+            weather_locations: vec![WeatherState {
+                id: "home".into(),
+                location: "Amsterdam".into(),
+                timezone: "Europe/Amsterdam".into(),
+                available: true,
+                utc_offset_seconds: 7200,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for (date, offset) in [
+            ("2026-10-25T00:59:59Z", 7200),
+            ("2026-10-25T01:00:00Z", 3600),
+        ] {
+            let rows = project_at(&activity, &TimezoneState::default(), date.parse().unwrap());
+            assert_eq!(rows[0].clock.utc_offset_seconds, offset);
+            assert!(!rows[0].clock_unavailable);
+        }
+        let instant = "2026-10-19T12:26:00Z".parse().unwrap();
+        for zone in ["", "Invalid/Zone", "Etc/UTC"] {
+            activity.weather_locations[0].timezone = zone.into();
+            let rows = project_at(&activity, &TimezoneState::default(), instant);
+            assert_eq!(rows[0].id, "weather:home");
+            assert_eq!(rows[0].clock.label, "Amsterdam");
+            assert_eq!(rows[0].clock_unavailable, zone != "Etc/UTC");
+            if rows[0].clock_unavailable {
+                assert!(rows[0].clock.abbreviation.is_empty());
+                assert!(rows[0].clock.timezone_region_ids.is_empty());
+                assert_eq!(
+                    serde_json::to_value(&rows[0]).unwrap()["clock_unavailable"],
+                    true
+                );
+            } else {
+                assert_eq!(rows[0].clock.utc_offset_seconds, 0);
+                assert_eq!(rows[0].clock.abbreviation, "UTC");
+            }
+        }
+    }
 
     #[test]
     fn estimated_metadata_keeps_current_identity_without_changing_saved_locations() {

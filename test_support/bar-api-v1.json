@@ -2735,7 +2735,7 @@
           "weather": null
         },
         {
-          "abbreviation": "",
+          "abbreviation": "CET",
           "city": "Amsterdam",
           "has_coordinates": true,
           "has_weather": true,
@@ -2756,6 +2756,8 @@
           },
           "timezone": "Europe/Amsterdam",
           "timezone_region_ids": [
+            "Africa-Lagos",
+            "Africa-Casablanca",
             "Europe-Paris"
           ],
           "utc_offset_seconds": 3600,

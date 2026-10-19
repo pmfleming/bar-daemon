@@ -594,9 +594,14 @@ fn generated_contract_fixture() -> Value {
         serde_json::from_value(fixture["snapshot"]["activity"].clone()).expect("activity fixture");
     let local =
         serde_json::from_value(fixture["snapshot"]["timezone"].clone()).expect("timezone fixture");
+    // Match the example's observation time, not the season in which tests run.
     fixture["snapshot"]["activity"]["locations"] =
-        serde_json::to_value(crate::activity::locations::project(&activity, &local))
-            .expect("native locations");
+        serde_json::to_value(crate::activity::locations::project_at(
+            &activity,
+            &local,
+            chrono::DateTime::from_timestamp_millis(1766400000000).expect("fixture instant"),
+        ))
+        .expect("native locations");
     fixture
 }
 
