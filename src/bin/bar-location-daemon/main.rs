@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     version,
-    about = "Update the system timezone only after fresh Wi-Fi/IP agreement"
+    about = "Apply GeoClue timezones, confirming non-IP results with IP timezone agreement"
 )]
 struct Args {
     #[arg(long)]

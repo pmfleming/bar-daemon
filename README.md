@@ -19,7 +19,9 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
 
 The package also provides **`bar-location-daemon`**, a separate Rust system service
-for fresh Wi-Fi/IP timezone consensus and bounded failure retries. It replaces
+for GeoClue-first timezone updates and bounded failure retries. Confirmed GeoClue
+IP results are accepted directly; other results require matching canonical IP
+and GeoClue timezones, with no distance limit. It replaces
 the former Python location updater, not the session daemon's read-only timezone
 observer. Enable `nixosModules.location-timezone` with
 `services.location-timezone.enable = true`; see [location/timezone](docs/location-timezone.md).

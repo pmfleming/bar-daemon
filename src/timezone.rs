@@ -103,7 +103,9 @@ async fn accepted_location(connection: &zbus::Connection) -> Result<Option<Accep
                     && (-180.0..=180.0).contains(&fix.longitude)
                     && fix.verified_at.is_finite()
                     && fix.verified_at > 0.0
-                    && fix.timezone.parse::<Tz>().is_ok(),
+                    && fix.timezone.parse::<Tz>().is_ok()
+                    && fix.accuracy_meters.is_none_or(|a| a.is_finite() && a >= 0.0)
+                    && matches!(fix.source.as_str(), "" | "unknown" | "ip" | "non_ip"),
                 "invalid accepted location"
             );
         }

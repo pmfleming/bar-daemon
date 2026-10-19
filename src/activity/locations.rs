@@ -39,8 +39,8 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
         represented.insert(weather.timezone.as_str());
     }
     // One stable automatic row, independent of saved weather/home locations.
-    // The authority supplies only verified Wi-Fi coordinates; rejected fixes
-    // never reach this projection. No user configuration is rewritten.
+    // The authority supplies accepted GeoClue coordinates (possibly coarse IP
+    // estimates), not verified physical position. No configuration is rewritten.
     if let Some(fix) = &local.accepted_location
         && let Ok(clock) = WorldClockState::new(&fix.timezone, "Current location")
     {

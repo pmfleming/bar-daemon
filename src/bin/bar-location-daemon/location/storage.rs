@@ -1,3 +1,4 @@
+use super::policy::Source;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::{AtomicFilePolicy, read_bytes_bounded};
@@ -24,12 +25,14 @@ pub(super) struct Accepted {
     pub latitude: f64,
     pub longitude: f64,
     pub verified_at: f64,
+    #[serde(default)]
+    pub source: Source,
+    #[serde(default)]
+    pub accuracy_meters: Option<f64>,
 }
 impl State {
-    pub fn cooldown(&self, now: f64) -> Duration {
-        Duration::from_secs_f64(
-            (self.ip_not_before.max(self.wifi_not_before) - now).clamp(0.0, 365.0 * 86400.0),
-        )
+    pub fn geoclue_cooldown(&self, now: f64) -> Duration {
+        Duration::from_secs_f64((self.wifi_not_before - now).clamp(0.0, 365.0 * 86400.0))
     }
 }
 pub(super) struct Storage {

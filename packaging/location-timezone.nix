@@ -6,10 +6,11 @@
 }:
 let
   cfg = config.services.location-timezone;
+  geoclueAgent = config.services.geoclue2.package.override { withDemoAgent = true; };
 in
 {
   options.services.location-timezone = {
-    enable = lib.mkEnableOption "Rust Wi-Fi/IP timezone consensus daemon";
+    enable = lib.mkEnableOption "GeoClue-first timezone authority with conditional IP confirmation";
     package = lib.mkOption {
       type = lib.types.package;
       description = "bar-daemon package providing bar-location-daemon";
@@ -31,8 +32,17 @@ in
       }
     ];
     time.timeZone = null;
-    # This authority owns filtered NetworkManager -> beaconDB acquisition.
-    # Do not enable, disable or configure GeoClue for unrelated applications.
+    services.geoclue2 = {
+      enable = true;
+      package = lib.mkDefault ((import ./geoclue) pkgs.geoclue2);
+      enableNmea = lib.mkDefault false;
+      geoProviderUrl = lib.mkDefault "https://api.beacondb.net/v1/geolocate";
+      appConfig.location-timezone = {
+        isAllowed = true;
+        isSystem = true;
+        users = [ (toString config.ids.uids.automatic-timezoned) ];
+      };
+    };
     # Preserve the deployed account and state ownership during Python -> Rust migration.
     users.users.automatic-timezoned = {
       isSystemUser = true;
@@ -45,21 +55,36 @@ in
     environment.systemPackages = [ cfg.integrationPackage ];
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
-        if ((action.id == "org.freedesktop.timedate1.set-timezone"
-             || action.id == "org.freedesktop.NetworkManager.wifi.scan")
+        if (action.id == "org.freedesktop.timedate1.set-timezone"
             && subject.user == "automatic-timezoned") {
           return polkit.Result.YES;
         }
       });
     '';
+    # GeoClue 2.7 requires an agent associated with the requesting UID even
+    # for explicitly allowed system applications. This agent cannot set timezones.
+    systemd.services.location-timezone-agent = {
+      description = "GeoClue authorization agent for the timezone authority";
+      requires = [ "geoclue.service" ];
+      after = [ "geoclue.service" ];
+      serviceConfig = {
+        User = "automatic-timezoned";
+        ExecStart = "${geoclueAgent}/libexec/geoclue-2.0/demos/agent";
+        Restart = "on-failure";
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+      };
+    };
     # Same unit replaces the old Python ExecStart: no second timezone writer.
     systemd.services.location-timezone = {
-      description = "Rust location authority with fresh Wi-Fi/IP timezone consensus";
+      description = "GeoClue-first timezone authority with conditional IP confirmation";
       wantedBy = [ "multi-user.target" ];
+      requires = [ "location-timezone-agent.service" ];
       conflicts = [ "automatic-timezoned.service" ];
       after = [
         "automatic-timezoned.service"
         "NetworkManager.service"
+        "location-timezone-agent.service"
       ];
       environment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
       serviceConfig = {

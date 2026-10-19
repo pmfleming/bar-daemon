@@ -1,0 +1,261 @@
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff -ruN a/interface/org.freedesktop.GeoClue2.Location.xml b/interface/org.freedesktop.GeoClue2.Location.xml
+--- a/interface/org.freedesktop.GeoClue2.Location.xml	1969-12-31 17:00:01.000000000 -0700
++++ b/interface/org.freedesktop.GeoClue2.Location.xml	2026-10-19 01:27:03.366874950 -0600
+@@ -75,6 +75,12 @@
+     -->
+     <property name="Description" type="s" access="read"/>
+ 
++    <!-- Shelllist extension, not upstream GeoClue API. 0 = unknown,
++         1 = IP (IP-only request or explicit provider ipf fallback),
++         2 = non-IP. Missing/unknown values require IP confirmation.
++         This describes provider evidence, not proof of physical location. -->
++    <property name="SourceKind" type="u" access="read"/>
++
+ 
+     <!--
+         Timestamp:
+diff -ruN a/src/gclue-location.c b/src/gclue-location.c
+--- a/src/gclue-location.c	1969-12-31 17:00:01.000000000 -0700
++++ b/src/gclue-location.c	2026-10-19 01:26:35.308034385 -0600
+@@ -37,6 +37,7 @@
+ 
+ struct _GClueLocationPrivate {
+         char   *description;
++        guint source_kind;
+ 
+         gdouble longitude;
+         gdouble latitude;
+@@ -58,6 +59,7 @@
+         PROP_ALTITUDE,
+         PROP_SPEED,
+         PROP_HEADING,
++        PROP_SOURCE_KIND,
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GClueLocation,
+@@ -74,6 +76,9 @@
+         GClueLocation *location = GCLUE_LOCATION (object);
+ 
+         switch (property_id) {
++        case PROP_SOURCE_KIND:
++                g_value_set_uint (value, location->priv->source_kind);
++                break;
+         case PROP_DESCRIPTION:
+                 g_value_set_string (value,
+                                     gclue_location_get_description (location));
+@@ -182,6 +187,9 @@
+         GClueLocation *location = GCLUE_LOCATION (object);
+ 
+         switch (property_id) {
++        case PROP_SOURCE_KIND:
++                location->priv->source_kind = g_value_get_uint (value);
++                break;
+         case PROP_DESCRIPTION:
+                 gclue_location_set_description (location,
+                                                 g_value_get_string (value));
+@@ -261,6 +269,12 @@
+         glocation_class->get_property = gclue_location_get_property;
+         glocation_class->set_property = gclue_location_set_property;
+ 
++        /* Shelllist extension: 0 unknown, 1 IP, 2 non-IP. Never inferred from
++         * the public human-readable description or reported accuracy. */
++        pspec = g_param_spec_uint ("source-kind", "Source kind", "Location provenance",
++                                  0, 2, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++        g_object_class_install_property (glocation_class, PROP_SOURCE_KIND, pspec);
++
+         /**
+          * GClueLocation:description:
+          *
+@@ -784,6 +798,7 @@
+                  "accuracy", location->priv->accuracy,
+                  "altitude", location->priv->altitude,
+                  "timestamp", location->priv->timestamp,
++                 "source-kind", location->priv->source_kind,
+                  "speed", location->priv->speed,
+                  "heading", location->priv->heading,
+                  "description", location->priv->description,
+@@ -805,6 +820,7 @@
+ 
+         return g_object_new
+                 (GCLUE_TYPE_LOCATION,
++                 "source-kind", location->priv->source_kind,
+                  "latitude", location->priv->latitude,
+                  "longitude", location->priv->longitude,
+                  "accuracy", location->priv->accuracy,
+diff -ruN a/src/gclue-mozilla.c b/src/gclue-mozilla.c
+--- a/src/gclue-mozilla.c	1969-12-31 17:00:01.000000000 -0700
++++ b/src/gclue-mozilla.c	2026-10-19 01:44:14.681981025 -0600
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include <stdlib.h>
++#include <math.h>
+ #include <glib.h>
+ #include <json-glib/json-glib.h>
+ #include <string.h>
+@@ -337,6 +338,20 @@
+         return TRUE;
+ }
+ 
++/* Do not let JSON-GLib/GObject default invalid coordinates to zero and then
++ * attach trusted IP provenance to that fabricated position. */
++static gboolean
++read_number (JsonObject *object, const char *name, gdouble *value)
++{
++        JsonNode *node = json_object_get_member (object, name);
++        if (node == NULL || !JSON_NODE_HOLDS_VALUE (node) ||
++            (json_node_get_value_type (node) != G_TYPE_DOUBLE &&
++             json_node_get_value_type (node) != G_TYPE_INT64))
++                return FALSE;
++        *value = json_node_get_double (node);
++        return isfinite (*value);
++}
++
+ GClueLocation *
+ gclue_mozilla_parse_response (const char *json,
+                               const char *location_description,
+@@ -348,6 +363,15 @@
+         g_autofree char *desc_new = NULL;
+         GClueLocation *location;
+         gdouble latitude, longitude, accuracy;
++        /* This argument is the request builder's internal input-kind token,
++         * not a provider-supplied or public Location.Description string. */
++        guint source_kind = 0;
++        if (g_strcmp0 (location_description, "GeoIP") == 0)
++                source_kind = 1;
++        else if (g_strcmp0 (location_description, "WiFi") == 0 ||
++                 g_strcmp0 (location_description, "3GPP") == 0 ||
++                 g_strcmp0 (location_description, "3GPP + WiFi") == 0)
++                source_kind = 2;
+ 
+         parser = json_parser_new ();
+ 
+@@ -355,6 +379,8 @@
+                 return NULL;
+ 
+         node = json_parser_get_root (parser);
++        if (node == NULL || !JSON_NODE_HOLDS_OBJECT (node))
++                goto invalid_location;
+         object = json_node_get_object (node);
+ 
+         if (parse_server_error (object, error))
+@@ -363,7 +389,14 @@
+         if (json_object_has_member (object, "fallback")) {
+                 const char *fallback;
+ 
+-                fallback = json_object_get_string_member (object, "fallback");
++                JsonNode *fallback_node = json_object_get_member (object, "fallback");
++                fallback = JSON_NODE_HOLDS_VALUE (fallback_node) &&
++                           json_node_get_value_type (fallback_node) == G_TYPE_STRING
++                        ? json_node_get_string (fallback_node) : NULL;
++                /* Only explicit ipf is positive evidence of IP fallback.
++                 * An unrecognised/null fallback must not inherit IP trust. */
++                source_kind = g_strcmp0 (fallback, "ipf") == 0 ? 1 :
++                              g_strcmp0 (fallback, "lacf") == 0 ? 2 : 0;
+                 if (fallback && strlen (fallback)) {
+                         desc_new = g_strdup_printf ("%s fallback (from %s data)",
+                                                     fallback, location_description);
+@@ -371,16 +404,27 @@
+                 }
+         }
+ 
+-        loc_object = json_object_get_object_member (object, "location");
+-        latitude = json_object_get_double_member (loc_object, "lat");
+-        longitude = json_object_get_double_member (loc_object, "lng");
+-
+-        accuracy = json_object_get_double_member (object, "accuracy");
++        node = json_object_get_member (object, "location");
++        if (node == NULL || !JSON_NODE_HOLDS_OBJECT (node))
++                goto invalid_location;
++        loc_object = json_node_get_object (node);
++        if (!read_number (loc_object, "lat", &latitude) ||
++            !read_number (loc_object, "lng", &longitude) ||
++            !read_number (object, "accuracy", &accuracy) ||
++            latitude < -90 || latitude > 90 ||
++            longitude < -180 || longitude > 180 || accuracy < 0)
++                goto invalid_location;
+ 
+         location = gclue_location_new (latitude, longitude, accuracy,
+                                        location_description);
++        g_object_set (location, "source-kind", source_kind, NULL);
+ 
+         return location;
++
++invalid_location:
++        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                             "Invalid geolocation coordinates or accuracy");
++        return NULL;
+ }
+ 
+ const char *
+diff -ruN a/src/gclue-service-location.c b/src/gclue-service-location.c
+--- a/src/gclue-service-location.c	1969-12-31 17:00:01.000000000 -0700
++++ b/src/gclue-service-location.c	2026-10-19 01:26:52.308936265 -0600
+@@ -145,9 +145,12 @@
+                 GClueLocation *loc;
+                 gdouble altitude;
+                 GVariant *timestamp;
++                guint source_kind;
+ 
+                 location = GCLUE_DBUS_LOCATION (object);
+                 loc = g_value_get_object (value);
++                g_object_get (loc, "source-kind", &source_kind, NULL);
++                gclue_dbus_location_set_source_kind (location, source_kind);
+                 gclue_dbus_location_set_latitude
+                         (location, gclue_location_get_latitude (loc));
+                 gclue_dbus_location_set_longitude
+diff -ruN a/src/gclue-wifi.c b/src/gclue-wifi.c
+--- a/src/gclue-wifi.c	1969-12-31 17:00:01.000000000 -0700
++++ b/src/gclue-wifi.c	2026-10-19 01:41:42.746776411 -0600
+@@ -1434,8 +1434,9 @@
+ 
+                         wifi->priv->cache_hits++;
+ 
+-                        /* Duplicate the location so its timestamp is updated. */
+-                        new_location = gclue_location_duplicate_fresh (cached_location);
++                        /* Preserve observation age across cache hits. A new
++                         * client/request is not a new provider observation. */
++                        new_location = gclue_location_duplicate (cached_location);
+                         gclue_location_source_set_location (GCLUE_LOCATION_SOURCE (source), new_location);
+ 
+                         g_task_return_pointer (task, g_steal_pointer (&new_location), g_object_unref);
+diff -ruN a/src/meson.build b/src/meson.build
+--- a/src/meson.build	1969-12-31 17:00:01.000000000 -0700
++++ b/src/meson.build	2026-10-19 01:40:00.033674001 -0600
+@@ -13,8 +13,7 @@
+                  libgeoclue_public_api_inc,
+                  include_directories('..') ]
+ 
+-sources += [ 'gclue-main.c',
+-             'gclue-3g-tower.h',
++sources += [ 'gclue-3g-tower.h',
+              'gclue-client-info.h', 'gclue-client-info.c',
+              'gclue-config.h', 'gclue-config.c',
+              'gclue-error.h', 'gclue-error.c',
+@@ -65,7 +64,7 @@
+ c_args = [ '-DG_LOG_DOMAIN="Geoclue"' ]
+ link_with = [ libgeoclue_public_api ]
+ executable('geoclue',
+-           sources,
++           sources + ['gclue-main.c'],
+            link_with: link_with,
+            include_directories: include_dirs,
+            c_args: c_args,
+@@ -73,6 +72,15 @@
+            install: true,
+            install_dir: libexecdir)
+ 
++# Test the actual parser/copy implementation, without running the daemon.
++provenance_test = executable('location-provenance-test',
++           sources + ['provenance-test.c'],
++           link_with: link_with,
++           include_directories: include_dirs,
++           c_args: c_args,
++           dependencies: geoclue_deps)
++test('location-provenance', provenance_test)
++
+ dbus_interface = join_paths(dbus_interface_dir, 'org.freedesktop.GeoClue2.xml')
+ agent_dbus_interface = join_paths(dbus_interface_dir, 'org.freedesktop.GeoClue2.Agent.xml')
+ pkgconf = import('pkgconfig')

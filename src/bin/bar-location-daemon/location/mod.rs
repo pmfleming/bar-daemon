@@ -2,16 +2,16 @@
 mod bus;
 #[cfg(test)]
 mod bus_tests;
+mod geoclue;
 mod http;
 mod policy;
 mod reader;
 mod storage;
 #[cfg(test)]
 mod tests;
-mod wifi;
 
 use anyhow::{Context, Result};
-use policy::{Decision, Fix, Network, Schedule, Zones};
+use policy::{Decision, Fix, Network, Schedule, Source, Zones};
 use std::{path::PathBuf, time::Duration};
 use storage::{Accepted, State, Storage};
 use tokio::{
@@ -34,7 +34,7 @@ trait Backend {
     async fn observe(&self) -> Result<Observation>;
     async fn timezone(&self) -> Result<String>;
     async fn set_timezone(&self, zone: &str) -> Result<()>;
-    async fn wifi(&self, started: f64) -> Result<http::LookupResult>;
+    async fn geoclue(&self, started: f64) -> Result<Fix>;
     async fn ip(&self) -> http::LookupResult;
 }
 fn wall_time() -> f64 {
@@ -53,7 +53,7 @@ struct Authority {
 impl Authority {
     async fn new(storage: Storage, zones: Zones, backend: &impl Backend) -> Result<Self> {
         let state = storage.load()?;
-        storage.save(&state).await?; // migrate Python quota fields without losing accepted state/cooldowns
+        storage.save(&state).await?;
         Ok(Self {
             storage,
             state,
@@ -104,8 +104,6 @@ impl Authority {
                         } else if self.schedule.ready(Instant::now()) {
                             self.check(backend, &mut control).await?;
                         } else if changed {
-                            // Connectivity flicker must not leave an obsolete offline
-                            // warning on a completed, now-online connection.
                             self.storage
                                 .status(if self.schedule.due.is_some() {
                                     "Waiting to check current location…"
@@ -132,8 +130,10 @@ impl Authority {
     async fn finish(&mut self, decision: Decision) -> Result<()> {
         let message = match decision {
             Decision::Retry(reason) => {
+                // Provider cooldowns gate their own calls, not the whole pipeline.
+                // In particular an IP checker cooldown cannot block GeoClue-IP.
                 self.schedule
-                    .retry(Instant::now(), self.state.cooldown(wall_time()));
+                    .retry(Instant::now(), self.state.geoclue_cooldown(wall_time()));
                 tracing::info!(
                     reason,
                     outcome = "retry",
@@ -170,21 +170,25 @@ impl Authority {
         backend: &impl Backend,
         control: &mut watch::Receiver<Control>,
     ) -> Result<()> {
-        if !self.state.cooldown(wall_time()).is_zero() {
+        // The default GeoClue endpoint is the retired direct beaconDB endpoint.
+        // Honour an outstanding legacy cooldown rather than bypassing it on upgrade.
+        if !self.state.geoclue_cooldown(wall_time()).is_zero() {
             return self
-                .finish(Decision::Retry("Location provider rate limited"))
+                .finish(Decision::Retry("GeoClue provider migration cooldown"))
                 .await;
         }
         self.storage.status("Checking current location…").await?;
-        tracing::info!("acquiring filtered Wi-Fi and independent IP evidence");
+        tracing::info!("asking GeoClue; IP confirmation only for non-IP or unknown provenance");
         let started = wall_time();
         let epoch = control.borrow().epoch;
         let acquired = self.acquire(backend, control, started).await?;
-        let (wifi, ip) = match acquired {
+        // Persist an observed 429 before acting on any simultaneous cancellation.
+        self.storage.save(&self.state).await?;
+        let (geo, ip) = match acquired {
             Ok(evidence) => evidence,
             Err(decision) => return self.finish(decision).await,
         };
-        let zone = match self.zones.agree(&wifi, &ip, started, wall_time()) {
+        let zone = match self.zones.decide(&geo, ip.as_ref(), started, wall_time()) {
             Ok(zone) => zone,
             Err(decision) => return self.finish(decision).await,
         };
@@ -208,8 +212,7 @@ impl Authority {
         }
         self.state.write_pending = true;
         self.storage.save(&self.state).await?;
-        // Check after persistence, immediately before the privileged call. Never
-        // accept an acquisition from an old network or across a sleep/reload event.
+        // Recheck after persistence, immediately before the privileged call.
         let observed = backend.observe().await;
         let changed = control.borrow();
         let valid = observed.is_ok_and(|s| {
@@ -244,21 +247,23 @@ impl Authority {
                 self.baseline = actual;
                 self.state.accepted = Some(Accepted {
                     timezone: zone,
-                    latitude: wifi.latitude,
-                    longitude: wifi.longitude,
+                    latitude: geo.latitude,
+                    longitude: geo.longitude,
                     verified_at: wall_time(),
+                    source: geo.source,
+                    accuracy_meters: Some(geo.accuracy),
                 });
                 self.state.write_pending = false;
                 self.storage.save(&self.state).await?;
-                tracing::info!(outcome = "accepted", verified_timezone = %self.baseline, timezone_changed = needs_write, current_location = "updated", retry = "new connection or explicit reload", "location check finished");
+                tracing::info!(outcome = "accepted", verified_timezone = %self.baseline,
+                    timezone_changed = needs_write, source = ?geo.source, "location check finished");
                 self.schedule.complete();
                 self.last_result.clear();
                 self.storage.status("").await
             }
             Err(error) => {
                 tracing::warn!(error = %error, "timezone application or verification failed");
-                // Unknown application is not a transient lookup failure. Keep the
-                // durable intent fence across process death; require explicit reload.
+                // Keep durable intent across process death; explicit recovery only.
                 self.state.paused = true;
                 self.storage.save(&self.state).await?;
                 self.finish(Decision::Stop(
@@ -273,72 +278,68 @@ impl Authority {
         backend: &impl Backend,
         control: &mut watch::Receiver<Control>,
         started: f64,
-    ) -> Result<Result<(Fix, Fix), Decision>> {
-        let wifi = backend.wifi(started);
-        // Creating this async future does not issue a request. It is polled only
-        // after usable Wi-Fi evidence and a fresh connection/control check.
-        let ip = backend.ip();
-        tokio::pin!(wifi, ip);
-        let mut wifi_fix = None;
-        let mut ip_fix = None;
-        let mut ip_allowed = false;
+    ) -> Result<Result<(Fix, Option<Fix>), Decision>> {
         let epoch = control.borrow().epoch;
+        let network = self.schedule.network.clone();
+        let stage_control = control.clone();
         let deadline = tokio::time::sleep(Duration::from_secs(90));
         tokio::pin!(deadline);
+        let deadline_at = deadline.deadline();
+        let lookup = async {
+            let geo = match backend.geoclue(started).await {
+                Ok(fix) => fix,
+                Err(error) => {
+                    tracing::warn!(error = %error, "GeoClue acquisition failed");
+                    return Ok(Err(Decision::Retry("GeoClue location unavailable")));
+                }
+            };
+            if let Err(decision) = self.zones.geoclue_zone(&geo, started, wall_time()) {
+                return Ok(Err(decision));
+            }
+            tracing::info!(source = ?geo.source, accuracy_meters = geo.accuracy,
+                observation_age_seconds = wall_time() - geo.timestamp, "GeoClue evidence received");
+            if geo.source == Source::Ip {
+                return Ok(Ok((geo, None)));
+            }
+            if self.state.ip_not_before > wall_time() {
+                return Ok(Err(Decision::Retry("IP confirmation rate limited")));
+            }
+            let observed = backend.observe().await;
+            let current = stage_control.borrow();
+            let valid = observed
+                .is_ok_and(|s| !s.sleeping && s.network == network && s.network.is_some())
+                && current.epoch == epoch
+                && !current.sleeping
+                && !current.shutdown
+                && Instant::now() < deadline_at;
+            drop(current);
+            if !valid {
+                return Ok(Err(Decision::Retry("Location check interrupted")));
+            }
+            // Sequential by construction; no IP request for GeoClue-IP results.
+            match backend.ip().await {
+                http::LookupResult::Fix(ip) => Ok(Ok((geo, Some(ip)))),
+                http::LookupResult::Limited(delay) => {
+                    self.state.ip_not_before = self
+                        .state
+                        .ip_not_before
+                        .max(wall_time() + delay.as_secs_f64());
+                    // No await after observing 429: the outer caller persists it
+                    // outside the cancellable future before processing the result.
+                    Ok(Err(Decision::Retry("IP confirmation rate limited")))
+                }
+                http::LookupResult::Unavailable => {
+                    Ok(Err(Decision::Retry("IP confirmation unavailable")))
+                }
+            }
+        };
+        tokio::pin!(lookup);
         let mut poll = tokio::time::interval(Duration::from_secs(5));
         poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            if wifi_fix.is_some() && !ip_allowed {
-                let observed = backend.observe().await;
-                let current = control.borrow();
-                let valid = observed.is_ok_and(|s| {
-                    !s.sleeping && s.network == self.schedule.network && s.network.is_some()
-                }) && current.epoch == epoch
-                    && !current.sleeping
-                    && !current.shutdown
-                    && Instant::now() < deadline.deadline();
-                if !valid {
-                    return Ok(Err(Decision::Retry("Location check interrupted")));
-                }
-                ip_allowed = true;
-            }
             tokio::select! {
-                // Persist a ready 429 before processing a simultaneous cancellation.
                 biased;
-                result = &mut ip, if ip_allowed && ip_fix.is_none() => match result {
-                    http::LookupResult::Fix(fix) => {
-                        tracing::info!(provider = "ipapi.co", reported_timezone = %fix.timezone, country_code = %fix.country_code, "IP evidence received");
-                        ip_fix = Some(fix);
-                    },
-                    http::LookupResult::Limited(delay) => {
-                        self.state.ip_not_before = self.state.ip_not_before.max(wall_time() + delay.as_secs_f64());
-                        self.storage.save(&self.state).await?;
-                        return Ok(Err(Decision::Retry("Location provider rate limited")));
-                    }
-                    http::LookupResult::Unavailable | http::LookupResult::NotRecognised =>
-                        return Ok(Err(Decision::Retry("IP location unavailable"))),
-                },
-                result = &mut wifi, if wifi_fix.is_none() => match result {
-                    Ok(http::LookupResult::Fix(fix)) => {
-                        if !fix.usable_wifi(started, wall_time()) {
-                            return Ok(Err(Decision::Retry("Fresh Wi-Fi location unavailable")));
-                        }
-                        tracing::info!(source = %fix.source, accuracy_meters = fix.accuracy, observation_age_seconds = wall_time() - fix.timestamp, "filtered Wi-Fi location found");
-                        wifi_fix = Some(fix);
-                    },
-                    Ok(http::LookupResult::Limited(delay)) => {
-                        self.state.wifi_not_before = self.state.wifi_not_before.max(wall_time() + delay.as_secs_f64());
-                        self.storage.save(&self.state).await?;
-                        return Ok(Err(Decision::Retry("Wi-Fi location provider rate limited")));
-                    },
-                    Ok(http::LookupResult::NotRecognised) =>
-                        return Ok(Err(Decision::Stop("Wi-Fi location not recognised"))),
-                    Ok(http::LookupResult::Unavailable) => return Ok(Err(Decision::Retry("Wi-Fi location unavailable"))),
-                    Err(error) => {
-                        tracing::warn!(error = %error, "Wi-Fi acquisition failed");
-                        return Ok(Err(Decision::Retry("Wi-Fi location unavailable")));
-                    },
-                },
+                result = &mut lookup => return result,
                 changed = control.changed() => {
                     changed.context("location control ended")?;
                     return Ok(Err(Decision::Retry("Location check interrupted")));
@@ -346,15 +347,9 @@ impl Authority {
                 _ = &mut deadline => return Ok(Err(Decision::Retry("Location acquisition timed out"))),
                 _ = poll.tick() => {
                     let valid = backend.observe().await.is_ok_and(|s|
-                        !s.sleeping && s.network == self.schedule.network && s.network.is_some());
+                        !s.sleeping && s.network == network && s.network.is_some());
                     if !valid { return Ok(Err(Decision::Retry("Network or sleep state changed"))); }
                 }
-            }
-            if wifi_fix.is_some() && ip_fix.is_some() {
-                return Ok(Ok((
-                    wifi_fix.take().expect("checked Wi-Fi"),
-                    ip_fix.take().expect("checked IP"),
-                )));
             }
         }
     }
@@ -365,7 +360,7 @@ pub async fn run(
     runtime_directory: PathBuf,
     tzdata: PathBuf,
 ) -> Result<()> {
-    let zones = Zones::load(&tzdata).context("load timezone boundaries and country metadata")?;
+    let zones = Zones::load(&tzdata).context("load timezone boundaries and aliases")?;
     let connection = tokio::time::timeout(
         Duration::from_secs(10),
         zbus::connection::Builder::system()?

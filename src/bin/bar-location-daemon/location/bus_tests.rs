@@ -1,22 +1,26 @@
-//! Real D-Bus serialization on a private bus; never touches host services.
+//! Actual GeoClue/NM/timedated serialization on a private bus; no host services.
 use super::*;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
-use zbus::Connection;
-use zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::{Connection, object_server::SignalEmitter};
+use zvariant::OwnedObjectPath;
 
 #[derive(Default)]
 struct Services {
-    last_scan: AtomicI64,
-    requested: Notify,
+    fresh: AtomicBool,
+    malformed_time: AtomicBool,
+    deny_start: AtomicBool,
+    source: AtomicU32,
+    desktop: Mutex<String>,
+    accuracy: AtomicU32,
+    started: Notify,
+    deleted: Notify,
     writes: AtomicUsize,
-    completed_scans: AtomicUsize,
+    ip_calls: AtomicUsize,
     zone: Mutex<String>,
-    usable_aps: AtomicBool,
-    deny_scan: AtomicBool,
 }
 struct NetworkManager;
 #[zbus::interface(name = "org.freedesktop.NetworkManager")]
@@ -36,81 +40,6 @@ impl NetworkManager {
     #[zbus(property)]
     fn primary_connection(&self) -> OwnedObjectPath {
         "/connection/a".try_into().unwrap()
-    }
-    fn get_devices(&self) -> Vec<OwnedObjectPath> {
-        vec!["/fixture/wifi".try_into().unwrap()]
-    }
-}
-struct Device;
-#[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
-impl Device {
-    #[zbus(property)]
-    fn device_type(&self) -> u32 {
-        2
-    }
-    #[zbus(property)]
-    fn managed(&self) -> bool {
-        true
-    }
-}
-struct Wireless(Arc<Services>);
-#[zbus::interface(name = "org.freedesktop.NetworkManager.Device.Wireless")]
-impl Wireless {
-    #[zbus(property)]
-    fn last_scan(&self) -> i64 {
-        self.0.last_scan.load(Ordering::SeqCst)
-    }
-    fn request_scan(
-        &self,
-        options: std::collections::HashMap<String, OwnedValue>,
-    ) -> zbus::fdo::Result<()> {
-        assert!(options.is_empty());
-        self.0.requested.notify_one();
-        if self.0.deny_scan.load(Ordering::SeqCst) {
-            Err(zbus::fdo::Error::AccessDenied("scan denied".into()))
-        } else {
-            Ok(())
-        }
-    }
-    fn get_all_access_points(&self) -> Vec<OwnedObjectPath> {
-        (0..7)
-            .map(|i| format!("/fixture/ap{i}").try_into().unwrap())
-            .collect()
-    }
-}
-struct AccessPoint(Arc<Services>, usize);
-#[zbus::interface(name = "org.freedesktop.NetworkManager.AccessPoint")]
-impl AccessPoint {
-    #[zbus(property)]
-    fn hw_address(&self) -> &str {
-        match self.1 {
-            0 => "00:11:22:33:44:55",
-            1 => "00:11:22:33:44:66",
-            2 => "7a:11:22:29:92:b4",
-            3 => "00:11:22:33:44:77",
-            4 => "00:11:22:33:44:88",
-            5 => "00:11:22:33:44:99",
-            _ => "00:11:22:33:44:55", // duplicate is not independent evidence
-        }
-    }
-    #[zbus(property)]
-    fn ssid(&self) -> Vec<u8> {
-        if self.1 == 3 {
-            b"private_nomap".to_vec()
-        } else {
-            b"fixture".to_vec()
-        }
-    }
-    #[zbus(property)]
-    fn strength(&self) -> u8 {
-        if self.1 == 5 { 1 } else { 80 }
-    }
-    #[zbus(property)]
-    fn last_seen(&self) -> i32 {
-        if self.1 == 4 || (self.1 == 1 && !self.0.usable_aps.load(Ordering::SeqCst)) {
-            return 0;
-        }
-        (self.0.last_scan.load(Ordering::SeqCst) / 1000) as i32
     }
 }
 struct Login;
@@ -135,6 +64,135 @@ impl Timedated {
         *self.0.zone.lock().unwrap() = zone.into();
     }
 }
+struct Manager(Arc<Services>);
+#[zbus::interface(name = "org.freedesktop.GeoClue2.Manager")]
+impl Manager {
+    fn get_client(&self) -> OwnedObjectPath {
+        "/fixture/client".try_into().unwrap()
+    }
+    fn delete_client(&self, path: OwnedObjectPath) {
+        assert_eq!(path.as_str(), "/fixture/client");
+        self.0.deleted.notify_one();
+    }
+}
+struct Client(Arc<Services>);
+#[zbus::interface(name = "org.freedesktop.GeoClue2.Client")]
+impl Client {
+    #[zbus(property)]
+    fn desktop_id(&self) -> String {
+        self.0.desktop.lock().unwrap().clone()
+    }
+    #[zbus(property)]
+    fn set_desktop_id(&self, value: &str) {
+        *self.0.desktop.lock().unwrap() = value.into();
+    }
+    #[zbus(property)]
+    fn requested_accuracy_level(&self) -> u32 {
+        self.0.accuracy.load(Ordering::SeqCst)
+    }
+    #[zbus(property)]
+    fn set_requested_accuracy_level(&self, value: u32) {
+        self.0.accuracy.store(value, Ordering::SeqCst);
+    }
+    #[zbus(property)]
+    fn location(&self) -> OwnedObjectPath {
+        "/fixture/location".try_into().unwrap()
+    }
+    fn start(&self) -> zbus::fdo::Result<()> {
+        assert_eq!(*self.0.desktop.lock().unwrap(), "location-timezone");
+        assert_eq!(self.0.accuracy.load(Ordering::SeqCst), 4);
+        self.0.started.notify_one();
+        if self.0.deny_start.load(Ordering::SeqCst) {
+            Err(zbus::fdo::Error::AccessDenied("denied".into()))
+        } else {
+            Ok(())
+        }
+    }
+    async fn publish(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        self.0.fresh.store(true, Ordering::SeqCst);
+        self.0.malformed_time.store(false, Ordering::SeqCst);
+        Self::location_updated(
+            &emitter,
+            "/fixture/location".try_into().unwrap(),
+            "/fixture/location".try_into().unwrap(),
+        )
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+    #[zbus(signal)]
+    async fn location_updated(
+        emitter: &SignalEmitter<'_>,
+        old: OwnedObjectPath,
+        new: OwnedObjectPath,
+    ) -> zbus::Result<()>;
+}
+struct Location(Arc<Services>);
+#[zbus::interface(name = "org.freedesktop.GeoClue2.Location")]
+impl Location {
+    #[zbus(property)]
+    fn latitude(&self) -> f64 {
+        53.3498
+    }
+    #[zbus(property)]
+    fn longitude(&self) -> f64 {
+        -6.2603
+    }
+    #[zbus(property)]
+    fn accuracy(&self) -> f64 {
+        300_000.0
+    }
+    #[zbus(property)]
+    fn description(&self) -> &str {
+        "GeoIP"
+    } // deliberately misleading for non-IP/unknown
+    #[zbus(property)]
+    fn source_kind(&self) -> u32 {
+        self.0.source.load(Ordering::SeqCst)
+    }
+    #[zbus(property)]
+    fn timestamp(&self) -> (u64, u64) {
+        let seconds = wall_time() as u64;
+        (
+            if self.0.fresh.load(Ordering::SeqCst) {
+                seconds
+            } else {
+                seconds - 600
+            },
+            if self.0.malformed_time.load(Ordering::SeqCst) {
+                1_000_000
+            } else {
+                0
+            },
+        )
+    }
+}
+struct LegacyLocation;
+#[zbus::interface(name = "org.freedesktop.GeoClue2.Location")]
+impl LegacyLocation {
+    #[zbus(property)]
+    fn latitude(&self) -> f64 {
+        53.3498
+    }
+    #[zbus(property)]
+    fn longitude(&self) -> f64 {
+        -6.2603
+    }
+    #[zbus(property)]
+    fn accuracy(&self) -> f64 {
+        300_000.0
+    }
+    #[zbus(property)]
+    fn description(&self) -> &str {
+        "ipf fallback (from WiFi data)"
+    }
+    #[zbus(property)]
+    fn timestamp(&self) -> (u64, u64) {
+        (wall_time() as u64, 0)
+    }
+}
 struct Peer {
     bus: bus::Bus,
     state: Arc<Services>,
@@ -149,21 +207,17 @@ impl Backend for Peer {
     async fn set_timezone(&self, zone: &str) -> Result<()> {
         self.bus.set_timezone(zone).await
     }
-    async fn wifi(&self, _: f64) -> Result<http::LookupResult> {
-        let _scan = wifi::scan(&self.bus.connection).await?;
-        self.state.completed_scans.fetch_add(1, Ordering::SeqCst);
-        // HTTP serialization/response policy are independently exercised by wifi::tests.
-        Ok(http::LookupResult::Fix(tests::fix("WiFi")))
+    async fn geoclue(&self, started: f64) -> Result<Fix> {
+        geoclue::locate_on(&self.bus.connection, started).await
     }
     async fn ip(&self) -> http::LookupResult {
-        http::LookupResult::Fix(tests::fix("IP"))
+        self.state.ip_calls.fetch_add(1, Ordering::SeqCst);
+        http::LookupResult::Fix(tests::fix(Source::Ip))
     }
 }
-
-async fn peer() -> (tokio::process::Child, Connection, Peer, Arc<Services>) {
+async fn peer(legacy: bool) -> (tokio::process::Child, Connection, Peer, Arc<Services>) {
     let state = Arc::new(Services::default());
     *state.zone.lock().unwrap() = "America/Edmonton".into();
-    state.usable_aps.store(true, Ordering::SeqCst);
     use tokio::io::AsyncBufReadExt;
     let mut daemon = tokio::process::Command::new("dbus-daemon")
         .args([
@@ -185,9 +239,11 @@ async fn peer() -> (tokio::process::Child, Connection, Peer, Arc<Services>) {
         .unwrap()
         .unwrap()
         .unwrap();
-    let mut server = zbus::connection::Builder::address(address.as_str())
+    let server = zbus::connection::Builder::address(address.as_str())
         .unwrap()
         .name("org.freedesktop.NetworkManager")
+        .unwrap()
+        .name("org.freedesktop.GeoClue2")
         .unwrap()
         .name("org.freedesktop.login1")
         .unwrap()
@@ -199,15 +255,19 @@ async fn peer() -> (tokio::process::Child, Connection, Peer, Arc<Services>) {
         .unwrap()
         .serve_at("/org/freedesktop/timedate1", Timedated(state.clone()))
         .unwrap()
-        .serve_at("/fixture/wifi", Device)
+        .serve_at("/org/freedesktop/GeoClue2/Manager", Manager(state.clone()))
         .unwrap()
-        .serve_at("/fixture/wifi", Wireless(state.clone()))
+        .serve_at("/fixture/client", Client(state.clone()))
         .unwrap();
-    for i in 0..7 {
-        server = server
-            .serve_at(format!("/fixture/ap{i}"), AccessPoint(state.clone(), i))
-            .unwrap();
-    }
+    let server = if legacy {
+        server
+            .serve_at("/fixture/location", LegacyLocation)
+            .unwrap()
+    } else {
+        server
+            .serve_at("/fixture/location", Location(state.clone()))
+            .unwrap()
+    };
     let client = zbus::connection::Builder::address(address.as_str())
         .unwrap()
         .method_timeout(Duration::from_secs(1))
@@ -227,84 +287,89 @@ async fn peer() -> (tokio::process::Child, Connection, Peer, Arc<Services>) {
     )
 }
 
-async fn publish_scan(state: &Services) {
-    state.requested.notified().await;
-    // LastSeen is whole seconds: publish strictly after the request's second.
-    let now = wifi::boottime_ms().unwrap();
-    tokio::time::sleep(Duration::from_millis((1100 - now % 1000) as u64)).await;
-    state
-        .last_scan
-        .store(wifi::boottime_ms().unwrap(), Ordering::SeqCst);
+#[tokio::test]
+async fn real_bus_provenance_controls_ip_confirmation_not_description_or_accuracy() {
+    for (legacy, source) in [(false, 1), (false, 2), (false, 0), (false, 999), (true, 1)] {
+        let (_daemon, _server, peer, state) = peer(legacy).await;
+        state.fresh.store(true, Ordering::SeqCst);
+        state.source.store(source, Ordering::SeqCst);
+        let (_dir, mut a) = tests::authority(&peer).await;
+        a.schedule
+            .observe(peer.observe().await.unwrap().network, Instant::now());
+        let (_sender, mut control) = watch::channel(Control::default());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            a.check(&peer, &mut control).await.unwrap();
+            assert!(a.state.accepted.is_some(), "{}", a.last_result);
+            state.deleted.notified().await;
+        })
+        .await
+        .unwrap();
+        assert_eq!(state.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            state.ip_calls.load(Ordering::SeqCst),
+            usize::from(legacy || source != 1)
+        );
+        assert_eq!(
+            a.state.accepted.as_ref().unwrap().source,
+            if legacy {
+                Source::Unknown
+            } else {
+                Source::from_geoclue(source)
+            }
+        );
+    }
 }
 
 #[tokio::test]
-async fn real_bus_waits_for_new_scan_then_verifies_one_write() {
-    let (_daemon, _server, peer, state) = peer().await;
-    let (_dir, mut authority) = tests::authority(&peer).await;
-    authority
-        .schedule
-        .observe(peer.observe().await.unwrap().network, Instant::now());
-    let (_sender, mut control) = watch::channel(Control::default());
-    let publish = async {
-        publish_scan(&state).await;
+async fn stale_or_malformed_fix_waits_for_update_then_cleans_up() {
+    for malformed in [false, true] {
+        let (_daemon, _server, peer, state) = peer(false).await;
+        state.source.store(1, Ordering::SeqCst);
+        state.fresh.store(malformed, Ordering::SeqCst);
+        state.malformed_time.store(malformed, Ordering::SeqCst);
+        let publish = async {
+            state.started.notified().await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let client = zbus::Proxy::new(
+                &peer.bus.connection,
+                "org.freedesktop.GeoClue2",
+                "/fixture/client",
+                "org.freedesktop.GeoClue2.Client",
+            )
+            .await
+            .unwrap();
+            client.call::<_, _, ()>("Publish", &()).await.unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (result, ()) = tokio::join!(peer.geoclue(wall_time()), publish);
+            assert_eq!(result.unwrap().source, Source::Ip);
+            state.deleted.notified().await;
+        })
+        .await
+        .unwrap();
         assert_eq!(state.writes.load(Ordering::SeqCst), 0);
-    };
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let (result, ()) = tokio::join!(authority.check(&peer, &mut control), publish);
-        result.unwrap();
-    })
-    .await
-    .unwrap();
-    assert_eq!(state.completed_scans.load(Ordering::SeqCst), 1);
-    assert_eq!(state.writes.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        authority.storage.load().unwrap().accepted.unwrap().timezone,
-        "Europe/Dublin"
-    );
-}
-
-#[tokio::test]
-async fn filtered_stale_and_duplicate_aps_cannot_supply_missing_evidence() {
-    let (_daemon, _server, peer, state) = peer().await;
-    state.usable_aps.store(false, Ordering::SeqCst);
-    let (result, ()) = tokio::join!(peer.wifi(wall_time()), publish_scan(&state));
-    assert!(
-        result.is_err(),
-        "one good AP plus duplicates/unsuitable APs is insufficient"
-    );
-    assert_eq!(state.completed_scans.load(Ordering::SeqCst), 0);
-    assert_eq!(state.writes.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn cached_scan_is_not_accepted_and_cancellation_cannot_finish_acquisition() {
-    let (_daemon, _server, peer, state) = peer().await;
-    state
-        .last_scan
-        .store(wifi::boottime_ms().unwrap() - 5000, Ordering::SeqCst);
-    let mut pending = Box::pin(peer.wifi(wall_time()));
-    tokio::select! {
-        _ = &mut pending => panic!("cached scan must not complete"),
-        _ = state.requested.notified() => {},
     }
-    tokio::select! {
-        _ = &mut pending => panic!("must wait for LastScan to advance"),
-        _ = tokio::time::sleep(Duration::from_millis(50)) => {},
-    }
-    drop(pending);
-    state
-        .last_scan
-        .store(wifi::boottime_ms().unwrap(), Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(state.completed_scans.load(Ordering::SeqCst), 0);
-    assert_eq!(state.writes.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
-async fn scan_denied_never_falls_back_to_cached_aps() {
-    let (_daemon, _server, peer, state) = peer().await;
-    state.deny_scan.store(true, Ordering::SeqCst);
-    assert!(peer.wifi(wall_time()).await.is_err());
-    assert_eq!(state.completed_scans.load(Ordering::SeqCst), 0);
-    assert_eq!(state.writes.load(Ordering::SeqCst), 0);
+async fn cancellation_and_denial_release_geoclue_client_without_effects() {
+    for denied in [false, true] {
+        let (_daemon, _server, peer, state) = peer(false).await;
+        state.deny_start.store(denied, Ordering::SeqCst);
+        if denied {
+            assert!(peer.geoclue(wall_time()).await.is_err());
+        } else {
+            let mut pending = Box::pin(peer.geoclue(wall_time()));
+            tokio::select! {
+                result = &mut pending => panic!("stale fix must not complete: {result:?}"),
+                _ = state.started.notified() => {},
+            }
+            drop(pending);
+        }
+        tokio::time::timeout(Duration::from_secs(2), state.deleted.notified())
+            .await
+            .unwrap();
+        assert_eq!(state.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(state.ip_calls.load(Ordering::SeqCst), 0);
+    }
 }

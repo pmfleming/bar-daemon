@@ -24,6 +24,7 @@
     {
       # Daemon-owned idle integration: one patch set for runtime and tests.
       lib.mkManagedHypridle = import ./packaging/hypridle;
+      lib.mkLocationGeoclue = import ./packaging/geoclue;
 
       packages = forAllSystems (
         system: pkgs:
@@ -116,6 +117,7 @@
               $out/share/polkit-1/actions/org.laufan.location-timezone.policy
           '';
           inherit managedHypridle;
+          locationGeoclue = self.lib.mkLocationGeoclue (pkgs.geoclue2.override { withDemoAgent = true; });
         }
       );
 
@@ -140,6 +142,7 @@
       checks = forAllSystems (system: pkgs: {
         default = self.packages.${system}.default;
         modules = import ./packaging/module-check.nix { inherit self nixpkgs system pkgs; };
+        locationGeoclue = self.packages.${system}.locationGeoclue;
       });
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt-tree);
 

@@ -105,6 +105,10 @@ pub(crate) struct AcceptedLocation {
     pub latitude: f64,
     pub longitude: f64,
     pub verified_at: f64,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub accuracy_meters: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

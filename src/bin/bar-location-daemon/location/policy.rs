@@ -1,22 +1,36 @@
-//! Fail-closed evidence policy and connection-scoped retry scheduling.
+//! GeoClue first; only canonical timezone equality is required for confirmation.
 use std::{collections::HashMap, path::Path, time::Duration};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Source {
+    #[default]
+    Unknown,
+    Ip,
+    NonIp,
+}
+impl Source {
+    /// Shelllist's additive GeoClue SourceKind property, not Description.
+    pub fn from_geoclue(value: u32) -> Self {
+        match value {
+            1 => Self::Ip,
+            2 => Self::NonIp,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct Fix {
     pub latitude: f64,
     pub longitude: f64,
     pub timestamp: f64,
-    pub source: String,
-    #[serde(default)]
+    pub source: Source,
     pub accuracy: f64,
-    #[serde(default)]
-    pub timezone: String,
-    #[serde(default)]
-    pub country_code: String,
 }
 impl Fix {
     pub fn coordinates_valid(&self) -> bool {
@@ -28,36 +42,31 @@ impl Fix {
     pub fn fresh(&self, started: f64, now: f64) -> bool {
         self.coordinates_valid()
             && self.timestamp.is_finite()
-            && self.timestamp >= started
+            // GeoClue 2.7 publishes whole seconds. Tolerate that quantisation,
+            // not a pre-connection cached fix or a timestamp fabricated by us.
+            && self.timestamp >= started.floor()
             && self.timestamp <= now + 5.0
             && now - self.timestamp <= 300.0
     }
-    pub fn usable_wifi(&self, started: f64, now: f64) -> bool {
-        self.fresh(started, now)
-            && self.source == "WiFi"
-            && self.accuracy.is_finite()
-            && self.accuracy > 0.0
-            && self.accuracy <= 25_000.0
+    pub fn usable_geoclue(&self, started: f64, now: f64) -> bool {
+        self.fresh(started, now) && self.accuracy.is_finite() && self.accuracy >= 0.0
     }
 }
 
 pub(super) struct Zones {
     finder: tzf_rs::DefaultFinder,
     links: HashMap<String, String>,
-    countries: HashMap<String, String>,
 }
 impl Zones {
     pub fn load(directory: &Path) -> Result<Self> {
-        Self::from_tables(
-            &std::fs::read_to_string(directory.join("tzdata.zi"))?,
-            &std::fs::read_to_string(directory.join("zone.tab"))?,
-        )
+        Ok(Self::from_table(&std::fs::read_to_string(
+            directory.join("tzdata.zi"),
+        )?))
     }
-    pub fn from_tables(links: &str, countries: &str) -> Result<Self> {
+    pub fn from_table(links: &str) -> Self {
         let mut result = Self {
             finder: tzf_rs::DefaultFinder::new(),
             links: HashMap::new(),
-            countries: HashMap::new(),
         };
         for line in links.lines() {
             let fields: Vec<_> = line.split_whitespace().collect();
@@ -65,23 +74,7 @@ impl Zones {
                 result.links.insert(fields[2].into(), fields[1].into());
             }
         }
-        for line in countries.lines().filter(|line| !line.starts_with('#')) {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            if fields.len() >= 3 {
-                let zone = result.canonical(fields[2]).context("unknown tzdata zone")?;
-                // zone.tab lists country-specific zones; aliases can share a target.
-                result
-                    .countries
-                    .entry(zone)
-                    .or_default()
-                    .push_str(&format!(",{},", fields[0]));
-            }
-        }
-        ensure!(
-            !result.countries.is_empty(),
-            "tzdata country table is empty"
-        );
-        Ok(result)
+        result
     }
     pub fn canonical(&self, name: &str) -> Option<String> {
         let mut name = name;
@@ -95,8 +88,8 @@ impl Zones {
     }
     fn at(&self, fix: &Fix) -> Option<String> {
         let name = self.canonical(self.finder.get_tz_name(fix.longitude, fix.latitude))?;
-        // Bundled TZF boundaries are simplified (~111m tolerance). Reject near
-        // boundaries rather than pretending this is the old exact land dataset.
+        // The bundled boundaries are simplified (~111m tolerance). Ambiguity is
+        // missing evidence (retry), not a confirmed disagreement (stop).
         for dx in [-0.002, 0.0, 0.002] {
             for dy in [-0.002, 0.0, 0.002] {
                 let names = self
@@ -109,78 +102,42 @@ impl Zones {
         }
         Some(name)
     }
-    pub fn agree(&self, wifi: &Fix, ip: &Fix, started: f64, now: f64) -> Result<String, Decision> {
-        let wifi_usable = wifi.usable_wifi(started, now);
-        let ip_fresh = ip.fresh(started, now);
-        let timestamp_difference_seconds = (wifi.timestamp - ip.timestamp).abs();
-        tracing::info!(
-            wifi_usable,
-            ip_fresh,
-            wifi_age_seconds = now - wifi.timestamp,
-            ip_age_seconds = now - ip.timestamp,
-            timestamp_difference_seconds,
-            accuracy_meters = wifi.accuracy,
-            "location evidence freshness"
-        );
-        if !wifi_usable || !ip_fresh || timestamp_difference_seconds > 120.0 {
-            return Err(Decision::Retry("Fresh location unavailable"));
+    pub fn geoclue_zone(&self, geo: &Fix, started: f64, now: f64) -> Result<String, Decision> {
+        if !geo.usable_geoclue(started, now) {
+            return Err(Decision::Retry("Fresh GeoClue location unavailable"));
         }
-        let wifi_zone = self.at(wifi);
-        let ip_coordinate_zone = self.at(ip);
-        let ip_reported_zone = self.canonical(&ip.timezone);
-        let distance_km = distance_km(wifi, ip);
-        tracing::info!(wifi_timezone = ?wifi_zone, ip_coordinate_timezone = ?ip_coordinate_zone,
-            ip_reported_timezone = %ip.timezone, ip_canonical_timezone = ?ip_reported_zone,
-            ip_country = %ip.country_code, distance_km, "comparing location evidence");
-        let zone = wifi_zone.ok_or_else(|| {
-            tracing::info!(
-                reason = "wifi_boundary_uncertain",
-                "location evidence rejected"
-            );
-            Decision::Stop("Timezone boundary uncertain")
-        })?;
-        let distance_exceeded = distance_km > 50.0;
-        let invalid_ip_source = ip.source != "IP";
-        let ip_coordinates_disagree = ip_coordinate_zone.as_deref() != Some(&zone);
-        let ip_timezone_disagrees = ip_reported_zone.as_deref() != Some(&zone);
-        if distance_exceeded
-            || invalid_ip_source
-            || ip_coordinates_disagree
-            || ip_timezone_disagrees
+        self.at(geo)
+            .ok_or(Decision::Retry("GeoClue timezone unresolved"))
+    }
+    pub fn decide(
+        &self,
+        geo: &Fix,
+        ip: Option<&Fix>,
+        started: f64,
+        now: f64,
+    ) -> Result<String, Decision> {
+        let zone = self.geoclue_zone(geo, started, now)?;
+        if geo.source == Source::Ip {
+            tracing::info!(timezone = %zone, "accepting GeoClue IP location without a second lookup");
+            return Ok(zone);
+        }
+        let ip = ip.ok_or(Decision::Retry("IP confirmation unavailable"))?;
+        if !ip.fresh(started, now)
+            || ip.source != Source::Ip
+            || (geo.timestamp - ip.timestamp).abs() > 120.0
         {
-            tracing::info!(
-                distance_exceeded,
-                invalid_ip_source,
-                ip_coordinates_disagree,
-                ip_timezone_disagrees,
-                "location evidence rejected"
-            );
-            return Err(Decision::Stop("Sources disagree"));
+            return Err(Decision::Retry("Fresh IP confirmation unavailable"));
         }
-        if ip.country_code.len() != 2
-            || !ip.country_code.bytes().all(|c| c.is_ascii_alphabetic())
-            || !self.countries.get(&zone).is_some_and(|countries| {
-                countries.contains(&format!(",{},", ip.country_code.to_ascii_uppercase()))
-            })
-        {
-            tracing::info!(
-                reason = "ip_country_timezone_mismatch",
-                "location evidence rejected"
-            );
-            return Err(Decision::Stop("IP country and timezone disagree"));
+        let ip_zone = self
+            .at(ip)
+            .ok_or(Decision::Retry("IP timezone unresolved"))?;
+        tracing::info!(source = ?geo.source, geoclue_timezone = %zone, ip_timezone = %ip_zone,
+            "comparing canonical timezones (no distance requirement)");
+        if zone != ip_zone {
+            return Err(Decision::Stop("GeoClue and IP timezones disagree"));
         }
-        tracing::info!(timezone = %zone, "location evidence agreed");
         Ok(zone)
     }
-}
-fn distance_km(a: &Fix, b: &Fix) -> f64 {
-    let dlat = (b.latitude - a.latitude).to_radians();
-    let dlon = (b.longitude - a.longitude).to_radians();
-    let h = (dlat / 2.0).sin().powi(2)
-        + a.latitude.to_radians().cos()
-            * b.latitude.to_radians().cos()
-            * (dlon / 2.0).sin().powi(2);
-    6371.0 * 2.0 * h.clamp(0.0, 1.0).sqrt().asin()
 }
 
 #[derive(Debug, PartialEq)]

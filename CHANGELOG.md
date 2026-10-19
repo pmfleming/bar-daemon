@@ -6,18 +6,16 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
-- Stop location checks for the current connection when beaconDB reports no Wi-Fi
-  coverage (404), with an explicit “Wi-Fi location not recognised” status. Reload
-  or a new connection re-arms checks. Query ipapi.co only after usable Wi-Fi
-  evidence and a fresh connection/control check, preserving shared acquisition
-  deadlines, cancellation and independent provider cooldowns.
-
-- Replace the location authority's GeoClue lookup with fresh NetworkManager scans
-  and direct Wi-Fi-only beaconDB requests. Filter ambiguous locally administered
-  and multicast BSSIDs, opt-outs, stale/weak observations and duplicates before
-  lookup; unavailable coverage never falls back to IP. Preserve timezone agreement,
-  cancellation and write verification, persist beaconDB cooldowns, and replace
-  the GeoClue agent dependency with narrowly scoped Wi-Fi scan authorization.
+- Use GeoClue first for automatic timezone updates. Accept positively identified
+  IP-only/fallback results without another IP request; confirm all other sources
+  by canonical coordinate-derived timezone equality, without distance, country
+  or Wi-Fi-only accuracy restrictions. Missing confirmation retries; actual
+  timezone disagreement leaves the system unchanged. This supersedes the recent
+  direct NetworkManager/beaconDB acquisition and connection-scoped 404 stop.
+  Package a tested GeoClue SourceKind extension instead of trusting Description;
+  preserve cached observation age. Restore GeoClue service-account authorization,
+  remove direct scan privilege, retain write-safety fences and legacy cooldowns,
+  and prevent independent IP cooldowns from blocking GeoClue-IP acceptance.
 
 - Recover notification-center read contention natively: wait for reader capacity
   within one three-second deadline and retry only SQLite BUSY/LOCKED reads up to
@@ -37,12 +35,13 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
-- A stable **Current location** entry backed by the last verified Wi-Fi fix,
+- A stable **Current location** entry backed by the last accepted GeoClue estimate
+  (including approximate IP positions), with source/accuracy metadata,
   read through an active-local-session-authorized interface without modifying
   saved locations. Rejected fixes and temporary reader outages retain it.
 - Location-attempt diagnostics for provider acquisition, evidence comparisons,
   precise disagreement reasons, retry scheduling and verified timezone effects.
-  Coordinates and network identifiers stay out of logs; agreement rules are unchanged.
+  Coordinates and network identifiers stay out of authority logs.
 
 - Optional notification period view: three newest records followed by disjoint
   Today / This week / This month / Older groups. Previews never duplicate group

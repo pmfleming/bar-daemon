@@ -1,4 +1,7 @@
-use super::{policy::Fix, wall_time};
+use super::{
+    policy::{Fix, Source},
+    wall_time,
+};
 use anyhow::{Result, ensure};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
@@ -7,8 +10,6 @@ use std::time::Duration;
 pub(super) enum LookupResult {
     Fix(Fix),
     Limited(Duration),
-    /// A Wi-Fi-only provider explicitly has no coverage for these observations.
-    NotRecognised,
     Unavailable,
 }
 
@@ -91,8 +92,6 @@ fn parse(bytes: &[u8], now: f64) -> Result<Fix> {
     struct Payload {
         latitude: f64,
         longitude: f64,
-        timezone: String,
-        country_code: String,
         #[serde(default)]
         error: bool,
     }
@@ -103,20 +102,13 @@ fn parse(bytes: &[u8], now: f64) -> Result<Fix> {
             error.column()
         )
     })?;
-    ensure!(
-        !value.error
-            && !value.timezone.is_empty()
-            && value.timezone.len() <= 100
-            && value.country_code.len() == 2
-            && value.country_code.bytes().all(|c| c.is_ascii_alphabetic()),
-        "invalid IP location"
-    );
+    ensure!(!value.error, "IP provider returned an error");
+    // Both zones are resolved from coordinates by the same offline dataset.
+    // Provider timezone/country labels are not additional consensus vetoes.
     let fix = Fix {
         latitude: value.latitude,
         longitude: value.longitude,
-        timezone: value.timezone,
-        country_code: value.country_code.to_ascii_uppercase(),
-        source: "IP".into(),
+        source: Source::Ip,
         accuracy: 0.0,
         timestamp: now,
     };
@@ -185,8 +177,16 @@ mod tests {
     #[test]
     fn bounded_ip_payload_and_cooldown_parsing() {
         let good = br#"{"latitude":53.34,"longitude":-6.27,"timezone":"Europe/Dublin","country_code":"ie"}"#;
-        assert_eq!(parse(good, 100.0).unwrap().country_code, "IE");
-        for field in ["latitude", "longitude", "timezone", "country_code"] {
+        assert_eq!(parse(good, 100.0).unwrap().source, Source::Ip);
+        assert!(parse(br#"{"latitude":53.34,"longitude":-6.27}"#, 100.0).is_ok());
+        assert!(
+            parse(
+                br#"{"latitude":53.34,"longitude":-6.27,"error":true}"#,
+                100.0
+            )
+            .is_err()
+        );
+        for field in ["latitude", "longitude"] {
             let mut value: serde_json::Value = serde_json::from_slice(good).unwrap();
             value[field] = serde_json::Value::Null;
             assert!(parse(&serde_json::to_vec(&value).unwrap(), 100.0).is_err());

@@ -10,8 +10,9 @@
 - Library code: MIT. This does not change the MIT license on bar-daemon's code.
 
 The lite dataset has simplified boundaries (upstream reports about 111 metres
-maximum deviation). The daemon adds a small boundary-ambiguity check, requires
-independent Wi-Fi/IP agreement, and rejects country/timezone inconsistencies.
+maximum deviation). The daemon adds a small boundary-ambiguity check. Confirmed
+GeoClue IP results are accepted directly; other sources require matching canonical
+coordinate-derived IP/GeoClue timezones, without a distance or country constraint.
 This is not exact geographic/country-border certification. No network downloads
 of boundary data occur at runtime. Obtain the corresponding unmodified database
 from the versioned tzf-dist crate/source above.

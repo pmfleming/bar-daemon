@@ -1,4 +1,7 @@
-use super::{Backend, Control, Observation, http, policy::Network, wifi};
+use super::{
+    Backend, Control, Observation, geoclue, http,
+    policy::{Fix, Network},
+};
 use anyhow::{Context, Result, ensure};
 use futures::StreamExt;
 use std::{collections::HashMap, time::Duration};
@@ -121,9 +124,8 @@ impl Backend for Bus {
         .await
         .context("timezone application reply lost")?
     }
-    async fn wifi(&self, started: f64) -> Result<http::LookupResult> {
-        let scan = wifi::scan(&self.connection).await?;
-        wifi::lookup(&self.http, scan, started).await
+    async fn geoclue(&self, started: f64) -> Result<Fix> {
+        geoclue::locate(started).await
     }
     async fn ip(&self) -> http::LookupResult {
         http::lookup(&self.http).await
