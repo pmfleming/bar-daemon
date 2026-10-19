@@ -104,6 +104,7 @@ pub(crate) struct SleepInhibitor {
 pub(crate) enum LocationSource {
     Ip,
     NonIp,
+    Manual,
     #[default]
     #[serde(other)]
     Unknown,
@@ -121,6 +122,18 @@ pub(crate) struct AcceptedLocation {
     pub accuracy_meters: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LocationControl {
+    pub available: bool,
+    pub revision: u64,
+    pub manual: bool,
+    pub paused: bool,
+    pub uncertain: bool,
+    pub effective_place: Option<crate::location_place::Place>,
+    pub operation_id: Option<String>,
+    pub operation_status: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TimezoneState {
     pub available: bool,
@@ -131,6 +144,8 @@ pub(crate) struct TimezoneState {
     pub timezone_region_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_location: Option<AcceptedLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_control: Option<LocationControl>,
     pub error: Option<String>,
 }
 

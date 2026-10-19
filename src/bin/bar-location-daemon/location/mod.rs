@@ -2,6 +2,7 @@
 mod bus;
 #[cfg(test)]
 mod bus_tests;
+mod control;
 mod geoclue;
 mod http;
 mod policy;
@@ -72,6 +73,7 @@ struct Authority {
     reload: u64,
     control_epoch: u64,
     network_status: Option<NetworkStatus>,
+    commands: Option<tokio::sync::mpsc::Receiver<control::Command>>,
 }
 impl Authority {
     async fn new(storage: Storage, zones: Zones, backend: &impl Backend) -> Result<Self> {
@@ -104,6 +106,7 @@ impl Authority {
             reload: 0,
             control_epoch: 0,
             network_status: None,
+            commands: None,
         })
     }
     async fn run(
@@ -133,11 +136,30 @@ impl Authority {
                 );
                 self.state.paused = false;
                 self.state.write_pending = false;
+                self.state.manual = false;
                 self.storage.save(&self.state).await?;
                 self.schedule.rearm();
                 self.reload = current.reload;
             }
-            if self.state.paused || self.state.write_pending {
+            if let Some(command) = self
+                .commands
+                .as_mut()
+                .and_then(|queue| queue.try_recv().ok())
+            {
+                let result = self
+                    .apply_control(backend, &control, command.uid, command.request)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = command.reply.send(result);
+            }
+            if self.state.manual && !self.state.paused && !self.state.write_pending {
+                self.storage
+                    .status(
+                        "Current location set manually",
+                        self.state.accepted_revision,
+                    )
+                    .await?;
+            } else if self.state.paused || self.state.write_pending {
                 self.storage
                     .status(
                         "Automatic location paused · reload to resume",
@@ -344,6 +366,7 @@ impl Authority {
                     .accepted_revision
                     .checked_add(1)
                     .context("accepted location revision exhausted")?;
+                self.state.manual_place = None;
                 self.state.accepted = Some(Accepted {
                     timezone: zone,
                     latitude: geo.latitude,
@@ -468,16 +491,19 @@ pub async fn run(
     tzdata: PathBuf,
 ) -> Result<()> {
     let zones = Zones::load(&tzdata).context("load timezone boundaries and aliases")?;
+    let (sender, receiver) = watch::channel(Control::default());
+    let (commands, command_receiver) = tokio::sync::mpsc::channel(1);
     let connection = tokio::time::timeout(
         Duration::from_secs(10),
         zbus::connection::Builder::system()?
             .method_timeout(Duration::from_secs(5))
             .serve_at(
                 "/org/laufan/LocationTimezone",
-                reader::Reader(Storage::new(
-                    state_directory.clone(),
-                    runtime_directory.clone(),
-                )),
+                reader::Reader {
+                    storage: Storage::new(state_directory.clone(), runtime_directory.clone()),
+                    commands,
+                    changes: sender.clone(),
+                },
             )?
             .name("org.laufan.LocationTimezone")?
             .build(),
@@ -493,7 +519,7 @@ pub async fn run(
         &backend,
     )
     .await?;
-    let (sender, receiver) = watch::channel(Control::default());
+    authority.commands = Some(command_receiver);
     let events = bus::events(&backend.connection, sender);
     tokio::pin!(events);
     let running = authority.run(&backend, receiver);

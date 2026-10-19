@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::{AtomicFilePolicy, read_bytes_bounded};
 use std::{path::PathBuf, time::Duration};
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub(super) struct State {
     #[serde(default)]
     pub paused: bool,
@@ -23,8 +23,14 @@ pub(super) struct State {
     // silently re-arm writes on restart. Explicit reload clears this fence.
     #[serde(default)]
     pub write_pending: bool,
+    #[serde(default)]
+    pub manual: bool,
+    #[serde(default)]
+    pub manual_place: Option<crate::location_place::Place>,
+    #[serde(default)]
+    pub operation: Option<super::control::Operation>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Accepted {
     pub timezone: String,
     pub latitude: f64,
@@ -70,6 +76,9 @@ impl Storage {
                 && state.wifi_not_before >= 0.0,
             "invalid provider cooldown"
         );
+        if let Some(place) = &state.manual_place {
+            place.validate()?;
+        }
         Ok(state)
     }
     pub async fn save(&self, state: &State) -> Result<()> {

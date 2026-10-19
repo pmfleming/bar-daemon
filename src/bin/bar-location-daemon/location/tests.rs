@@ -180,6 +180,144 @@ async fn check(a: &mut Authority, backend: &impl Backend) {
     a.check(backend, &mut control).await.unwrap();
 }
 
+fn manual_request(revision: u64, id: &str) -> super::control::Request {
+    super::control::Request {
+        request_id: id.into(),
+        revision,
+        place: Some(crate::location_place::Place {
+            name: "Dublin".into(),
+            country: "Ireland".into(),
+            region: String::new(),
+            timezone: "Europe/Dublin".into(),
+            latitude: 53.3498,
+            longitude: -6.2603,
+        }),
+    }
+}
+#[tokio::test]
+async fn manual_and_automatic_are_durable_and_do_not_replay() {
+    let backend = Fake::default();
+    let (dir, mut a) = authority(&backend).await;
+    let (_sender, control) = watch::channel(Control::default());
+    let request = manual_request(0, "manual-one");
+    a.apply_control(&backend, &control, 1000, request.clone())
+        .await
+        .unwrap();
+    assert!(a.state.manual);
+    assert_eq!(a.state.accepted.as_ref().unwrap().source, Source::Manual);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    a.apply_control(&backend, &control, 1000, request.clone())
+        .await
+        .unwrap();
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        a.apply_control(&backend, &control, 1001, request)
+            .await
+            .is_err()
+    );
+    let mut restarted = Authority::new(
+        Storage::new(dir.path().join("state"), dir.path().join("run")),
+        zones(),
+        &backend,
+    )
+    .await
+    .unwrap();
+    assert!(restarted.state.manual);
+    let revision = restarted.state.accepted_revision;
+    restarted
+        .apply_control(
+            &backend,
+            &control,
+            1000,
+            super::control::Request {
+                request_id: "automatic".into(),
+                revision,
+                place: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!restarted.state.manual);
+    assert_eq!(
+        restarted.state.accepted.as_ref().unwrap().source,
+        Source::Manual,
+        "retain last effective place until acquisition succeeds"
+    );
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn manual_same_zone_and_uncertain_write_guards() {
+    let backend = Fake::default();
+    *backend.zone.lock().unwrap() = "Europe/Dublin".into();
+    let (_dir, mut a) = authority(&backend).await;
+    let (_sender, control) = watch::channel(Control::default());
+    a.apply_control(&backend, &control, 1000, manual_request(0, "same-zone"))
+        .await
+        .unwrap();
+    assert!(a.state.manual);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    let backend = Fake::default();
+    backend.lost_reply.store(true, Ordering::SeqCst);
+    let (_dir, mut a) = authority(&backend).await;
+    assert!(
+        a.apply_control(&backend, &control, 1000, manual_request(0, "lost"))
+            .await
+            .is_err()
+    );
+    assert!(a.state.write_pending && a.state.paused);
+    assert!(
+        a.apply_control(
+            &backend,
+            &control,
+            1000,
+            super::control::Request {
+                request_id: "resume".into(),
+                revision: a.state.accepted_revision,
+                place: None
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn queued_manual_cancels_inflight_automatic_acquisition() {
+    let backend = Fake::default();
+    backend.pending_geo.store(true, Ordering::SeqCst);
+    let (_dir, mut a) = authority(&backend).await;
+    a.schedule.due = Some(Instant::now());
+    let (sender, receiver) = watch::channel(Control::default());
+    let (commands, queue) = tokio::sync::mpsc::channel(1);
+    a.commands = Some(queue);
+    let submit = async {
+        while !backend.geo_live.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let (reply, received) = tokio::sync::oneshot::channel();
+        commands
+            .send(super::control::Command {
+                uid: 1000,
+                request: manual_request(0, "interrupt"),
+                reply,
+            })
+            .await
+            .unwrap();
+        sender.send_modify(|c| c.epoch += 1);
+        received.await.unwrap().unwrap();
+        sender.send_modify(|c| c.shutdown = true);
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(a.run(&backend, receiver), submit)
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+    assert!(a.state.manual);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    assert!(!backend.geo_live.load(Ordering::SeqCst));
+}
+
 #[test]
 fn policy_accepts_ip_and_compares_zones_not_distance_accuracy_or_offset() {
     let z = zones();

@@ -1,5 +1,7 @@
 //! Session-independent system timezone authority; never changes UTC/NTP.
 mod location;
+#[path = "../../location_place.rs"]
+mod location_place;
 
 use clap::Parser;
 use std::path::PathBuf;

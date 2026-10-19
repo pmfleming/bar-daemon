@@ -109,6 +109,7 @@ async fn monitor_connection(
     let mut zone: Option<String> = None;
     let mut zone_error = None;
     let mut accepted = store.read(|s| s.timezone.accepted_location.clone()).await;
+    let mut location_control = None;
     let mut zone_retry = Retry::default();
     let mut accepted_retry = Retry::default();
     let (mut read_zone, mut read_accepted, mut dirty) = (true, true, true);
@@ -129,7 +130,17 @@ async fn monitor_connection(
             read_zone = false;
         }
         if read_accepted {
-            let result = accepted_location(connection).await;
+            let candidate_control = read_control(connection).await.ok();
+            let mut result = accepted_location(connection).await;
+            if let Some(before) = &candidate_control {
+                match read_control(connection).await {
+                    Ok(after) if before.revision == after.revision => {}
+                    _ => result = Err(anyhow::anyhow!("Location changed during read")),
+                }
+            }
+            if result.is_ok() {
+                location_control = candidate_control;
+            }
             accepted_retry.completed(result.is_ok(), timing.retry);
             match result {
                 Ok(location) => accepted = location,
@@ -151,6 +162,7 @@ async fn monitor_connection(
             }
             state.error = zone_error.clone().or_else(|| status.message.clone());
             state.accepted_location = accepted.clone();
+            state.location_control = location_control.clone();
             store.update_timezone(state).await;
             dirty = false;
         }
@@ -192,6 +204,81 @@ async fn monitor_connection(
             }
         }
     }
+}
+
+pub(crate) async fn read_control(
+    connection: &zbus::Connection,
+) -> Result<crate::model::LocationControl> {
+    let json = location_call(connection, "GetControl", None).await?;
+    parse_control(&json)
+}
+fn parse_control(json: &str) -> Result<crate::model::LocationControl> {
+    anyhow::ensure!(json.len() <= 8192, "Location control response too large");
+    let result: crate::model::LocationControl = serde_json::from_str(json)?;
+    if let Some(place) = &result.effective_place {
+        place.validate()?;
+    }
+    Ok(result)
+}
+async fn location_call(
+    connection: &zbus::Connection,
+    method: &str,
+    params: Option<String>,
+) -> Result<String> {
+    tokio::time::timeout(
+        Duration::from_secs(if params.is_some() { 30 } else { 5 }),
+        async {
+            let proxy = zbus::Proxy::new(
+                connection,
+                LOCATION,
+                "/org/laufan/LocationTimezone",
+                LOCATION,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>(if let Some(params) = params {
+                proxy.call(method, &(params,)).await?
+            } else {
+                proxy.call(method, &()).await?
+            })
+        },
+    )
+    .await
+    .context("Location request timed out; read status before any retry")?
+}
+pub(crate) async fn location_control(
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let connection = zbus::Connection::system().await?;
+    let value = if method == "location.status" {
+        read_control(&connection).await?
+    } else {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            request_id: String,
+            revision: u64,
+            place: Option<crate::location_place::Place>,
+        }
+        let mut request: Request = serde_json::from_value(params)?;
+        if method == "location.returnToAutomatic" {
+            anyhow::ensure!(request.place.is_none(), "Automatic does not accept a place");
+        } else {
+            request
+                .place
+                .as_mut()
+                .context("Manual location requires a place")?
+                .validate()?;
+        }
+        let json = location_call(
+            &connection,
+            "SetLocationPolicy",
+            Some(serde_json::to_string(&request)?),
+        )
+        .await?;
+        parse_control(&json)?
+    };
+    Ok(serde_json::json!({"location_control":value}))
 }
 
 async fn accepted_location(connection: &zbus::Connection) -> Result<Option<AcceptedLocation>> {
@@ -303,6 +390,7 @@ fn state_for_timezone(timezone: &str, instant: DateTime<Utc>) -> Result<Timezone
             instant,
         ),
         accepted_location: None,
+        location_control: None,
         error: None,
     })
 }

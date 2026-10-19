@@ -115,6 +115,7 @@ impl ApiService {
             "activity.queryRange" => self.activity.activity_query_range(params).await,
             "activity.refresh" => self.activity.activity_refresh().await,
             "locations.search" | "locations.add" | "locations.remove" => self.activity.locations(method, params).await,
+            "location.status" | "location.setManual" | "location.returnToAutomatic" => match crate::timezone::location_control(method,params).await {Ok(data)=>success(data),Err(failure)=>error("location-error",failure.to_string())},
             "todos.create" => self.activity.todo_create(params).await,
             "todos.complete" => self.activity.todo_complete(params).await,
             "todos.delete" => self.activity.todo_delete(params).await,

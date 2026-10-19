@@ -30,6 +30,106 @@ struct Services {
     ip_calls: AtomicUsize,
     zone: Mutex<String>,
 }
+struct ControlPolicy(Arc<AtomicBool>);
+#[zbus::interface(name = "org.freedesktop.PolicyKit1.Authority")]
+impl ControlPolicy {
+    fn check_authorization(
+        &self,
+        subject: (
+            &str,
+            std::collections::HashMap<String, zvariant::OwnedValue>,
+        ),
+        action: &str,
+        _details: std::collections::HashMap<String, String>,
+        flags: u32,
+        _cancellation: &str,
+    ) -> (bool, bool, std::collections::HashMap<String, String>) {
+        assert_eq!(subject.0, "system-bus-name");
+        assert!(subject.1.contains_key("name"));
+        assert_eq!(flags, 0);
+        assert!(matches!(
+            action,
+            "org.laufan.location-timezone.read" | "org.laufan.location-timezone.control"
+        ));
+        (self.0.load(Ordering::SeqCst), false, Default::default())
+    }
+}
+#[tokio::test]
+async fn location_control_authorizes_actual_bus_caller_and_publishes_verified_state() {
+    let (_daemon, server, backend, _state) = peer(false).await;
+    let (dir, mut authority) = tests::authority(&backend).await;
+    let allow = Arc::new(AtomicBool::new(false));
+    server
+        .request_name("org.freedesktop.PolicyKit1")
+        .await
+        .unwrap();
+    server
+        .object_server()
+        .at(
+            "/org/freedesktop/PolicyKit1/Authority",
+            ControlPolicy(allow.clone()),
+        )
+        .await
+        .unwrap();
+    let (changes, control) = watch::channel(Control::default());
+    let (commands, mut queue) = tokio::sync::mpsc::channel(1);
+    server
+        .object_server()
+        .at(
+            "/org/laufan/LocationTimezone",
+            reader::Reader {
+                storage: Storage::new(dir.path().join("state"), dir.path().join("run")),
+                commands,
+                changes,
+            },
+        )
+        .await
+        .unwrap();
+    server
+        .request_name("org.laufan.LocationTimezone")
+        .await
+        .unwrap();
+    let proxy = zbus::Proxy::new(
+        &backend.bus.connection,
+        "org.laufan.LocationTimezone",
+        "/org/laufan/LocationTimezone",
+        "org.laufan.LocationTimezone",
+    )
+    .await
+    .unwrap();
+    let request=serde_json::json!({"request_id":"private-bus-manual","revision":0,"place":{"name":"Dublin","country":"Ireland","region":"","timezone":"Europe/Dublin","latitude":53.3498,"longitude":-6.2603}}).to_string();
+    assert!(
+        proxy
+            .call::<_, _, String>("SetLocationPolicy", &(request.clone(),))
+            .await
+            .is_err()
+    );
+    assert!(queue.try_recv().is_err());
+    allow.store(true, Ordering::SeqCst);
+    let driver = async {
+        let command = queue.recv().await.unwrap();
+        let result = authority
+            .apply_control(&backend, &control, command.uid, command.request)
+            .await
+            .map_err(|e| e.to_string());
+        command.reply.send(result).unwrap();
+    };
+    let response = async {
+        proxy
+            .call::<_, _, String>("SetLocationPolicy", &(request,))
+            .await
+            .unwrap()
+    };
+    let ((), response) = tokio::join!(driver, response);
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["manual"], true);
+    let accepted: String = proxy.call("GetAccepted", &()).await.unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&accepted).unwrap()["source"],
+        "manual"
+    );
+}
+
 struct NetworkManager;
 #[zbus::interface(name = "org.freedesktop.NetworkManager")]
 impl NetworkManager {

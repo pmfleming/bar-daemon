@@ -10,6 +10,7 @@ use tokio::time::Instant;
 pub(super) enum Source {
     Ip,
     NonIp,
+    Manual,
     #[default]
     #[serde(other)]
     Unknown,
@@ -90,7 +91,7 @@ impl Zones {
         }
         None
     }
-    fn at(&self, fix: &Fix) -> Option<String> {
+    pub(super) fn at(&self, fix: &Fix) -> Option<String> {
         let name = self.canonical(self.finder.get_tz_name(fix.longitude, fix.latitude))?;
         // The bundled boundaries are simplified (~111m tolerance). Ambiguity is
         // missing evidence (retry), not a confirmed disagreement (stop).

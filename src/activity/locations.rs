@@ -25,6 +25,8 @@ pub(crate) struct Location {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<crate::location_place::Place>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location_source: Option<LocationSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accuracy_meters: Option<f64>,
@@ -109,10 +111,31 @@ pub(crate) fn append_current(
             // Home coordinates/weather stay fixed; current provenance is independent.
             home.location_source = Some(fix.source);
             home.accuracy_meters = fix.accuracy_meters;
+            home.location_mode = local
+                .location_control
+                .as_ref()
+                .map(|c| if c.manual { "manual" } else { "automatic" }.into());
             return;
         }
         let (clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
+        let place = local
+            .location_control
+            .as_ref()
+            .and_then(|c| c.effective_place.clone())
+            .unwrap_or_else(|| crate::location_place::Place {
+                name: clock.city.clone(),
+                country: String::new(),
+                region: String::new(),
+                timezone: fix.timezone.clone(),
+                latitude: fix.latitude,
+                longitude: fix.longitude,
+            });
         locations.push(Location {
+            place: Some(place),
+            location_mode: local
+                .location_control
+                .as_ref()
+                .map(|c| if c.manual { "manual" } else { "automatic" }.into()),
             id: "current-location".into(),
             clock,
             clock_unavailable,

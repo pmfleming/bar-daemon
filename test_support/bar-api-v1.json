@@ -217,6 +217,29 @@
         "result": "activity"
       },
       {
+        "name": "location.status",
+        "params": {},
+        "result": "location_control"
+      },
+      {
+        "name": "location.setManual",
+        "params": {
+          "place": "object",
+          "request_id": "string",
+          "revision": "integer"
+        },
+        "result": "location_control"
+      },
+      {
+        "name": "location.returnToAutomatic",
+        "params": {
+          "place": "null",
+          "request_id": "string",
+          "revision": "integer"
+        },
+        "result": "location_control"
+      },
+      {
         "name": "todos.create",
         "params": {
           "due_date": "2026-01-20",
