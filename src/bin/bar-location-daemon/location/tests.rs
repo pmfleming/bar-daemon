@@ -100,6 +100,8 @@ impl Backend for Fake {
                 .then(|| self.network.lock().unwrap().clone()),
             sleeping: false,
             blocked,
+            connectivity: 4,
+            state: 70,
         })
     }
     async fn timezone(&self) -> Result<String> {
@@ -618,6 +620,21 @@ async fn legacy_provider_cooldown_is_preserved_but_not_repopulated() {
     check(&mut a, &backend).await;
     assert_eq!(backend.geo_calls.load(Ordering::SeqCst), 0);
     assert!(a.state.geoclue_cooldown(wall_time()).as_secs() >= 7198);
+}
+
+#[test]
+fn network_diagnostics_name_only_the_changed_identity_fields() {
+    let original = network("private-path");
+    assert!(original.changed_fields(&original).is_empty());
+    let mut next = original.clone();
+    next.owner = ":1.99".into();
+    assert_eq!(next.changed_fields(&original), ["owner"]);
+    next.active.push("another-private-path".into());
+    next.primary = "private-primary".into();
+    assert_eq!(
+        next.changed_fields(&original),
+        ["owner", "active_connections", "primary_connection"]
+    );
 }
 
 #[test]

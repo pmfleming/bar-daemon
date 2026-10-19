@@ -1,7 +1,7 @@
 //! Canonical location identity/merging belongs to the producer. Consumers own
 //! locale sorting, filtering and selection, not cross-source record synthesis.
 use super::model::{ActivityState, WeatherState, WorldClockState};
-use crate::model::TimezoneState;
+use crate::model::{LocationSource, TimezoneState};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +16,10 @@ pub(crate) struct Location {
     pub home: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub current: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_source: Option<LocationSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accuracy_meters: Option<f64>,
     pub has_weather: bool,
     pub weather: Option<WeatherState>,
     pub lunar: Option<super::astronomy::LunarPhase>,
@@ -51,6 +55,8 @@ pub(crate) fn project(activity: &ActivityState, local: &TimezoneState) -> Vec<Lo
             longitude: fix.longitude,
             has_coordinates: true,
             current: true,
+            location_source: Some(fix.source),
+            accuracy_meters: fix.accuracy_meters,
             ..Default::default()
         });
     }
@@ -124,5 +130,47 @@ fn weather_location(weather: &WeatherState, clock: Option<&WorldClockState>) -> 
         has_weather: true,
         weather: Some(weather.clone()),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::AcceptedLocation;
+
+    #[test]
+    fn estimated_metadata_keeps_current_identity_without_changing_saved_locations() {
+        let mut local = TimezoneState {
+            accepted_location: Some(AcceptedLocation {
+                timezone: "Europe/Dublin".into(),
+                latitude: 53.3,
+                longitude: -6.2,
+                verified_at: 1000.0,
+                source: LocationSource::Ip,
+                accuracy_meters: Some(26_000.0),
+            }),
+            ..Default::default()
+        };
+        let mut activity = ActivityState::default();
+        activity
+            .world_clocks
+            .push(WorldClockState::new("Europe/Dublin", "Saved clock").unwrap());
+        let rows = project(&activity, &local);
+        let current = rows.iter().find(|row| row.current).unwrap();
+        assert_eq!(current.id, "current-location");
+        assert_eq!(current.clock.label, "Current location");
+        assert_eq!(current.location_source, Some(LocationSource::Ip));
+        assert_eq!(current.accuracy_meters, Some(26_000.0));
+        assert!(!current.home && !current.has_weather);
+        let saved = rows.iter().find(|row| !row.current).unwrap();
+        assert_eq!(saved.clock.label, "Saved clock");
+        assert_eq!(saved.location_source, None);
+        local.accepted_location.as_mut().unwrap().source = LocationSource::Unknown;
+        local.accepted_location.as_mut().unwrap().accuracy_meters = None;
+        let rows = project(&activity, &local);
+        let current = rows.iter().find(|row| row.current).unwrap();
+        assert_eq!(current.id, "current-location");
+        assert_eq!(current.location_source, Some(LocationSource::Unknown));
+        assert_eq!(current.accuracy_meters, None);
     }
 }

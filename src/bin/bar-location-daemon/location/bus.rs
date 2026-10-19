@@ -67,13 +67,15 @@ impl Backend for Bus {
             let owner = dbus.get_name_owner(NM.try_into()?).await?.to_string();
             let values =
                 properties(&self.connection, NM, "/org/freedesktop/NetworkManager", NM).await?;
-            if u32::try_from(field(&values, "Connectivity")?)? != 4
-                || u32::try_from(field(&values, "State")?)? != 70
-            {
+            let connectivity = u32::try_from(field(&values, "Connectivity")?)?;
+            let state = u32::try_from(field(&values, "State")?)?;
+            if connectivity != 4 || state != 70 {
                 return Ok(Observation {
                     network: None,
                     sleeping,
                     blocked: None,
+                    connectivity,
+                    state,
                 });
             }
             let mut active = Vec::<OwnedObjectPath>::try_from(
@@ -113,6 +115,8 @@ impl Backend for Bus {
                 }),
                 sleeping,
                 blocked,
+                connectivity,
+                state,
             })
         })
         .await

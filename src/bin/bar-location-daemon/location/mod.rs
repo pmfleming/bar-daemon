@@ -41,6 +41,15 @@ struct Observation {
     network: Option<Network>,
     sleeping: bool,
     blocked: Option<Blocked>,
+    connectivity: u32,
+    state: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NetworkStatus {
+    connectivity: u32,
+    state: u32,
+    sleeping: bool,
+    blocked: Option<Blocked>,
 }
 trait Backend {
     async fn observe(&self) -> Result<Observation>;
@@ -62,6 +71,7 @@ struct Authority {
     last_result: String,
     reload: u64,
     control_epoch: u64,
+    network_status: Option<NetworkStatus>,
 }
 impl Authority {
     async fn new(storage: Storage, zones: Zones, backend: &impl Backend) -> Result<Self> {
@@ -93,6 +103,7 @@ impl Authority {
             last_result: String::new(),
             reload: 0,
             control_epoch: 0,
+            network_status: None,
         })
     }
     async fn run(
@@ -136,6 +147,17 @@ impl Authority {
             } else {
                 match backend.observe().await {
                     Ok(observation) => {
+                        let status = NetworkStatus {
+                            connectivity: observation.connectivity,
+                            state: observation.state,
+                            sleeping: observation.sleeping || current.sleeping,
+                            blocked: observation.blocked,
+                        };
+                        if self.network_status != Some(status) {
+                            tracing::info!(connectivity = status.connectivity, state = status.state,
+                                sleeping = status.sleeping, blocked = ?status.blocked, "network availability changed");
+                            self.network_status = Some(status);
+                        }
                         let network = if observation.sleeping || current.sleeping {
                             None
                         } else {
@@ -169,6 +191,9 @@ impl Authority {
                         }
                     }
                     Err(_) => {
+                        if self.network_status.take().is_some() {
+                            tracing::info!("network observation became unavailable");
+                        }
                         self.schedule.observe(None, Instant::now());
                         self.storage
                             .status(

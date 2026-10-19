@@ -157,7 +157,10 @@ canonicalization. Its simplified boundaries have an upstream-reported ~111m
 maximum deviation; nearby ±0.002-degree samples must resolve unambiguously.
 Boundary uncertainty is retriable missing evidence, never a permanent
 "sources disagree" result. This sampling is not a distance comparison between
-providers. See `packaging/licenses/timezone-boundaries.md` for ODbL attribution.
+providers, nor a check of the location's full reported uncertainty. Coarse IP
+estimates can resolve to the wrong side of a border even with an unambiguous
+coordinate. No accuracy-circle rejection heuristic is implemented: capped or
+sparse samples would not establish a guaranteed physical-location bound. See `packaging/licenses/timezone-boundaries.md` for ODbL attribution.
 
 At startup, compare the canonical system timezone with durable `expected_timezone`
 (or the accepted zone for legacy state) and persist a pause on mismatch. First
@@ -195,7 +198,10 @@ restart even if no new location has yet been accepted.
 The session daemon retains accepted fixes through temporary reader failures and
 projects the stable `current-location` row. These are **accepted estimated
 coordinates**, potentially coarse IP estimates, not verified physical position.
-Rejected/pending evidence never replaces that row. No weather lookup or reverse
+Its projection includes `location_source` and optional `accuracy_meters`; the
+shared list/detail subtitle labels IP/non-IP/unknown estimates and reported
+accuracy without changing identity or adding fields. Reported accuracy is not a
+guaranteed radius. Rejected/pending evidence never replaces that row. No weather lookup or reverse
 geocoding is implied. The bar clock continues to follow observed timedated offset,
 not the stored accepted-location zone or Qt's cached process timezone.
 The session caches the observed zone and recomputes its offset/abbreviation and
@@ -214,6 +220,10 @@ keyboard navigation are unchanged.
 
 `journalctl -u location-timezone.service` reports attempts, source categories,
 accuracy, observation age, canonical zones, retry/rejection and verified effects.
+Availability transitions include NetworkManager connectivity/state codes, sleep
+and blocked reasons. Identity changes report only which of owner, active
+connections or primary connection changed, including across an offline interval;
+raw connection identifiers are not logged.
 The authority does not log coordinates, IP addresses, SSIDs, BSSIDs or raw
 responses. GeoClue itself owns its provider configuration and diagnostics;
 upstream GeoClue DEBUG logs may contain request/location data. Do not enable
@@ -248,7 +258,7 @@ No fixture requires live providers or host services. Provider coverage, deployed
 service-account authorization and actual network moves require separate acceptance
 after authorized activation. Build success is not deployment evidence.
 
-Implementation validation: 18 location binary tests passed (including private
+Initial implementation validation: 18 location binary tests passed (including private
 D-Bus and local HTTP fixtures); the library suite passed 143 tests with its one
 existing PipeWire-dependent test ignored. Strict Clippy passed for the location
 binary and test targets. The patched GeoClue package, including the module's
@@ -256,3 +266,15 @@ agent-enabled variant, built and passed its Meson test. NixOS module contract
 assertions evaluated successfully; the full product Nix check was not run.
 Shelllist's focused Qt clock suite passed all four cases, including setup/cleanup.
 No live providers, host timezone writes or service activation were exercised.
+
+Review follow-up validation: 27 location tests and 147 library tests pass; the
+library's existing PipeWire-dependent case remains ignored. The opt-in packaged
+agent fixture passes separately with private system/session buses, including
+re-registration after owner loss. Strict Clippy passes. Both agent-enabled and
+agent-disabled patched GeoClue packages build and pass production parser/cache
+checks, and the revised Nix module assertions evaluate. Qt clock and actual
+Time/Weather metadata/navigation suites pass (4 and 5 cases including lifecycle).
+The full Qt suite passes 333 cases with its existing renderer skip, using the Nix
+check's `QML_XHR_ALLOW_FILE_READ=1` fixture setting; strict QML lint passes. Panel
+UI review reports no new numeric-role or local-wrapper overrides.
+No new package activation or live-provider/timezone acceptance was performed.

@@ -158,6 +158,22 @@ pub(super) struct Network {
     pub primary: String,
 }
 
+impl Network {
+    pub fn changed_fields(&self, previous: &Self) -> Vec<&'static str> {
+        let mut fields = Vec::new();
+        if self.owner != previous.owner {
+            fields.push("owner");
+        }
+        if self.active != previous.active {
+            fields.push("active_connections");
+        }
+        if self.primary != previous.primary {
+            fields.push("primary_connection");
+        }
+        fields
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Schedule {
     pub network: Option<Network>,
@@ -174,6 +190,12 @@ impl Schedule {
             return false;
         }
         if network.is_some() && self.retry_network != network {
+            if let (Some(current), Some(previous)) = (&network, &self.retry_network) {
+                // Field names only: never emit identifiers, addresses or raw objects.
+                tracing::info!(changed_fields = ?current.changed_fields(previous), "network identity changed");
+            } else {
+                tracing::info!("first eligible network observed");
+            }
             self.retry_network = network.clone();
             self.retry_due = None;
             self.retries = 0;
