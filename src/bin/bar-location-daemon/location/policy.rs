@@ -8,10 +8,11 @@ use tokio::time::Instant;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Source {
-    #[default]
-    Unknown,
     Ip,
     NonIp,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 impl Source {
     /// Shelllist's additive GeoClue SourceKind property, not Description.

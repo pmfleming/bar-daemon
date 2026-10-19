@@ -227,6 +227,10 @@ fn policy_accepts_ip_and_compares_zones_not_distance_accuracy_or_offset() {
     }
     assert_eq!(z.canonical("Eire"), z.canonical("Europe/Dublin"));
     assert_ne!(z.canonical("Europe/London"), z.canonical("Europe/Dublin"));
+    assert_eq!(
+        serde_json::from_str::<Source>(r#""future_gps""#).unwrap(),
+        Source::Unknown
+    );
 }
 
 #[test]
@@ -776,6 +780,23 @@ async fn legacy_state_migrates_and_failed_persistence_blocks_timezone_effects() 
 }
 
 #[tokio::test]
+async fn accepted_revision_survives_restart_and_publishes_even_with_an_unchanged_message() {
+    let backend = Fake::default();
+    let (_dir, mut a) = authority(&backend).await;
+    check(&mut a, &backend).await;
+    assert_eq!(a.storage.load().unwrap().accepted_revision, 1);
+    // Another accepted fix in the same zone still needs a reader refresh.
+    check(&mut a, &backend).await;
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(a.storage.load().unwrap().accepted_revision, 2);
+    a.storage.status("", 3).await.unwrap();
+    let status: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&a.storage.status_path).unwrap()).unwrap();
+    assert_eq!(status["accepted_revision"], 3);
+    assert_eq!(status["message"], "");
+}
+
+#[tokio::test]
 async fn durable_files_retain_private_coordinates_and_public_status_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let backend = Fake::default();
@@ -799,6 +820,6 @@ async fn durable_files_retain_private_coordinates_and_public_status_permissions(
     );
     assert_eq!(
         std::fs::read_to_string(&a.storage.status_path).unwrap(),
-        r#"{"message":""}"#
+        r#"{"accepted_revision":1,"message":""}"#
     );
 }

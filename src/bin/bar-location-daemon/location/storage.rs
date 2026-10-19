@@ -14,6 +14,8 @@ pub(super) struct State {
     pub wifi_not_before: f64,
     #[serde(default)]
     pub accepted: Option<Accepted>,
+    #[serde(default)]
+    pub accepted_revision: u64,
     // Last verified or explicitly acknowledged zone, independent of location.
     #[serde(default)]
     pub expected_timezone: Option<String>,
@@ -44,7 +46,7 @@ impl State {
 pub(super) struct Storage {
     pub state_path: PathBuf,
     pub status_path: PathBuf,
-    last_message: Option<String>,
+    last_message: Option<(String, u64)>,
 }
 impl Storage {
     pub fn new(state: PathBuf, runtime: PathBuf) -> Self {
@@ -79,13 +81,19 @@ impl Storage {
         .await?;
         Ok(())
     }
-    pub async fn status(&mut self, message: &str) -> Result<()> {
-        if self.last_message.as_deref() == Some(message) {
+    pub async fn status(&mut self, message: &str, revision: u64) -> Result<()> {
+        if self
+            .last_message
+            .as_ref()
+            .is_some_and(|(last, last_revision)| last == message && *last_revision == revision)
+        {
             return Ok(());
         }
         shelllist_daemon_tokio::write_bytes_atomic_async(
             self.status_path.clone(),
-            serde_json::to_vec(&serde_json::json!({"message": message}))?,
+            serde_json::to_vec(
+                &serde_json::json!({"message": message, "accepted_revision": revision}),
+            )?,
             AtomicFilePolicy {
                 directory_mode: Some(0o755),
                 file_mode: Some(0o644),
@@ -93,7 +101,7 @@ impl Storage {
             },
         )
         .await?;
-        self.last_message = Some(message.to_owned());
+        self.last_message = Some((message.to_owned(), revision));
         tracing::info!(message, "location status");
         Ok(())
     }

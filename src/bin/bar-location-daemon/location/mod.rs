@@ -128,7 +128,10 @@ impl Authority {
             }
             if self.state.paused || self.state.write_pending {
                 self.storage
-                    .status("Automatic location paused · reload to resume")
+                    .status(
+                        "Automatic location paused · reload to resume",
+                        self.state.accepted_revision,
+                    )
                     .await?;
             } else {
                 match backend.observe().await {
@@ -147,23 +150,31 @@ impl Authority {
                                     "Waiting for internet or resume · timezone unchanged",
                                 )
                             };
-                            self.storage.status(message).await?;
+                            self.storage
+                                .status(message, self.state.accepted_revision)
+                                .await?;
                         } else if self.schedule.ready(Instant::now()) {
                             self.check(backend, &mut control).await?;
                         } else if changed {
                             self.storage
-                                .status(if self.schedule.due.is_some() {
-                                    "Waiting to check current location…"
-                                } else {
-                                    &self.last_result
-                                })
+                                .status(
+                                    if self.schedule.due.is_some() {
+                                        "Waiting to check current location…"
+                                    } else {
+                                        &self.last_result
+                                    },
+                                    self.state.accepted_revision,
+                                )
                                 .await?;
                         }
                     }
                     Err(_) => {
                         self.schedule.observe(None, Instant::now());
                         self.storage
-                            .status("Network observation unavailable · timezone unchanged")
+                            .status(
+                                "Network observation unavailable · timezone unchanged",
+                                self.state.accepted_revision,
+                            )
                             .await?;
                     }
                 }
@@ -211,7 +222,9 @@ impl Authority {
                 format!("{reason} · no automatic change")
             }
         };
-        self.storage.status(&message).await?;
+        self.storage
+            .status(&message, self.state.accepted_revision)
+            .await?;
         self.last_result = message;
         Ok(())
     }
@@ -228,7 +241,9 @@ impl Authority {
                 .finish(Decision::Retry("GeoClue provider migration cooldown"))
                 .await;
         }
-        self.storage.status("Checking current location…").await?;
+        self.storage
+            .status("Checking current location…", self.state.accepted_revision)
+            .await?;
         tracing::info!("asking GeoClue; IP confirmation only for non-IP or unknown provenance");
         let started = self.schedule.network_since.unwrap_or_else(wall_time);
         let epoch = control.borrow().epoch;
@@ -299,6 +314,11 @@ impl Authority {
             Ok(actual) => {
                 self.baseline = actual;
                 self.state.expected_timezone = Some(zone.clone());
+                self.state.accepted_revision = self
+                    .state
+                    .accepted_revision
+                    .checked_add(1)
+                    .context("accepted location revision exhausted")?;
                 self.state.accepted = Some(Accepted {
                     timezone: zone,
                     latitude: geo.latitude,
@@ -313,7 +333,7 @@ impl Authority {
                     timezone_changed = needs_write, source = ?geo.source, "location check finished");
                 self.schedule.complete();
                 self.last_result.clear();
-                self.storage.status("").await
+                self.storage.status("", self.state.accepted_revision).await
             }
             Err(error) => {
                 tracing::warn!(error = %error, "timezone application or verification failed");

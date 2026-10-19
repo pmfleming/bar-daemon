@@ -177,14 +177,19 @@ restart even if no new location has yet been accepted.
 
 - `/var/lib/location-timezone/state.json`: mode 0600 in a 0700 directory;
   accepted location, `ip_not_before`, legacy `wifi_not_before`, `paused`, and
-  `write_pending`, and `expected_timezone`. Old Python/Rust state loads without dropping accepted data or
+  `write_pending`, `expected_timezone`, and monotonic `accepted_revision`. Old Python/Rust state loads without dropping accepted data or
   safety fences; missing provenance becomes `unknown`, missing accuracy `null`.
   Corrupt, oversized or symlinked state fails closed.
-- `/run/location-timezone/status.json`: mode 0644, only `{ "message": "..." }`.
+- `/run/location-timezone/status.json`: mode 0644, only `message` and
+  `accepted_revision` (no coordinates or provider details). The revision advances
+  with every durably accepted fix, including same-zone/no-write outcomes, and
+  survives restart. Publishing it is not suppressed by an unchanged message.
   Both files use atomic replacement and parent-directory fsync.
 - Authorized `GetAccepted` returns the last accepted timezone, coordinates,
   verification timestamp, `source` (`ip`, `non_ip`, `unknown`) and optional
-  `accuracy_meters`. Active local sessions are allowed by polkit; inactive/remote
+  `accuracy_meters`. Readers map future source strings to `unknown` without
+  discarding otherwise valid accepted data; unknown never grants IP trust.
+  Active local sessions are allowed by polkit; inactive/remote
   sessions are denied without prompting. There is no location mutation API.
 
 The session daemon retains accepted fixes through temporary reader failures and
@@ -193,6 +198,17 @@ coordinates**, potentially coarse IP estimates, not verified physical position.
 Rejected/pending evidence never replaces that row. No weather lookup or reverse
 geocoding is implied. The bar clock continues to follow observed timedated offset,
 not the stored accepted-location zone or Qt's cached process timezone.
+The session caches the observed zone and recomputes its offset/abbreviation and
+region IDs locally once a minute (DST included). It reads timedated at startup,
+on relevant `PropertiesChanged`, on service-owner appearance, or with bounded
+exponential retry after a failed read—not on a permanent ten-second timer.
+Idle timedated disappearance does not reactivate it. The two-second public-status
+file poll discovers accepted revisions even when an entire checking→accepted
+transition falls between polls. Message-only changes are local presentation;
+a new revision/reader owner triggers authorized `GetAccepted`, with bounded
+failure retries and retention of the last accepted fix. Legacy status without a
+revision still refreshes the reader on message changes.
+
 Status presentation remains optional; existing `FeedbackSource` composition and
 keyboard navigation are unchanged.
 

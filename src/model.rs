@@ -99,6 +99,16 @@ pub(crate) struct SleepInhibitor {
     pub pid: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocationSource {
+    Ip,
+    NonIp,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AcceptedLocation {
     pub timezone: String,
@@ -106,7 +116,7 @@ pub(crate) struct AcceptedLocation {
     pub longitude: f64,
     pub verified_at: f64,
     #[serde(default)]
-    pub source: String,
+    pub source: LocationSource,
     #[serde(default)]
     pub accuracy_meters: Option<f64>,
 }
