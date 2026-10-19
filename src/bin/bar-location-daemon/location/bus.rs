@@ -1,5 +1,5 @@
 use super::{
-    Backend, Control, Observation, geoclue, http,
+    Backend, Blocked, Control, Observation, geoclue, http,
     policy::{Fix, Network},
 };
 use anyhow::{Context, Result, ensure};
@@ -73,6 +73,7 @@ impl Backend for Bus {
                 return Ok(Observation {
                     network: None,
                     sleeping,
+                    blocked: None,
                 });
             }
             let mut active = Vec::<OwnedObjectPath>::try_from(
@@ -82,6 +83,21 @@ impl Backend for Bus {
             .map(|p| p.to_string())
             .collect::<Vec<_>>();
             active.sort();
+            let mut blocked = None;
+            for path in &active {
+                let connection = properties(
+                    &self.connection,
+                    &owner,
+                    path,
+                    "org.freedesktop.NetworkManager.Connection.Active",
+                )
+                .await?;
+                let kind = <&str>::try_from(field(&connection, "Type")?)?;
+                let vpn = bool::try_from(field(&connection, "Vpn")?)?;
+                if vpn || matches!(kind, "vpn" | "wireguard" | "tun") {
+                    blocked = Some(Blocked::Vpn);
+                }
+            }
             let primary =
                 OwnedObjectPath::try_from(field(&values, "PrimaryConnection")?.try_clone()?)?
                     .to_string();
@@ -90,12 +106,13 @@ impl Backend for Bus {
                 "NetworkManager restarted during observation"
             );
             Ok(Observation {
-                network: Some(Network {
+                network: blocked.is_none().then_some(Network {
                     owner,
                     active,
                     primary,
                 }),
                 sleeping,
+                blocked,
             })
         })
         .await

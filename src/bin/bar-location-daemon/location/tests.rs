@@ -32,6 +32,8 @@ struct Fake {
     geo_failed: AtomicBool,
     observe_delay: Duration,
     observe_calls: AtomicUsize,
+    vpn: AtomicBool,
+    vpn_on_observation: usize,
     geo_delay: Duration,
     geo_changes_network: AtomicBool,
     pending_geo: AtomicBool,
@@ -57,6 +59,8 @@ impl Default for Fake {
             geo_failed: AtomicBool::new(false),
             observe_delay: Duration::ZERO,
             observe_calls: AtomicUsize::new(0),
+            vpn: AtomicBool::new(false),
+            vpn_on_observation: usize::MAX,
             geo_delay: Duration::ZERO,
             geo_changes_network: AtomicBool::new(false),
             pending_geo: AtomicBool::new(false),
@@ -82,13 +86,20 @@ impl Drop for Live<'_> {
 }
 impl Backend for Fake {
     async fn observe(&self) -> Result<Observation> {
-        self.observe_calls.fetch_add(1, Ordering::SeqCst);
+        let calls = self.observe_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if calls >= self.vpn_on_observation {
+            self.vpn.store(true, Ordering::SeqCst);
+        }
         if !self.observe_delay.is_zero() {
             tokio::time::sleep(self.observe_delay).await;
         }
+        let blocked = self.vpn.load(Ordering::SeqCst).then_some(Blocked::Vpn);
         Ok(Observation {
-            network: Some(self.network.lock().unwrap().clone()),
+            network: blocked
+                .is_none()
+                .then(|| self.network.lock().unwrap().clone()),
             sleeping: false,
+            blocked,
         })
     }
     async fn timezone(&self) -> Result<String> {
@@ -419,6 +430,52 @@ async fn both_acquisition_stages_are_bounded_and_cancel_on_network_sleep_reload_
             );
         }
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn vpn_blocks_start_confirmation_inflight_acquisition_and_final_write() {
+    let backend = Fake::default();
+    backend.vpn.store(true, Ordering::SeqCst);
+    let (_dir, mut a) = authority(&backend).await;
+    let (sender, control) = watch::channel(Control::default());
+    let stop = async {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        sender.send_modify(|c| c.shutdown = true);
+    };
+    let (result, ()) = tokio::join!(a.run(&backend, control), stop);
+    result.unwrap();
+    assert_eq!(backend.geo_calls.load(Ordering::SeqCst), 0);
+    assert!(
+        std::fs::read_to_string(&a.storage.status_path)
+            .unwrap()
+            .contains("VPN active")
+    );
+    for (source, observation, ip_calls) in [
+        (Source::Ip, 1, 0),
+        (Source::NonIp, 1, 0),
+        (Source::NonIp, 2, 1),
+    ] {
+        let backend = Fake {
+            vpn_on_observation: observation,
+            ..Fake::default()
+        };
+        backend.geo.lock().unwrap().source = source;
+        let (_dir, mut a) = authority(&backend).await;
+        check(&mut a, &backend).await;
+        assert_eq!(backend.ip_calls.load(Ordering::SeqCst), ip_calls);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    }
+    let backend = Fake {
+        vpn_on_observation: 1,
+        ..Fake::default()
+    };
+    backend.pending_geo.store(true, Ordering::SeqCst);
+    let (_dir, mut a) = authority(&backend).await;
+    let before = Instant::now();
+    check(&mut a, &backend).await;
+    assert_eq!(before.elapsed(), Duration::from_secs(5));
+    assert!(!backend.geo_live.load(Ordering::SeqCst));
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(start_paused = true)]

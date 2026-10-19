@@ -20,6 +20,8 @@ struct Services {
     agent_registrations: AtomicUsize,
     agent_registered: Notify,
     address: Mutex<String>,
+    connection_kind: Mutex<String>,
+    vpn: AtomicBool,
     desktop: Mutex<String>,
     accuracy: AtomicU32,
     started: Notify,
@@ -46,6 +48,18 @@ impl NetworkManager {
     #[zbus(property)]
     fn primary_connection(&self) -> OwnedObjectPath {
         "/connection/a".try_into().unwrap()
+    }
+}
+struct ActiveConnection(Arc<Services>);
+#[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
+impl ActiveConnection {
+    #[zbus(property, name = "Type")]
+    fn connection_type(&self) -> String {
+        self.0.connection_kind.lock().unwrap().clone()
+    }
+    #[zbus(property)]
+    fn vpn(&self) -> bool {
+        self.0.vpn.load(Ordering::SeqCst)
     }
 }
 struct Login;
@@ -246,6 +260,7 @@ impl Backend for Peer {
 async fn peer(legacy: bool) -> (tokio::process::Child, Connection, Peer, Arc<Services>) {
     let state = Arc::new(Services::default());
     *state.zone.lock().unwrap() = "America/Edmonton".into();
+    *state.connection_kind.lock().unwrap() = "802-11-wireless".into();
     use tokio::io::AsyncBufReadExt;
     let mut daemon = tokio::process::Command::new("dbus-daemon")
         .args([
@@ -279,6 +294,8 @@ async fn peer(legacy: bool) -> (tokio::process::Child, Connection, Peer, Arc<Ser
         .name("org.freedesktop.timedate1")
         .unwrap()
         .serve_at("/org/freedesktop/NetworkManager", NetworkManager)
+        .unwrap()
+        .serve_at("/connection/a", ActiveConnection(state.clone()))
         .unwrap()
         .serve_at("/org/freedesktop/login1", Login)
         .unwrap()
@@ -414,6 +431,31 @@ async fn stale_or_malformed_fix_waits_for_update_then_cleans_up() {
         .unwrap();
         assert_eq!(state.writes.load(Ordering::SeqCst), 0);
     }
+}
+
+#[tokio::test]
+async fn networkmanager_tunnel_types_and_vpn_flag_block_and_disappearing_connections_fail_closed() {
+    let (_daemon, server, peer, state) = peer(false).await;
+    for (kind, vpn, blocked) in [
+        ("802-11-wireless", false, false),
+        ("802-3-ethernet", false, false),
+        ("vpn", false, true),
+        ("wireguard", false, true),
+        ("tun", false, true),
+        ("other", true, true),
+    ] {
+        *state.connection_kind.lock().unwrap() = kind.into();
+        state.vpn.store(vpn, Ordering::SeqCst);
+        let observed = peer.observe().await.unwrap();
+        assert_eq!(observed.blocked, blocked.then_some(Blocked::Vpn), "{kind}");
+        assert_eq!(observed.network.is_none(), blocked);
+    }
+    server
+        .object_server()
+        .remove::<ActiveConnection, _>("/connection/a")
+        .await
+        .unwrap();
+    assert!(peer.observe().await.is_err());
 }
 
 #[tokio::test]

@@ -26,9 +26,21 @@ struct Control {
     sleeping: bool,
     shutdown: bool,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blocked {
+    Vpn,
+}
+impl Blocked {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Vpn => "VPN active · timezone unchanged",
+        }
+    }
+}
 struct Observation {
     network: Option<Network>,
     sleeping: bool,
+    blocked: Option<Blocked>,
 }
 trait Backend {
     async fn observe(&self) -> Result<Observation>;
@@ -128,9 +140,14 @@ impl Authority {
                         };
                         let changed = self.schedule.observe(network, Instant::now());
                         if self.schedule.network.is_none() {
-                            self.storage
-                                .status("Waiting for internet or resume · timezone unchanged")
-                                .await?;
+                            let message = if observation.sleeping || current.sleeping {
+                                "Waiting for internet or resume · timezone unchanged"
+                            } else {
+                                observation.blocked.map(Blocked::message).unwrap_or(
+                                    "Waiting for internet or resume · timezone unchanged",
+                                )
+                            };
+                            self.storage.status(message).await?;
                         } else if self.schedule.ready(Instant::now()) {
                             self.check(backend, &mut control).await?;
                         } else if changed {
@@ -387,17 +404,15 @@ impl Authority {
             }
         };
         tokio::pin!(network_watch);
-        loop {
-            tokio::select! {
-                biased;
-                result = &mut lookup => return result,
-                changed = control.changed() => {
-                    changed.context("location control ended")?;
-                    return Ok(Err(Decision::Retry("Location check interrupted")));
-                }
-                _ = &mut deadline => return Ok(Err(Decision::Retry("Location acquisition timed out"))),
-                decision = &mut network_watch => return Ok(Err(decision)),
+        tokio::select! {
+            biased;
+            result = &mut lookup => result,
+            changed = control.changed() => {
+                changed.context("location control ended")?;
+                Ok(Err(Decision::Retry("Location check interrupted")))
             }
+            _ = &mut deadline => Ok(Err(Decision::Retry("Location acquisition timed out"))),
+            decision = &mut network_watch => Ok(Err(decision)),
         }
     }
 }

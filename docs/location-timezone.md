@@ -51,6 +51,13 @@ remain unknown. Other adapters currently default to unknown, which deliberately
 follows the same confirmation rule as non-IP (including GPS/static sources).
 This is provider evidence, not a proof of physical location or provider independence.
 GeoClue and the independent IP service can both reflect a VPN's egress location.
+As an additional conservative policy, active NetworkManager VPN connections
+(`Vpn=true`, or type `vpn`, `wireguard`, `tun`) block automatic checks and writes,
+including in-flight confirmation and the final write fence. The public reason is
+`VPN active · timezone unchanged`, distinct from lack of internet. Disappearing or
+unreadable active-connection properties fail closed. This also blocks split-tunnel
+connections and cannot detect unmanaged/upstream tunnels or all proxies; it is
+not proof of the physical network location.
 
 The property travels with each location and its copies, not as a global "last
 provider" flag. The patch also preserves the original observation timestamp on
