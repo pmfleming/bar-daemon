@@ -367,8 +367,22 @@ impl Authority {
             }
         };
         tokio::pin!(lookup);
-        let mut poll = tokio::time::interval(Duration::from_secs(5));
-        poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let network_watch = async {
+            let period = Duration::from_secs(5);
+            let mut poll = tokio::time::interval_at(Instant::now() + period, period);
+            poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                poll.tick().await;
+                let valid = backend
+                    .observe()
+                    .await
+                    .is_ok_and(|s| !s.sleeping && s.network == network && s.network.is_some());
+                if !valid {
+                    return Decision::Retry("Network or sleep state changed");
+                }
+            }
+        };
+        tokio::pin!(network_watch);
         loop {
             tokio::select! {
                 biased;
@@ -378,11 +392,7 @@ impl Authority {
                     return Ok(Err(Decision::Retry("Location check interrupted")));
                 }
                 _ = &mut deadline => return Ok(Err(Decision::Retry("Location acquisition timed out"))),
-                _ = poll.tick() => {
-                    let valid = backend.observe().await.is_ok_and(|s|
-                        !s.sleeping && s.network == network && s.network.is_some());
-                    if !valid { return Ok(Err(Decision::Retry("Network or sleep state changed"))); }
-                }
+                decision = &mut network_watch => return Ok(Err(decision)),
             }
         }
     }

@@ -108,7 +108,9 @@ with the existing systemd/environment defaults. Nix supplies tzdata explicitly.
 - Each GeoClue attempt uses a dedicated connection/client. It requests CITY
   accuracy, subscribes before Start, and waits past stale/invalid fixes. D-Bus
   calls are bounded to five seconds; the entire two-stage acquisition to 90.
-  Cleanup deletes the client on success/error/cancellation, bounded to five
+  Network polling starts after five seconds and runs as a concurrent future;
+  a slow observation cannot block acquisition completion, control cancellation,
+  or the deadline. Cleanup deletes the client on success/error/cancellation, bounded to five
   seconds; dropping the private connection is the final ownership fence.
 - Fixes must have valid coordinates, timestamps no earlier than the observed
   network epoch (rounded down to GeoClue's whole-second precision), at most five

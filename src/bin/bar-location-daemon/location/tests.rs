@@ -30,6 +30,9 @@ struct Fake {
     geo: Mutex<Fix>,
     ip_fix: Mutex<Fix>,
     geo_failed: AtomicBool,
+    observe_delay: Duration,
+    observe_calls: AtomicUsize,
+    geo_delay: Duration,
     geo_changes_network: AtomicBool,
     pending_geo: AtomicBool,
     geo_live: AtomicBool,
@@ -52,6 +55,9 @@ impl Default for Fake {
             geo: Mutex::new(fix(Source::NonIp)),
             ip_fix: Mutex::new(fix(Source::Ip)),
             geo_failed: AtomicBool::new(false),
+            observe_delay: Duration::ZERO,
+            observe_calls: AtomicUsize::new(0),
+            geo_delay: Duration::ZERO,
             geo_changes_network: AtomicBool::new(false),
             pending_geo: AtomicBool::new(false),
             geo_live: AtomicBool::new(false),
@@ -76,6 +82,10 @@ impl Drop for Live<'_> {
 }
 impl Backend for Fake {
     async fn observe(&self) -> Result<Observation> {
+        self.observe_calls.fetch_add(1, Ordering::SeqCst);
+        if !self.observe_delay.is_zero() {
+            tokio::time::sleep(self.observe_delay).await;
+        }
         Ok(Observation {
             network: Some(self.network.lock().unwrap().clone()),
             sleeping: false,
@@ -99,6 +109,9 @@ impl Backend for Fake {
         self.geo_calls.fetch_add(1, Ordering::SeqCst);
         self.geo_live.store(true, Ordering::SeqCst);
         let _live = Live(&self.geo_live);
+        if !self.geo_delay.is_zero() {
+            tokio::time::sleep(self.geo_delay).await;
+        }
         if self.pending_geo.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
         }
@@ -405,6 +418,38 @@ async fn both_acquisition_stages_are_bounded_and_cancel_on_network_sleep_reload_
                 usize::from(ip_stage)
             );
         }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_network_observation_does_not_block_lookup_control_or_deadline() {
+    for scenario in ["lookup", "control", "deadline"] {
+        let backend = Fake {
+            observe_delay: Duration::from_secs(5),
+            geo_delay: Duration::from_secs(6),
+            ..Fake::default()
+        };
+        backend.geo.lock().unwrap().source = Source::Ip;
+        backend
+            .pending_geo
+            .store(scenario != "lookup", Ordering::SeqCst);
+        let (_dir, mut a) = authority(&backend).await;
+        let (sender, mut control) = watch::channel(Control::default());
+        let begin = Instant::now();
+        let interrupt = async {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            assert_eq!(backend.observe_calls.load(Ordering::SeqCst), 0);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if scenario == "control" {
+                sender.send_modify(|c| c.shutdown = true);
+            }
+        };
+        let (result, ()) = tokio::join!(a.acquire(&backend, &mut control, wall_time()), interrupt);
+        let result = result.unwrap();
+        assert_eq!(result.is_ok(), scenario == "lookup");
+        let seconds = if scenario == "deadline" { 90 } else { 6 };
+        assert_eq!(begin.elapsed(), Duration::from_secs(seconds), "{scenario}");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     }
 }
 
