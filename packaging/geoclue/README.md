@@ -5,8 +5,8 @@ source `mv1d6cgs3146dkx2hgsiv2dg44d457km-source`). The patch and test are
 GPL-2.0-or-later, like the upstream files; they are applied to GeoClue, not linked
 into the MIT Rust daemon.
 
-`default.nix` appends `provenance.patch` and enables its Meson production-parser
-test. `lib.mkLocationGeoclue`, `packages.locationGeoclue` and
+`default.nix` appends `provenance.patch` and `freshness.patch` and enables their
+Meson production-parser/cache test. `lib.mkLocationGeoclue`, `packages.locationGeoclue` and
 `checks.locationGeoclue` expose the same implementation used by the NixOS module.
 The module's ordinary GeoClue package override retains the patch when selecting
 the demo-agent build variant.
@@ -28,9 +28,17 @@ it follows the confirmation branch. An unpatched GeoClue also follows that branc
 The daemon never silently upgrades missing/new provenance values to IP trust.
 
 Wi-Fi cache hits retain observation timestamps instead of restamping old
-observations. The authority can therefore reject a pre-attempt cached fix even
-when a new GeoClue client was just created. GeoClue's original whole-second
-precision remains; the Rust consumer permits that quantisation only.
+observations. The authority rejects pre-network-epoch or expired evidence, not
+all pre-attempt evidence. GeoClue's original whole-second precision remains.
+
+The additive `Client.RefreshSince(t)` method lets an active, authorized owning
+client request one revalidation, with a non-future Unix timestamp. Wi-Fi cache
+selection excludes older entries before comparing accuracy; both Wi-Fi and IP
+fallback share this path. Active web sources are refreshed even if another
+client keeps them alive; an existing HTTP query is coalesced by upstream code.
+There is no background revalidation timer, daemon restart, or timestamp rewrite.
+Other clients can still use recent cache entries. Provider errors or missing
+hardware remain pending evidence, bounded by the authority's acquisition deadline.
 
 ## Tests and upgrades
 
@@ -40,7 +48,11 @@ It verifies source preservation through both copy paths and that mutating a
 Description cannot change provenance. Malformed/missing/out-of-range coordinates
 and invalid accuracy are rejected before GObject can default them to a fabricated
 zero-valued location carrying IP provenance. Rust private-bus tests verify the consumer
-wire contract, including unknown and absent properties.
+wire contract, including unknown and absent properties, recent cache reuse and
+one-shot revalidation with a source kept alive. The C test includes the production
+Wi-Fi translation unit and exercises cache insertion/lookup, cutoff rejection,
+selection of fresh over stale more-accurate entries, and IP-fallback caching
+without constructing a live GeoClue source or contacting host services.
 
 Build with `tools/local-build build --attr locationGeoclue ../bar-daemon` from the
 framework checkout (or the equivalent source-launcher invocation in the policy

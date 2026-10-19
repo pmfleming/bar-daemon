@@ -2,7 +2,7 @@
 use super::*;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
 use zbus::{Connection, object_server::SignalEmitter};
@@ -14,6 +14,9 @@ struct Services {
     malformed_time: AtomicBool,
     deny_start: AtomicBool,
     source: AtomicU32,
+    age: AtomicU64,
+    refresh_supported: AtomicBool,
+    refreshes: AtomicUsize,
     desktop: Mutex<String>,
     accuracy: AtomicU32,
     started: Notify,
@@ -108,6 +111,19 @@ impl Client {
             Ok(())
         }
     }
+    async fn refresh_since(
+        &self,
+        minimum: u64,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        if !self.0.refresh_supported.load(Ordering::SeqCst) {
+            return Err(zbus::fdo::Error::UnknownMethod("unpatched GeoClue".into()));
+        }
+        assert!(minimum <= wall_time() as u64);
+        assert_eq!(self.0.refreshes.fetch_add(1, Ordering::SeqCst), 0);
+        self.0.age.store(0, Ordering::SeqCst);
+        self.publish(emitter).await
+    }
     async fn publish(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -157,7 +173,7 @@ impl Location {
         let seconds = wall_time() as u64;
         (
             if self.0.fresh.load(Ordering::SeqCst) {
-                seconds
+                seconds - self.0.age.load(Ordering::SeqCst)
             } else {
                 seconds - 600
             },
@@ -348,6 +364,29 @@ async fn stale_or_malformed_fix_waits_for_update_then_cleans_up() {
         .await
         .unwrap();
         assert_eq!(state.writes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn shared_source_recent_cache_is_reused_and_stale_cache_is_revalidated_once() {
+    for source in [0, 1, 2] {
+        for age in [30, 100, 600] {
+            let (_daemon, _server, peer, state) = peer(false).await;
+            state.fresh.store(true, Ordering::SeqCst);
+            state.source.store(source, Ordering::SeqCst);
+            state.age.store(age, Ordering::SeqCst);
+            state.refresh_supported.store(true, Ordering::SeqCst);
+            let network_since = wall_time() - 60.0;
+            let fix = tokio::time::timeout(Duration::from_secs(5), peer.geoclue(network_since))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(fix.usable_geoclue(network_since, wall_time()));
+            assert_eq!(
+                state.refreshes.load(Ordering::SeqCst),
+                usize::from(age > 60)
+            );
+        }
     }
 }
 

@@ -1,0 +1,206 @@
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff -ruN a/interface/org.freedesktop.GeoClue2.Client.xml b/interface/org.freedesktop.GeoClue2.Client.xml
+--- a/interface/org.freedesktop.GeoClue2.Client.xml	2026-10-19 09:26:18.724577852 +0200
++++ b/interface/org.freedesktop.GeoClue2.Client.xml	2026-10-19 12:51:47.184645654 +0200
+@@ -107,6 +107,14 @@
+     -->
+     <method name="Stop"/>
+ 
++    <!-- Shelllist extension. After authorized Start, request one bounded
++         revalidation of cached web evidence older than this Unix timestamp.
++         Does not restamp evidence or guarantee that providers are available.
++         Only the owning client connection may call this, once per client. -->
++    <method name="RefreshSince">
++      <arg name="minimum_timestamp" type="t" direction="in"/>
++    </method>
++
+     <!--
+         LocationUpdated:
+         @old: old location as path to a #org.freedesktop.GeoClue2.Location object
+diff -ruN a/src/gclue-locator.c b/src/gclue-locator.c
+--- a/src/gclue-locator.c	2026-10-19 09:26:18.725408449 +0200
++++ b/src/gclue-locator.c	2026-10-19 12:52:00.800561703 +0200
+@@ -592,6 +592,19 @@
+         return base_result;
+ }
+ 
++void
++gclue_locator_refresh_since (GClueLocator *locator, guint64 minimum_timestamp)
++{
++        GList *node;
++        for (node = locator->priv->active_sources; node != NULL; node = node->next) {
++                GClueLocationSource *source = node->data;
++                if (GCLUE_IS_WIFI (source))
++                        gclue_wifi_refresh_since (GCLUE_WIFI (source), minimum_timestamp);
++                else if (GCLUE_IS_WEB_SOURCE (source))
++                        gclue_web_source_refresh (GCLUE_WEB_SOURCE (source));
++        }
++}
++
+ GClueLocator *
+ gclue_locator_new (GClueAccuracyLevel level)
+ {
+diff -ruN a/src/gclue-locator.h b/src/gclue-locator.h
+--- a/src/gclue-locator.h	2026-10-19 09:26:18.725433426 +0200
++++ b/src/gclue-locator.h	2026-10-19 12:52:04.128541436 +0200
+@@ -63,6 +63,8 @@
+ void                gclue_locator_set_time_threshold (GClueLocator *locator,
+                                                       guint         threshold);
+ 
++void gclue_locator_refresh_since (GClueLocator *locator, guint64 minimum_timestamp);
++
+ G_END_DECLS
+ 
+ #endif /* GCLUE_LOCATOR_H */
+diff -ruN a/src/gclue-service-client.c b/src/gclue-service-client.c
+--- a/src/gclue-service-client.c	2026-10-19 09:26:18.725794342 +0200
++++ b/src/gclue-service-client.c	2026-10-19 12:51:55.842592079 +0200
+@@ -57,6 +57,7 @@
+ 
+         /* Number of times location has been updated */
+         guint locations_updated;
++        gboolean refreshed;
+ 
+         gboolean agent_stopped; /* Agent stopped client, not the app */
+ };
+@@ -632,6 +633,29 @@
+         return TRUE;
+ }
+ 
++static gboolean
++gclue_service_client_handle_refresh_since (GClueDBusClient *client,
++                                            GDBusMethodInvocation *invocation,
++                                            guint64 minimum_timestamp)
++{
++        GClueServiceClientPrivate *priv = GCLUE_SERVICE_CLIENT (client)->priv;
++        const char *sender = g_dbus_method_invocation_get_sender (invocation);
++        guint64 now = g_get_real_time () / G_USEC_PER_SEC;
++
++        if (g_strcmp0 (sender, gclue_client_info_get_bus_name (priv->client_info)) != 0 ||
++            !gclue_dbus_client_get_active (client) || priv->locator == NULL ||
++            priv->refreshed || minimum_timestamp > now) {
++                g_dbus_method_invocation_return_error_literal (invocation,
++                        G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED,
++                        "Revalidation requires an active owning client, once, without a future timestamp");
++                return TRUE;
++        }
++        priv->refreshed = TRUE;
++        gclue_locator_refresh_since (priv->locator, minimum_timestamp);
++        gclue_dbus_client_complete_refresh_since (client, invocation);
++        return TRUE;
++}
++
+ static void
+ gclue_service_client_finalize (GObject *object)
+ {
+@@ -916,6 +940,7 @@
+ {
+         iface->handle_start = gclue_service_client_handle_start;
+         iface->handle_stop = gclue_service_client_handle_stop;
++        iface->handle_refresh_since = gclue_service_client_handle_refresh_since;
+ }
+ 
+ static gboolean
+diff -ruN a/src/gclue-wifi.c b/src/gclue-wifi.c
+--- a/src/gclue-wifi.c	2026-10-19 09:41:42.746776411 +0200
++++ b/src/gclue-wifi.c	2026-10-19 12:52:24.943416869 +0200
+@@ -153,6 +153,7 @@
+         GHashTable *location_cache;  /* (element-type GVariant LocationCacheValue) (owned) */
+         guint cache_prune_timeout_id;
+         guint cache_hits, cache_misses;
++        guint64 minimum_timestamp;
+ 
+ #if GLIB_CHECK_VERSION(2, 64, 0)
+         GMemoryMonitor *memory_monitor;
+@@ -1340,7 +1341,8 @@
+ }
+ 
+ static GClueLocation *
+-find_cached_location (GHashTable *cache, GVariant *key, GArray *signals)
++find_cached_location (GHashTable *cache, GVariant *key, GArray *signals,
++                      guint64 minimum_timestamp)
+ {
+         g_autofree gchar *key_str = g_variant_print (key, FALSE);
+         GClueLocation *location = NULL;
+@@ -1357,6 +1359,9 @@
+         for (l = value->elements; l; l = l->next) {
+                 LocationCacheElement *element = l->data;
+ 
++                if (gclue_location_get_timestamp (element->location) < minimum_timestamp)
++                        continue;
++
+                 if (location &&
+                     gclue_location_get_accuracy (element->location) >=
+                     gclue_location_get_accuracy (location)) {
+@@ -1422,7 +1427,8 @@
+         g_autoptr(GVariant) cache_key = get_location_cache_hashtable_key (wifi, bss_array);
+         g_autoptr(GArray) signal_array = get_location_cache_signal_array (wifi, bss_array);
+         GClueLocation *cached_location = find_cached_location (wifi->priv->location_cache,
+-                                                               cache_key, signal_array);
++                                                               cache_key, signal_array,
++                                                               wifi->priv->minimum_timestamp);
+         RefreshTaskData *tdata;
+ 
+         g_task_set_source_tag (task, gclue_wifi_refresh_async);
+@@ -1519,6 +1525,17 @@
+         g_task_return_pointer (task, g_steal_pointer (&location), g_object_unref);
+ }
+ 
++void
++gclue_wifi_refresh_since (GClueWifi *wifi, guint64 minimum_timestamp)
++{
++        guint64 now = g_get_real_time () / G_USEC_PER_SEC;
++        wifi->priv->minimum_timestamp = MIN (now, MAX (wifi->priv->minimum_timestamp,
++                                                       minimum_timestamp));
++        /* Refresh even if another app keeps the shared source active. The web
++         * source coalesces an already running query. No periodic HTTP polling. */
++        gclue_web_source_refresh (GCLUE_WEB_SOURCE (wifi));
++}
++
+ static GClueLocation *
+ gclue_wifi_refresh_finish (GClueWebSource  *source,
+                            GAsyncResult    *result,
+diff -ruN a/src/gclue-wifi.h b/src/gclue-wifi.h
+--- a/src/gclue-wifi.h	2026-10-19 09:26:18.726077914 +0200
++++ b/src/gclue-wifi.h	2026-10-19 12:52:27.812399991 +0200
+@@ -66,6 +66,8 @@
+ gboolean gclue_wifi_should_skip_bsss (GClueAccuracyLevel level);
+ GList *gclue_wifi_get_bss_list (GClueWifi *wifi);
+ 
++void gclue_wifi_refresh_since (GClueWifi *wifi, guint64 minimum_timestamp);
++
+ G_END_DECLS
+ 
+ #endif /* GCLUE_WIFI_H */
+diff -ruN a/src/meson.build b/src/meson.build
+--- a/src/meson.build	2026-10-19 09:40:00.033674001 +0200
++++ b/src/meson.build	2026-10-19 12:52:36.270350636 +0200
+@@ -25,7 +25,7 @@
+              'gclue-service-location.h', 'gclue-service-location.c',
+              'gclue-static-source.c', 'gclue-static-source.h',
+              'gclue-web-source.c', 'gclue-web-source.h',
+-             'gclue-wifi.h', 'gclue-wifi.c',
++             'gclue-wifi.h',
+              'gclue-mozilla.h', 'gclue-mozilla.c',
+              'gclue-min-uint.h', 'gclue-min-uint.c',
+              'gclue-location.h', 'gclue-location.c',
+@@ -64,7 +64,7 @@
+ c_args = [ '-DG_LOG_DOMAIN="Geoclue"' ]
+ link_with = [ libgeoclue_public_api ]
+ executable('geoclue',
+-           sources + ['gclue-main.c'],
++           sources + ['gclue-main.c', 'gclue-wifi.c'],
+            link_with: link_with,
+            include_directories: include_dirs,
+            c_args: c_args,
+@@ -72,7 +72,8 @@
+            install: true,
+            install_dir: libexecdir)
+ 
+-# Test the actual parser/copy implementation, without running the daemon.
++# The test includes gclue-wifi.c to exercise its actual private cache lookup.
++# No host services or providers are contacted.
+ provenance_test = executable('location-provenance-test',
+            sources + ['provenance-test.c'],
+            link_with: link_with,

@@ -49,6 +49,7 @@ struct Authority {
     baseline: String,
     last_result: String,
     reload: u64,
+    control_epoch: u64,
 }
 impl Authority {
     async fn new(storage: Storage, zones: Zones, backend: &impl Backend) -> Result<Self> {
@@ -79,6 +80,7 @@ impl Authority {
             baseline,
             last_result: String::new(),
             reload: 0,
+            control_epoch: 0,
         })
     }
     async fn run(
@@ -93,6 +95,12 @@ impl Authority {
             if current.shutdown {
                 return Ok(());
             }
+            if current.epoch != self.control_epoch && current.reload == self.reload {
+                // A coalesced sleep/resume must invalidate evidence even when
+                // polling never observed the intermediate sleeping state.
+                self.schedule.network_since = self.schedule.network.as_ref().map(|_| wall_time());
+            }
+            self.control_epoch = current.epoch;
             if current.reload != self.reload {
                 self.baseline = backend.timezone().await?;
                 self.state.expected_timezone = Some(
@@ -103,7 +111,7 @@ impl Authority {
                 self.state.paused = false;
                 self.state.write_pending = false;
                 self.storage.save(&self.state).await?;
-                self.schedule = Schedule::default();
+                self.schedule.rearm();
                 self.reload = current.reload;
             }
             if self.state.paused || self.state.write_pending {
@@ -201,7 +209,7 @@ impl Authority {
         }
         self.storage.status("Checking current location…").await?;
         tracing::info!("asking GeoClue; IP confirmation only for non-IP or unknown provenance");
-        let started = wall_time();
+        let started = self.schedule.network_since.unwrap_or_else(wall_time);
         let epoch = control.borrow().epoch;
         let acquired = self.acquire(backend, control, started).await?;
         // Persist an observed 429 before acting on any simultaneous cancellation.

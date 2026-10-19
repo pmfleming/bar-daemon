@@ -262,6 +262,32 @@ fn invalid_stale_future_and_unresolved_evidence_are_retry_not_disagreement() {
     ));
 }
 
+#[test]
+fn recent_evidence_is_reusable_within_network_epoch_but_not_across_it() {
+    let now = wall_time();
+    let mut geo = fix(Source::NonIp);
+    geo.timestamp = now - 30.0;
+    assert!(
+        zones()
+            .decide(&geo, Some(&fix(Source::Ip)), now - 60.0, now)
+            .is_ok()
+    );
+    assert!(!geo.usable_geoclue(now - 10.0, now));
+    geo.timestamp = now - 91.0;
+    assert!(!geo.usable_geoclue(now - 120.0, now));
+    geo.source = Source::Ip;
+    assert!(geo.usable_geoclue(now - 120.0, now));
+    let mut schedule = Schedule::default();
+    schedule.observe(Some(network("a")), Instant::now());
+    let since = schedule.network_since;
+    schedule.retry(Instant::now(), Duration::ZERO);
+    schedule.observe(Some(network("a")), Instant::now());
+    schedule.rearm();
+    assert_eq!(schedule.network_since, since);
+    schedule.observe(None, Instant::now());
+    assert!(schedule.network_since.is_none());
+}
+
 #[tokio::test]
 async fn ip_fallback_skips_independent_lookup_even_during_its_cooldown() {
     let backend = Fake::default();

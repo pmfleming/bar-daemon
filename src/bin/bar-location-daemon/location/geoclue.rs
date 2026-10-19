@@ -95,6 +95,7 @@ pub(super) async fn locate_on(connection: &Connection, started: f64) -> Result<F
     let mut updates = client.receive_signal("LocationUpdated").await?;
     client.call::<_, _, ()>("Start", &()).await?;
     let mut location: OwnedObjectPath = client.get_property("Location").await?;
+    let mut refreshed = false;
     loop {
         if location.as_str() != "/" {
             let values = properties(
@@ -125,6 +126,17 @@ pub(super) async fn locate_on(connection: &Connection, started: f64) -> Result<F
                     "GeoClue restarted during acquisition"
                 );
                 return Ok(fix);
+            }
+            if !refreshed {
+                refreshed = true;
+                // Shelllist extension: revalidate stale shared sources once, rather
+                // than relying on GeoClue's process exiting to clear its cache.
+                // Old/unpatched services may not support it; remain conservative.
+                let minimum = started.floor().max((wall_time() - 90.0).floor()).max(0.0) as u64;
+                match client.call::<_, _, ()>("RefreshSince", &(minimum,)).await {
+                    Ok(()) => {}
+                    Err(error) => tracing::debug!(%error, "GeoClue revalidation unavailable"),
+                }
             }
             tracing::debug!(source = ?source, "waiting for a usable fresh GeoClue fix");
         }

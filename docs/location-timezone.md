@@ -55,6 +55,11 @@ GeoClue and the independent IP service can both reflect a VPN's egress location.
 The property travels with each location and its copies, not as a global "last
 provider" flag. The patch also preserves the original observation timestamp on
 Wi-Fi cache hits, instead of refreshing old observations when a client starts.
+The companion `Client.RefreshSince(t)` extension requests one revalidation per
+active owning client. It excludes cached Wi-Fi/IP-fallback entries older than the
+requested cutoff and refreshes active web sources even when another app keeps
+GeoClue running. It never restamps an observation, introduces no periodic provider
+poll, and leaves provider failures as pending evidence.
 A GeoClue timestamp can still be provider-response time, not AP scan time; neither
 it nor this patch proves database age or fresh independent physical observations.
 Patch application and production-parser tests are build gates; incompatible
@@ -99,10 +104,15 @@ with the existing systemd/environment defaults. Nix supplies tzdata explicitly.
   calls are bounded to five seconds; the entire two-stage acquisition to 90.
   Cleanup deletes the client on success/error/cancellation, bounded to five
   seconds; dropping the private connection is the final ownership fence.
-- Fixes must have valid coordinates, timestamps no earlier than the attempt
-  (rounded down to GeoClue's whole-second precision), at most five minutes old,
-  and at most five seconds in the future. When confirmation is needed, evidence
-  timestamps must be within two minutes of each other.
+- Fixes must have valid coordinates, timestamps no earlier than the observed
+  network epoch (rounded down to GeoClue's whole-second precision), at most five
+  minutes old, and at most five seconds in the future. Same-network retries and
+  reload do not reset that epoch; reconnect/resume does. Non-IP/unknown GeoClue
+  observations must be at most 90 seconds old, leaving room for the independent
+  request inside the two-minute evidence-pair window. A stale/pre-network fix
+  requests one `RefreshSince` revalidation; the existing 90-second acquisition
+  deadline still bounds waiting. An unpatched service may lack this extension;
+  stale evidence is never accepted merely because revalidation is unavailable.
 - IP is requested only after usable GeoClue evidence with a resolved timezone,
   then a fresh network/sleep/control check. HTTP is HTTPS-only, without proxies
   or redirects, with a 15-second timeout and 64 KiB streamed-response limit.

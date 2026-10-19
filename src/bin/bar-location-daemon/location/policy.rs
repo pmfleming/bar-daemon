@@ -42,14 +42,17 @@ impl Fix {
     pub fn fresh(&self, started: f64, now: f64) -> bool {
         self.coordinates_valid()
             && self.timestamp.is_finite()
-            // GeoClue 2.7 publishes whole seconds. Tolerate that quantisation,
-            // not a pre-connection cached fix or a timestamp fabricated by us.
+            // `started` is the current network epoch, not each retry's start.
+            // GeoClue 2.7 timestamps have whole-second precision.
             && self.timestamp >= started.floor()
             && self.timestamp <= now + 5.0
             && now - self.timestamp <= 300.0
     }
     pub fn usable_geoclue(&self, started: f64, now: f64) -> bool {
-        self.fresh(started, now) && self.accuracy.is_finite() && self.accuracy >= 0.0
+        self.fresh(started, now)
+            // Leave room for the bounded IP request within the 120s pair window.
+            && (self.source == Source::Ip || now - self.timestamp <= 90.0)
+            && self.accuracy.is_finite() && self.accuracy >= 0.0
     }
 }
 
@@ -156,6 +159,7 @@ pub(super) struct Network {
 #[derive(Default)]
 pub(super) struct Schedule {
     pub network: Option<Network>,
+    pub network_since: Option<f64>,
     completed: Option<Network>,
     retry_network: Option<Network>,
     retry_due: Option<Instant>,
@@ -172,6 +176,9 @@ impl Schedule {
             self.retry_due = None;
             self.retries = 0;
         }
+        // A reconnect/resume is a new freshness epoch even when identity recurs.
+        // Retrying or explicitly reloading on the same observed network is not.
+        self.network_since = network.as_ref().map(|_| super::wall_time());
         self.due = network
             .as_ref()
             .filter(|n| Some(*n) != self.completed.as_ref())
@@ -182,6 +189,15 @@ impl Schedule {
             });
         self.network = network;
         true
+    }
+    pub fn rearm(&mut self) {
+        self.completed = None;
+        self.retry_due = None;
+        self.retries = 0;
+        self.due = self
+            .network
+            .as_ref()
+            .map(|_| Instant::now() + Duration::from_secs(10));
     }
     pub fn ready(&self, now: Instant) -> bool {
         self.network.is_some() && self.due.is_some_and(|due| due <= now)

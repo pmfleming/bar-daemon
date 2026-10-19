@@ -2,6 +2,45 @@
 /* Exercises the patched production parser and copy paths; no network/services. */
 #include "gclue-mozilla.h"
 #include "gclue-location.h"
+/* Compile the actual private cache implementation into this test target. */
+#include "gclue-wifi.c"
+
+static void test_cache (void)
+{
+        g_autoptr(GHashTable) cache = g_hash_table_new_full (variant_hash,
+                (GEqualFunc) g_variant_equal, (GDestroyNotify) g_variant_unref,
+                location_cache_value_free);
+        g_autoptr(GVariant) key = g_variant_ref_sink (g_variant_new_string ("fixture"));
+        g_autoptr(GArray) signals = g_array_new (FALSE, FALSE, sizeof (gint16));
+        const char *responses[] = {
+                "{\"location\":{\"lat\":53.3,\"lng\":-6.2},\"accuracy\":100}",
+                "{\"location\":{\"lat\":53.3,\"lng\":-6.2},\"accuracy\":26000,\"fallback\":\"ipf\"}"
+        };
+        for (guint i = 0; i < G_N_ELEMENTS (responses); i++) {
+                g_hash_table_remove_all (cache);
+                g_autoptr(GError) error = NULL;
+                g_autoptr(GClueLocation) parsed = gclue_mozilla_parse_response (responses[i], "WiFi", &error);
+                g_assert_no_error (error);
+                guint source_kind;
+                g_object_get (parsed, "source-kind", &source_kind, NULL);
+                g_autoptr(GClueLocation) old = g_object_new (GCLUE_TYPE_LOCATION,
+                        "timestamp", (guint64) 1000, "source-kind", source_kind,
+                        "latitude", 53.3, "longitude", -6.2, "accuracy", 100.0, NULL);
+                GArray *stored = g_array_ref (signals);
+                add_cached_location (cache, key, &stored, old);
+                GClueLocation *hit = find_cached_location (cache, key, signals, 1000);
+                g_assert_true (hit == old);
+                g_assert_cmpuint (gclue_location_get_timestamp (hit), ==, 1000);
+                g_assert_null (find_cached_location (cache, key, signals, 1001));
+                // A worse but fresh fix must win over the stale accurate entry.
+                g_autoptr(GClueLocation) fresh = g_object_new (GCLUE_TYPE_LOCATION,
+                        "timestamp", (guint64) 1200, "source-kind", source_kind,
+                        "latitude", 53.3, "longitude", -6.2, "accuracy", 30000.0, NULL);
+                stored = g_array_ref (signals);
+                add_cached_location (cache, key, &stored, fresh);
+                g_assert_true (find_cached_location (cache, key, signals, 1100) == fresh);
+        }
+}
 
 static guint kind (GClueLocation *location)
 {
@@ -12,6 +51,7 @@ static guint kind (GClueLocation *location)
 
 int main (void)
 {
+        test_cache ();
         const struct {
                 const char *request_kind;
                 const char *fallback;
