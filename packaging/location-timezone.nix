@@ -34,6 +34,9 @@ in
     time.timeZone = null;
     services.geoclue2 = {
       enable = true;
+      enableDemoAgent = lib.mkDefault false;
+      # The dedicated service-account agent still registers under this ID.
+      whitelistedAgents = [ "geoclue-demo-agent" ];
       package = lib.mkDefault ((import ./geoclue) pkgs.geoclue2);
       enableNmea = lib.mkDefault false;
       geoProviderUrl = lib.mkDefault "https://api.beacondb.net/v1/geolocate";
@@ -73,6 +76,10 @@ in
         Restart = "on-failure";
         PrivateTmp = true;
         NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateNetwork = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
       };
     };
     # Same unit replaces the old Python ExecStart: no second timezone writer.

@@ -17,6 +17,9 @@ struct Services {
     age: AtomicU64,
     refresh_supported: AtomicBool,
     refreshes: AtomicUsize,
+    agent_registrations: AtomicUsize,
+    agent_registered: Notify,
+    address: Mutex<String>,
     desktop: Mutex<String>,
     accuracy: AtomicU32,
     started: Notify,
@@ -70,6 +73,15 @@ impl Timedated {
 struct Manager(Arc<Services>);
 #[zbus::interface(name = "org.freedesktop.GeoClue2.Manager")]
 impl Manager {
+    #[zbus(property)]
+    fn in_use(&self) -> bool {
+        false
+    }
+    fn add_agent(&self, desktop: &str) {
+        assert_eq!(desktop, "geoclue-demo-agent");
+        self.0.agent_registrations.fetch_add(1, Ordering::SeqCst);
+        self.0.agent_registered.notify_one();
+    }
     fn get_client(&self) -> OwnedObjectPath {
         "/fixture/client".try_into().unwrap()
     }
@@ -255,6 +267,7 @@ async fn peer(legacy: bool) -> (tokio::process::Child, Connection, Peer, Arc<Ser
         .unwrap()
         .unwrap()
         .unwrap();
+    *state.address.lock().unwrap() = address.clone();
     let server = zbus::connection::Builder::address(address.as_str())
         .unwrap()
         .name("org.freedesktop.NetworkManager")
@@ -301,6 +314,42 @@ async fn peer(legacy: bool) -> (tokio::process::Child, Connection, Peer, Arc<Ser
         },
         state,
     )
+}
+
+#[tokio::test]
+#[ignore = "requires LOCATION_GEOCLUE_AGENT pointing to the packaged agent; private bus only"]
+async fn packaged_service_agent_reregisters_without_a_desktop_agent() {
+    let (_daemon, server, _peer, state) = peer(false).await;
+    let agent = std::env::var("LOCATION_GEOCLUE_AGENT").expect("set packaged agent path");
+    let address = state.address.lock().unwrap().clone();
+    let mut child = tokio::process::Command::new(agent)
+        .env("DBUS_SYSTEM_BUS_ADDRESS", &address)
+        // GApplication also probes the session bus for singleton ownership.
+        .env("DBUS_SESSION_BUS_ADDRESS", &address)
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), state.agent_registered.notified())
+        .await
+        .unwrap();
+    server
+        .release_name("org.freedesktop.GeoClue2")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    server
+        .request_name("org.freedesktop.GeoClue2")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), state.agent_registered.notified())
+        .await
+        .unwrap();
+    assert_eq!(state.agent_registrations.load(Ordering::SeqCst), 2);
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
 }
 
 #[tokio::test]

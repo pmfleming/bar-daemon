@@ -74,8 +74,14 @@ Import `bar-daemon.nixosModules.location-timezone` and set
 GeoClue, defaults to the patched GeoClue package and beaconDB endpoint, and
 registers `location-timezone` for the reserved `automatic-timezoned` UID.
 The per-service-account `location-timezone-agent` supplies GeoClue 2.7's required
-authorization agent. This agent does not set timezones. NMEA discovery defaults
-off but hosts may override provider configuration.
+authorization agent. This agent does not set timezones. Desktop demo-agent
+autostart defaults off; the dedicated agent's `geoclue-demo-agent` identity is
+explicitly whitelisted and its separate agent-enabled package retained. The agent
+has read-only system/home isolation and only AF_UNIX access in a private network
+namespace. It re-registers when GeoClue returns after idle shutdown. NMEA discovery
+defaults off but hosts may override provider configuration. This is not strict
+application isolation: NixOS still supplies browser application permissions, and
+hosts may explicitly enable desktop agents.
 
 The module removes direct NetworkManager scan authorization: the authority no
 longer scans Wi-Fi or sends BSSIDs itself. NetworkManager remains the connectivity
@@ -201,6 +207,13 @@ and absent provenance, stale/malformed updates, denial, cleanup and timedated
 readback. Local HTTP fixtures retain transport/response/429 bounds. The patched
 GeoClue build tests its production parser and copy paths without network access.
 Shelllist's Qt clock regression checks live offset changes and date rollover.
+
+The packaged-agent re-registration fixture is opt-in: set `LOCATION_GEOCLUE_AGENT`
+to the built `libexec/geoclue-2.0/demos/agent` and run `cargo test --bin
+bar-location-daemon packaged_service_agent -- --ignored`. Both its system and
+session D-Bus addresses point at a private fixture bus; no desktop agent is used.
+The service sandbox is checked through Nix module assertions, not activated by
+the fixture.
 
 No fixture requires live providers or host services. Provider coverage, deployed
 service-account authorization and actual network moves require separate acceptance
