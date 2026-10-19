@@ -130,21 +130,25 @@ Boundary uncertainty is retriable missing evidence, never a permanent
 "sources disagree" result. This sampling is not a distance comparison between
 providers. See `packaging/licenses/timezone-boundaries.md` for ODbL attribution.
 
-Before applying, reread the system timezone and pause if it differs from the
-baseline (manual override). Persist write intent, then recheck connection and
+At startup, compare the canonical system timezone with durable `expected_timezone`
+(or the accepted zone for legacy state) and persist a pause on mismatch. First
+installation without either baseline cannot identify an earlier manual override.
+Before applying, reread the system timezone and pause if its canonical identity
+differs from the baseline (manual override). Persist write intent, then recheck connection and
 sleep/control state. Call timedated noninteractively only when the canonical
 zone differs, and verify readback even when no write was needed. Only durable,
 verified outcomes replace accepted state. Lost/rejected replies or verification
 failure retain `write_pending` and pause across restarts; there is no blind replay.
 SIGTERM allows bounded verification/persistence. `systemctl reload
 location-timezone` explicitly clears pause/uncertain intent and captures a new
-baseline without bypassing cooldowns.
+baseline durably without bypassing cooldowns. That acknowledgement survives a
+restart even if no new location has yet been accepted.
 
 ## State, privacy and presentation
 
 - `/var/lib/location-timezone/state.json`: mode 0600 in a 0700 directory;
   accepted location, `ip_not_before`, legacy `wifi_not_before`, `paused`, and
-  `write_pending`. Old Python/Rust state loads without dropping accepted data or
+  `write_pending`, and `expected_timezone`. Old Python/Rust state loads without dropping accepted data or
   safety fences; missing provenance becomes `unknown`, missing accuracy `null`.
   Corrupt, oversized or symlinked state fails closed.
 - `/run/location-timezone/status.json`: mode 0644, only `{ "message": "..." }`.

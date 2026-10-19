@@ -52,14 +52,31 @@ struct Authority {
 }
 impl Authority {
     async fn new(storage: Storage, zones: Zones, backend: &impl Backend) -> Result<Self> {
-        let state = storage.load()?;
+        let mut state = storage.load()?;
+        let baseline = backend.timezone().await?;
+        let canonical = zones
+            .canonical(&baseline)
+            .context("invalid system timezone")?;
+        let expected = state
+            .expected_timezone
+            .as_deref()
+            .or_else(|| state.accepted.as_ref().map(|a| a.timezone.as_str()));
+        if let Some(expected) = expected {
+            if zones.canonical(expected).as_deref() != Some(&canonical) {
+                tracing::info!(current_timezone = %baseline, "timezone changed while authority was stopped; pausing");
+                state.paused = true;
+            }
+        } else {
+            // First installation has no evidence of a previous manual override.
+            state.expected_timezone = Some(canonical);
+        }
         storage.save(&state).await?;
         Ok(Self {
             storage,
             state,
             zones,
             schedule: Schedule::default(),
-            baseline: backend.timezone().await?,
+            baseline,
             last_result: String::new(),
             reload: 0,
         })
@@ -78,6 +95,11 @@ impl Authority {
             }
             if current.reload != self.reload {
                 self.baseline = backend.timezone().await?;
+                self.state.expected_timezone = Some(
+                    self.zones
+                        .canonical(&self.baseline)
+                        .context("invalid system timezone")?,
+                );
                 self.state.paused = false;
                 self.state.write_pending = false;
                 self.storage.save(&self.state).await?;
@@ -200,7 +222,9 @@ impl Authority {
                     .await;
             }
         };
-        if current != self.baseline {
+        if self.zones.canonical(&current).is_none()
+            || self.zones.canonical(&current) != self.zones.canonical(&self.baseline)
+        {
             tracing::info!(baseline = %self.baseline, current_timezone = %current, proposed_timezone = %zone, "manual timezone change detected");
             self.state.paused = true;
             self.storage.save(&self.state).await?;
@@ -245,6 +269,7 @@ impl Authority {
         match applied {
             Ok(actual) => {
                 self.baseline = actual;
+                self.state.expected_timezone = Some(zone.clone());
                 self.state.accepted = Some(Accepted {
                     timezone: zone,
                     latitude: geo.latitude,

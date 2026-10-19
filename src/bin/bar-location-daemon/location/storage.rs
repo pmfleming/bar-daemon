@@ -14,6 +14,9 @@ pub(super) struct State {
     pub wifi_not_before: f64,
     #[serde(default)]
     pub accepted: Option<Accepted>,
+    // Last verified or explicitly acknowledged zone, independent of location.
+    #[serde(default)]
+    pub expected_timezone: Option<String>,
     // Persist intent before calling timedated: a crash or lost reply must not
     // silently re-arm writes on restart. Explicit reload clears this fence.
     #[serde(default)]

@@ -543,6 +543,59 @@ async fn disagreement_manual_override_and_uncertain_write_keep_previous_accepted
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn startup_detects_offline_override_and_reload_acknowledgement_survives_restart() {
+    for legacy in [false, true] {
+        let backend = Fake::default();
+        let (dir, mut a) = authority(&backend).await;
+        check(&mut a, &backend).await;
+        if legacy {
+            a.state.expected_timezone = None;
+            a.state.accepted.as_mut().unwrap().timezone = "Eire".into();
+            a.storage.save(&a.state).await.unwrap();
+        }
+        let storage = || Storage::new(dir.path().join("state"), dir.path().join("run"));
+        *backend.zone.lock().unwrap() = "Eire".into();
+        assert!(
+            !Authority::new(storage(), zones(), &backend)
+                .await
+                .unwrap()
+                .state
+                .paused
+        );
+        *backend.zone.lock().unwrap() = "America/Edmonton".into();
+        let mut restarted = Authority::new(storage(), zones(), &backend).await.unwrap();
+        assert!(restarted.storage.load().unwrap().paused);
+        let before = backend.geo_calls.load(Ordering::SeqCst);
+        let (sender, control) = watch::channel(Control::default());
+        let stop = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            sender.send_modify(|c| c.shutdown = true);
+        };
+        let (result, ()) = tokio::join!(restarted.run(&backend, control), stop);
+        result.unwrap();
+        assert_eq!(backend.geo_calls.load(Ordering::SeqCst), before);
+        let (sender, control) = watch::channel(Control {
+            reload: 1,
+            ..Control::default()
+        });
+        let stop = async {
+            // Stop before the debounced lookup: acknowledgement alone must persist.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            sender.send_modify(|c| c.shutdown = true);
+        };
+        let (result, ()) = tokio::join!(restarted.run(&backend, control), stop);
+        result.unwrap();
+        let restarted = Authority::new(storage(), zones(), &backend).await.unwrap();
+        assert!(!restarted.state.paused);
+        assert_eq!(
+            restarted.state.expected_timezone.as_deref(),
+            Some("America/Edmonton")
+        );
+        assert_eq!(backend.geo_calls.load(Ordering::SeqCst), before);
+    }
+}
+
 #[tokio::test]
 async fn legacy_state_migrates_and_failed_persistence_blocks_timezone_effects() {
     let backend = Fake::default();
