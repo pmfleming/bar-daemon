@@ -96,6 +96,51 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn location_api_requires_revision_and_never_removes_protected_roles() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = StateStore::default();
+        let service = ActivityService::with_paths(
+            state.clone(),
+            directory.path().join("config.json"),
+            directory.path().join("todos.json"),
+        )
+        .await;
+        let api = ActivityApi::new(state, service);
+        let mut place = crate::location_place::Place::home();
+        place.name = "Haarlem".into();
+        place.latitude = 52.38;
+        place.longitude = 4.64;
+        let reply = api
+            .locations("locations.add", json!({"place":place,"revision":1}))
+            .await;
+        assert_eq!(reply["ok"], true);
+        let id = reply["data"]["id"].as_str().unwrap();
+        assert_eq!(reply["data"]["activity"]["location_catalog"]["revision"], 2);
+        for protected in ["weather:home", "current-location"] {
+            assert_eq!(
+                api.locations("locations.remove", json!({"id":protected,"revision":2}))
+                    .await["ok"],
+                false
+            );
+        }
+        assert_eq!(
+            api.locations("locations.remove", json!({"id":id,"revision":1}))
+                .await["ok"],
+            false
+        );
+        assert_eq!(
+            api.locations("locations.remove", json!({"id":id,"revision":2}))
+                .await["ok"],
+            true
+        );
+        assert_eq!(
+            api.locations("locations.add", json!({"place":null,"revision":3}))
+                .await["ok"],
+            false
+        );
+    }
+
+    #[tokio::test]
     async fn isolated_live_todo_lifecycle_matches_generated_replies_and_persists_once() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("todos.json");

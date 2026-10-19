@@ -1,5 +1,7 @@
 //! Session-independent system timezone authority; never changes UTC/NTP.
 mod location;
+// Shared validation also contains catalog-only deduplication helpers.
+#[allow(dead_code)]
 #[path = "../../location_place.rs"]
 mod location_place;
 

@@ -46,6 +46,7 @@ pub(crate) struct ActivityService {
     catalog_path: PathBuf,
     providers: ProviderRegistry,
     refresh_guard: Mutex<()>,
+    publication_guard: Mutex<()>,
     todo_guard: Mutex<()>,
     todo_sequence: AtomicU64,
 }
@@ -68,13 +69,22 @@ impl ActivityService {
             ),
         };
         let catalog_path = todo_path.with_file_name("locations.json");
-        let catalog_result = match config::load(&config_path).await {
-            Ok(config) => super::catalog::Catalog::load_or_import(&catalog_path, &config).await,
-            Err(error) => Err(error),
-        };
+        let catalog_result = async {
+            // Once imported, a malformed calendar config cannot replace saved cities.
+            let config = if tokio::fs::try_exists(&catalog_path).await? {
+                ActivityConfig::default()
+            } else {
+                config::load(&config_path).await?
+            };
+            super::catalog::Catalog::load_or_import(&catalog_path, &config).await
+        }
+        .await;
         let (catalog, catalog_error) = match catalog_result {
             Ok(catalog) => (Some(catalog), None),
-            Err(error) => (None, Some(format!("City store unavailable: {error:#}"))),
+            Err(error) => (
+                Some(super::catalog::Catalog::protected_home()),
+                Some(format!("City store unavailable: {error:#}")),
+            ),
         };
         let service = Arc::new(Self {
             data: RwLock::new(ActivityData {
@@ -90,6 +100,7 @@ impl ActivityService {
             catalog_path,
             providers: ProviderRegistry::builtins(),
             refresh_guard: Mutex::new(()),
+            publication_guard: Mutex::new(()),
             todo_guard: Mutex::new(()),
             todo_sequence: AtomicU64::new(1),
         });
@@ -142,6 +153,7 @@ impl ActivityService {
     }
 
     async fn publish_syncing(&self) {
+        let _publication = self.publication_guard.lock().await;
         let mut current = self.state.read(|s| s.activity.clone()).await;
         current.available = true;
         current.syncing = true;
@@ -259,13 +271,12 @@ impl ActivityService {
                 .map(|index| cached.swap_remove(index));
             weather::cached_or_fetch(location, previous, now, async {
                 // Service unit fixtures never contact live forecast providers.
-                #[cfg(test)]
-                {
+                if cfg!(test) {
                     anyhow::bail!("Forecast provider disabled in unit fixture")
-                }
-                #[cfg(not(test))]
-                {
-                    weather::fetch(location).await
+                } else {
+                    tokio::time::timeout(Duration::from_secs(15), weather::fetch(location))
+                        .await
+                        .context("Forecast request timed out")?
                 }
             })
         }))
@@ -468,6 +479,7 @@ impl ActivityService {
     }
 
     async fn publish_state(&self, error: Option<String>) {
+        let _publication = self.publication_guard.lock().await;
         let data = self.data.read().await;
         let now = unix_ms();
         let events = data.events_by_source.values().flatten();
@@ -560,6 +572,42 @@ mod tests {
     use crate::state::StateStore;
 
     use super::ActivityService;
+
+    #[tokio::test]
+    async fn city_catalog_survives_bad_config_and_corruption_never_moves_home() {
+        let directory = tempdir().unwrap();
+        let service = service_in(&directory).await;
+        let mut place = crate::location_place::Place::home();
+        place.name = "Haarlem".into();
+        place.latitude = 52.38;
+        place.longitude = 4.64;
+        let id = service.add_city(place, 1).await.unwrap();
+        {
+            let _guard = service.refresh_guard.lock().await;
+        }
+        std::fs::write(directory.path().join("activity.json"), b"bad-calendar-json").unwrap();
+        let reopened = service_in(&directory).await;
+        assert!(
+            reopened
+                .state
+                .read(|s| s.activity.locations.iter().any(|c| c.id == id))
+                .await
+        );
+        reopened.remove_city(&id, 2).await.unwrap();
+        std::fs::write(directory.path().join("locations.json"), b"broken").unwrap();
+        let broken = service_in(&directory).await;
+        let snapshot = broken.state.read(|s| s.activity.clone()).await;
+        let home = snapshot.locations.iter().find(|c| c.home).unwrap();
+        assert_eq!(home.clock.label, "Amsterdam");
+        assert_eq!(home.clock.timezone, "Europe/Amsterdam");
+        assert!(!snapshot.location_catalog.unwrap().writable);
+        assert!(
+            broken
+                .add_city(crate::location_place::Place::home(), 1)
+                .await
+                .is_err()
+        );
+    }
 
     async fn service_in(directory: &tempfile::TempDir) -> std::sync::Arc<ActivityService> {
         ActivityService::with_paths(

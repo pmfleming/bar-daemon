@@ -30,6 +30,9 @@ pub(crate) struct CatalogInfo {
     pub writable: bool,
 }
 impl Catalog {
+    pub(crate) fn protected_home() -> Self {
+        Self::seed(&ActivityConfig::default())
+    }
     fn seed(config: &ActivityConfig) -> Self {
         let mut cities = vec![City {
             id: HOME.into(),
@@ -121,7 +124,7 @@ impl Catalog {
     }
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 1 && self.revision > 0 && self.next_id > 0 && self.cities.len() <= 128,
+            self.version == 1 && self.revision > 0 && self.next_id > 0 && self.cities.len() <= 32,
             "unsupported or oversized city store"
         );
         let mut ids = HashSet::new();
@@ -156,6 +159,10 @@ impl Catalog {
         {
             return Ok((self.clone(), existing.id.clone()));
         }
+        ensure!(
+            self.cities.len() < 32,
+            "At most 32 saved cities (including Home) are supported"
+        );
         let mut next = self.clone();
         let id = format!("city:{}", next.next_id);
         next.next_id = next.next_id.checked_add(1).context("city ID exhausted")?;

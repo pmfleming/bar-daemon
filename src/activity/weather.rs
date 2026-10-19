@@ -88,6 +88,8 @@ pub(super) async fn cached_or_fetch(
             location: config.location.clone(),
             home: config.home,
             timezone: config.timezone.clone(),
+            latitude: config.latitude,
+            longitude: config.longitude,
             error: Some(error.to_string()),
             ..previous.unwrap_or_default()
         }),
