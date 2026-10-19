@@ -126,9 +126,13 @@ with the existing systemd/environment defaults. Nix supplies tzdata explicitly.
   or redirects, with a 15-second timeout and 64 KiB streamed-response limit.
 - An observed IP HTTP 429 is persisted before cancellation/return. Retry-After
   accepts seconds/HTTP dates, minimum 60 seconds, default one hour, maximum one
-  year. Reload/reconnect/restart cannot bypass it. During IP cooldown, ordinary
-  bounded retries may ask GeoClue again: a new GeoClue-IP result can succeed, but
-  a non-IP/unknown result cannot issue an independent IP request until expiry.
+  year. Reload/reconnect/restart cannot bypass it. If non-IP/unknown evidence
+  specifically needs rate-limited confirmation, same-network retries wait until
+  the greater of the IP and GeoClue cooldowns. Connectivity flicker preserves
+  this delay. A new connection, reload or restart can still ask GeoClue and accept
+  a positively identified IP result without spending an IP confirmation request.
+  Trade-off: a same-network change to IP provenance is not discovered promptly
+  during this wait. The retry gate is structured state, not status-string parsing.
 - Existing `wifi_not_before` cooldowns survive migration and gate GeoClue until
   expiry because the default GeoClue endpoint is the same beaconDB provider.
   This legacy field is not repopulated. GeoClue owns subsequent provider HTTP

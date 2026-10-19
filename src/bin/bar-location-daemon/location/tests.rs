@@ -464,6 +464,21 @@ async fn ip_failure_retries_and_persisted_cooldown_does_not_block_later_geoclue_
     backend.limited.store(true, Ordering::SeqCst);
     check(&mut a, &backend).await;
     assert!(a.storage.load().unwrap().ip_not_before >= wall_time() + 7199.0);
+    assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(7198)));
+    let calls = backend.geo_calls.load(Ordering::SeqCst);
+    let (sender, control) = watch::channel(Control::default());
+    let stop = async {
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        sender.send_modify(|c| c.shutdown = true);
+    };
+    let (result, ()) = tokio::join!(a.run(&backend, control), stop);
+    result.unwrap();
+    assert_eq!(backend.geo_calls.load(Ordering::SeqCst), calls);
+    a.schedule.observe(None, Instant::now());
+    a.schedule.observe(Some(network("a")), Instant::now());
+    assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(300)));
+    a.schedule.observe(Some(network("b")), Instant::now());
+    assert!(a.schedule.ready(Instant::now() + Duration::from_secs(10)));
     let mut a = Authority::new(
         Storage::new(dir.path().join("state"), dir.path().join("run")),
         zones(),
@@ -512,6 +527,17 @@ async fn ready_reply_racing_shutdown_persists_429_but_never_applies_a_fix() {
         assert!(a.state.accepted.is_none());
         assert!(!a.state.write_pending);
     }
+}
+
+#[tokio::test]
+async fn confirmation_cooldown_retry_uses_the_larger_provider_deadline() {
+    let backend = Fake::default();
+    let (_dir, mut a) = authority(&backend).await;
+    a.state.ip_not_before = wall_time() + 3600.0;
+    a.state.wifi_not_before = wall_time() + 7200.0;
+    a.finish(Decision::IpConfirmationLimited).await.unwrap();
+    assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(7198)));
+    assert!(a.schedule.ready(Instant::now() + Duration::from_secs(7201)));
 }
 
 #[tokio::test]

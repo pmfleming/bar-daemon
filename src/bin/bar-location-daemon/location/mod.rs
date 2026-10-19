@@ -157,24 +157,28 @@ impl Authority {
             }
         }
     }
+    fn retry_message(&mut self, reason: &str, minimum: Duration) -> String {
+        self.schedule.retry(Instant::now(), minimum);
+        tracing::info!(
+            reason,
+            outcome = "retry",
+            retry_in_seconds = self
+                .schedule
+                .due
+                .map(|due| due.saturating_duration_since(Instant::now()).as_secs()),
+            "location check finished"
+        );
+        format!("{reason} · timezone unchanged · retrying automatically")
+    }
     async fn finish(&mut self, decision: Decision) -> Result<()> {
+        let now = wall_time();
+        let minimum = self.state.geoclue_cooldown(now);
         let message = match decision {
-            Decision::Retry(reason) => {
-                // Provider cooldowns gate their own calls, not the whole pipeline.
-                // In particular an IP checker cooldown cannot block GeoClue-IP.
-                self.schedule
-                    .retry(Instant::now(), self.state.geoclue_cooldown(wall_time()));
-                tracing::info!(
-                    reason,
-                    outcome = "retry",
-                    retry_in_seconds = self
-                        .schedule
-                        .due
-                        .map(|due| due.saturating_duration_since(Instant::now()).as_secs()),
-                    "location check finished"
-                );
-                format!("{reason} · timezone unchanged · retrying automatically")
-            }
+            Decision::Retry(reason) => self.retry_message(reason, minimum),
+            Decision::IpConfirmationLimited => self.retry_message(
+                "IP confirmation rate limited",
+                minimum.max(self.state.ip_cooldown(now)),
+            ),
             Decision::Stop(reason) => {
                 self.schedule.complete();
                 tracing::info!(
@@ -335,7 +339,7 @@ impl Authority {
                 return Ok(Ok((geo, None)));
             }
             if self.state.ip_not_before > wall_time() {
-                return Ok(Err(Decision::Retry("IP confirmation rate limited")));
+                return Ok(Err(Decision::IpConfirmationLimited));
             }
             let observed = backend.observe().await;
             let current = stage_control.borrow();
@@ -359,7 +363,7 @@ impl Authority {
                         .max(wall_time() + delay.as_secs_f64());
                     // No await after observing 429: the outer caller persists it
                     // outside the cancellable future before processing the result.
-                    Ok(Err(Decision::Retry("IP confirmation rate limited")))
+                    Ok(Err(Decision::IpConfirmationLimited))
                 }
                 http::LookupResult::Unavailable => {
                     Ok(Err(Decision::Retry("IP confirmation unavailable")))

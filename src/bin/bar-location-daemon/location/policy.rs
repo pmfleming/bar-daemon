@@ -146,6 +146,7 @@ impl Zones {
 #[derive(Debug, PartialEq)]
 pub(super) enum Decision {
     Retry(&'static str),
+    IpConfirmationLimited,
     Stop(&'static str),
 }
 
