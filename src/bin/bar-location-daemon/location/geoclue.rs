@@ -15,6 +15,12 @@ const GEO: &str = "org.freedesktop.GeoClue2";
 const MANAGER: &str = "/org/freedesktop/GeoClue2/Manager";
 const IO: Duration = Duration::from_secs(5);
 
+fn revalidation_cutoff(network_since: f64, now: f64) -> u64 {
+    // Round the age cutoff up, not down, and leave response-time headroom
+    // inside the 90s non-IP usability window. Never return the just-expired hit.
+    network_since.floor().max((now - 60.0).ceil()).max(0.0) as u64
+}
+
 pub(super) async fn locate(started: f64) -> Result<Fix> {
     // Dropping the dedicated connection scopes even a GetClient with a lost reply.
     let connection = tokio::time::timeout(
@@ -132,7 +138,7 @@ pub(super) async fn locate_on(connection: &Connection, started: f64) -> Result<F
                 // Shelllist extension: revalidate stale shared sources once, rather
                 // than relying on GeoClue's process exiting to clear its cache.
                 // Old/unpatched services may not support it; remain conservative.
-                let minimum = started.floor().max((wall_time() - 90.0).floor()).max(0.0) as u64;
+                let minimum = revalidation_cutoff(started, wall_time());
                 match client.call::<_, _, ()>("RefreshSince", &(minimum,)).await {
                     Ok(()) => {}
                     Err(error) => tracing::debug!(%error, "GeoClue revalidation unavailable"),
@@ -149,5 +155,18 @@ pub(super) async fn locate_on(connection: &Connection, started: f64) -> Result<F
             bail!("GeoClue location unavailable");
         }
         location = next;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revalidation_cutoff;
+
+    #[test]
+    fn cutoff_excludes_expired_whole_seconds_and_preserves_network_fence() {
+        assert_eq!(revalidation_cutoff(800.0, 1000.9), 941);
+        assert_eq!(revalidation_cutoff(950.9, 1000.9), 950);
+        assert_eq!(revalidation_cutoff(0.0, 30.0), 0);
+        assert!(revalidation_cutoff(800.0, 1000.9) > 910);
     }
 }

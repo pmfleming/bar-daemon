@@ -125,8 +125,9 @@ with the existing systemd/environment defaults. Nix supplies tzdata explicitly.
   reload do not reset that epoch; reconnect/resume does. Non-IP/unknown GeoClue
   observations must be at most 90 seconds old, leaving room for the independent
   request inside the two-minute evidence-pair window. A stale/pre-network fix
-  requests one `RefreshSince` revalidation; the existing 90-second acquisition
-  deadline still bounds waiting. An unpatched service may lack this extension;
+  requests one `RefreshSince` revalidation with an age cutoff rounded upward
+  and a 60-second age target (headroom for the reply); the existing 90-second
+  acquisition deadline still bounds waiting. An unpatched service may lack this extension;
   stale evidence is never accepted merely because revalidation is unavailable.
 - IP is requested only after usable GeoClue evidence with a resolved timezone,
   then a fresh network/sleep/control check. HTTP is HTTPS-only, without proxies
@@ -267,7 +268,7 @@ assertions evaluated successfully; the full product Nix check was not run.
 Shelllist's focused Qt clock suite passed all four cases, including setup/cleanup.
 No live providers, host timezone writes or service activation were exercised.
 
-Review follow-up validation: 27 location tests and 147 library tests pass; the
+Review follow-up validation: 28 location tests and 147 library tests pass; the
 library's existing PipeWire-dependent case remains ignored. The opt-in packaged
 agent fixture passes separately with private system/session buses, including
 re-registration after owner loss. Strict Clippy passes. Both agent-enabled and
