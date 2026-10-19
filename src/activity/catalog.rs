@@ -319,7 +319,9 @@ mod tests {
         };
         super::super::locations::append_current(&mut rows, &local, instant);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].home && rows[0].current);
+        assert!(rows[0].home && !rows[0].current);
+        assert!(rows[0].location_source.is_none());
+        assert!(rows[0].location_mode.is_none());
         assert_eq!(rows[0].latitude, Place::home().latitude);
         let mut away = local;
         away.accepted_location.as_mut().unwrap().timezone = "Europe/Paris".into();
@@ -329,7 +331,112 @@ mod tests {
         assert_eq!(rows[1].id, "current-location");
         let mut rows = catalog.project(&[], instant);
         super::super::locations::append_current(&mut rows, &Default::default(), instant);
-        assert!(rows[1].clock_unavailable);
+        assert_eq!(rows.len(), 1);
+        assert!(rows.iter().all(|row| !row.current));
+    }
+    #[test]
+    fn current_is_single_populated_and_replaced_not_appended() {
+        use crate::model::{AcceptedLocation, LocationControl, LocationSource, TimezoneState};
+        let catalog = Catalog::seed(&ActivityConfig::default());
+        let place = Place {
+            name: "Taipei".into(),
+            timezone: "Asia/Taipei".into(),
+            latitude: 25.033,
+            longitude: 121.5654,
+            country: String::new(),
+            region: String::new(),
+        };
+        let (catalog, id) = catalog.add(place.clone(), 1).unwrap();
+        let instant = chrono::Utc::now();
+        let forecast = WeatherState {
+            id: id.clone(),
+            available: true,
+            temperature_c: 26.0,
+            ..Default::default()
+        };
+        let mut rows = catalog.project(&[forecast], instant);
+        let mut local = TimezoneState {
+            accepted_location: Some(AcceptedLocation {
+                timezone: place.timezone.clone(),
+                latitude: place.latitude,
+                longitude: place.longitude,
+                verified_at: 1.0,
+                source: LocationSource::Manual,
+                accuracy_meters: None,
+            }),
+            location_control: Some(LocationControl {
+                available: true,
+                revision: 2,
+                manual: true,
+                paused: false,
+                uncertain: false,
+                effective_place: Some(place),
+                operation_id: None,
+                operation_status: None,
+            }),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            super::super::locations::append_current(&mut rows, &local, instant);
+            assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
+            let current = rows.iter().find(|row| row.current).unwrap();
+            assert_eq!(current.clock.label, "Taipei");
+            assert!(!current.clock_unavailable && current.has_coordinates && current.has_weather);
+            assert_eq!(current.weather.as_ref().unwrap().temperature_c, 26.0);
+        }
+        // Resuming Automatic retains the last accepted city until a fresh fix.
+        local.location_control.as_mut().unwrap().manual = false;
+        super::super::locations::append_current(&mut rows, &local, instant);
+        assert_eq!(
+            rows.iter().find(|r| r.current).unwrap().clock.label,
+            "Taipei"
+        );
+        // A new automatic location replaces the single row, without stale weather/name.
+        local.accepted_location.as_mut().unwrap().timezone = "Asia/Tokyo".into();
+        local.accepted_location.as_mut().unwrap().longitude = 139.65;
+        super::super::locations::append_current(&mut rows, &local, instant);
+        let current = rows.iter().find(|r| r.current).unwrap();
+        assert_eq!(current.clock.timezone, "Asia/Tokyo");
+        assert_ne!(current.clock.label, "Taipei");
+        assert!(!current.has_weather);
+        assert_eq!(rows.iter().filter(|r| r.current).count(), 1);
+        // Home has no Current entry, icon role or estimate metadata in either mode.
+        for manual in [false, true] {
+            local.location_control.as_mut().unwrap().manual = manual;
+            local.accepted_location.as_mut().unwrap().timezone = "Europe/Amsterdam".into();
+            super::super::locations::append_current(&mut rows, &local, instant);
+            assert!(
+                rows.iter()
+                    .all(|r| !r.current && r.id != "current-location")
+            );
+            assert_eq!(rows.len(), 2); // The independently saved Taipei still exists.
+        }
+    }
+    #[test]
+    fn unknown_or_invalid_location_never_creates_a_blank_current() {
+        let catalog = Catalog::seed(&ActivityConfig::default());
+        let instant = chrono::Utc::now();
+        for system_zone in ["", "Europe/Amsterdam", "Asia/Taipei"] {
+            let mut rows = catalog.project(&[], instant);
+            let mut local = crate::model::TimezoneState {
+                available: true,
+                timezone: system_zone.into(),
+                ..Default::default()
+            };
+            super::super::locations::append_current(&mut rows, &local, instant);
+            assert_eq!(rows.len(), 1);
+            local.accepted_location = Some(crate::model::AcceptedLocation {
+                timezone: "Invalid/Zone".into(),
+                latitude: 0.0,
+                longitude: 0.0,
+                verified_at: 1.0,
+                source: crate::model::LocationSource::Unknown,
+                accuracy_meters: None,
+            });
+            super::super::locations::append_current(&mut rows, &local, instant);
+            assert_eq!(rows.len(), 1);
+            assert!(rows.iter().all(|r| !r.current));
+        }
     }
     #[test]
     fn duplicates_and_distinct_same_zone_places() {

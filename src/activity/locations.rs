@@ -103,25 +103,36 @@ pub(crate) fn append_current(
     local: &TimezoneState,
     instant: DateTime<Utc>,
 ) {
+    // Replacing the effective location never appends a second Current entry.
+    locations.retain(|row| row.id != "current-location");
+    for row in locations.iter_mut() {
+        row.current = false;
+    }
     if let Some(fix) = &local.accepted_location {
-        if crate::location_place::same_zone(&fix.timezone, "Europe/Amsterdam")
-            && let Some(home) = locations.iter_mut().find(|row| row.home)
-        {
-            home.current = true;
-            // Home coordinates/weather stay fixed; current provenance is independent.
-            home.location_source = Some(fix.source);
-            home.accuracy_meters = fix.accuracy_meters;
-            home.location_mode = local
-                .location_control
-                .as_ref()
-                .map(|c| if c.manual { "manual" } else { "automatic" }.into());
+        // At home there is no separate Current presentation, including on Home.
+        // Unknown location likewise has no fabricated/blank placeholder.
+        if crate::location_place::same_zone(&fix.timezone, "Europe/Amsterdam") {
             return;
         }
-        let (clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
-        let place = local
+        let (mut clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
+        if clock_unavailable
+            || !(-90.0..=90.0).contains(&fix.latitude)
+            || !(-180.0..=180.0).contains(&fix.longitude)
+        {
+            return;
+        }
+        let named_place = local
             .location_control
             .as_ref()
-            .and_then(|c| c.effective_place.clone())
+            .and_then(|c| c.effective_place.as_ref())
+            .filter(|place| {
+                place.validate().is_ok()
+                    && crate::location_place::same_zone(&place.timezone, &fix.timezone)
+                    && (place.latitude - fix.latitude).abs() < 0.000001
+                    && (place.longitude - fix.longitude).abs() < 0.000001
+            });
+        let place = named_place
+            .cloned()
             .unwrap_or_else(|| crate::location_place::Place {
                 name: clock.city.clone(),
                 country: String::new(),
@@ -130,7 +141,23 @@ pub(crate) fn append_current(
                 latitude: fix.latitude,
                 longitude: fix.longitude,
             });
+        if named_place.is_some() {
+            clock.label = place.name.clone();
+            clock.city = place.name.clone();
+        }
+        // Reuse a saved city's forecast when it is the same place, never another
+        // city's weather just because it shares a timezone. No new provider I/O.
+        let weather = locations
+            .iter()
+            .find(|row| {
+                row.place
+                    .as_ref()
+                    .is_some_and(|saved| saved.same_place(&place))
+            })
+            .and_then(|row| row.weather.clone());
         locations.push(Location {
+            has_weather: weather.is_some(),
+            weather,
             place: Some(place),
             location_mode: local
                 .location_control
@@ -145,17 +172,6 @@ pub(crate) fn append_current(
             current: true,
             location_source: Some(fix.source),
             accuracy_meters: fix.accuracy_meters,
-            ..Default::default()
-        });
-    } else {
-        locations.push(Location {
-            id: "current-location".into(),
-            clock: WorldClockState {
-                label: "Current location".into(),
-                ..Default::default()
-            },
-            clock_unavailable: true,
-            current: true,
             ..Default::default()
         });
     }

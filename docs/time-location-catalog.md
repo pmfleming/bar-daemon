@@ -25,10 +25,14 @@ computed projection cannot overwrite a newer catalog publication. Unrelated
 forecast caches survive changes. Each forecast fetch has a 15-second deadline
 so mutations do not wait indefinitely behind provider I/O. Home and Current are protected;
 Current is suppressed when the accepted location resolves to Home's canonical
-zone. Home then gains the Current role without replacing its fixed coordinates.
-Unknown accepted location remains an unavailable separate Current row.
+zone. Home retains only its Home role, with no Current icon or estimate metadata;
+its fixed coordinates remain unchanged. Unknown or unusable accepted location does
+not create a blank Current placeholder. The projection replaces a single stable
+Current row, never appends another. A manually selected place supplies its name,
+and an exact-place match may reuse a saved forecast without new provider I/O.
+Automatic resume retains the last accepted place until fresh evidence arrives.
 
-Final validation: `cargo test --locked --all-targets` passed 156 library tests,
+Initial stage-5 validation: `cargo test --locked --all-targets` passed 156 library tests,
 34 authority tests and one startup integration test (three existing environment-
 dependent tests ignored). Strict Clippy passed for the library and authority binary.
 The protocol-fixture freshness check passes. New regression coverage exercises real
@@ -36,3 +40,11 @@ add/remove API replies, revision/protected-role rejection, malformed configurati
 on restart and corrupt catalog fallback. Service unit fixtures block live forecast
 HTTP. No host service, timezone or provider was changed. Authority controls are
 implemented separately; see `time-location-controls.md`.
+
+Current-city clarification: library **158 passed / 1 existing ignored**; authority
+**34 passed / 1 existing ignored**; strict library/authority Clippy passed. New
+projection tests cover unknown/invalid locations, repeated replacement, known
+manual city names and matching forecasts, retained last location on Automatic
+resume, and Home-only presentation in both modes. Authorization/write policy is
+unchanged. Read-only probes of the installed authority returned `Access denied`;
+no service activation, permission relaxation or live timezone mutation was done.
