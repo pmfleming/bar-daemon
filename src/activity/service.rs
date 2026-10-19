@@ -34,6 +34,8 @@ struct ActivityData {
     todo_error: Option<String>,
     weather: WeatherState,
     weather_locations: Vec<WeatherState>,
+    catalog: Option<super::catalog::Catalog>,
+    catalog_error: Option<String>,
 }
 
 pub(crate) struct ActivityService {
@@ -41,6 +43,7 @@ pub(crate) struct ActivityService {
     state: StateStore,
     config_path: PathBuf,
     todo_path: PathBuf,
+    catalog_path: PathBuf,
     providers: ProviderRegistry,
     refresh_guard: Mutex<()>,
     todo_guard: Mutex<()>,
@@ -64,15 +67,27 @@ impl ActivityService {
                 Some(format!("Local todo store is unavailable: {error:#}")),
             ),
         };
+        let catalog_path = todo_path.with_file_name("locations.json");
+        let catalog_result = match config::load(&config_path).await {
+            Ok(config) => super::catalog::Catalog::load_or_import(&catalog_path, &config).await,
+            Err(error) => Err(error),
+        };
+        let (catalog, catalog_error) = match catalog_result {
+            Ok(catalog) => (Some(catalog), None),
+            Err(error) => (None, Some(format!("City store unavailable: {error:#}"))),
+        };
         let service = Arc::new(Self {
             data: RwLock::new(ActivityData {
                 todos,
                 todo_error,
+                catalog,
+                catalog_error,
                 ..ActivityData::default()
             }),
             state,
             config_path,
             todo_path,
+            catalog_path,
             providers: ProviderRegistry::builtins(),
             refresh_guard: Mutex::new(()),
             todo_guard: Mutex::new(()),
@@ -168,9 +183,7 @@ impl ActivityService {
             .collect::<BTreeSet<_>>();
         {
             let mut data = self.data.write().await;
-            if data.config.configured_weather_locations() != config.configured_weather_locations() {
-                data.weather_locations.clear();
-            }
+            // Saved cities are imported once. Config refresh must not resurrect removals.
             data.config = config.clone();
             data.events_by_source
                 .retain(|source_id, _| configured_ids.contains(source_id.as_str()));
@@ -219,7 +232,12 @@ impl ActivityService {
     }
 
     async fn refresh_weather(&self, config: &ActivityConfig) {
-        let locations = config.configured_weather_locations();
+        let catalog = self.data.read().await.catalog.clone();
+        let owned = catalog.as_ref().map(|c| c.weather_configs());
+        let locations = owned
+            .as_deref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| config.configured_weather_locations());
         if locations.is_empty() {
             let mut data = self.data.write().await;
             data.weather = WeatherState {
@@ -239,7 +257,17 @@ impl ActivityService {
                 .iter()
                 .position(|weather| weather.id == location.id)
                 .map(|index| cached.swap_remove(index));
-            weather::cached_or_fetch(location, previous, now, weather::fetch(location))
+            weather::cached_or_fetch(location, previous, now, async {
+                // Service unit fixtures never contact live forecast providers.
+                #[cfg(test)]
+                {
+                    anyhow::bail!("Forecast provider disabled in unit fixture")
+                }
+                #[cfg(not(test))]
+                {
+                    weather::fetch(location).await
+                }
+            })
         }))
         .await;
         let primary = forecasts
@@ -251,6 +279,58 @@ impl ActivityService {
         let mut data = self.data.write().await;
         data.weather = primary;
         data.weather_locations = forecasts;
+    }
+
+    pub(crate) async fn add_city(
+        self: &Arc<Self>,
+        place: crate::location_place::Place,
+        revision: u64,
+    ) -> Result<String> {
+        let guard = self.refresh_guard.lock().await;
+        let data = self.data.read().await;
+        anyhow::ensure!(
+            data.catalog_error.is_none(),
+            "City store unavailable; restart after resolving storage failure"
+        );
+        let catalog = data.catalog.clone().context("City store unavailable")?;
+        drop(data);
+        let (next, id) = catalog.add(place, revision)?;
+        if next.revision != catalog.revision {
+            self.save_catalog(next).await?;
+        }
+        drop(guard);
+        self.publish_state(None).await;
+        self.request_refresh().await;
+        Ok(id)
+    }
+    pub(crate) async fn remove_city(&self, id: &str, revision: u64) -> Result<()> {
+        let _guard = self.refresh_guard.lock().await;
+        let data = self.data.read().await;
+        anyhow::ensure!(
+            data.catalog_error.is_none(),
+            "City store unavailable; restart after resolving storage failure"
+        );
+        let catalog = data.catalog.clone().context("City store unavailable")?;
+        drop(data);
+        self.save_catalog(catalog.remove(id, revision)?).await?;
+        self.data
+            .write()
+            .await
+            .weather_locations
+            .retain(|w| w.id != id);
+        self.publish_state(None).await;
+        Ok(())
+    }
+    async fn save_catalog(&self, catalog: super::catalog::Catalog) -> Result<()> {
+        // A failed durability barrier may have replaced the file. Fence writes
+        // until restart/reload rather than publishing an unconfirmed revision.
+        if let Err(error) = crate::paths::save_json_atomic(&self.catalog_path, &catalog).await {
+            let mut data = self.data.write().await;
+            data.catalog_error = Some(format!("City save unconfirmed: {error:#}"));
+            return Err(error);
+        }
+        self.data.write().await.catalog = Some(catalog);
+        Ok(())
     }
 
     pub(crate) async fn query_range(
@@ -418,11 +498,17 @@ impl ActivityService {
             .iter()
             .filter_map(|clock| WorldClockState::new(&clock.timezone, &clock.label).ok())
             .collect();
-        let error = data.todo_error.clone().or(error).or_else(|| {
-            sources
-                .iter()
-                .find_map(|source: &ActivitySourceState| source.error.clone())
-        });
+        let catalog = data.catalog.clone();
+        let error = data
+            .catalog_error
+            .clone()
+            .or_else(|| data.todo_error.clone())
+            .or(error)
+            .or_else(|| {
+                sources
+                    .iter()
+                    .find_map(|source: &ActivitySourceState| source.error.clone())
+            });
         let mut state = ActivityState {
             available: true,
             syncing: false,
@@ -438,6 +524,10 @@ impl ActivityService {
             sources,
             world_clocks,
             locations: Vec::new(),
+            location_catalog: catalog.as_ref().map(|c| super::catalog::CatalogInfo {
+                revision: c.revision,
+                writable: data.catalog_error.is_none(),
+            }),
             lunar: super::astronomy::lunar(now),
             weather: super::astronomy::weather(data.weather.clone(), now),
             weather_locations: data
@@ -450,7 +540,15 @@ impl ActivityService {
         };
         drop(data);
         let local = self.state.read(|s| s.timezone.clone()).await;
-        state.locations = super::locations::project(&state, &local);
+        if let Some(catalog) = catalog {
+            state.locations = catalog.project(&state.weather_locations, chrono::Utc::now());
+            for location in &mut state.locations {
+                location.lunar = state.lunar.clone();
+            }
+            super::locations::append_current(&mut state.locations, &local, chrono::Utc::now());
+        } else {
+            state.locations = super::locations::project(&state, &local);
+        }
         self.state.update_activity(state).await;
     }
 }

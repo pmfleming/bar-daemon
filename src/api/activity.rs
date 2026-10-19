@@ -16,6 +16,38 @@ impl ActivityApi {
     pub(super) fn new(state: StateStore, activity: Arc<ActivityService>) -> Self {
         Self { state, activity }
     }
+    pub(super) async fn locations(&self, method: &str, params: Value) -> Value {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Search {
+            query: String,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Add {
+            place: crate::location_place::Place,
+            revision: u64,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Remove {
+            id: String,
+            revision: u64,
+        }
+        let result: anyhow::Result<Value> = async {
+            match method {
+                "locations.search" => {let request:Search=serde_json::from_value(params)?; Ok(serde_json::json!({"places":crate::activity::place_search::search(&request.query).await?}))},
+                "locations.add" => {let request:Add=serde_json::from_value(params)?;let id=self.activity.add_city(request.place,request.revision).await?;Ok(serde_json::json!({"id":id,"activity":self.state.read(|s|s.activity.clone()).await}))},
+                "locations.remove" => {let request:Remove=serde_json::from_value(params)?;self.activity.remove_city(&request.id,request.revision).await?;Ok(serde_json::json!({"id":request.id,"activity":self.state.read(|s|s.activity.clone()).await}))},
+                _=>anyhow::bail!("Unknown location operation")
+            }
+        }.await;
+        match result {
+            Ok(data) => super::success(data),
+            Err(error) => super::error("location-error", error.to_string()),
+        }
+    }
+
     pub(super) async fn activity_query_range(&self, params: Value) -> Value {
         let request = request!(params, RangeRequest, "activity.queryRange");
         activity_wire::range(

@@ -194,6 +194,29 @@
         "result": "activity"
       },
       {
+        "name": "locations.search",
+        "params": {
+          "query": "string"
+        },
+        "result": "places"
+      },
+      {
+        "name": "locations.add",
+        "params": {
+          "place": "object",
+          "revision": "integer"
+        },
+        "result": "activity"
+      },
+      {
+        "name": "locations.remove",
+        "params": {
+          "id": "string",
+          "revision": "integer"
+        },
+        "result": "activity"
+      },
+      {
         "name": "todos.create",
         "params": {
           "due_date": "2026-01-20",

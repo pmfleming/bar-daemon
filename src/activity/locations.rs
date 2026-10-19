@@ -20,6 +20,10 @@ pub(crate) struct Location {
     pub home: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub current: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<crate::location_place::Place>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location_source: Option<LocationSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,23 +59,8 @@ pub(crate) fn project_at(
         ));
         represented.insert(weather.timezone.as_str());
     }
-    // One stable automatic row, independent of saved weather/home locations.
-    // The authority supplies accepted GeoClue coordinates (possibly coarse IP
-    // estimates), not verified physical position. No configuration is rewritten.
-    if let Some(fix) = &local.accepted_location {
-        let (clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
-        locations.push(Location {
-            id: "current-location".into(),
-            clock,
-            clock_unavailable,
-            latitude: fix.latitude,
-            longitude: fix.longitude,
-            has_coordinates: true,
-            current: true,
-            location_source: Some(fix.source),
-            accuracy_meters: fix.accuracy_meters,
-            ..Default::default()
-        });
+    if local.accepted_location.is_some() {
+        append_current(&mut locations, local, instant);
     }
     if local.accepted_location.is_none()
         && local.available
@@ -105,6 +94,48 @@ pub(crate) fn project_at(
     }
     locations.sort_by(|a, b| a.id.cmp(&b.id));
     locations
+}
+
+pub(crate) fn append_current(
+    locations: &mut Vec<Location>,
+    local: &TimezoneState,
+    instant: DateTime<Utc>,
+) {
+    if let Some(fix) = &local.accepted_location {
+        if crate::location_place::same_zone(&fix.timezone, "Europe/Amsterdam")
+            && let Some(home) = locations.iter_mut().find(|row| row.home)
+        {
+            home.current = true;
+            // Home coordinates/weather stay fixed; current provenance is independent.
+            home.location_source = Some(fix.source);
+            home.accuracy_meters = fix.accuracy_meters;
+            return;
+        }
+        let (clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
+        locations.push(Location {
+            id: "current-location".into(),
+            clock,
+            clock_unavailable,
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            has_coordinates: true,
+            current: true,
+            location_source: Some(fix.source),
+            accuracy_meters: fix.accuracy_meters,
+            ..Default::default()
+        });
+    } else {
+        locations.push(Location {
+            id: "current-location".into(),
+            clock: WorldClockState {
+                label: "Current location".into(),
+                ..Default::default()
+            },
+            clock_unavailable: true,
+            current: true,
+            ..Default::default()
+        });
+    }
 }
 
 fn clock_at(timezone: &str, label: &str, instant: DateTime<Utc>) -> (WorldClockState, bool) {

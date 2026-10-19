@@ -14,6 +14,8 @@ pub(crate) struct ActivityState {
     pub world_clocks: Vec<WorldClockState>,
     #[serde(default)]
     pub locations: Vec<super::locations::Location>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_catalog: Option<super::catalog::CatalogInfo>,
     pub lunar: Option<super::astronomy::LunarPhase>,
     pub weather: WeatherState,
     pub weather_locations: Vec<WeatherState>,

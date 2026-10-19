@@ -17,6 +17,7 @@ mod daemon;
 mod display_policy;
 mod hyprland;
 mod media;
+mod location_place;
 mod model;
 mod osd_hardware;
 mod paths;
