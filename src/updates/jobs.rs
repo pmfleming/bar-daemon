@@ -23,22 +23,26 @@ pub(super) fn read(directory: &Path) -> Vec<UpdateJob> {
             }
         })
         .collect();
-    // A successful update supersedes an older stale-check warning immediately,
-    // without waiting for the next three-hour stale-check timer.
-    let fresh = jobs
+    // Reconcile immediately, without waiting for the next stale-check timer.
+    let superseded = jobs
         .iter()
-        .find(|j| {
-            j.name == "ai-tools"
-                && j.status == "completed"
-                && matches!(j.phase.as_str(), "activated" | "current")
-        })
-        .and_then(|j| j.finished_at);
-    for job in &mut jobs {
-        if job.name == "ai-tools-stale"
-            && job.phase == "stale"
-            && fresh.is_some_and(|t| t >= job.finished_at.unwrap_or(u64::MAX))
-        {
-            job.phase = "current".into();
+        .find(|j| j.name == "ai-tools")
+        .zip(jobs.iter().find(|j| j.name == "ai-tools-stale"))
+        .and_then(|(update, stale)| {
+            shelllist_update_status::stale_superseded_at(
+                &update.status,
+                &update.phase,
+                update.finished_at,
+                &stale.phase,
+                stale.finished_at,
+            )
+        });
+    if superseded.is_some() {
+        for job in &mut jobs {
+            if job.name == "ai-tools-stale" {
+                job.phase = "current".into();
+                job.error = None;
+            }
         }
     }
     jobs
@@ -108,6 +112,28 @@ mod tests {
             "started_at": 1, "finished_at": null, "exit_code": null, "pid": std::process::id(),
             "boot_id": fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),
             "process_start": fs::read_to_string("/proc/self/stat").unwrap().rsplit_once(')').unwrap().1.split_whitespace().nth(19).unwrap(), "error": null })
+    }
+    #[test]
+    fn successful_update_clears_superseded_stale_phase_and_error() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("jobs")).unwrap();
+        let mut update = record();
+        update["status"] = json!("completed");
+        update["phase"] = json!("current");
+        update["finished_at"] = json!(20);
+        let mut stale = update.clone();
+        stale["phase"] = json!("stale");
+        stale["finished_at"] = json!(10);
+        stale["error"] = json!("old warning");
+        fs::write(root.path().join("jobs/ai-tools.json"), update.to_string()).unwrap();
+        let path = root.path().join("jobs/ai-tools-stale.json");
+        fs::write(&path, stale.to_string()).unwrap();
+        let jobs = read(root.path());
+        let projected = jobs.iter().find(|j| j.name == "ai-tools-stale").unwrap();
+        assert_eq!(projected.phase, "current");
+        assert!(projected.error.is_none());
+        assert_eq!(projected.finished_at, Some(10));
+        assert_eq!(fs::read_to_string(path).unwrap(), stale.to_string());
     }
     #[test]
     fn crash_reboot_and_pid_reuse_cannot_appear_as_running() {
