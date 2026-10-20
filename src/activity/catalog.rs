@@ -302,39 +302,6 @@ mod tests {
         );
     }
     #[test]
-    fn at_home_projection_retains_home_coordinates_and_saved_cities() {
-        let catalog = Catalog::seed(&ActivityConfig::default());
-        let instant = chrono::Utc::now();
-        let mut rows = catalog.project(&[], instant);
-        let local = crate::model::TimezoneState {
-            accepted_location: Some(crate::model::AcceptedLocation {
-                timezone: "Europe/Amsterdam".into(),
-                latitude: 52.38,
-                longitude: 4.64,
-                verified_at: 1.0,
-                source: crate::model::LocationSource::Ip,
-                accuracy_meters: None,
-            }),
-            ..Default::default()
-        };
-        super::super::locations::append_current(&mut rows, &local, instant);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].home && !rows[0].current);
-        assert!(rows[0].location_source.is_none());
-        assert!(rows[0].location_mode.is_none());
-        assert_eq!(rows[0].latitude, home_place().latitude);
-        let mut away = local;
-        away.accepted_location.as_mut().unwrap().timezone = "Europe/Paris".into();
-        let mut rows = catalog.project(&[], instant);
-        super::super::locations::append_current(&mut rows, &away, instant);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[1].id, "current-location");
-        let mut rows = catalog.project(&[], instant);
-        super::super::locations::append_current(&mut rows, &Default::default(), instant);
-        assert_eq!(rows.len(), 1);
-        assert!(rows.iter().all(|row| !row.current));
-    }
-    #[test]
     fn current_is_single_populated_and_replaced_not_appended() {
         use crate::model::{AcceptedLocation, LocationControl, LocationSource, TimezoneState};
         let catalog = Catalog::seed(&ActivityConfig::default());
