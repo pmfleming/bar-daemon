@@ -8,7 +8,9 @@ use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, sleep};
 
 use super::{POLICY_WRITE, SleepPolicy, base_config, load, perform_profile, plugged};
-use crate::{sleep as power_sleep, state::StateStore};
+use crate::{model::PowerSleepState, sleep as power_sleep, state::StateStore};
+
+type ActionResult = Result<Option<PowerSleepState>>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -90,34 +92,16 @@ async fn connected(store: &StateStore) -> Result<()> {
     let mut policies = store.subscribe_domains(&[crate::protocol::stream::SLEEP_POLICY]);
     let mut fallback = interval(Duration::from_secs(2));
     fallback.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut inhibitor: Option<zvariant::OwnedFd> = None;
-    let mut edge = LidEdge::default();
-    // JoinSet cancellation drops the action when this connection/owner is lost.
-    // The observer never waits for POLICY_WRITE or for locking/helper setup.
-    let mut actions = tokio::task::JoinSet::new();
-    let mut retry = LidRetry::default();
-    let mut status = LidState {
-        available: true,
-        ..Default::default()
-    };
-    store.update_lid(status.clone()).await;
+    let mut controller = LidController::default();
+    controller.status.available = true;
+    store.update_lid(controller.status.clone()).await;
     loop {
         tokio::select! {
-            result = actions.join_next(), if !actions.is_empty() => {
-                match result.context("lid action worker ended")? {
-                    Ok(Ok(state)) => {
-                        retry.clear();
-                        status.error = None;
-                        if let Some(state) = state { store.update_power_sleep(state).await; }
-                    }
-                    Ok(Err(error)) => {
-                        let pending = retry.failed(&error);
-                        status.error = Some(format!("Lid action failed{}: {error:#}",
-                            if pending { "; retrying preparation while lid remains closed" } else { "" }));
-                    }
-                    Err(error) => { retry.clear(); status.error = Some(format!("Lid action worker failed: {error}")); },
+            result = controller.actions.join_next(), if !controller.actions.is_empty() => {
+                if let Some(state) = controller.completed(result.context("lid action worker ended")?) {
+                    store.update_power_sleep(state).await;
                 }
-                store.update_lid(status.clone()).await;
+                store.update_lid(controller.status.clone()).await;
                 continue;
             }
             _ = fallback.tick() => {},
@@ -131,12 +115,62 @@ async fn connected(store: &StateStore) -> Result<()> {
                 _ => continue,
             }
         }
+        controller.observe(&manager, &session).await?;
+        store.update_lid(controller.status.clone()).await;
+    }
+}
+
+// Own the FD and workers together: disconnect/cancellation releases native
+// ownership and aborts actions, without making observation wait for POLICY_WRITE.
+#[derive(Default)]
+struct LidController {
+    inhibitor: Option<zvariant::OwnedFd>,
+    edge: LidEdge,
+    actions: tokio::task::JoinSet<ActionResult>,
+    retry: LidRetry,
+    status: LidState,
+}
+impl LidController {
+    fn completed(
+        &mut self,
+        result: Result<ActionResult, tokio::task::JoinError>,
+    ) -> Option<PowerSleepState> {
+        self.status.error = match result {
+            Ok(Ok(state)) => {
+                self.retry.clear();
+                self.status.error = None;
+                return state;
+            }
+            Ok(Err(error)) => {
+                let pending = self.retry.failed(&error);
+                Some(format!(
+                    "Lid action failed{}: {error:#}",
+                    if pending {
+                        "; retrying preparation while lid remains closed"
+                    } else {
+                        ""
+                    }
+                ))
+            }
+            Err(error) => {
+                self.retry.clear();
+                Some(format!("Lid action worker failed: {error}"))
+            }
+        };
+        None
+    }
+
+    async fn observe(
+        &mut self,
+        manager: &zbus::Proxy<'_>,
+        session: &zbus::Proxy<'_>,
+    ) -> Result<()> {
         let policy =
             power_sleep::bounded("read lid policy", Duration::from_secs(2), load()).await?;
-        let active = active_local_graphical(&session).await?;
+        let active = active_local_graphical(session).await?;
         let managed = policy.lid_action != LidAction::System && active;
-        if managed && inhibitor.is_none() {
-            inhibitor = Some(
+        if managed && self.inhibitor.is_none() {
+            self.inhibitor = Some(
                 manager
                     .call(
                         "Inhibit",
@@ -151,24 +185,29 @@ async fn connected(store: &StateStore) -> Result<()> {
                     .context("take ownership of the lid switch")?,
             );
         } else if !managed {
-            inhibitor = None;
+            self.inhibitor = None;
         }
         let closed: bool = manager.get_property("LidClosed").await?;
         // logind's Docked also covers external displays. Keep clamshell use safe.
         let docked: bool = manager.get_property("Docked").await?;
         let eligible = managed && !docked;
-        let triggered = edge.observe(closed, eligible);
-        if !(closed && eligible) || retry.policy.as_ref().is_some_and(|p| p != &policy) {
-            retry.clear();
+        let triggered = self.edge.observe(closed, eligible);
+        self.retry.reconcile(&policy, closed && eligible);
+        if self.actions.is_empty() {
+            let operation = if triggered {
+                self.retry.start(policy.clone());
+                Some(power_sleep::operation_id())
+            } else {
+                self.retry
+                    .due(power_sleep::operation_id())
+                    .then_some(self.retry.operation)
+            };
+            if let Some(operation) = operation {
+                self.actions.spawn(perform(policy, operation));
+            }
         }
-        if triggered && actions.is_empty() {
-            retry.start(policy.clone());
-            actions.spawn(perform(policy, power_sleep::operation_id()));
-        } else if actions.is_empty() && retry.due(power_sleep::operation_id()) {
-            actions.spawn(perform(policy, retry.operation));
-        }
-        status.managed = managed;
-        store.update_lid(status.clone()).await;
+        self.status.managed = managed;
+        Ok(())
     }
 }
 
@@ -189,6 +228,16 @@ impl LidRetry {
     fn start(&mut self, policy: SleepPolicy) {
         self.clear();
         self.policy = Some(policy);
+    }
+    fn reconcile(&mut self, policy: &SleepPolicy, eligible: bool) {
+        if !eligible
+            || self
+                .policy
+                .as_ref()
+                .is_some_and(|previous| previous != policy)
+        {
+            self.clear();
+        }
     }
     fn failed(&mut self, error: &anyhow::Error) -> bool {
         if error.is::<power_sleep::RetryCancelled>() {
@@ -225,10 +274,7 @@ impl LidRetry {
 
 // The action owns its policy guard and connection; the observer must remain
 // independent so session changes can release native lid ownership promptly.
-async fn perform(
-    policy: SleepPolicy,
-    operation: u64,
-) -> Result<Option<crate::model::PowerSleepState>> {
+async fn perform(policy: SleepPolicy, operation: u64) -> ActionResult {
     let retryable =
         |error: anyhow::Error| error.context(power_sleep::RetryablePreflight(operation));
     let _guard = tokio::time::timeout(Duration::from_secs(3), POLICY_WRITE.lock())
@@ -276,7 +322,7 @@ async fn act(
     manager: &zbus::Proxy<'_>,
     session: &zbus::Proxy<'_>,
     operation: u64,
-) -> Result<Option<crate::model::PowerSleepState>> {
+) -> ActionResult {
     confirm_trigger(manager, session).await?;
     let state = match policy.lid_action {
         LidAction::System | LidAction::Ignore => return Ok(None),
@@ -379,9 +425,63 @@ mod tests {
         policy.lid_action = super::LidAction::System;
         assert!(super::validate_lid_selection(15, &policy, true).is_err());
         let error = anyhow::anyhow!("busy").context(crate::sleep::RetryablePreflight(7));
-        retry.start(SleepPolicy::default());
-        retry.clear(); // reopened, docked, inactive, or policy changed
+        retry.start(policy.clone());
+        retry.reconcile(&policy, true);
+        assert!(retry.failed(&error)); // unchanged eligible episode survives polling
+        retry.reconcile(&policy, false); // reopened, docked, or inactive
         assert!(!retry.failed(&error));
+        retry.start(policy.clone());
+        policy.lid_action = super::LidAction::Lock;
+        retry.reconcile(&policy, true);
+        assert!(!retry.failed(&error)); // policy changes invalidate the retry chain
+    }
+
+    #[tokio::test]
+    async fn completion_clears_stale_errors_and_disconnect_releases_resources() {
+        use std::{
+            io::Read,
+            os::{fd::OwnedFd, unix::net::UnixStream},
+        };
+        use tokio::sync::oneshot;
+        let mut controller = super::LidController::default();
+        controller.retry.start(SleepPolicy::default());
+        let preflight = anyhow::anyhow!("busy").context(crate::sleep::RetryablePreflight(7));
+        assert!(controller.completed(Ok(Err(preflight))).is_none());
+        assert!(
+            controller
+                .status
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("retrying")
+        );
+        assert!(controller.completed(Ok(Ok(None))).is_none());
+        assert!(controller.status.error.is_none());
+        assert!(controller.retry.policy.is_none());
+
+        let (fd, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        controller.inhibitor = Some(OwnedFd::from(fd).into());
+        let (started, ready) = oneshot::channel();
+        let (finished, cancelled) = oneshot::channel::<()>();
+        controller.actions.spawn(async move {
+            let _guard = finished;
+            started.send(()).unwrap();
+            std::future::pending().await
+        });
+        ready.await.unwrap();
+        drop(controller);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), cancelled)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(
+            peer.read(&mut [0]).unwrap(),
+            0,
+            "native ownership FD must close"
+        );
     }
 
     #[test]
