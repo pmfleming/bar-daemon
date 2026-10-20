@@ -1,5 +1,7 @@
 //! GeoClue first; only canonical timezone equality is required for confirmation.
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
+
+use crate::location_place::TimezoneLinks;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -60,7 +62,7 @@ impl Fix {
 
 pub(super) struct Zones {
     finder: tzf_rs::DefaultFinder,
-    links: HashMap<String, String>,
+    links: TimezoneLinks,
 }
 impl Zones {
     pub fn load(directory: &Path) -> Result<Self> {
@@ -69,27 +71,14 @@ impl Zones {
         )?))
     }
     pub fn from_table(links: &str) -> Self {
-        let mut result = Self {
+        Self {
             finder: tzf_rs::DefaultFinder::new(),
-            links: HashMap::new(),
-        };
-        for line in links.lines() {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            if matches!(fields.first(), Some(&"L" | &"Link")) && fields.len() >= 3 {
-                result.links.insert(fields[2].into(), fields[1].into());
-            }
+            links: TimezoneLinks::from_table(links),
         }
-        result
     }
     pub fn canonical(&self, name: &str) -> Option<String> {
-        let mut name = name;
-        for _ in 0..20 {
-            match self.links.get(name) {
-                Some(target) => name = target,
-                None => return name.parse::<chrono_tz::Tz>().ok().map(|_| name.to_owned()),
-            }
-        }
-        None
+        let name = self.links.resolve(name)?;
+        name.parse::<chrono_tz::Tz>().ok().map(|_| name.to_owned())
     }
     pub(super) fn at(&self, fix: &Fix) -> Option<String> {
         let name = self.canonical(self.finder.get_tz_name(fix.longitude, fix.latitude))?;

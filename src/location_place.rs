@@ -1,7 +1,7 @@
 //! Validated place identities shared by the catalog and privileged authority.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,16 +16,6 @@ pub(crate) struct Place {
     pub longitude: f64,
 }
 impl Place {
-    pub fn home() -> Self {
-        Self {
-            name: "Amsterdam".into(),
-            country: "Netherlands".into(),
-            region: "North Holland".into(),
-            timezone: "Europe/Amsterdam".into(),
-            latitude: 52.3676,
-            longitude: 4.9041,
-        }
-    }
     pub fn validate(&self) -> Result<()> {
         for text in [&self.name, &self.country, &self.region] {
             ensure!(
@@ -43,47 +33,37 @@ impl Place {
             .context("invalid place timezone")?;
         Ok(())
     }
-    pub fn same_place(&self, other: &Self) -> bool {
-        self.name.eq_ignore_ascii_case(&other.name)
-            && same_zone(&self.timezone, &other.timezone)
-            && (self.latitude - other.latitude).abs() < 0.05
-            && (self.longitude - other.longitude).abs() < 0.05
-    }
 }
 
-pub(crate) fn canonical_with_table(name: &str, table: &str) -> Option<String> {
-    name.parse::<chrono_tz::Tz>().ok()?;
-    let links: HashMap<_, _> = table
-        .lines()
-        .filter_map(|line| {
-            let words: Vec<_> = line.split_whitespace().collect();
-            (words.len() >= 3 && matches!(words[0], "L" | "Link")).then(|| (words[2], words[1]))
-        })
-        .collect();
-    let mut zone = name;
-    for _ in 0..20 {
-        match links.get(zone) {
-            Some(target) => zone = target,
-            None => return Some(zone.into()),
-        }
+/// Parsed once per tzdata source; both authorities resolve the same bounded chains.
+pub(crate) struct TimezoneLinks(HashMap<String, String>);
+impl TimezoneLinks {
+    pub fn from_table(table: &str) -> Self {
+        Self(
+            table
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    match (fields.next(), fields.next(), fields.next()) {
+                        (Some("L" | "Link"), Some(target), Some(alias)) => {
+                            Some((alias.into(), target.into()))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect(),
+        )
     }
-    None
-}
-pub(crate) fn same_zone(left: &str, right: &str) -> bool {
-    static TABLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let directory = std::env::var_os("TZDIR").map(std::path::PathBuf::from);
-        directory
-            .iter()
-            .map(|p| p.join("tzdata.zi"))
-            .chain([
-                Path::new("/etc/zoneinfo/tzdata.zi").to_owned(),
-                Path::new("/usr/share/zoneinfo/tzdata.zi").to_owned(),
-            ])
-            .find_map(|p| std::fs::read_to_string(p).ok())
-            .unwrap_or_default()
-    });
-    matches!((canonical_with_table(left, table), canonical_with_table(right, table)), (Some(a),Some(b)) if a == b)
+
+    pub fn resolve<'a>(&'a self, mut name: &'a str) -> Option<&'a str> {
+        for _ in 0..20 {
+            match self.0.get(name) {
+                Some(target) => name = target,
+                None => return Some(name),
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -91,23 +71,37 @@ mod tests {
     use super::*;
     #[test]
     fn aliases_are_not_equal_offsets() {
-        let table = "L Europe/Brussels Europe/Amsterdam\n";
-        assert_eq!(
-            canonical_with_table("Europe/Amsterdam", table).as_deref(),
-            Some("Europe/Brussels")
-        );
+        let links = TimezoneLinks::from_table("L Europe/Brussels Europe/Amsterdam\n");
+        assert_eq!(links.resolve("Europe/Amsterdam"), Some("Europe/Brussels"));
         assert_ne!(
-            canonical_with_table("Europe/Paris", table),
-            canonical_with_table("Europe/Amsterdam", table)
+            links.resolve("Europe/Paris"),
+            links.resolve("Europe/Amsterdam")
         );
-        assert_eq!(canonical_with_table("Invalid/Zone", table), None);
+        for (table, expected) in [
+            ("Link B A\nL Europe/Dublin B\n", Some("Europe/Dublin")),
+            ("L B A\nL A B\n", None),
+            ("L A A\n", None),
+            ("# ignored\nL incomplete\nZone A B\n", Some("A")),
+            (
+                "L Europe/Paris A\nL Europe/Dublin A\n",
+                Some("Europe/Dublin"),
+            ),
+        ] {
+            assert_eq!(TimezoneLinks::from_table(table).resolve("A"), expected);
+        }
     }
     #[test]
     fn invalid_places_rejected() {
-        let mut place = Place::home();
-        place.latitude = f64::NAN;
+        let mut place = Place {
+            name: "Amsterdam".into(),
+            country: String::new(),
+            region: String::new(),
+            timezone: "Europe/Amsterdam".into(),
+            latitude: f64::NAN,
+            longitude: 4.9,
+        };
         assert!(place.validate().is_err());
-        place = Place::home();
+        place.latitude = 52.4;
         place.name = "\n".into();
         assert!(place.validate().is_err());
     }

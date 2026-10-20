@@ -1,7 +1,7 @@
 //! Durable saved cities. Declarative sources are imported once, never replayed on refresh.
 use super::{
     config::{ActivityConfig, WeatherConfig},
-    locations::Location,
+    locations::{Location, home_place, same_place},
     model::{WeatherState, WorldClockState},
 };
 use crate::{location_place::Place, paths::save_json_atomic};
@@ -36,7 +36,7 @@ impl Catalog {
     fn seed(config: &ActivityConfig) -> Self {
         let mut cities = vec![City {
             id: HOME.into(),
-            place: Place::home(),
+            place: home_place(),
             has_coordinates: true,
             weather: true,
         }];
@@ -56,7 +56,7 @@ impl Catalog {
                 latitude: weather.latitude,
                 longitude: weather.longitude,
             };
-            if place.same_place(&Place::home()) {
+            if same_place(&place, &home_place()) {
                 continue;
             }
             let id = if weather.id == "home" {
@@ -141,7 +141,7 @@ impl Catalog {
             .find(|c| c.id == HOME)
             .context("Home missing")?;
         ensure!(
-            home.place == Place::home() && home.weather && home.has_coordinates,
+            home.place == home_place() && home.weather && home.has_coordinates,
             "Amsterdam Home is protected"
         );
         Ok(())
@@ -155,7 +155,7 @@ impl Catalog {
         if let Some(existing) = self
             .cities
             .iter()
-            .find(|c| c.has_coordinates && c.place.same_place(&place))
+            .find(|c| c.has_coordinates && same_place(&c.place, &place))
         {
             return Ok((self.clone(), existing.id.clone()));
         }
@@ -272,7 +272,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.cities.len(), 1);
         assert!(first.remove(HOME, 1).is_err());
-        let mut place = Place::home();
+        let mut place = home_place();
         place.name = "Haarlem".into();
         place.latitude = 52.387;
         place.longitude = 4.646;
@@ -322,7 +322,7 @@ mod tests {
         assert!(rows[0].home && !rows[0].current);
         assert!(rows[0].location_source.is_none());
         assert!(rows[0].location_mode.is_none());
-        assert_eq!(rows[0].latitude, Place::home().latitude);
+        assert_eq!(rows[0].latitude, home_place().latitude);
         let mut away = local;
         away.accepted_location.as_mut().unwrap().timezone = "Europe/Paris".into();
         let mut rows = catalog.project(&[], instant);
@@ -441,10 +441,10 @@ mod tests {
     #[test]
     fn duplicates_and_distinct_same_zone_places() {
         let catalog = Catalog::seed(&ActivityConfig::default());
-        let (same, id) = catalog.add(Place::home(), 1).unwrap();
+        let (same, id) = catalog.add(home_place(), 1).unwrap();
         assert_eq!(id, HOME);
         assert_eq!(same.revision, 1);
-        let mut other = Place::home();
+        let mut other = home_place();
         other.name = "Haarlem".into();
         let (next, _) = catalog.add(other, 1).unwrap();
         assert_eq!(next.cities.len(), 2);

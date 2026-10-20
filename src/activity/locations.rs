@@ -1,10 +1,56 @@
 //! Canonical location identity/merging belongs to the producer. Consumers own
 //! locale sorting, filtering and selection, not cross-source record synthesis.
 use super::model::{ActivityState, WeatherState, WorldClockState};
-use crate::model::{LocationSource, TimezoneState};
+use crate::{
+    location_place::{Place, TimezoneLinks},
+    model::{LocationSource, TimezoneState},
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
+
+// Catalog identity and the fixed Home city are session presentation policy,
+// not part of the privileged authority's place validation.
+pub(super) fn home_place() -> Place {
+    Place {
+        name: "Amsterdam".into(),
+        country: "Netherlands".into(),
+        region: "North Holland".into(),
+        timezone: "Europe/Amsterdam".into(),
+        latitude: 52.3676,
+        longitude: 4.9041,
+    }
+}
+
+pub(super) fn same_place(left: &Place, right: &Place) -> bool {
+    left.name.eq_ignore_ascii_case(&right.name)
+        && same_zone(&left.timezone, &right.timezone)
+        && (left.latitude - right.latitude).abs() < 0.05
+        && (left.longitude - right.longitude).abs() < 0.05
+}
+
+fn same_zone(left: &str, right: &str) -> bool {
+    static LINKS: std::sync::OnceLock<TimezoneLinks> = std::sync::OnceLock::new();
+    let links = LINKS.get_or_init(|| {
+        let directory = std::env::var_os("TZDIR").map(std::path::PathBuf::from);
+        let table = directory
+            .iter()
+            .map(|p| p.join("tzdata.zi"))
+            .chain([
+                Path::new("/etc/zoneinfo/tzdata.zi").to_owned(),
+                Path::new("/usr/share/zoneinfo/tzdata.zi").to_owned(),
+            ])
+            .find_map(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        TimezoneLinks::from_table(&table)
+    });
+    left.parse::<chrono_tz::Tz>().is_ok()
+        && right.parse::<chrono_tz::Tz>().is_ok()
+        && matches!((links.resolve(left), links.resolve(right)), (Some(a), Some(b)) if a == b)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Location {
@@ -108,73 +154,72 @@ pub(crate) fn append_current(
     for row in locations.iter_mut() {
         row.current = false;
     }
-    if let Some(fix) = &local.accepted_location {
-        // At home there is no separate Current presentation, including on Home.
-        // Unknown location likewise has no fabricated/blank placeholder.
-        if crate::location_place::same_zone(&fix.timezone, "Europe/Amsterdam") {
-            return;
-        }
-        let (mut clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
-        if clock_unavailable
-            || !(-90.0..=90.0).contains(&fix.latitude)
-            || !(-180.0..=180.0).contains(&fix.longitude)
-        {
-            return;
-        }
-        let named_place = local
+    let Some(fix) = &local.accepted_location else {
+        return;
+    };
+    // At home there is no separate Current presentation, including on Home.
+    // Unknown location likewise has no fabricated/blank placeholder.
+    if same_zone(&fix.timezone, "Europe/Amsterdam") {
+        return;
+    }
+    let (mut clock, clock_unavailable) = clock_at(&fix.timezone, "Current location", instant);
+    if clock_unavailable
+        || !(-90.0..=90.0).contains(&fix.latitude)
+        || !(-180.0..=180.0).contains(&fix.longitude)
+    {
+        return;
+    }
+    let named_place = local
+        .location_control
+        .as_ref()
+        .and_then(|c| c.effective_place.as_ref())
+        .filter(|place| {
+            place.validate().is_ok()
+                && same_zone(&place.timezone, &fix.timezone)
+                && (place.latitude - fix.latitude).abs() < 0.000001
+                && (place.longitude - fix.longitude).abs() < 0.000001
+        });
+    let place = named_place.cloned().unwrap_or_else(|| Place {
+        name: clock.city.clone(),
+        country: String::new(),
+        region: String::new(),
+        timezone: fix.timezone.clone(),
+        latitude: fix.latitude,
+        longitude: fix.longitude,
+    });
+    if named_place.is_some() {
+        clock.label = place.name.clone();
+        clock.city = place.name.clone();
+    }
+    // Reuse a saved city's forecast when it is the same place, never another
+    // city's weather just because it shares a timezone. No new provider I/O.
+    let weather = locations
+        .iter()
+        .find(|row| {
+            row.place
+                .as_ref()
+                .is_some_and(|saved| same_place(saved, &place))
+        })
+        .and_then(|row| row.weather.clone());
+    locations.push(Location {
+        has_weather: weather.is_some(),
+        weather,
+        place: Some(place),
+        location_mode: local
             .location_control
             .as_ref()
-            .and_then(|c| c.effective_place.as_ref())
-            .filter(|place| {
-                place.validate().is_ok()
-                    && crate::location_place::same_zone(&place.timezone, &fix.timezone)
-                    && (place.latitude - fix.latitude).abs() < 0.000001
-                    && (place.longitude - fix.longitude).abs() < 0.000001
-            });
-        let place = named_place
-            .cloned()
-            .unwrap_or_else(|| crate::location_place::Place {
-                name: clock.city.clone(),
-                country: String::new(),
-                region: String::new(),
-                timezone: fix.timezone.clone(),
-                latitude: fix.latitude,
-                longitude: fix.longitude,
-            });
-        if named_place.is_some() {
-            clock.label = place.name.clone();
-            clock.city = place.name.clone();
-        }
-        // Reuse a saved city's forecast when it is the same place, never another
-        // city's weather just because it shares a timezone. No new provider I/O.
-        let weather = locations
-            .iter()
-            .find(|row| {
-                row.place
-                    .as_ref()
-                    .is_some_and(|saved| saved.same_place(&place))
-            })
-            .and_then(|row| row.weather.clone());
-        locations.push(Location {
-            has_weather: weather.is_some(),
-            weather,
-            place: Some(place),
-            location_mode: local
-                .location_control
-                .as_ref()
-                .map(|c| if c.manual { "manual" } else { "automatic" }.into()),
-            id: "current-location".into(),
-            clock,
-            clock_unavailable,
-            latitude: fix.latitude,
-            longitude: fix.longitude,
-            has_coordinates: true,
-            current: true,
-            location_source: Some(fix.source),
-            accuracy_meters: fix.accuracy_meters,
-            ..Default::default()
-        });
-    }
+            .map(|c| if c.manual { "manual" } else { "automatic" }.into()),
+        id: "current-location".into(),
+        clock,
+        clock_unavailable,
+        latitude: fix.latitude,
+        longitude: fix.longitude,
+        has_coordinates: true,
+        current: true,
+        location_source: Some(fix.source),
+        accuracy_meters: fix.accuracy_meters,
+        ..Default::default()
+    });
 }
 
 fn clock_at(timezone: &str, label: &str, instant: DateTime<Utc>) -> (WorldClockState, bool) {

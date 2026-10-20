@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use crate::{
-    model::{AcceptedLocation, TimezoneState},
+    model::{AcceptedLocation, LocationControl, TimezoneState},
     state::StateStore,
 };
 
@@ -130,20 +130,10 @@ async fn monitor_connection(
             read_zone = false;
         }
         if read_accepted {
-            let candidate_control = read_control(connection).await.ok();
-            let mut result = accepted_location(connection).await;
-            if let Some(before) = &candidate_control {
-                match read_control(connection).await {
-                    Ok(after) if before.revision == after.revision => {}
-                    _ => result = Err(anyhow::anyhow!("Location changed during read")),
-                }
-            }
-            if result.is_ok() {
-                location_control = candidate_control;
-            }
+            let result = read_location(connection).await;
             accepted_retry.completed(result.is_ok(), timing.retry);
             match result {
-                Ok(location) => accepted = location,
+                Ok(snapshot) => (accepted, location_control) = snapshot,
                 Err(error) => {
                     tracing::debug!(%error, "accepted location reader unavailable; retaining last verified fix")
                 }
@@ -169,10 +159,7 @@ async fn monitor_connection(
         tokio::select! {
             signal = changes.next() => {
                 let signal = signal.context("timedate1 property stream ended")?;
-                let (interface, changed, invalidated): (String, std::collections::HashMap<String, zvariant::OwnedValue>, Vec<String>) = signal.body().deserialize()?;
-                if interface == BUS && (changed.contains_key("Timezone") || invalidated.iter().any(|s| s == "Timezone")) {
-                    read_zone = true;
-                }
+                read_zone |= timezone_changed(&signal)?;
             }
             signal = owners.next() => {
                 let signal = signal.context("D-Bus owner stream ended")?;
@@ -193,9 +180,7 @@ async fn monitor_connection(
                 if next != status {
                     // Revisions catch accepted updates even if checking -> empty
                     // occurred entirely between polls. Legacy messages still work.
-                    if next.revision != status.revision || next.revision.is_none() {
-                        read_accepted = true;
-                    }
+                    read_accepted |= next.revision != status.revision || next.revision.is_none();
                     status = next;
                     dirty = true;
                 }
@@ -204,6 +189,34 @@ async fn monitor_connection(
             }
         }
     }
+}
+
+fn timezone_changed(signal: &zbus::Message) -> Result<bool> {
+    let (interface, changed, invalidated): (
+        String,
+        std::collections::HashMap<String, zvariant::OwnedValue>,
+        Vec<String>,
+    ) = signal.body().deserialize()?;
+    Ok(interface == BUS
+        && (changed.contains_key("Timezone") || invalidated.iter().any(|s| s == "Timezone")))
+}
+
+// Read the control revision on both sides of the accepted fix. An older service
+// without GetControl remains supported; a torn modern snapshot is retried.
+async fn read_location(
+    connection: &zbus::Connection,
+) -> Result<(Option<AcceptedLocation>, Option<LocationControl>)> {
+    let control = read_control(connection).await.ok();
+    let location = accepted_location(connection).await;
+    if let Some(before) = &control {
+        anyhow::ensure!(
+            read_control(connection)
+                .await
+                .is_ok_and(|after| before.revision == after.revision),
+            "Location changed during read"
+        );
+    }
+    Ok((location?, control))
 }
 
 pub(crate) async fn read_control(
@@ -282,19 +295,7 @@ pub(crate) async fn location_control(
 }
 
 async fn accepted_location(connection: &zbus::Connection) -> Result<Option<AcceptedLocation>> {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(connection)
-            .destination(LOCATION)?
-            .path("/org/laufan/LocationTimezone")?
-            .interface(LOCATION)?
-            .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
-            .await?;
-        let json: String = proxy.call("GetAccepted", &()).await?;
-        parse_accepted_location(&json)
-    })
-    .await
-    .context("accepted location read timed out")?
+    parse_accepted_location(&location_call(connection, "GetAccepted", None).await?)
 }
 
 fn parse_accepted_location(json: &str) -> Result<Option<AcceptedLocation>> {

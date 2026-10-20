@@ -1,6 +1,7 @@
 //! Serialized, authorized UI intents. Lost replies never replay timezone writes.
 use super::{
     Authority, Backend, Control, Fix, Source,
+    policy::Zones,
     storage::{Accepted, State},
     wall_time,
 };
@@ -16,6 +17,29 @@ pub(super) struct Request {
     pub revision: u64,
     // None is explicitly Return to Automatic, not an unresolved city.
     pub place: Option<Place>,
+}
+impl Request {
+    fn zone(&self, zones: &Zones) -> Result<Option<String>> {
+        let Some(place) = &self.place else {
+            return Ok(None);
+        };
+        place.validate()?;
+        let fix = Fix {
+            latitude: place.latitude,
+            longitude: place.longitude,
+            timestamp: wall_time(),
+            source: Source::Manual,
+            accuracy: 0.0,
+        };
+        let resolved = zones
+            .at(&fix)
+            .context("Place timezone is unresolved or near a boundary")?;
+        ensure!(
+            zones.canonical(&place.timezone).as_deref() == Some(&resolved),
+            "Place coordinates and timezone disagree"
+        );
+        Ok(Some(resolved))
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Operation {
@@ -73,7 +97,7 @@ impl Authority {
         );
         let epoch = control.borrow().epoch;
         ensure!(
-            !control.borrow().sleeping && !control.borrow().shutdown,
+            control.borrow().active(epoch),
             "Location control unavailable while sleeping or stopping"
         );
         let current = backend.timezone().await?;
@@ -81,27 +105,7 @@ impl Authority {
             self.zones.canonical(&current) == self.zones.canonical(&self.baseline),
             "System timezone changed externally; reconcile before saving"
         );
-        let zone = if let Some(place) = &request.place {
-            place.validate()?;
-            let fix = Fix {
-                latitude: place.latitude,
-                longitude: place.longitude,
-                timestamp: wall_time(),
-                source: Source::Manual,
-                accuracy: 0.0,
-            };
-            let resolved = self
-                .zones
-                .at(&fix)
-                .context("Place timezone is unresolved or near a boundary")?;
-            ensure!(
-                self.zones.canonical(&place.timezone).as_deref() == Some(&resolved),
-                "Place coordinates and timezone disagree"
-            );
-            Some(resolved)
-        } else {
-            None
-        };
+        let zone = request.zone(&self.zones)?;
         let mut next = self.state.clone();
         next.accepted_revision = next
             .accepted_revision
@@ -119,28 +123,16 @@ impl Authority {
         }
         self.persist_control(next).await?;
         if let (Some(place), Some(zone)) = (request.place, zone) {
-            let valid = {
-                let state = control.borrow();
-                state.epoch == epoch && !state.sleeping && !state.shutdown
-            };
+            let valid = control.borrow().active(epoch);
             let result = async {
                 ensure!(valid, "Location control interrupted before apply");
-                if self.zones.canonical(&current).as_deref() != Some(&zone) {
-                    backend.set_timezone(&zone).await?;
-                }
-                let actual = backend.timezone().await?;
-                ensure!(
-                    self.zones.canonical(&actual).as_deref() == Some(&zone),
-                    "Timezone application unverified"
-                );
-                Ok::<_, anyhow::Error>(actual)
+                self.apply_timezone(backend, &current, &zone).await
             }
             .await;
             match result {
                 Ok(actual) => {
                     let mut next = self.state.clone();
                     next.manual = true;
-                    next.manual_place = Some(place.clone());
                     next.expected_timezone = Some(zone.clone());
                     next.accepted = Some(Accepted {
                         timezone: zone,
@@ -150,24 +142,28 @@ impl Authority {
                         source: Source::Manual,
                         accuracy_meters: None,
                     });
+                    next.manual_place = Some(place);
                     next.accepted_revision = next
                         .accepted_revision
                         .checked_add(1)
                         .context("Location revision exhausted")?;
                     next.write_pending = false;
-                    next.operation.as_mut().unwrap().outcome = "applied".into();
+                    next.operation
+                        .as_mut()
+                        .context("Missing location operation")?
+                        .outcome = "applied".into();
                     self.persist_control(next).await?;
                     self.baseline = actual;
                 }
                 Err(error) => {
                     self.state.paused = true;
-                    self.state.operation.as_mut().unwrap().outcome = "uncertain".into();
+                    self.state
+                        .operation
+                        .as_mut()
+                        .context("Missing location operation")?
+                        .outcome = "uncertain".into();
                     self.storage.save(&self.state).await?;
-                    self.storage
-                        .status(
-                            "Timezone change unverified · automatic location paused",
-                            self.state.accepted_revision,
-                        )
+                    self.status("Timezone change unverified · automatic location paused")
                         .await?;
                     return Err(error);
                 }
@@ -175,16 +171,12 @@ impl Authority {
         } else {
             self.schedule.rearm();
         }
-        self.storage
-            .status(
-                if self.state.manual {
-                    "Current location set manually"
-                } else {
-                    "Automatic location · awaiting fresh location"
-                },
-                self.state.accepted_revision,
-            )
-            .await?;
+        self.status(if self.state.manual {
+            "Current location set manually"
+        } else {
+            "Automatic location · awaiting fresh location"
+        })
+        .await?;
         Ok(status(&self.state).to_string())
     }
     async fn persist_control(&mut self, next: State) -> Result<()> {

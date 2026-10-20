@@ -5,29 +5,20 @@ use shelllist_daemon_core::{AtomicFilePolicy, read_bytes_bounded};
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub(super) struct State {
-    #[serde(default)]
     pub paused: bool,
-    #[serde(default)]
     pub ip_not_before: f64,
-    #[serde(default)]
     pub wifi_not_before: f64,
-    #[serde(default)]
     pub accepted: Option<Accepted>,
-    #[serde(default)]
     pub accepted_revision: u64,
     // Last verified or explicitly acknowledged zone, independent of location.
-    #[serde(default)]
     pub expected_timezone: Option<String>,
     // Persist intent before calling timedated: a crash or lost reply must not
     // silently re-arm writes on restart. Explicit reload clears this fence.
-    #[serde(default)]
     pub write_pending: bool,
-    #[serde(default)]
     pub manual: bool,
-    #[serde(default)]
     pub manual_place: Option<crate::location_place::Place>,
-    #[serde(default)]
     pub operation: Option<super::control::Operation>,
 }
 #[derive(Clone, Deserialize, Serialize)]

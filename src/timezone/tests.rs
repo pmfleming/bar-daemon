@@ -110,6 +110,8 @@ struct Fixture {
     accepted_reads: AtomicUsize,
     zone_fails: AtomicBool,
     accepted_fails: AtomicBool,
+    control_revision: AtomicUsize,
+    control_changes: AtomicBool,
 }
 struct TimeService(Arc<Fixture>);
 #[zbus::interface(name = "org.freedesktop.timedate1")]
@@ -126,6 +128,20 @@ impl TimeService {
 struct LocationService(Arc<Fixture>);
 #[zbus::interface(name = "org.laufan.LocationTimezone")]
 impl LocationService {
+    fn get_control(&self) -> zbus::fdo::Result<String> {
+        let revision = self.0.control_revision.fetch_add(
+            usize::from(self.0.control_changes.load(Ordering::SeqCst)),
+            Ordering::SeqCst,
+        );
+        if revision == 0 {
+            return Err(zbus::fdo::Error::UnknownMethod("legacy service".into()));
+        }
+        Ok(serde_json::json!({
+            "available": true, "revision": revision,
+            "manual": false, "paused": false, "uncertain": false,
+        })
+        .to_string())
+    }
     fn get_accepted(&self) -> zbus::fdo::Result<String> {
         self.0.accepted_reads.fetch_add(1, Ordering::SeqCst);
         if self.0.accepted_fails.load(Ordering::SeqCst) {
@@ -319,4 +335,13 @@ async fn private_bus_monitor_is_idle_locally_and_recovers_updates_failures_and_o
     wait_for(&store, "Europe/Brussels", 56.0).await;
     monitor.abort();
     let _ = monitor.await;
+    fixture.control_revision.store(1, Ordering::SeqCst);
+    let (accepted, control) = read_location(&server).await.unwrap();
+    assert_eq!(accepted.unwrap().latitude, 56.0);
+    assert_eq!(control.unwrap().revision, 1);
+    fixture.control_changes.store(true, Ordering::SeqCst);
+    assert_eq!(
+        read_location(&server).await.unwrap_err().to_string(),
+        "Location changed during read"
+    );
 }

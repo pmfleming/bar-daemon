@@ -106,10 +106,10 @@ mod tests {
         )
         .await;
         let api = ActivityApi::new(state, service);
-        let mut place = crate::location_place::Place::home();
-        place.name = "Haarlem".into();
-        place.latitude = 52.38;
-        place.longitude = 4.64;
+        let place = json!({
+            "name": "Haarlem", "country": "Netherlands", "region": "North Holland",
+            "timezone": "Europe/Amsterdam", "latitude": 52.38, "longitude": 4.64,
+        });
         let reply = api
             .locations("locations.add", json!({"place":place,"revision":1}))
             .await;

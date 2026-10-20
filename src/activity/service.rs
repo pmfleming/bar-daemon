@@ -38,6 +38,16 @@ struct ActivityData {
     catalog_error: Option<String>,
 }
 
+impl ActivityData {
+    fn writable_catalog(&self) -> Result<&super::catalog::Catalog> {
+        anyhow::ensure!(
+            self.catalog_error.is_none(),
+            "City store unavailable; restart after resolving storage failure"
+        );
+        self.catalog.as_ref().context("City store unavailable")
+    }
+}
+
 pub(crate) struct ActivityService {
     data: RwLock<ActivityData>,
     state: StateStore,
@@ -244,8 +254,10 @@ impl ActivityService {
     }
 
     async fn refresh_weather(&self, config: &ActivityConfig) {
-        let catalog = self.data.read().await.catalog.clone();
-        let owned = catalog.as_ref().map(|c| c.weather_configs());
+        let owned = {
+            let data = self.data.read().await;
+            data.catalog.as_ref().map(|c| c.weather_configs())
+        };
         let locations = owned
             .as_deref()
             .map(std::borrow::Cow::Borrowed)
@@ -299,14 +311,11 @@ impl ActivityService {
     ) -> Result<String> {
         let guard = self.refresh_guard.lock().await;
         let data = self.data.read().await;
-        anyhow::ensure!(
-            data.catalog_error.is_none(),
-            "City store unavailable; restart after resolving storage failure"
-        );
-        let catalog = data.catalog.clone().context("City store unavailable")?;
-        drop(data);
+        let catalog = data.writable_catalog()?;
         let (next, id) = catalog.add(place, revision)?;
-        if next.revision != catalog.revision {
+        let changed = next.revision != catalog.revision;
+        drop(data);
+        if changed {
             self.save_catalog(next).await?;
         }
         drop(guard);
@@ -316,14 +325,11 @@ impl ActivityService {
     }
     pub(crate) async fn remove_city(&self, id: &str, revision: u64) -> Result<()> {
         let _guard = self.refresh_guard.lock().await;
-        let data = self.data.read().await;
-        anyhow::ensure!(
-            data.catalog_error.is_none(),
-            "City store unavailable; restart after resolving storage failure"
-        );
-        let catalog = data.catalog.clone().context("City store unavailable")?;
-        drop(data);
-        self.save_catalog(catalog.remove(id, revision)?).await?;
+        let next = {
+            let data = self.data.read().await;
+            data.writable_catalog()?.remove(id, revision)?
+        };
+        self.save_catalog(next).await?;
         self.data
             .write()
             .await
@@ -577,7 +583,7 @@ mod tests {
     async fn city_catalog_survives_bad_config_and_corruption_never_moves_home() {
         let directory = tempdir().unwrap();
         let service = service_in(&directory).await;
-        let mut place = crate::location_place::Place::home();
+        let mut place = crate::activity::locations::home_place();
         place.name = "Haarlem".into();
         place.latitude = 52.38;
         place.longitude = 4.64;
@@ -603,7 +609,7 @@ mod tests {
         assert!(!snapshot.location_catalog.unwrap().writable);
         assert!(
             broken
-                .add_city(crate::location_place::Place::home(), 1)
+                .add_city(crate::activity::locations::home_place(), 1)
                 .await
                 .is_err()
         );

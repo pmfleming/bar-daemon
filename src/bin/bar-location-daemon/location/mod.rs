@@ -20,12 +20,17 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 struct Control {
     epoch: u64,
     reload: u64,
     sleeping: bool,
     shutdown: bool,
+}
+impl Control {
+    fn active(self, epoch: u64) -> bool {
+        self.epoch == epoch && !self.sleeping && !self.shutdown
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Blocked {
@@ -44,6 +49,11 @@ struct Observation {
     blocked: Option<Blocked>,
     connectivity: u32,
     state: u32,
+}
+impl Observation {
+    fn on_network(&self, network: &Option<Network>) -> bool {
+        !self.sleeping && self.network.is_some() && self.network == *network
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NetworkStatus {
@@ -117,30 +127,11 @@ impl Authority {
         let mut ticks = tokio::time::interval(Duration::from_secs(5));
         ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            let current = control.borrow_and_update().clone();
+            let current = *control.borrow_and_update();
             if current.shutdown {
                 return Ok(());
             }
-            if current.epoch != self.control_epoch && current.reload == self.reload {
-                // A coalesced sleep/resume must invalidate evidence even when
-                // polling never observed the intermediate sleeping state.
-                self.schedule.network_since = self.schedule.network.as_ref().map(|_| wall_time());
-            }
-            self.control_epoch = current.epoch;
-            if current.reload != self.reload {
-                self.baseline = backend.timezone().await?;
-                self.state.expected_timezone = Some(
-                    self.zones
-                        .canonical(&self.baseline)
-                        .context("invalid system timezone")?,
-                );
-                self.state.paused = false;
-                self.state.write_pending = false;
-                self.state.manual = false;
-                self.storage.save(&self.state).await?;
-                self.schedule.rearm();
-                self.reload = current.reload;
-            }
+            self.reconcile_control(backend, current).await?;
             if let Some(command) = self
                 .commands
                 .as_mut()
@@ -152,79 +143,14 @@ impl Authority {
                     .map_err(|error| error.to_string());
                 let _ = command.reply.send(result);
             }
-            if self.state.manual && !self.state.paused && !self.state.write_pending {
-                self.storage
-                    .status(
-                        "Current location set manually",
-                        self.state.accepted_revision,
-                    )
+            if self.state.paused || self.state.write_pending {
+                self.status("Automatic location paused · reload to resume")
                     .await?;
-            } else if self.state.paused || self.state.write_pending {
-                self.storage
-                    .status(
-                        "Automatic location paused · reload to resume",
-                        self.state.accepted_revision,
-                    )
-                    .await?;
+            } else if self.state.manual {
+                self.status("Current location set manually").await?;
             } else {
-                match backend.observe().await {
-                    Ok(observation) => {
-                        let status = NetworkStatus {
-                            connectivity: observation.connectivity,
-                            state: observation.state,
-                            sleeping: observation.sleeping || current.sleeping,
-                            blocked: observation.blocked,
-                        };
-                        if self.network_status != Some(status) {
-                            tracing::info!(connectivity = status.connectivity, state = status.state,
-                                sleeping = status.sleeping, blocked = ?status.blocked, "network availability changed");
-                            self.network_status = Some(status);
-                        }
-                        let network = if observation.sleeping || current.sleeping {
-                            None
-                        } else {
-                            observation.network
-                        };
-                        let changed = self.schedule.observe(network, Instant::now());
-                        if self.schedule.network.is_none() {
-                            let message = if observation.sleeping || current.sleeping {
-                                "Waiting for internet or resume · timezone unchanged"
-                            } else {
-                                observation.blocked.map(Blocked::message).unwrap_or(
-                                    "Waiting for internet or resume · timezone unchanged",
-                                )
-                            };
-                            self.storage
-                                .status(message, self.state.accepted_revision)
-                                .await?;
-                        } else if self.schedule.ready(Instant::now()) {
-                            self.check(backend, &mut control).await?;
-                        } else if changed {
-                            self.storage
-                                .status(
-                                    if self.schedule.due.is_some() {
-                                        "Waiting to check current location…"
-                                    } else {
-                                        &self.last_result
-                                    },
-                                    self.state.accepted_revision,
-                                )
-                                .await?;
-                        }
-                    }
-                    Err(_) => {
-                        if self.network_status.take().is_some() {
-                            tracing::info!("network observation became unavailable");
-                        }
-                        self.schedule.observe(None, Instant::now());
-                        self.storage
-                            .status(
-                                "Network observation unavailable · timezone unchanged",
-                                self.state.accepted_revision,
-                            )
-                            .await?;
-                    }
-                }
+                self.observe(backend, &mut control, current.sleeping)
+                    .await?;
             }
             tokio::select! {
                 _ = ticks.tick() => {},
@@ -232,6 +158,107 @@ impl Authority {
             }
         }
     }
+    async fn reconcile_control(&mut self, backend: &impl Backend, current: Control) -> Result<()> {
+        if current.epoch != self.control_epoch && current.reload == self.reload {
+            // Even coalesced sleep/resume invalidates evidence from the old epoch.
+            self.schedule.network_since = self.schedule.network.as_ref().map(|_| wall_time());
+        }
+        self.control_epoch = current.epoch;
+        if current.reload != self.reload {
+            self.baseline = backend.timezone().await?;
+            self.state.expected_timezone = Some(
+                self.zones
+                    .canonical(&self.baseline)
+                    .context("invalid system timezone")?,
+            );
+            self.state.paused = false;
+            self.state.write_pending = false;
+            self.state.manual = false;
+            self.storage.save(&self.state).await?;
+            self.schedule.rearm();
+            self.reload = current.reload;
+        }
+        Ok(())
+    }
+
+    async fn status(&mut self, message: &str) -> Result<()> {
+        self.storage
+            .status(message, self.state.accepted_revision)
+            .await
+    }
+
+    async fn observe(
+        &mut self,
+        backend: &impl Backend,
+        control: &mut watch::Receiver<Control>,
+        sleeping: bool,
+    ) -> Result<()> {
+        let observation = match backend.observe().await {
+            Ok(observation) => observation,
+            Err(_) => {
+                if self.network_status.take().is_some() {
+                    tracing::info!("network observation became unavailable");
+                }
+                self.schedule.observe(None, Instant::now());
+                return self
+                    .status("Network observation unavailable · timezone unchanged")
+                    .await;
+            }
+        };
+        let status = NetworkStatus {
+            connectivity: observation.connectivity,
+            state: observation.state,
+            sleeping: observation.sleeping || sleeping,
+            blocked: observation.blocked,
+        };
+        if self.network_status != Some(status) {
+            tracing::info!(connectivity = status.connectivity, state = status.state,
+                sleeping = status.sleeping, blocked = ?status.blocked, "network availability changed");
+            self.network_status = Some(status);
+        }
+        let network = if status.sleeping {
+            None
+        } else {
+            observation.network
+        };
+        let changed = self.schedule.observe(network, Instant::now());
+        let message = if self.schedule.network.is_none() {
+            status
+                .blocked
+                .filter(|_| !status.sleeping)
+                .map(Blocked::message)
+                .unwrap_or("Waiting for internet or resume · timezone unchanged")
+        } else if self.schedule.ready(Instant::now()) {
+            return self.check(backend, control).await;
+        } else if !changed {
+            return Ok(());
+        } else if self.schedule.due.is_some() {
+            "Waiting to check current location…"
+        } else {
+            &self.last_result
+        };
+        self.storage
+            .status(message, self.state.accepted_revision)
+            .await
+    }
+
+    async fn apply_timezone(
+        &self,
+        backend: &impl Backend,
+        current: &str,
+        zone: &str,
+    ) -> Result<String> {
+        if self.zones.canonical(current).as_deref() != Some(zone) {
+            backend.set_timezone(zone).await?;
+        }
+        let actual = backend.timezone().await?;
+        anyhow::ensure!(
+            self.zones.canonical(&actual).as_deref() == Some(zone),
+            "Timezone application unverified"
+        );
+        Ok(actual)
+    }
+
     fn retry_message(&mut self, reason: &str, minimum: Duration) -> String {
         self.schedule.retry(Instant::now(), minimum);
         tracing::info!(
@@ -269,9 +296,7 @@ impl Authority {
                 format!("{reason} · no automatic change")
             }
         };
-        self.storage
-            .status(&message, self.state.accepted_revision)
-            .await?;
+        self.status(&message).await?;
         self.last_result = message;
         Ok(())
     }
@@ -288,9 +313,7 @@ impl Authority {
                 .finish(Decision::Retry("GeoClue provider migration cooldown"))
                 .await;
         }
-        self.storage
-            .status("Checking current location…", self.state.accepted_revision)
-            .await?;
+        self.status("Checking current location…").await?;
         tracing::info!("asking GeoClue; IP confirmation only for non-IP or unknown provenance");
         let started = self.schedule.network_since.unwrap_or_else(wall_time);
         let epoch = control.borrow().epoch;
@@ -330,11 +353,8 @@ impl Authority {
         // Recheck after persistence, immediately before the privileged call.
         let observed = backend.observe().await;
         let changed = control.borrow();
-        let valid = observed.is_ok_and(|s| {
-            !s.sleeping && s.network == self.schedule.network && s.network.is_some()
-        }) && changed.epoch == epoch
-            && !changed.sleeping
-            && !changed.shutdown;
+        let valid =
+            observed.is_ok_and(|s| s.on_network(&self.schedule.network)) && changed.active(epoch);
         drop(changed);
         if !valid {
             self.state.write_pending = false;
@@ -345,19 +365,7 @@ impl Authority {
         }
         let needs_write = self.zones.canonical(&current).as_deref() != Some(&zone);
         tracing::info!(current_timezone = %current, proposed_timezone = %zone, needs_write, "verifying accepted timezone");
-        let applied = async {
-            if needs_write {
-                backend.set_timezone(&zone).await?;
-            }
-            let actual = backend.timezone().await?;
-            anyhow::ensure!(
-                self.zones.canonical(&actual).as_deref() == Some(&zone),
-                "timezone not verified"
-            );
-            Ok::<_, anyhow::Error>(actual)
-        }
-        .await;
-        match applied {
+        match self.apply_timezone(backend, &current, &zone).await {
             Ok(actual) => {
                 self.baseline = actual;
                 self.state.expected_timezone = Some(zone.clone());
@@ -381,7 +389,7 @@ impl Authority {
                     timezone_changed = needs_write, source = ?geo.source, "location check finished");
                 self.schedule.complete();
                 self.last_result.clear();
-                self.storage.status("", self.state.accepted_revision).await
+                self.status("").await
             }
             Err(error) => {
                 tracing::warn!(error = %error, "timezone application or verification failed");
@@ -428,11 +436,8 @@ impl Authority {
             }
             let observed = backend.observe().await;
             let current = stage_control.borrow();
-            let valid = observed
-                .is_ok_and(|s| !s.sleeping && s.network == network && s.network.is_some())
-                && current.epoch == epoch
-                && !current.sleeping
-                && !current.shutdown
+            let valid = observed.is_ok_and(|s| s.on_network(&network))
+                && current.active(epoch)
                 && Instant::now() < deadline_at;
             drop(current);
             if !valid {
@@ -465,7 +470,7 @@ impl Authority {
                 let valid = backend
                     .observe()
                     .await
-                    .is_ok_and(|s| !s.sleeping && s.network == network && s.network.is_some());
+                    .is_ok_and(|s| s.on_network(&network));
                 if !valid {
                     return Decision::Retry("Network or sleep state changed");
                 }

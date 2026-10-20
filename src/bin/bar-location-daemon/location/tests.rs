@@ -170,14 +170,32 @@ impl Backend for Fake {
 }
 pub(super) async fn authority(backend: &impl Backend) -> (TempDir, Authority) {
     let dir = tempfile::tempdir().unwrap();
-    let storage = Storage::new(dir.path().join("state"), dir.path().join("run"));
-    let mut a = Authority::new(storage, zones(), backend).await.unwrap();
+    let mut a = reopen(&dir, backend).await;
     a.schedule.observe(Some(network("a")), Instant::now());
     (dir, a)
+}
+async fn reopen(dir: &TempDir, backend: &impl Backend) -> Authority {
+    Authority::new(
+        Storage::new(dir.path().join("state"), dir.path().join("run")),
+        zones(),
+        backend,
+    )
+    .await
+    .unwrap()
 }
 async fn check(a: &mut Authority, backend: &impl Backend) {
     let (_sender, mut control) = watch::channel(Control::default());
     a.check(backend, &mut control).await.unwrap();
+}
+
+async fn run_for(a: &mut Authority, backend: &impl Backend, seconds: u64, initial: Control) {
+    let (sender, control) = watch::channel(initial);
+    let stop = async {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        sender.send_modify(|c| c.shutdown = true);
+    };
+    let (result, ()) = tokio::join!(a.run(backend, control), stop);
+    result.unwrap();
 }
 
 fn manual_request(revision: u64, id: &str) -> super::control::Request {
@@ -215,13 +233,7 @@ async fn manual_and_automatic_are_durable_and_do_not_replay() {
             .await
             .is_err()
     );
-    let mut restarted = Authority::new(
-        Storage::new(dir.path().join("state"), dir.path().join("run")),
-        zones(),
-        &backend,
-    )
-    .await
-    .unwrap();
+    let mut restarted = reopen(&dir, &backend).await;
     assert!(restarted.state.manual);
     let revision = restarted.state.accepted_revision;
     restarted
@@ -581,13 +593,7 @@ async fn vpn_blocks_start_confirmation_inflight_acquisition_and_final_write() {
     let backend = Fake::default();
     backend.vpn.store(true, Ordering::SeqCst);
     let (_dir, mut a) = authority(&backend).await;
-    let (sender, control) = watch::channel(Control::default());
-    let stop = async {
-        tokio::time::sleep(Duration::from_secs(15)).await;
-        sender.send_modify(|c| c.shutdown = true);
-    };
-    let (result, ()) = tokio::join!(a.run(&backend, control), stop);
-    result.unwrap();
+    run_for(&mut a, &backend, 15, Control::default()).await;
     assert_eq!(backend.geo_calls.load(Ordering::SeqCst), 0);
     assert!(
         std::fs::read_to_string(&a.storage.status_path)
@@ -667,26 +673,14 @@ async fn ip_failure_retries_and_persisted_cooldown_does_not_block_later_geoclue_
     assert!(a.storage.load().unwrap().ip_not_before >= wall_time() + 7199.0);
     assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(7198)));
     let calls = backend.geo_calls.load(Ordering::SeqCst);
-    let (sender, control) = watch::channel(Control::default());
-    let stop = async {
-        tokio::time::sleep(Duration::from_secs(600)).await;
-        sender.send_modify(|c| c.shutdown = true);
-    };
-    let (result, ()) = tokio::join!(a.run(&backend, control), stop);
-    result.unwrap();
+    run_for(&mut a, &backend, 600, Control::default()).await;
     assert_eq!(backend.geo_calls.load(Ordering::SeqCst), calls);
     a.schedule.observe(None, Instant::now());
     a.schedule.observe(Some(network("a")), Instant::now());
     assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(300)));
     a.schedule.observe(Some(network("b")), Instant::now());
     assert!(a.schedule.ready(Instant::now() + Duration::from_secs(10)));
-    let mut a = Authority::new(
-        Storage::new(dir.path().join("state"), dir.path().join("run")),
-        zones(),
-        &backend,
-    )
-    .await
-    .unwrap();
+    let mut a = reopen(&dir, &backend).await;
     a.schedule.observe(Some(network("a")), Instant::now());
     check(&mut a, &backend).await;
     assert_eq!(
@@ -695,17 +689,17 @@ async fn ip_failure_retries_and_persisted_cooldown_does_not_block_later_geoclue_
         "restart cannot bypass 429"
     );
     backend.geo.lock().unwrap().source = Source::Ip;
-    let (sender, control) = watch::channel(Control {
-        reload: 1,
-        epoch: 1,
-        ..Control::default()
-    });
-    let stop = async {
-        tokio::time::sleep(Duration::from_secs(40)).await;
-        sender.send_modify(|c| c.shutdown = true);
-    };
-    let (result, ()) = tokio::join!(a.run(&backend, control), stop);
-    result.unwrap();
+    run_for(
+        &mut a,
+        &backend,
+        40,
+        Control {
+            reload: 1,
+            epoch: 1,
+            ..Control::default()
+        },
+    )
+    .await;
     assert_eq!(backend.ip_calls.load(Ordering::SeqCst), 2);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     assert!(a.storage.load().unwrap().ip_not_before > wall_time());
@@ -745,19 +739,14 @@ async fn confirmation_cooldown_retry_uses_the_larger_provider_deadline() {
 async fn legacy_provider_cooldown_is_preserved_but_not_repopulated() {
     let backend = Fake::default();
     let (dir, mut a) = authority(&backend).await;
-    a.state.wifi_not_before = wall_time() + 7200.0;
+    let deadline = wall_time() + 7200.0;
+    a.state.wifi_not_before = deadline;
     a.storage.save(&a.state).await.unwrap();
-    let mut a = Authority::new(
-        Storage::new(dir.path().join("state"), dir.path().join("run")),
-        zones(),
-        &backend,
-    )
-    .await
-    .unwrap();
+    let mut a = reopen(&dir, &backend).await;
     a.schedule.observe(Some(network("a")), Instant::now());
     check(&mut a, &backend).await;
     assert_eq!(backend.geo_calls.load(Ordering::SeqCst), 0);
-    assert!(a.state.geoclue_cooldown(wall_time()).as_secs() >= 7198);
+    assert_eq!(a.state.wifi_not_before, deadline);
 }
 
 #[test]
@@ -836,21 +825,9 @@ async fn disagreement_manual_override_and_uncertain_write_keep_previous_accepted
                 .ready(Instant::now() + Duration::from_secs(86400))
         );
         if uncertain {
-            let mut restarted = Authority::new(
-                Storage::new(dir.path().join("state"), dir.path().join("run")),
-                zones(),
-                &backend,
-            )
-            .await
-            .unwrap();
+            let mut restarted = reopen(&dir, &backend).await;
             let before = backend.geo_calls.load(Ordering::SeqCst);
-            let (sender, control) = watch::channel(Control::default());
-            let stop = async {
-                tokio::time::sleep(Duration::from_secs(30)).await;
-                sender.send_modify(|c| c.shutdown = true);
-            };
-            let (result, ()) = tokio::join!(restarted.run(&backend, control), stop);
-            result.unwrap();
+            run_for(&mut restarted, &backend, 30, Control::default()).await;
             assert_eq!(backend.geo_calls.load(Ordering::SeqCst), before);
         }
     }
@@ -867,39 +844,26 @@ async fn startup_detects_offline_override_and_reload_acknowledgement_survives_re
             a.state.accepted.as_mut().unwrap().timezone = "Eire".into();
             a.storage.save(&a.state).await.unwrap();
         }
-        let storage = || Storage::new(dir.path().join("state"), dir.path().join("run"));
         *backend.zone.lock().unwrap() = "Eire".into();
-        assert!(
-            !Authority::new(storage(), zones(), &backend)
-                .await
-                .unwrap()
-                .state
-                .paused
-        );
+        assert!(!reopen(&dir, &backend).await.state.paused);
         *backend.zone.lock().unwrap() = "America/Edmonton".into();
-        let mut restarted = Authority::new(storage(), zones(), &backend).await.unwrap();
+        let mut restarted = reopen(&dir, &backend).await;
         assert!(restarted.storage.load().unwrap().paused);
         let before = backend.geo_calls.load(Ordering::SeqCst);
-        let (sender, control) = watch::channel(Control::default());
-        let stop = async {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            sender.send_modify(|c| c.shutdown = true);
-        };
-        let (result, ()) = tokio::join!(restarted.run(&backend, control), stop);
-        result.unwrap();
+        run_for(&mut restarted, &backend, 30, Control::default()).await;
         assert_eq!(backend.geo_calls.load(Ordering::SeqCst), before);
-        let (sender, control) = watch::channel(Control {
-            reload: 1,
-            ..Control::default()
-        });
-        let stop = async {
-            // Stop before the debounced lookup: acknowledgement alone must persist.
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            sender.send_modify(|c| c.shutdown = true);
-        };
-        let (result, ()) = tokio::join!(restarted.run(&backend, control), stop);
-        result.unwrap();
-        let restarted = Authority::new(storage(), zones(), &backend).await.unwrap();
+        // Stop before the debounced lookup: acknowledgement alone must persist.
+        run_for(
+            &mut restarted,
+            &backend,
+            1,
+            Control {
+                reload: 1,
+                ..Control::default()
+            },
+        )
+        .await;
+        let restarted = reopen(&dir, &backend).await;
         assert!(!restarted.state.paused);
         assert_eq!(
             restarted.state.expected_timezone.as_deref(),
