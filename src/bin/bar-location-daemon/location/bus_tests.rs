@@ -582,6 +582,48 @@ async fn shared_source_recent_cache_is_reused_and_stale_cache_is_revalidated_onc
 }
 
 #[tokio::test]
+async fn replacement_owner_cannot_authorize_an_old_fix_or_receive_its_cleanup() {
+    let (_daemon, server, peer, state) = peer(false).await;
+    let replace = async {
+        state.started.notified().await;
+        server
+            .release_name("org.freedesktop.GeoClue2")
+            .await
+            .unwrap();
+        let address = state.address.lock().unwrap().clone();
+        let replacement = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name("org.freedesktop.GeoClue2")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let old_client = bus::proxy(
+            &peer.bus.connection,
+            server.unique_name().unwrap().as_str(),
+            "/fixture/client",
+            "org.freedesktop.GeoClue2.Client",
+        )
+        .await
+        .unwrap();
+        old_client.call::<_, _, ()>("Publish", &()).await.unwrap();
+        state.deleted.notified().await;
+        drop(replacement);
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (result, ()) = tokio::join!(peer.geoclue(wall_time()), replace);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "GeoClue restarted during acquisition"
+        );
+    })
+    .await
+    .unwrap();
+    assert_eq!(state.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(state.ip_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn cancellation_and_denial_release_geoclue_client_without_effects() {
     for denied in [false, true] {
         let (_daemon, _server, peer, state) = peer(false).await;
