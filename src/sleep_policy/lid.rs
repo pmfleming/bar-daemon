@@ -124,9 +124,10 @@ async fn connected(store: &StateStore) -> Result<()> {
 // ownership and aborts actions, without making observation wait for POLICY_WRITE.
 #[derive(Default)]
 struct LidController {
+    // Begin worker cancellation before returning native ownership to logind.
+    actions: tokio::task::JoinSet<ActionResult>,
     inhibitor: Option<zvariant::OwnedFd>,
     edge: LidEdge,
-    actions: tokio::task::JoinSet<ActionResult>,
     retry: LidRetry,
     status: LidState,
 }
