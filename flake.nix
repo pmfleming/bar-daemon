@@ -30,6 +30,7 @@
         system: pkgs:
         let
           managedHypridle = self.lib.mkManagedHypridle pkgs.hypridle;
+          locationGeoclue = self.lib.mkLocationGeoclue (pkgs.geoclue2.override { withDemoAgent = true; });
           barDaemon = daemonFramework.lib.buildRustPackage pkgs {
             pname = "bar-daemon";
             version = "0.1.0";
@@ -66,6 +67,7 @@
               pkgs.pipewire
             ];
             HYPRIDLE_TEST_BIN = "${managedHypridle}/bin/hypridle";
+            LOCATION_GEOCLUE_AGENT = "${locationGeoclue}/libexec/geoclue-2.0/demos/agent";
             cargoTestFlags = [ "--all-targets" ];
             checkFlags = [ "--include-ignored" ];
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
@@ -116,8 +118,7 @@
             install -Dm644 ${./packaging/polkit/org.laufan.location-timezone.policy} \
               $out/share/polkit-1/actions/org.laufan.location-timezone.policy
           '';
-          inherit managedHypridle;
-          locationGeoclue = self.lib.mkLocationGeoclue (pkgs.geoclue2.override { withDemoAgent = true; });
+          inherit managedHypridle locationGeoclue;
         }
       );
 
@@ -175,6 +176,7 @@
             LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             HYPRIDLE_TEST_BIN = "${self.packages.${system}.managedHypridle}/bin/hypridle";
+            LOCATION_GEOCLUE_AGENT = "${self.packages.${system}.locationGeoclue}/libexec/geoclue-2.0/demos/agent";
             RUST_BACKTRACE = "1";
             RUST_LOG = "bar_daemon=debug";
           };

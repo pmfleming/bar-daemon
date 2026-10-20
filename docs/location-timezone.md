@@ -248,10 +248,13 @@ readback. Local HTTP fixtures retain transport/response/429 bounds. The patched
 GeoClue build tests its production parser and copy paths without network access.
 Shelllist's Qt clock regression checks live offset changes and date rollover.
 
-The packaged-agent re-registration fixture is opt-in: set `LOCATION_GEOCLUE_AGENT`
-to the built `libexec/geoclue-2.0/demos/agent` and run `cargo test --bin
-bar-location-daemon packaged_service_agent -- --ignored`. Both its system and
-session D-Bus addresses point at a private fixture bus; no desktop agent is used.
+The Nix package check includes the packaged-agent re-registration fixture and
+sets `LOCATION_GEOCLUE_AGENT` to the patched, agent-enabled package's
+`libexec/geoclue-2.0/demos/agent`. The development shell sets the same variable;
+run `cargo test --bin bar-location-daemon packaged_service_agent -- --ignored`
+to exercise it separately. Outside that shell, set `LOCATION_GEOCLUE_AGENT`
+explicitly. Both its system and session D-Bus addresses point at a private fixture
+bus; no desktop agent is used.
 The service sandbox is checked through Nix module assertions, not activated by
 the fixture.
 
