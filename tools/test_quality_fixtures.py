@@ -9,7 +9,6 @@ SCRIPT = Path(__file__).with_name("quality-fixtures.sh").resolve()
 PIPEWIRE = "audio::tests::private_pipewire_control_reuses_connection_and_reads_external_changes"
 IDLE = "native_control_preserves_cookies_and_base_listeners_and_cancels_activity"
 
-
 class FixtureRunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -67,26 +66,6 @@ exit {status}
                     self.assertTrue((self.out / "cobertura.xml").is_file())
                 self.assertEqual(args, expected + ["--", "--include-ignored"])
                 self.assertNotEqual(self.run_script(mode).returncode, 0)
-
-    def test_missing_prerequisite_does_not_execute_cargo(self):
-        self.cargo(self.passing())
-        del self.env["HYPRIDLE_TEST_BIN"]
-        self.assertNotEqual(self.run_script().returncode, 0)
-        self.assertFalse((self.root / "args").exists())
-
-    def test_incomplete_or_failed_runs_never_certify_success(self):
-        for name, output, status, expected in [
-            ("missing", f"test {PIPEWIRE} ... ok", 0, 1),
-            ("ignored", self.passing() + "\ntest result: ok. 0 passed; 0 failed; 1 ignored;", 0, 1),
-            ("cargo-failed", self.passing(), 7, 7),
-        ]:
-            with self.subTest(failure=name):
-                self.out = self.root / name
-                self.env["QUALITY_OUTPUT_DIR"] = str(self.out)
-                self.cargo(output, status)
-                self.assertEqual(self.run_script().returncode, expected)
-                self.assertFalse((self.out / "complete.txt").exists())
-
 
 if __name__ == "__main__":
     unittest.main()

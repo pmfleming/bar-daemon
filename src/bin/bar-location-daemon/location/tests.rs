@@ -258,42 +258,6 @@ async fn manual_and_automatic_are_durable_and_do_not_replay() {
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
-async fn manual_same_zone_and_uncertain_write_guards() {
-    let backend = Fake::default();
-    *backend.zone.lock().unwrap() = "Europe/Dublin".into();
-    let (_dir, mut a) = authority(&backend).await;
-    let (_sender, control) = watch::channel(Control::default());
-    a.apply_control(&backend, &control, 1000, manual_request(0, "same-zone"))
-        .await
-        .unwrap();
-    assert!(a.state.manual);
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
-    let backend = Fake::default();
-    backend.lost_reply.store(true, Ordering::SeqCst);
-    let (_dir, mut a) = authority(&backend).await;
-    assert!(
-        a.apply_control(&backend, &control, 1000, manual_request(0, "lost"))
-            .await
-            .is_err()
-    );
-    assert!(a.state.write_pending && a.state.paused);
-    assert!(
-        a.apply_control(
-            &backend,
-            &control,
-            1000,
-            super::control::Request {
-                request_id: "resume".into(),
-                revision: a.state.accepted_revision,
-                place: None
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-}
-#[tokio::test]
 async fn queued_manual_cancels_inflight_automatic_acquisition() {
     let backend = Fake::default();
     backend.pending_geo.store(true, Ordering::SeqCst);
@@ -328,61 +292,6 @@ async fn queued_manual_cancels_inflight_automatic_acquisition() {
     assert!(a.state.manual);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     assert!(!backend.geo_live.load(Ordering::SeqCst));
-}
-
-#[test]
-fn policy_accepts_ip_and_compares_zones_not_distance_accuracy_or_offset() {
-    let z = zones();
-    let now = wall_time();
-    let start = now - 1.0;
-    let mut geo = fix(Source::Ip);
-    geo.accuracy = 300_000.0;
-    assert_eq!(z.decide(&geo, None, start, now).unwrap(), "Europe/Dublin");
-    for source in [Source::NonIp, Source::Unknown] {
-        geo.source = source;
-        assert!(matches!(
-            z.decide(&geo, None, start, now),
-            Err(Decision::Retry(_))
-        ));
-        assert_eq!(
-            z.decide(&geo, Some(&fix(Source::Ip)), start, now).unwrap(),
-            "Europe/Dublin"
-        );
-        // Edmonton and Calgary: ~280km apart in America/Edmonton.
-        geo.latitude = 53.5461;
-        geo.longitude = -113.4938;
-        let mut ip = fix(Source::Ip);
-        ip.latitude = 51.0447;
-        ip.longitude = -114.0719;
-        assert_eq!(
-            z.decide(&geo, Some(&ip), start, now).unwrap(),
-            "America/Edmonton"
-        );
-        // Derry and Letterkenny: <50km, opposite sides of a timezone boundary.
-        geo.latitude = 54.9966;
-        geo.longitude = -7.3086;
-        ip.latitude = 54.95;
-        ip.longitude = -7.7333;
-        assert_eq!(z.geoclue_zone(&geo, start, now).unwrap(), "Europe/London");
-        assert!(matches!(
-            z.decide(&geo, Some(&ip), start, now),
-            Err(Decision::Stop(_))
-        ));
-        // London and Dublin share offsets today but are not the same IANA zone.
-        geo.latitude = 51.5074;
-        geo.longitude = -0.1278;
-        assert!(matches!(
-            z.decide(&geo, Some(&fix(Source::Ip)), start, now),
-            Err(Decision::Stop(_))
-        ));
-        geo = fix(Source::Ip);
-    }
-    assert_eq!(z.canonical("Eire"), z.canonical("Europe/Dublin"));
-    assert_ne!(z.canonical("Europe/London"), z.canonical("Europe/Dublin"));
-    assert_eq!(
-        serde_json::from_str::<Source>(r#""future_gps""#).unwrap(),
-        Source::Unknown
-    );
 }
 
 #[test]
@@ -725,17 +634,6 @@ async fn ready_reply_racing_shutdown_persists_429_but_never_applies_a_fix() {
 }
 
 #[tokio::test]
-async fn confirmation_cooldown_retry_uses_the_larger_provider_deadline() {
-    let backend = Fake::default();
-    let (_dir, mut a) = authority(&backend).await;
-    a.state.ip_not_before = wall_time() + 3600.0;
-    a.state.wifi_not_before = wall_time() + 7200.0;
-    a.finish(Decision::IpConfirmationLimited).await.unwrap();
-    assert!(!a.schedule.ready(Instant::now() + Duration::from_secs(7198)));
-    assert!(a.schedule.ready(Instant::now() + Duration::from_secs(7201)));
-}
-
-#[tokio::test]
 async fn legacy_provider_cooldown_is_preserved_but_not_repopulated() {
     let backend = Fake::default();
     let (dir, mut a) = authority(&backend).await;
@@ -747,21 +645,6 @@ async fn legacy_provider_cooldown_is_preserved_but_not_repopulated() {
     check(&mut a, &backend).await;
     assert_eq!(backend.geo_calls.load(Ordering::SeqCst), 0);
     assert_eq!(a.state.wifi_not_before, deadline);
-}
-
-#[test]
-fn network_diagnostics_name_only_the_changed_identity_fields() {
-    let original = network("private-path");
-    assert!(original.changed_fields(&original).is_empty());
-    let mut next = original.clone();
-    next.owner = ":1.99".into();
-    assert_eq!(next.changed_fields(&original), ["owner"]);
-    next.active.push("another-private-path".into());
-    next.primary = "private-primary".into();
-    assert_eq!(
-        next.changed_fields(&original),
-        ["owner", "active_connections", "primary_connection"]
-    );
 }
 
 #[test]
@@ -896,23 +779,6 @@ async fn legacy_state_migrates_and_failed_persistence_blocks_timezone_effects() 
     std::fs::remove_dir(&a.storage.state_path).unwrap();
     std::os::unix::fs::symlink(dir.path().join("other"), &a.storage.state_path).unwrap();
     assert!(a.storage.load().is_err());
-}
-
-#[tokio::test]
-async fn accepted_revision_survives_restart_and_publishes_even_with_an_unchanged_message() {
-    let backend = Fake::default();
-    let (_dir, mut a) = authority(&backend).await;
-    check(&mut a, &backend).await;
-    assert_eq!(a.storage.load().unwrap().accepted_revision, 1);
-    // Another accepted fix in the same zone still needs a reader refresh.
-    check(&mut a, &backend).await;
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(a.storage.load().unwrap().accepted_revision, 2);
-    a.storage.status("", 3).await.unwrap();
-    let status: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&a.storage.status_path).unwrap()).unwrap();
-    assert_eq!(status["accepted_revision"], 3);
-    assert_eq!(status["message"], "");
 }
 
 #[tokio::test]

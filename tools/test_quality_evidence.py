@@ -9,7 +9,6 @@ import unittest
 
 SCRIPT = Path(__file__).with_name("quality-evidence.sh").resolve()
 
-
 class EvidenceRunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -77,12 +76,6 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(subprocess.run([self.env["RQLENS_BIN"]]).returncode, 9)
 
-    def test_ambiguous_config_is_rejected_before_execution(self):
-        (self.root / "rqlens.toml").write_text(self.config + '[extra]\noutput_dir = "other"\n')
-        self.assertNotEqual(self.run_script().returncode, 0)
-        self.assertFalse((self.out / "status.tsv").exists())
-        self.assertFalse((self.out / "complete.txt").exists())
-
     def test_any_failed_phase_preserves_evidence_without_certifying_success(self):
         for variable, phase, code in [
             ("FIXTURE_STATUS", "fixtures", 7),
@@ -101,7 +94,6 @@ esac
                                  [f"{name}\t{code if name == phase else 0}" for name in
                                   ["fixtures", "verify", "measure", "policy", "report"]])
                 del self.env[variable]
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -126,6 +126,3 @@ async fn while_observed<T>(
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

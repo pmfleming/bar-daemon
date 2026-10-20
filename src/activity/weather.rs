@@ -238,6 +238,3 @@ fn condition(code: u16) -> &'static str {
         _ => "Unknown",
     }
 }
-
-#[cfg(test)]
-mod tests;

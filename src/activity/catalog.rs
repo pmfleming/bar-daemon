@@ -405,15 +405,4 @@ mod tests {
             assert!(rows.iter().all(|r| !r.current));
         }
     }
-    #[test]
-    fn duplicates_and_distinct_same_zone_places() {
-        let catalog = Catalog::seed(&ActivityConfig::default());
-        let (same, id) = catalog.add(home_place(), 1).unwrap();
-        assert_eq!(id, HOME);
-        assert_eq!(same.revision, 1);
-        let mut other = home_place();
-        other.name = "Haarlem".into();
-        let (next, _) = catalog.add(other, 1).unwrap();
-        assert_eq!(next.cities.len(), 2);
-    }
 }

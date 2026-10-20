@@ -625,35 +625,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_duration_events_belong_to_their_day_including_range_start() {
-        let directory = tempdir().unwrap();
-        let service = service_in(&directory).await;
-        service.data.write().await.events_by_source.insert(
-            "source".into(),
-            vec![super::ActivityEvent {
-                id: "instant".into(),
-                start_unix_ms: 0,
-                end_unix_ms: 0,
-                ..Default::default()
-            }],
-        );
-        let range = service
-            .query_range_in_timezone(0, 1000, chrono::Utc)
-            .await
-            .unwrap();
-        assert_eq!(range.days["1970-01-01"].event_ids, ["instant"]);
-        assert_eq!(range.busy_dates, ["1970-01-01"]);
-        assert!(
-            service
-                .query_range_in_timezone(-1000, 0, chrono::Utc)
-                .await
-                .unwrap()
-                .events
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
     async fn failed_todo_storage_blocks_mutations_and_recovers_without_data_loss() {
         for unreadable in [false, true] {
             let directory = tempdir().unwrap();

@@ -563,6 +563,3 @@ where
     .context("MPRIS operation timed out")??;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

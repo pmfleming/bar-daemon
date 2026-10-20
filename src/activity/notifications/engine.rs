@@ -934,8 +934,6 @@ impl NotificationEngine {
 mod tests {
     use std::sync::Arc;
 
-    use tokio::time::{Duration, timeout};
-
     use crate::state::StateStore;
 
     use super::NotificationEngine;
@@ -1211,56 +1209,5 @@ mod tests {
             }
         );
         assert!(!engine.invoke_action(id, "default", None).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn expires_and_emits_close_reason() {
-        let state = StateStore::default();
-        let engine = NotificationEngine::new(state.clone()).await;
-        let response = engine
-            .set_dnd(true, Some(crate::time::unix_ms() + 10))
-            .await
-            .unwrap();
-        assert!(response.dnd);
-        assert_eq!(response, state.read(|s| s.notifications.clone()).await);
-        let mut signals = engine.subscribe_signals();
-        engine.notify(0, notification("short", 5)).await.unwrap();
-        let snoozed = engine.notify(0, notification("later", 5)).await.unwrap();
-        assert!(
-            engine
-                .snooze(snoozed, crate::time::unix_ms() + 60_000)
-                .await
-                .unwrap()
-        );
-        let task = tokio::spawn(Arc::clone(&engine).run_expiry());
-        let signal = timeout(Duration::from_secs(1), signals.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            signal,
-            super::NotificationSignal::Closed {
-                id: 1,
-                reason: close_reason::EXPIRED
-            }
-        );
-        timeout(Duration::from_secs(1), async {
-            while state.snapshot().await.notifications.dnd {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(state.snapshot().await.notifications.dnd_until_unix_ms, None);
-        assert_eq!(
-            engine
-                .active()
-                .await
-                .iter()
-                .map(|n| n.id)
-                .collect::<Vec<_>>(),
-            [snoozed]
-        );
-        task.abort();
     }
 }

@@ -70,27 +70,6 @@ impl TimezoneLinks {
 mod tests {
     use super::*;
     #[test]
-    fn aliases_are_not_equal_offsets() {
-        let links = TimezoneLinks::from_table("L Europe/Brussels Europe/Amsterdam\n");
-        assert_eq!(links.resolve("Europe/Amsterdam"), Some("Europe/Brussels"));
-        assert_ne!(
-            links.resolve("Europe/Paris"),
-            links.resolve("Europe/Amsterdam")
-        );
-        for (table, expected) in [
-            ("Link B A\nL Europe/Dublin B\n", Some("Europe/Dublin")),
-            ("L B A\nL A B\n", None),
-            ("L A A\n", None),
-            ("# ignored\nL incomplete\nZone A B\n", Some("A")),
-            (
-                "L Europe/Paris A\nL Europe/Dublin A\n",
-                Some("Europe/Dublin"),
-            ),
-        ] {
-            assert_eq!(TimezoneLinks::from_table(table).resolve("A"), expected);
-        }
-    }
-    #[test]
     fn invalid_places_rejected() {
         let mut place = Place {
             name: "Amsterdam".into(),

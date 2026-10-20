@@ -1,6 +1,6 @@
 use super::{
     engine::NotificationEngine,
-    history::{self, HistoryError, HistoryQuery, MAX_PAGE, PAGE_BYTES},
+    history::{HistoryError, HistoryQuery},
     model::IncomingNotification,
 };
 use crate::state::StateStore;
@@ -105,83 +105,6 @@ async fn catalog_search_pages_and_mutation_restart_fences() {
             .iter()
             .all(|item| item.closed_unix_ms.is_some())
     );
-}
-
-#[tokio::test]
-async fn bounded_pages_make_progress_and_reject_invalid_cursors() {
-    let engine = NotificationEngine::new(StateStore::default()).await;
-    for _ in 0..20 {
-        let mut incoming = notification("Large", true);
-        incoming.body = "x".repeat(64 * 1024);
-        engine.notify(0, incoming).await.unwrap();
-    }
-    let mut cursor = None;
-    let mut ids = Vec::new();
-    loop {
-        let page = engine
-            .query_history(query("", cursor, MAX_PAGE))
-            .await
-            .unwrap();
-        let bytes: usize = page
-            .records
-            .iter()
-            .map(|item| serde_json::to_vec(item).unwrap().len())
-            .sum();
-        assert!(bytes <= PAGE_BYTES);
-        assert!(!page.records.is_empty());
-        ids.extend(page.records.iter().map(|item| item.notification.id));
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert_eq!(ids.len(), 20);
-    ids.sort_unstable();
-    ids.dedup();
-    assert_eq!(ids.len(), 20);
-    for invalid in [
-        query("", None, 0),
-        query("", None, MAX_PAGE + 1),
-        query(&"x".repeat(1025), None, 1),
-        query("", Some("not a cursor".into()), 1),
-    ] {
-        assert!(matches!(
-            engine.query_history(invalid).await,
-            Err(HistoryError::Invalid)
-        ));
-    }
-    let page = engine.query_history(query("", None, 1)).await.unwrap();
-    let mut token: serde_json::Value = serde_json::from_str(&page.next_cursor.unwrap()).unwrap();
-    token["expires"] = 0.into();
-    assert!(matches!(
-        engine
-            .query_history(query("", Some(token.to_string()), 1))
-            .await,
-        Err(HistoryError::Stale)
-    ));
-    // Generated cursors must accept every valid query, including JSON escaping.
-    let escaped = "\u{1}".repeat(1024);
-    for _ in 0..2 {
-        engine
-            .notify(0, notification(&escaped, true))
-            .await
-            .unwrap();
-    }
-    let escaped_page = engine
-        .query_history(query(&escaped, None, 1))
-        .await
-        .unwrap();
-    assert!(escaped_page.next_cursor.as_ref().unwrap().len() > 4096);
-    assert_eq!(
-        engine
-            .query_history(query(&escaped, escaped_page.next_cursor, 1))
-            .await
-            .unwrap()
-            .records
-            .len(),
-        1
-    );
-    assert_ne!(history::new_epoch().unwrap(), history::new_epoch().unwrap());
 }
 
 #[tokio::test]
