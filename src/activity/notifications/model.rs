@@ -115,7 +115,38 @@ pub(crate) struct HistoryNotification {
     pub close_reason: Option<u32>,
 }
 
+// Consume only due one-shot deadlines; absent/future deadlines remain intact.
+pub(super) fn take_due(deadline: &mut Option<u64>, now: u64) -> bool {
+    deadline.take_if(|until| *until <= now).is_some()
+}
+
+pub(super) fn expire_flag(enabled: &mut bool, deadline: &mut Option<u64>, now: u64) -> bool {
+    let expired = take_due(deadline, now);
+    *enabled &= !expired;
+    expired
+}
+
 impl ActiveNotification {
+    pub(super) fn next_deadline(&self) -> Option<u64> {
+        self.snoozed_until_unix_ms.or_else(|| {
+            self.expires_unix_ms
+                .into_iter()
+                .chain(self.toast_expires_unix_ms)
+                .min()
+        })
+    }
+
+    /// Return (woke, expired). Waking and protocol expiry can happen together;
+    /// a future snooze defers both protocol and popup expiry.
+    pub(super) fn advance(&mut self, now: u64) -> (bool, bool) {
+        let woke = take_due(&mut self.snoozed_until_unix_ms, now);
+        if self.snoozed_until_unix_ms.is_some() {
+            return (false, false);
+        }
+        self.toast_visible &= !take_due(&mut self.toast_expires_unix_ms, now);
+        (woke, self.expires_unix_ms.is_some_and(|until| until <= now))
+    }
+
     pub(super) fn app_key(&self) -> String {
         super::identity::app_key(
             &self.hints.desktop_entry,

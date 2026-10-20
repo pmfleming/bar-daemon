@@ -17,7 +17,7 @@ use super::{
     history::{self, HistoryError, HistoryPage, HistoryQuery},
     model::{
         ActiveNotification, HistoryNotification, IncomingNotification, NotificationActiveState,
-        NotificationSignal, NotificationState, close_reason,
+        NotificationSignal, NotificationState, close_reason, expire_flag,
     },
     persistence::{NotificationPersistence, PendingWrites},
     policy::NotificationPolicy,
@@ -34,15 +34,11 @@ struct EngineData {
     delete_tickets: BTreeMap<String, (u64, Vec<history::Position>)>,
 }
 
+#[derive(Default)]
 struct ExpiryBatch {
     expired_ids: Vec<u32>,
     changed: Vec<ActiveNotification>,
     dnd_expired: bool,
-}
-
-// Consume a one-shot deadline only when it is due; future/absent deadlines stay intact.
-fn take_due(deadline: &mut Option<u64>, now: u64) -> bool {
-    deadline.take_if(|until| *until <= now).is_some()
 }
 
 impl EngineData {
@@ -86,45 +82,28 @@ impl EngineData {
     }
 
     fn expire(&mut self, now: u64) -> ExpiryBatch {
-        let mut changed = Vec::new();
-        let mut expired_ids = Vec::new();
+        let mut batch = ExpiryBatch::default();
         for policy in self.app_policies.values_mut() {
-            if policy.silent && take_due(&mut policy.until_unix_ms, now) {
-                policy.silent = false;
+            if policy.silent && policy.expire(now) {
                 self.history_revision = self.history_revision.wrapping_add(1);
             }
         }
         for notification in self.active.values_mut() {
-            let woke = take_due(&mut notification.snoozed_until_unix_ms, now);
-            if notification.snoozed_until_unix_ms.is_some() {
-                continue;
-            }
-            if take_due(&mut notification.toast_expires_unix_ms, now) {
-                notification.toast_visible = false;
-                // Popup-only changes do not invalidate persisted history.
-            }
-            if notification
-                .expires_unix_ms
-                .is_some_and(|expiry| expiry <= now)
-            {
-                expired_ids.push(notification.id);
+            let (woke, expired) = notification.advance(now);
+            if expired {
+                batch.expired_ids.push(notification.id);
             }
             if woke {
-                changed.push(notification.clone());
+                batch.changed.push(notification.clone());
             }
         }
-        let dnd_expired = self.dnd && take_due(&mut self.dnd_until_unix_ms, now);
-        if dnd_expired {
-            self.dnd = false;
-        }
-        if !changed.is_empty() {
+        batch.dnd_expired =
+            self.dnd && expire_flag(&mut self.dnd, &mut self.dnd_until_unix_ms, now);
+        // Popup-only changes do not invalidate persisted history.
+        if !batch.changed.is_empty() {
             self.history_revision = self.history_revision.wrapping_add(1);
         }
-        ExpiryBatch {
-            expired_ids,
-            changed,
-            dnd_expired,
-        }
+        batch
     }
 }
 
@@ -193,13 +172,13 @@ impl NotificationEngine {
         state: StateStore,
         persistence: Option<NotificationPersistence>,
         last_id: u32,
-        dnd: bool,
-        dnd_until_unix_ms: Option<u64>,
+        mut dnd: bool,
+        mut dnd_until_unix_ms: Option<u64>,
     ) -> Result<Arc<Self>> {
         super::identity::refresh()
             .await
             .context("load notification application icons")?;
-        let dnd_expired = dnd_until_unix_ms.is_some_and(|until| until <= unix_ms());
+        let dnd_expired = expire_flag(&mut dnd, &mut dnd_until_unix_ms, unix_ms());
         let (signals, _) = broadcast::channel(256);
         let mut app_policies = if let Some(store) = &persistence {
             store.policies().await?
@@ -207,17 +186,14 @@ impl NotificationEngine {
             BTreeMap::new()
         };
         for policy in app_policies.values_mut() {
-            if policy.until_unix_ms.is_some_and(|until| until <= unix_ms()) {
-                policy.silent = false;
-                policy.until_unix_ms = None;
-            }
+            policy.expire(unix_ms());
         }
         let engine = Arc::new(Self {
             mutations: Mutex::new(()),
             data: Mutex::new(EngineData {
                 active: BTreeMap::new(),
-                dnd: dnd && !dnd_expired,
-                dnd_until_unix_ms: (!dnd_expired).then_some(dnd_until_unix_ms).flatten(),
+                dnd,
+                dnd_until_unix_ms,
                 history_revision: 0,
                 app_policies,
                 delete_tickets: BTreeMap::new(),
@@ -833,14 +809,10 @@ impl NotificationEngine {
 
     async fn next_expiry_delay(&self) -> Option<Duration> {
         let data = self.data.lock().await;
-        let notification_wakeup = data.active.values().filter_map(|item| {
-            item.snoozed_until_unix_ms.or_else(|| {
-                item.expires_unix_ms
-                    .into_iter()
-                    .chain(item.toast_expires_unix_ms)
-                    .min()
-            })
-        });
+        let notification_wakeup = data
+            .active
+            .values()
+            .filter_map(ActiveNotification::next_deadline);
         let next = notification_wakeup
             .chain(data.dnd_until_unix_ms)
             .chain(
@@ -973,6 +945,66 @@ mod tests {
         let mut n = super::super::model::incoming("test", summary, "");
         n.expire_timeout = timeout_ms;
         n
+    }
+
+    #[test]
+    fn expiry_keeps_snooze_popup_and_protocol_deadlines_distinct() {
+        use super::super::policy::AppPolicy;
+        use super::{ActiveNotification, EngineData};
+        let mut data = EngineData {
+            active: Default::default(),
+            dnd: true,
+            dnd_until_unix_ms: Some(100),
+            history_revision: u64::MAX,
+            app_policies: Default::default(),
+            delete_tickets: Default::default(),
+        };
+        for (id, snooze, expiry) in [
+            (1, Some(101), Some(99)),
+            (2, Some(100), Some(100)),
+            (3, None, None),
+        ] {
+            let mut item = ActiveNotification::from_incoming(id, notification("deadline", 0), 0);
+            item.snoozed_until_unix_ms = snooze;
+            item.toast_expires_unix_ms = Some(100);
+            item.expires_unix_ms = expiry;
+            data.active.insert(id, item);
+        }
+        for silent in [false, true] {
+            data.app_policies.insert(
+                silent.to_string(),
+                AppPolicy {
+                    silent,
+                    until_unix_ms: Some(100),
+                    ..Default::default()
+                },
+            );
+        }
+        let batch = data.expire(100);
+        assert_eq!(batch.expired_ids, [2]);
+        assert_eq!(
+            batch.changed.as_slice(),
+            std::slice::from_ref(&data.active[&2])
+        );
+        assert_eq!(data.active[&1].next_deadline(), Some(101));
+        assert!(data.active[&1].toast_visible);
+        assert_eq!(data.active[&1].toast_expires_unix_ms, Some(100));
+        assert!(data.active[&2].snoozed_until_unix_ms.is_none());
+        assert!(!data.active[&2].toast_visible);
+        assert!(!data.active[&3].toast_visible);
+        assert!(data.active[&3].next_deadline().is_none());
+        assert!(batch.dnd_expired);
+        assert!(!data.dnd);
+        assert!(data.dnd_until_unix_ms.is_none());
+        assert_eq!(data.history_revision, 1); // one policy + one wake; popup-only changes excluded
+        let again = data.expire(100);
+        assert!(again.changed.is_empty() && !again.dnd_expired);
+        assert_eq!(data.history_revision, 1);
+        // Startup also cleans expired deadlines on disabled policies; runtime does not.
+        let disabled = data.app_policies.get_mut("false").unwrap();
+        assert_eq!(disabled.until_unix_ms, Some(100));
+        assert!(disabled.expire(100));
+        assert!(!disabled.silent && disabled.until_unix_ms.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

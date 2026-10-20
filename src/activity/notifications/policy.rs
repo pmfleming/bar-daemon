@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use super::model::IncomingNotification;
+use super::model::{IncomingNotification, expire_flag};
 use serde::{Deserialize, Serialize};
 
 // UTF-8 bytes, not characters. Keep both individual fields and the complete
@@ -36,6 +36,9 @@ impl Default for AppPolicy {
     }
 }
 impl AppPolicy {
+    pub(super) fn expire(&mut self, now: u64) -> bool {
+        expire_flag(&mut self.silent, &mut self.until_unix_ms, now)
+    }
     pub fn silenced(&self, now: u64) -> bool {
         self.silent && self.until_unix_ms.is_none_or(|until| until > now)
     }
