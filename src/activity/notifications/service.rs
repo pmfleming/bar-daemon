@@ -127,6 +127,19 @@ async fn send_freedesktop(notification: IncomingNotification) -> Result<u32> {
         "urgency".into(),
         OwnedValue::from(notification.hints.urgency),
     );
+    if !notification.hints.desktop_entry.is_empty() {
+        hints.insert(
+            "desktop-entry".into(),
+            OwnedValue::try_from(zvariant::Value::new(
+                notification.hints.desktop_entry.as_str(),
+            ))
+            .context("encode notification desktop identity")?,
+        );
+    }
+    hints.insert(
+        "suppress-sound".into(),
+        OwnedValue::from(notification.hints.suppress_sound),
+    );
     if !notification.hints.category.is_empty() {
         hints.insert(
             "category".into(),

@@ -35,6 +35,11 @@ enum Mutation {
 
 #[derive(Debug)]
 enum PersistenceCommand {
+    Once {
+        key: String,
+        notification: Box<ActiveNotification>,
+        response: oneshot::Sender<Result<bool>>,
+    },
     Mutate(Vec<Mutation>),
     Delete {
         positions: Vec<Position>,
@@ -120,6 +125,19 @@ impl NotificationPersistence {
             ),
             mutations: Vec::new(),
         })
+    }
+
+    pub(crate) async fn save_once(
+        &self,
+        key: String,
+        notification: ActiveNotification,
+    ) -> Result<bool> {
+        self.request(|response| PersistenceCommand::Once {
+            key,
+            notification: Box::new(notification),
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn targets(
@@ -277,6 +295,13 @@ fn persistence_worker(
     let mut history_error = None;
     while let Some(command) = receiver.blocking_recv() {
         match command {
+            PersistenceCommand::Once {
+                key,
+                notification,
+                response,
+            } => reply(response, history_error.as_deref(), || {
+                store.save_once(&key, &notification)
+            }),
             PersistenceCommand::Targets {
                 app_key,
                 selected,
@@ -461,6 +486,10 @@ impl NotificationStore {
                    ON notifications(session_id) WHERE closed_unix_ms IS NULL;
                  CREATE INDEX IF NOT EXISTS notifications_history_order
                    ON notifications(history_id DESC);
+                 CREATE TABLE IF NOT EXISTS notification_once (
+                   event_key TEXT PRIMARY KEY,
+                   created_unix_ms INTEGER NOT NULL
+                 );
                  CREATE TABLE IF NOT EXISTS notification_meta (
                    key TEXT PRIMARY KEY,
                    value TEXT NOT NULL
@@ -580,6 +609,27 @@ impl NotificationStore {
         // SQLite reuses freed pages; deliberately avoid blocking VACUUM on the
         // ingress worker. Retention bounds growth, not the existing file size.
         Ok(())
+    }
+
+    fn save_once(&mut self, key: &str, notification: &ActiveNotification) -> Result<bool> {
+        // The event key and notification commit together, even if the caller is
+        // cancelled after admission. Deleting history never deletes this key.
+        let transaction = self.connection.unchecked_transaction()?;
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO notification_once VALUES (?1, ?2)",
+            params![key, notification.created_unix_ms],
+        )? > 0;
+        if inserted {
+            self.save(notification)?;
+        }
+        transaction.execute(
+            "DELETE FROM notification_once WHERE created_unix_ms < ?1",
+            [notification
+                .created_unix_ms
+                .saturating_sub(180 * 86400 * 1000)],
+        )?;
+        transaction.commit()?;
+        Ok(inserted)
     }
 
     fn save(&self, notification: &ActiveNotification) -> Result<()> {

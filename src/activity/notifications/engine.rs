@@ -121,6 +121,8 @@ pub(crate) struct NotificationEngine {
     persistence: Option<NotificationPersistence>,
     history_epoch: String,
     history_readers: Semaphore,
+    // Internal targets cannot be supplied by freedesktop notification senders.
+    update_targets: Mutex<BTreeMap<u32, String>>,
 }
 
 impl NotificationEngine {
@@ -207,6 +209,7 @@ impl NotificationEngine {
             persistence,
             history_epoch: history::new_epoch()?,
             history_readers: Semaphore::new(2),
+            update_targets: Mutex::new(BTreeMap::new()),
         });
         if dnd_expired && let Some(persistence) = &engine.persistence {
             persistence.reserve().await?.set_dnd(false, None);
@@ -262,6 +265,8 @@ impl NotificationEngine {
             );
             (id, stored, evicted)
         };
+        // A third-party replacement must never inherit an internal update route.
+        self.update_targets.lock().await.remove(&id);
         if let Some(persistence) = &mut writes {
             persistence.save(stored);
         }
@@ -277,6 +282,69 @@ impl NotificationEngine {
         self.expiry_wakeup.notify_one();
         self.publish_summary().await;
         Ok(id)
+    }
+
+    /// Durable, idempotent update outcomes; publish only after storage ack.
+    pub(crate) async fn notify_update_once(
+        &self,
+        key: String,
+        run_id: String,
+        incoming: IncomingNotification,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            key.len() <= 1024
+                && (run_id.is_empty() || shelllist_update_status::valid_run_id(&run_id)),
+            "Invalid update notification identity"
+        );
+        self.policy.validate(&incoming)?;
+        let _mutation = self.mutations.lock().await;
+        let store = self
+            .persistence
+            .as_ref()
+            .context("Update notifications require persistent storage")?;
+        let mut data = self.data.lock().await;
+        let id = self.allocate_id(&data.active)?;
+        let now = unix_ms();
+        let mut stored = ActiveNotification::from_incoming(id, incoming, now);
+        stored.source_monitor = self
+            .state
+            .read(|s| s.workspaces.focused_monitor.clone().unwrap_or_default())
+            .await;
+        if data
+            .app_policies
+            .get(&stored.app_key())
+            .is_some_and(|p| p.silenced(now))
+        {
+            stored.toast_visible = false;
+        }
+        if !store.save_once(key, stored.clone()).await? {
+            return Ok(());
+        }
+        if data.active.len() >= self.policy.maximum_active {
+            // Use the normal close path, including persistence, for eviction.
+            let oldest = data
+                .active
+                .values()
+                .min_by_key(|n| (n.created_unix_ms, n.id))
+                .map(|n| n.id);
+            drop(data);
+            if let Some(oldest) = oldest {
+                let mut writes = self.reserve_persistence().await?;
+                self.close_locked(oldest, close_reason::UNDEFINED, &mut writes)
+                    .await;
+            }
+            data = self.data.lock().await;
+        }
+        data.active.insert(id, stored);
+        data.history_revision = data.history_revision.wrapping_add(1);
+        let mut targets = self.update_targets.lock().await;
+        targets.retain(|id, _| data.active.contains_key(id));
+        targets.insert(id, run_id);
+        drop(targets);
+        drop(data);
+        self.expiry_wakeup.notify_one();
+        self.publish_summary().await;
+        Ok(())
     }
 
     pub(crate) async fn set_app_policy(
@@ -456,6 +524,7 @@ impl NotificationEngine {
             removed
         };
         if removed {
+            self.update_targets.lock().await.remove(&id);
             if let Some(persistence) = writes {
                 persistence.close(id, unix_ms(), reason);
             }
@@ -481,6 +550,7 @@ impl NotificationEngine {
             }
             ids
         };
+        self.update_targets.lock().await.clear();
         if let Some(persistence) = &mut writes
             && !ids.is_empty()
         {
@@ -777,6 +847,11 @@ impl NotificationEngine {
             }
             notification.hints.resident
         };
+        if action_key == "default"
+            && let Some(run_id) = self.update_targets.lock().await.get(&id).cloned()
+        {
+            crate::updates::open(&run_id, token.as_deref()).await?;
+        }
         if let Some(token) = token {
             self.emit(NotificationSignal::ActivationToken { id, token });
         }
@@ -943,6 +1018,60 @@ mod tests {
         let mut n = super::super::model::incoming("test", summary, "");
         n.expire_timeout = timeout_ms;
         n
+    }
+
+    #[tokio::test]
+    async fn update_outcomes_commit_once_across_dismissal_and_restart() {
+        let (_directory, path, engine) = NotificationEngine::persistent_fixture().await;
+        engine.toggle_dnd().await.unwrap();
+        for _ in 0..3 {
+            engine
+                .notify_update_once(
+                    "updates:run:run-1".into(),
+                    "run-1".into(),
+                    notification("Staged, not activated", -1),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(engine.active().await.len(), 1);
+        assert!(engine.state.read(|s| s.notifications.dnd).await);
+        let id = engine.active().await[0].id;
+        assert!(engine.update_targets.lock().await.contains_key(&id));
+        engine
+            .notify(id, notification("External replacement", -1))
+            .await
+            .unwrap();
+        assert!(
+            !engine.update_targets.lock().await.contains_key(&id),
+            "external replacement cannot inherit an internal route"
+        );
+        engine.clear().await.unwrap();
+        assert_eq!(engine.history(None, 100).await.unwrap().len(), 1);
+        drop(engine);
+        let engine = NotificationEngine::persistent(StateStore::default(), path)
+            .await
+            .unwrap();
+        engine
+            .notify_update_once(
+                "updates:run:run-1".into(),
+                "run-1".into(),
+                notification("Must not replay", -1),
+            )
+            .await
+            .unwrap();
+        assert!(engine.active().await.is_empty());
+        assert_eq!(engine.history(None, 100).await.unwrap().len(), 1);
+        engine
+            .notify_update_once(
+                "updates:run:run-2".into(),
+                "run-2".into(),
+                notification("New outcome", -1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(engine.active().await.len(), 1);
+        assert_eq!(engine.history(None, 100).await.unwrap().len(), 2);
     }
 
     #[test]

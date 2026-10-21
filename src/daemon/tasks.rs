@@ -109,7 +109,11 @@ impl MonitorTasks {
             &[DISPLAY_POLICY],
             crate::display_policy::monitor(state.clone()),
         );
-        tasks.add("updates", &[UPDATES], updates::monitor(state.clone()));
+        tasks.add(
+            "updates",
+            &[UPDATES],
+            updates::monitor(state.clone(), notifications.clone()),
+        );
         tasks.add("timezone", &[TIMEZONE], timezone::monitor(state.clone()));
         tasks.add(
             "notifications",

@@ -15,6 +15,43 @@ use update_worker::{
     readiness,
 };
 
+#[test]
+fn history_reads_real_producer_runs_and_rejects_a_cursor_after_new_publication() {
+    let root = tempfile::tempdir().unwrap();
+    for phase in [Phase::Staged, Phase::Current] {
+        let (_lock, mut status) = Status::start(root.path(), &Job::Run).unwrap().unwrap();
+        status.phase(phase).unwrap();
+        status.finish_report(Outcome::code(0)).unwrap();
+    }
+    let catalog = history::load(root.path()).unwrap();
+    assert_eq!(catalog.entries.len(), 2);
+    assert_eq!(catalog.entries[0].outcome, "current");
+    assert_eq!(catalog.entries[1].outcome, "staged");
+    let page = history::page(
+        catalog,
+        history::Query {
+            limit: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let cursor = page["history"]["cursor"].as_str().unwrap().to_owned();
+    {
+        let (_lock, mut status) = Status::start(root.path(), &Job::Run).unwrap().unwrap();
+        status.finish_report(Outcome::code(1)).unwrap();
+    }
+    assert!(
+        history::page(
+            history::load(root.path()).unwrap(),
+            history::Query {
+                cursor: Some(cursor),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+}
+
 fn candidate(root: &Path, name: &str) -> Candidate {
     let system = root.join(name);
     fs::create_dir_all(system.join("bin")).unwrap();

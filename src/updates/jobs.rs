@@ -79,7 +79,7 @@ fn read_one(path: &Path, name: &str) -> Result<UpdateJob> {
     })
 }
 
-fn is_running(record: &JobStatus) -> bool {
+pub(super) fn is_running(record: &JobStatus) -> bool {
     if fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .is_none_or(|boot| boot.trim() != record.boot_id)

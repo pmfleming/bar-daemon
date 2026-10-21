@@ -189,6 +189,8 @@ pub const METHODS: &[&str] = &[
     "notifications.invokeAction",
     "notifications.reply",
     "updates.refresh",
+    "updates.queryHistory",
+    "updates.readLog",
 ];
 /// Complete ordered event-stream registry for protocol version 1.
 pub const STREAMS: &[&str] = &[
@@ -295,7 +297,9 @@ pub fn registry() -> Value {
             { "name": "notifications.snooze", "params": { "id": 1, "until_unix_ms": 1768467500000_u64 }, "result": "operation" },
             { "name": "notifications.invokeAction", "params": { "id": 1, "action_key": "default", "activation_token": null }, "result": "operation" },
             { "name": "notifications.reply", "params": { "id": 1, "text": "Reply" }, "result": "operation" },
-            { "name": "updates.refresh", "params": {}, "result": "updates" }
+            { "name": "updates.refresh", "params": {}, "result": "updates" },
+            { "name": "updates.queryHistory", "params": { "query": "", "cursor": null, "run_id": null, "limit": 50 }, "result": "history" },
+            { "name": "updates.readLog", "params": { "run_id": "boot-123-run" }, "result": "log" }
         ],
         "streams": STREAMS.iter().map(|name| stream_metadata(name)).collect::<Vec<_>>()
     })

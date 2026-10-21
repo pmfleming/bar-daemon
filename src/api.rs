@@ -156,6 +156,14 @@ impl ApiService {
                 self.notifications.dispatch(method, params).await
             }
             "updates.refresh" => self.effects.updates_refresh().await,
+            "updates.readLog" => match crate::updates::history::read_log(params).await {
+                Ok(data) => success(data),
+                Err(failure) => error("update-log-error", failure.to_string()),
+            },
+            "updates.queryHistory" => match crate::updates::history::query(params).await {
+                Ok(data) => success(data),
+                Err(failure) => error("update-history-error", failure.to_string()),
+            },
             _ => unsupported_method(method),
         };
         self.state.fence_reply(response)

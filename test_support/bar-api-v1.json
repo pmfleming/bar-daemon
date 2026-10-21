@@ -1809,6 +1809,23 @@
         "name": "updates.refresh",
         "params": {},
         "result": "updates"
+      },
+      {
+        "name": "updates.queryHistory",
+        "params": {
+          "cursor": null,
+          "limit": 50,
+          "query": "",
+          "run_id": null
+        },
+        "result": "history"
+      },
+      {
+        "name": "updates.readLog",
+        "params": {
+          "run_id": "boot-123-run"
+        },
+        "result": "log"
       }
     ],
     "protocol": "bar-api",

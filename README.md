@@ -1,5 +1,25 @@
 # bar-daemon
 
+## Shelllist Updates
+
+The desktop update monitor exports a genuine `shelllist-updates` StatusNotifierItem
+(with native menu and watcher recovery), reads the worker's bounded per-run ledger,
+and sends meaningful outcome notifications. `updates.queryHistory` supplies
+revision-fenced, searchable pages; `updates.readLog` supplies a bounded read-only
+worker journal. No new update execution API is exposed.
+
+Install the matching Shelllist application for the launcher/icon/viewer and the
+matching update-worker with `notificationOwner = "desktop"`. Old/legacy records
+do not trigger desktop delivery. `BAR_DAEMON_UPDATE_DESKTOP=0` disables the tray and
+publisher for rollback; coordinate the worker's switch back to legacy ownership.
+`BAR_DAEMON_SHELLLIST` optionally supplies the absolute launcher executable when
+it is not on the user service's PATH. Native notifications have transactional
+idempotency keys; external notification backends receive summary-only messages
+without a claim of exactly-once delivery or retained action support.
+
+See `../shelllist/docs/updates.md` for behavior, coverage, migration and evidence.
+
+
 Rust status, policy, and action service for a Quickshell desktop bar.
 
 Quickshell owns layout, rendering, animation, input, and system-tray menu hosting. `bar-daemon` owns session/system integration, normalized state, policy, and effects. It exposes `bar-api` version 1 over session D-Bus and through a JSON Lines client suitable for QML `Process` integration.

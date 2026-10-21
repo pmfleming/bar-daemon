@@ -74,7 +74,7 @@
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
             postFixup = ''
-              wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl ]}
+              wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl pkgs.systemd ]}
               wrapProgram $out/bin/bar-battery-helper --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-location-daemon --set-default TZDIR ${pkgs.tzdata}/share/zoneinfo
             '';

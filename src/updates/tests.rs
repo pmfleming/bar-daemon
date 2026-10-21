@@ -106,7 +106,7 @@ async fn monitor_follows_creation_replacement_removal_and_later_writes() {
     let directory = root.path().join("updates");
     let store = StateStore::default();
     let mut events = store.subscribe();
-    let task = tokio::spawn(monitor_path(store, directory.clone()));
+    let task = tokio::spawn(monitor_path(store, directory.clone(), None));
     next_state(&mut events, |s| !s.available).await;
     publish(
         &directory,

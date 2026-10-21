@@ -8,8 +8,37 @@ use crate::{
     state::StateStore,
 };
 
+mod desktop;
+#[cfg(test)]
+mod desktop_tests;
+pub(crate) mod history;
 mod jobs;
+mod tray;
 mod watch;
+
+pub(crate) async fn open(run_id: &str, token: Option<&str>) -> Result<()> {
+    ensure!(
+        run_id.is_empty() || shelllist_update_status::valid_run_id(run_id),
+        "Invalid update run identity"
+    );
+    let mut command = tokio::process::Command::new(
+        std::env::var_os("BAR_DAEMON_SHELLLIST").unwrap_or_else(|| "shelllist".into()),
+    );
+    if run_id.is_empty() {
+        command.args(["updates", "open"]);
+    } else {
+        command.args(["updates", "run", run_id]);
+    }
+    if let Some(token) = token.filter(|token| token.len() <= 4096) {
+        command.env("XDG_ACTIVATION_TOKEN", token);
+    }
+    command.kill_on_drop(true);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), command.status())
+        .await
+        .context("Updates launcher timed out")??;
+    ensure!(status.success(), "Updates launcher failed");
+    Ok(())
+}
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/nixos-delayed-updates-v2";
 
@@ -19,15 +48,60 @@ pub(crate) fn state_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR))
 }
 
-pub(crate) async fn monitor(store: StateStore) {
-    monitor_path(store, state_dir()).await;
+pub(crate) async fn monitor(
+    store: StateStore,
+    service: std::sync::Arc<crate::activity::notifications::service::NotificationService>,
+) {
+    monitor_path(store, state_dir(), Some(service)).await;
 }
 
-async fn monitor_path(store: StateStore, directory: PathBuf) {
+async fn monitor_path(
+    store: StateStore,
+    directory: PathBuf,
+    service: Option<std::sync::Arc<crate::activity::notifications::service::NotificationService>>,
+) {
+    use ksni::TrayMethods;
+    let enabled =
+        service.is_some() && std::env::var("BAR_DAEMON_UPDATE_DESKTOP").as_deref() != Ok("0");
+    let mut publisher = service.filter(|_| enabled).map(desktop::Publisher::new);
+    let tray = if enabled {
+        tray::Tray
+            .assume_sni_available(true)
+            .spawn()
+            .await
+            .map_err(|error| tracing::warn!(%error, "Update tray unavailable"))
+            .ok()
+    } else {
+        None
+    };
+    // The library owns watcher loss/re-registration. Cancellation removes the item.
+    struct TrayGuard(Option<ksni::Handle<tray::Tray>>);
+    impl Drop for TrayGuard {
+        fn drop(&mut self) {
+            if let Some(handle) = &self.0 {
+                handle.shutdown();
+            }
+        }
+    }
+    let _tray = TrayGuard(tray);
     let mut watch = watch::Watch::new();
     loop {
         watch.refresh(&directory);
         refresh_path(&store, directory.clone()).await;
+        if let Some(publisher) = &mut publisher {
+            let path = directory.clone();
+            match tokio::task::spawn_blocking(move || history::load(&path)).await {
+                Ok(Ok(catalog)) => {
+                    if let Err(error) = publisher.reconcile(&catalog).await {
+                        tracing::warn!(%error, "Update outcome delivery unavailable");
+                    }
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "Update history reconciliation unavailable")
+                }
+                Err(error) => tracing::warn!(%error, "Update history reader stopped"),
+            }
+        }
         watch.wait().await;
     }
 }
