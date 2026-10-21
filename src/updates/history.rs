@@ -7,7 +7,6 @@ use shelllist_update_status::{
     HISTORY_LIMIT, HISTORY_MAX_BYTES, JobState, RunRecord, valid_run_id,
 };
 use std::{
-    collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     os::unix::fs::MetadataExt,
     path::Path,
@@ -199,8 +198,7 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
     );
     let now = chrono::Local::now();
     let search = search::Search::parse(&query.query, &now)?;
-    let mut hasher = DefaultHasher::new();
-    serde_json::to_vec(&catalog.entries)?.hash(&mut hasher);
+    let mut hasher = super::json::Measure::of(&catalog.entries)?.hash;
     query.query.hash(&mut hasher);
     query.run_id.hash(&mut hasher);
     query.lane.hash(&mut hasher);
@@ -265,7 +263,7 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
     let mut end = offset;
     let mut bytes = 0;
     for entry in matching.iter().skip(offset).take(query.limit.unwrap_or(50)) {
-        let size = serde_json::to_vec(entry)?.len();
+        let size = super::json::Measure::of(entry)?.bytes;
         if end > offset && bytes + size > 128 * 1024 {
             break;
         }
@@ -491,6 +489,19 @@ mod tests {
             "run-1"
         );
     }
+    #[test]
+    fn byte_limited_pages_make_progress_even_for_one_oversized_entry() {
+        for title_bytes in [70_000, 140_000] {
+            let mut catalog = catalog();
+            for entry in &mut catalog.entries {
+                entry.title = "x".repeat(title_bytes);
+            }
+            let page = page(catalog, Query::default()).unwrap();
+            assert_eq!(page["history"]["entries"].as_array().unwrap().len(), 1);
+            assert!(page["history"]["cursor"].as_str().unwrap().ends_with(":1"));
+        }
+    }
+
     #[test]
     fn rejects_bad_queries_and_stale_cursors_without_effects() {
         for params in [

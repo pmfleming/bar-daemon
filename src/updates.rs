@@ -15,6 +15,7 @@ mod desktop_tests;
 mod files;
 pub(crate) mod history;
 mod jobs;
+mod json;
 mod manual;
 #[cfg(test)]
 mod manual_tests;
@@ -110,15 +111,15 @@ async fn monitor_path(
             .await
             {
                 Ok(catalog) => {
-                    use std::hash::{Hash, Hasher};
-                    let mut hash = std::collections::hash_map::DefaultHasher::new();
-                    serde_json::to_vec(&(&catalog.entries, &catalog.errors, catalog.available))
-                        .unwrap_or_default()
-                        .hash(&mut hash);
-                    let revision = Some(hash.finish());
-                    if revision != last_catalog {
-                        last_catalog = revision;
-                        store.invalidate_update_history().await;
+                    match catalog.revision() {
+                        Ok(revision) if Some(revision) != last_catalog => {
+                            last_catalog = Some(revision);
+                            store.invalidate_update_history().await;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "Update history fingerprint unavailable")
+                        }
+                        _ => {}
                     }
                     if let Some(publisher) = &mut publisher
                         && let Err(error) = publisher.reconcile(&catalog).await

@@ -40,3 +40,24 @@ error saturation with valid records, and terminal precedence over a *live* marke
 RQLens manual `load`, compared with step 1: cognitive **19 → 14**, cyclomatic
 **22 → 17**, effort **147,424 → 91,812**. Validation: **34 update tests**, strict
 Clippy, formatting, and diff checks passed.
+
+## 3. Stream JSON measurement instead of retaining scratch buffers
+
+A shared `updates/json.rs` writer hashes and counts serialized bytes without keeping
+an extra JSON `Vec`. It replaces whole-catalog buffers in pagination and monitor
+invalidation and per-entry buffers for page budgeting. Catalog revision inputs remain
+entries/errors/availability. Serialization failures are propagated/logged instead of
+being converted into the hash of an empty buffer.
+
+The hash now consumes JSON bytes directly rather than `Vec::hash`'s length-prefixed
+encoding. This intentionally invalidates old opaque cursors once; the existing
+stale-cursor refresh contract applies. It is not a cryptographic digest. This is an
+allocation improvement by construction, **not** a benchmarked latency claim. Size-only
+measurements also compute the hash. RQLens page complexity stays **17 / 16**, while
+its effort rises **254,978 → 262,309**; monitor cognitive complexity rises **21 → 22**
+with explicit error handling (addressed structurally in step 5).
+
+Tests compare streamed counts/hashes against serialized Unicode/escaped bytes,
+reject serialization failure, exercise revision inputs, and ensure byte-limited
+pages progress even with one oversized entry. **38 update tests**, strict Clippy,
+formatting, and diff checks passed.

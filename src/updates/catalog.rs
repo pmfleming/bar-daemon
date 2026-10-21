@@ -1,7 +1,7 @@
 //! Shared read-only catalog and display-only recovery relationships. No I/O or acknowledgements.
 use serde::Serialize;
 use shelllist_update_status::RunRecord;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, hash::Hasher, path::PathBuf};
 
 #[derive(Serialize)]
 pub(crate) struct Entry {
@@ -53,6 +53,14 @@ pub(crate) struct Catalog {
     pub open_issues: Vec<OpenIssue>,
 }
 impl Catalog {
+    pub(super) fn revision(&self) -> serde_json::Result<u64> {
+        Ok(
+            super::json::Measure::of(&(&self.entries, &self.errors, self.available))?
+                .hash
+                .finish(),
+        )
+    }
+
     pub(super) fn record_error(&mut self, source: impl std::fmt::Display, error: anyhow::Error) {
         if self.errors.len() < 8 {
             self.errors.push(format!("{source}: {error:#}"));
@@ -243,7 +251,25 @@ pub(super) fn test_entry(id: &str, at: u64, name: &str, error: Option<&str>) -> 
 }
 #[cfg(test)]
 mod tests {
-    use super::{annotate, test_entry as run};
+    use super::{Catalog, annotate, test_entry as run};
+
+    #[test]
+    fn revision_tracks_records_errors_and_availability_but_is_repeatable() {
+        let mut catalog = Catalog::default();
+        let mut previous = catalog.revision().unwrap();
+        assert_eq!(catalog.revision().unwrap(), previous);
+        catalog.available = true;
+        let next = catalog.revision().unwrap();
+        assert_ne!(next, previous);
+        previous = next;
+        catalog.errors.push("unreadable record".into());
+        let next = catalog.revision().unwrap();
+        assert_ne!(next, previous);
+        previous = next;
+        catalog.entries.push(run("run", 10, "pi", None));
+        assert_ne!(catalog.revision().unwrap(), previous);
+    }
+
     #[test]
     fn retention_preserves_live_runs_and_the_cutoff_boundary() {
         let mut entry = run("run", 10, "pi", None);
