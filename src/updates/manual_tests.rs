@@ -73,6 +73,29 @@ fn preserves_activation_when_followup_fails_and_retains_failure_and_cancellation
             .collect::<Vec<_>>(),
         ["interrupted", "partial", "failed"]
     );
+    assert_eq!(catalog.entries[1].deployed, Some(true));
+    assert_eq!(
+        catalog.entries[1].failed_stage.as_deref(),
+        Some("Building the system")
+    );
+    assert_eq!(catalog.entries[2].deployed, Some(false));
+    let result = history::page(
+        history::load_catalog(&root.join("missing"), Some(root)),
+        history::Query {
+            query: "partial".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result["history"]["total"], 1,
+        "outcome codes are searchable even without the word in the title"
+    );
+    assert_eq!(result["history"]["entries"][0]["deployed"], true);
+    assert_eq!(
+        result["history"]["entries"][0]["failed_stage"],
+        "Building the system"
+    );
     assert_eq!(
         catalog.entries[1].record.job.phase,
         shelllist_update_status::Phase::Activated

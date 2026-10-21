@@ -1,7 +1,8 @@
 # Update worker status
 
 The privileged `update-daemon` project provides finite systemd-scheduled jobs.
-bar-daemon never executes its helpers and exposes no privileged update command.
+bar-daemon exposes no privileged update command. It reads worker ledgers and may
+invoke only the installed worker's unprivileged `status --json` report.
 Existing `updates.changed` events and snapshot `updates.jobs` report read-only
 job outcomes from `/var/lib/nixos-delayed-updates-v2/jobs/{system,ai-tools,ai-tools-stale}.json`.
 
@@ -23,7 +24,26 @@ artifacts are ignored. Readiness matches the worker's completeness check:
 `ready-flake.lock`, `ready-revision`, `ready-base-hash`, `ready-created-at`, and
 the `system` symlink must all be present.
 
-Shelllist shows active work and failures/staleness even when no candidate is
-ready. Clicking opens the existing NixOS/AI-tool service journals. The worker
-retains the existing independently rate-limited AI desktop alerts. No signal to
-an old bar process is needed for filesystem-driven status refresh.
+Shelllist's Updates viewer shows active work and failures/staleness even when no
+candidate is ready. A resident SNI item opens the read-only viewer; scoped logs
+remain explicit reads. Desktop/legacy notification ownership is configured by
+the worker, never inferred from session presence. See [Updates](../../shelllist/docs/updates.md).
+
+`updates.getOverview` takes no parameters. It invokes the absolute installed
+`/run/current-system/sw/bin/update-worker status --json` executable (override:
+`BAR_DAEMON_UPDATE_WORKER`), with no shell, sudo or caller-selected arguments.
+It normalizes booted/active/profile systems, validated boot staging and known age,
+baseline validity, tool versions/successful checks and actual systemd next times.
+Missing evidence remains null; historical staging is never used as current state.
+The report is bounded to 256 KiB, two readers and a five-second child deadline
+inside a six-second admission/read budget. The matching worker retires its report
+and nested subprocess groups after four seconds. Errors remain separate from
+readable history; older workers may lack added timestamps.
+
+The same bounded catalog provides up to 50 latest unresolved issues, with total
+and partial-read diagnostics. Recovery annotations are display-only: later
+matching component success recovers earlier failures, without rewriting outcomes.
+Holds, running/interrupted/cancelled runs and equal timestamps do not establish
+recovery. Incident identities are validated; a different component's success
+cannot erase an issue. Manual reports expose nullable `failed_stage` and
+`deployed`; search includes outcome codes as well as recorded fields.

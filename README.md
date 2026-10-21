@@ -6,7 +6,12 @@ The desktop update monitor exports a genuine `shelllist-updates` StatusNotifierI
 (with native menu and watcher recovery), reads the worker's bounded per-run ledger,
 and sends meaningful outcome notifications. `updates.queryHistory` supplies
 revision-fenced, searchable pages; `updates.readLog` supplies a bounded read-only
-worker journal or private manual rebuild log. The catalog also imports the existing
+worker journal or private manual rebuild log. `updates.getOverview` reads the
+installed worker's bounded, unprivileged status report for deployment/baseline,
+installed versions, successful checks and timer schedules, plus unresolved
+history issues. Recovery annotations never rewrite historical failures. See
+[worker status](docs/update-worker.md) for deadlines and executable configuration.
+The catalog also imports the existing
 user-owned `nixos-rebuild/history.jsonl` ledger and live markers under XDG state;
 `BAR_DAEMON_REBUILD_STATE_DIR` can override that directory. Explicit rebuild
 completion notifies even when unchanged; automatic no-change checks stay silent.

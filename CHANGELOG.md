@@ -35,6 +35,12 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Read-only `updates.getOverview` for worker-authoritative deployment, baseline,
+  installed tool/check times, schedules and bounded unresolved issues. Annotate
+  historical recovery without changing outcomes; expose manual failed-stage and
+  deployment fields and include outcome codes in history search. Cover SNI
+  registration when the tray watcher starts after the Updates item.
+
 - A stable **Current location** entry backed by the last accepted GeoClue estimate
   (including approximate IP positions), with source/accuracy metadata,
   read through an active-local-session-authorized interface without modifying

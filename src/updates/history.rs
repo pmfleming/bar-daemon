@@ -26,6 +26,9 @@ pub(crate) struct Entry {
     pub record: RunRecord,
     pub outcome: String,
     pub title: String,
+    pub failed_stage: Option<String>,
+    pub deployed: Option<bool>,
+    pub issues: Vec<super::issues::RunIssue>,
     #[serde(skip)]
     pub manual_log: Option<std::path::PathBuf>,
 }
@@ -34,6 +37,7 @@ pub(crate) struct Catalog {
     pub entries: Vec<Entry>,
     pub available: bool,
     pub errors: Vec<String>,
+    pub open_issues: Vec<super::issues::OpenIssue>,
 }
 
 pub(crate) fn load(root: &Path) -> Result<Catalog> {
@@ -100,6 +104,9 @@ pub(crate) fn load(root: &Path) -> Result<Catalog> {
                     }
                     .into(),
                     record,
+                    failed_stage: None,
+                    deployed: None,
+                    issues: Vec::new(),
                     manual_log: None,
                 });
             }
@@ -150,6 +157,7 @@ pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
         completed += 1;
         completed <= HISTORY_LIMIT
     });
+    catalog.open_issues = super::issues::annotate(&mut catalog.entries);
     catalog
 }
 
@@ -212,7 +220,8 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
                 return &entry.record.job.id == id;
             }
             let text = format!(
-                "{} {} {} {} {} {}",
+                "{} {} {} {} {} {} {}",
+                entry.outcome,
                 entry.title,
                 entry.record.lane,
                 entry.record.job.operation,

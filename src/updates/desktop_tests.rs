@@ -45,6 +45,13 @@ fn real_sni_registration_activation_and_watcher_restart() {
     std::fs::write(&launcher, text).unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
     let result = std::process::Command::new("dbus-run-session")
+        // Pure builds have no host /etc/dbus-1/session.conf. Keep this bus
+        // isolated from host configuration and service activation.
+        .arg(concat!(
+            "--config-file=",
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_support/dbus-session.conf"
+        ))
         .arg("--")
         .arg(std::env::current_exe().unwrap())
         .args([
@@ -83,6 +90,13 @@ async fn private_bus_child() {
         return;
     }
     let calls = Arc::new(Mutex::new(Vec::new()));
+    // Applications may start before the shell's watcher. Registration must not
+    // depend on a watcher being present when the Updates item is constructed.
+    let handle = super::tray::Tray
+        .assume_sni_available(true)
+        .spawn()
+        .await
+        .unwrap();
     let watcher = zbus::connection::Builder::session()
         .unwrap()
         .name("org.kde.StatusNotifierWatcher")
@@ -90,11 +104,6 @@ async fn private_bus_child() {
         .serve_at("/StatusNotifierWatcher", Watcher(calls.clone()))
         .unwrap()
         .build()
-        .await
-        .unwrap();
-    let handle = super::tray::Tray
-        .assume_sni_available(true)
-        .spawn()
         .await
         .unwrap();
     let wait = async {

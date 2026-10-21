@@ -117,6 +117,15 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
             .is_none_or(|id| id == &format!("{}:{stem}", report.started_at)),
         "Rebuild identity mismatch"
     );
+    ensure!(
+        report
+            .failed_stage
+            .as_ref()
+            .is_none_or(|stage| !stage.trim().is_empty()
+                && stage.len() <= 512
+                && !stage.chars().any(char::is_control)),
+        "Invalid failed rebuild stage"
+    );
     let id = format!("manual-{}-{stem}", report.started_at);
     let running = report.status == "running";
     let status = match report.status.as_str() {
@@ -188,7 +197,8 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
             "Rebuild failed during {}",
             report
                 .failed_stage
-                .unwrap_or_else(|| "an unrecorded stage".into())
+                .as_deref()
+                .unwrap_or("an unrecorded stage")
                 .chars()
                 .take(512)
                 .collect::<String>()
@@ -235,6 +245,9 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
         },
         outcome: outcome.into(),
         title: title.into(),
+        failed_stage: report.failed_stage,
+        deployed: report.deployed,
+        issues: Vec::new(),
         manual_log: Some(directory.join(filename)),
     })
 }

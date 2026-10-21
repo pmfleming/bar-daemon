@@ -12,10 +12,12 @@ mod desktop;
 #[cfg(test)]
 mod desktop_tests;
 pub(crate) mod history;
+mod issues;
 mod jobs;
 mod manual;
 #[cfg(test)]
 mod manual_tests;
+pub(crate) mod overview;
 mod tray;
 mod watch;
 

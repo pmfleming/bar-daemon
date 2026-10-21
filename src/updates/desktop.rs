@@ -371,6 +371,9 @@ mod tests {
             "started_at":1,"updated_at":2,"finished_at":2,"pid":1,"boot_id":"boot","process_start":"1","exit_code":0,"error":null}
         })).unwrap();
         Entry {
+            failed_stage: None,
+            deployed: None,
+            issues: Vec::new(),
             manual_log: None,
             outcome: record.outcome().into(),
             title: record.title().into(),

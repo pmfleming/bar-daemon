@@ -156,6 +156,10 @@ impl ApiService {
                 self.notifications.dispatch(method, params).await
             }
             "updates.refresh" => self.effects.updates_refresh().await,
+            "updates.getOverview" => match crate::updates::overview::get(params).await {
+                Ok(data) => success(data),
+                Err(failure) => error("update-overview-error", failure.to_string()),
+            },
             "updates.readLog" => match crate::updates::history::read_log(params).await {
                 Ok(data) => success(data),
                 Err(failure) => error("update-log-error", failure.to_string()),
