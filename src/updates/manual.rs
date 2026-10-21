@@ -60,6 +60,35 @@ struct Report {
     boot_id: Option<String>,
     process_start: Option<String>,
 }
+impl Report {
+    fn decode(raw: &[u8]) -> Result<Self> {
+        ensure!(
+            raw.len() <= HISTORY_MAX_BYTES,
+            "Rebuild record exceeds read limit"
+        );
+        Ok(serde_json::from_slice(raw)?)
+    }
+
+    fn completed(raw: &[u8]) -> Result<Self> {
+        let report = Self::decode(raw)?;
+        ensure!(
+            report.status != "running",
+            "Running record in completed rebuild ledger"
+        );
+        Ok(report)
+    }
+
+    fn marker(path: &Path, owner: u32) -> Result<Self> {
+        let report = Self::decode(&files::read(path, owner, HISTORY_MAX_BYTES)?)?;
+        ensure!(
+            report.status == "running"
+                && path == Path::new(&format!("{}.run.json", report.log.display())),
+            "Rebuild marker identity mismatch"
+        );
+        Ok(report)
+    }
+}
+
 fn validate(directory: &Path, report: &Report) -> Result<(String, JobState, PathBuf)> {
     ensure!(
         report.schema_version == 1 && (1..253402300800).contains(&report.started_at),
@@ -227,25 +256,9 @@ pub(super) fn load(directory: &Path) -> Result<Catalog> {
     };
     let mut records = BTreeMap::new();
     let cutoff = (crate::time::unix_ms() / 1000).saturating_sub(HISTORY_DAYS * 86400);
-    let mut add = |raw: &[u8], terminal: bool| -> Result<()> {
-        ensure!(
-            raw.len() <= HISTORY_MAX_BYTES,
-            "Rebuild record exceeds read limit"
-        );
-        let report: Report = serde_json::from_slice(raw)?;
-        ensure!(
-            !terminal || report.status != "running",
-            "Running record in completed rebuild ledger"
-        );
+    let mut add = |report: Report| -> Result<()> {
         let entry = entry(directory, report)?;
-        if entry.outcome == "running"
-            || entry
-                .record
-                .job
-                .finished_at
-                .unwrap_or(entry.record.job.updated_at)
-                >= cutoff
-        {
+        if entry.retained_since(cutoff) {
             // Terminal publication precedes marker removal. Never regress to running.
             records.entry(entry.record.job.id.clone()).or_insert(entry);
         }
@@ -253,26 +266,29 @@ pub(super) fn load(directory: &Path) -> Result<Catalog> {
     };
     let history = directory.join("history.jsonl");
     let owner = rustix::process::geteuid().as_raw();
-    match files::read(&history, owner, 16 * 1024 * 1024) {
-        Ok(raw) => {
-            for (index, line) in raw
-                .split(|b| *b == b'\n')
-                .filter(|line| !line.is_empty())
-                .enumerate()
-            {
-                ensure!(index < HISTORY_LIMIT, "Too many rebuild records");
-                if let Err(error) = add(line, true)
-                    && catalog.errors.len() < 8
-                {
-                    catalog.errors.push(format!("Rebuild history: {error:#}"));
-                }
-            }
-        }
+    let raw = match files::read(&history, owner, 16 * 1024 * 1024) {
+        Ok(raw) => raw,
         Err(error)
             if error
                 .downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
-        Err(error) => catalog.errors.push(format!("Rebuild history: {error:#}")),
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Vec::new()
+        }
+        Err(error) => {
+            catalog.record_error("Rebuild history", error);
+            Vec::new()
+        }
+    };
+    for (index, line) in raw
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .enumerate()
+    {
+        ensure!(index < HISTORY_LIMIT, "Too many rebuild records");
+        if let Err(error) = Report::completed(line).and_then(&mut add) {
+            catalog.record_error("Rebuild history", error);
+        }
     }
     let mut markers = 0;
     for (index, item) in std::fs::read_dir(directory)?.enumerate() {
@@ -287,18 +303,8 @@ pub(super) fn load(directory: &Path) -> Result<Catalog> {
         }
         markers += 1;
         ensure!(markers <= 128, "Too many rebuild markers");
-        let result = files::read(&path, owner, HISTORY_MAX_BYTES).and_then(|raw| {
-            let report: Report = serde_json::from_slice(&raw)?;
-            ensure!(
-                report.status == "running" && path == format!("{}.run.json", report.log.display()),
-                "Rebuild marker identity mismatch"
-            );
-            add(&raw, false)
-        });
-        if let Err(error) = result
-            && catalog.errors.len() < 8
-        {
-            catalog.errors.push(format!("Rebuild marker: {error:#}"));
+        if let Err(error) = Report::marker(&path, owner).and_then(&mut add) {
+            catalog.record_error("Rebuild marker", error);
         }
     }
     catalog.entries = records.into_values().collect();

@@ -24,3 +24,19 @@ RQLens worker `history::load`: cognitive **23 → 8**, cyclomatic **22 → 13**,
 Halstead effort **109,070 → 40,354**. Work moved into shared file operations and
 `read_entry`; these are not eliminated decisions. Validation: **33 update tests**,
 strict workspace/all-target Clippy, formatting, and diff whitespace checks passed.
+
+## 2. Decode manual reports once
+
+Manual ledger and marker readers now decode bounded reports through `Report`'s
+source-specific constructors, then pass the parsed report to shared ingestion.
+Markers no longer deserialize twice. Terminal-only ledger and running-only marker
+rules remain explicit. Both readers reuse catalog retention and the eight-error
+cap; the line/marker/directory limits and terminal-before-marker precedence remain.
+
+Tests cover running ledger rejection, per-record size limits, invalid markers,
+error saturation with valid records, and terminal precedence over a *live* marker
+(as well as the existing abandoned-marker case).
+
+RQLens manual `load`, compared with step 1: cognitive **19 → 14**, cyclomatic
+**22 → 17**, effort **147,424 → 91,812**. Validation: **34 update tests**, strict
+Clippy, formatting, and diff checks passed.

@@ -163,6 +163,13 @@ fn terminal_publication_wins_over_live_marker_and_abandoned_markers_are_unknown(
     let catalog = manual::load(root).unwrap();
     assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
     assert_eq!(catalog.entries[0].outcome, "running");
+    publish(root, std::slice::from_ref(&complete));
+    assert_eq!(
+        manual::load(root).unwrap().entries[0].outcome,
+        "activated",
+        "terminal publication wins even over a live marker"
+    );
+    fs::remove_file(root.join("history.jsonl")).unwrap();
     running["boot_id"] = json!("another-boot");
     fs::write(&marker, serde_json::to_vec(&running).unwrap()).unwrap();
     assert_eq!(
@@ -215,6 +222,42 @@ fn rejects_untrusted_sources_and_log_paths_and_bounds_reads() {
     fs::set_permissions(&log, fs::Permissions::from_mode(0o666)).unwrap();
     assert!(manual::read_log(&log).is_err());
 }
+#[test]
+fn malformed_ledger_records_and_markers_do_not_hide_valid_reports() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut running = report(root, 2, 0, true);
+    running["status"] = json!("running");
+    publish(root, &[running]);
+    let catalog = manual::load(root).unwrap();
+    assert!(catalog.entries.is_empty());
+    assert!(catalog.errors[0].contains("Running record in completed"));
+    fs::write(
+        root.join("history.jsonl"),
+        " ".repeat(shelllist_update_status::HISTORY_MAX_BYTES + 1),
+    )
+    .unwrap();
+    assert!(manual::load(root).unwrap().errors[0].contains("exceeds read limit"));
+    let valid = report(root, 1, 0, true);
+    fs::write(
+        root.join("history.jsonl"),
+        format!("{}{valid}\n", "{}\n".repeat(12)),
+    )
+    .unwrap();
+    fs::write(
+        root.join("rebuild-wrong.running.log.run.json"),
+        valid.to_string(),
+    )
+    .unwrap();
+    let catalog = manual::load(root).unwrap();
+    assert_eq!(catalog.errors.len(), 8);
+    assert_eq!(catalog.entries.len(), 1);
+    assert_eq!(catalog.entries[0].outcome, "activated");
+    fs::remove_file(root.join("history.jsonl")).unwrap();
+    let catalog = manual::load(root).unwrap();
+    assert!(catalog.errors[0].contains("Rebuild marker identity mismatch"));
+}
+
 #[tokio::test]
 async fn rebuild_watch_ignores_log_chatter_but_observes_terminal_publication() {
     let directory = tempfile::tempdir().unwrap();
