@@ -12,6 +12,7 @@ mod catalog;
 mod desktop;
 #[cfg(test)]
 mod desktop_tests;
+mod files;
 pub(crate) mod history;
 mod jobs;
 mod manual;

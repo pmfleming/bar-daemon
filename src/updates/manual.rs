@@ -1,6 +1,9 @@
 //! Read the existing, user-owned `rebuild-report.py` ledger. Never executes a
 //! rebuild, changes its outcome, or writes into the privileged worker state.
-use super::catalog::{Catalog, Entry};
+use super::{
+    catalog::{Catalog, Entry},
+    files,
+};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use shelllist_update_status::{
@@ -9,7 +12,6 @@ use shelllist_update_status::{
 };
 use std::{
     collections::BTreeMap,
-    fs::File,
     io::{Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -39,36 +41,6 @@ fn trusted_directory(directory: &Path) -> Result<bool> {
         "Untrusted manual rebuild directory"
     );
     Ok(true)
-}
-fn open_owned(path: &Path) -> Result<File> {
-    use rustix::fs::{Mode, OFlags, open};
-    let file = File::from(
-        open(
-            path,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(std::io::Error::from)?,
-    );
-    let metadata = file.metadata()?;
-    ensure!(
-        metadata.is_file()
-            && metadata.uid() == rustix::process::geteuid().as_raw()
-            && metadata.mode() & 0o022 == 0,
-        "Untrusted manual rebuild file"
-    );
-    Ok(file)
-}
-fn bytes(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    open_owned(path)?
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= limit,
-        "Manual rebuild file exceeds read limit"
-    );
-    Ok(bytes)
 }
 #[derive(Deserialize)]
 struct Report {
@@ -280,7 +252,8 @@ pub(super) fn load(directory: &Path) -> Result<Catalog> {
         Ok(())
     };
     let history = directory.join("history.jsonl");
-    match bytes(&history, 16 * 1024 * 1024) {
+    let owner = rustix::process::geteuid().as_raw();
+    match files::read(&history, owner, 16 * 1024 * 1024) {
         Ok(raw) => {
             for (index, line) in raw
                 .split(|b| *b == b'\n')
@@ -314,7 +287,7 @@ pub(super) fn load(directory: &Path) -> Result<Catalog> {
         }
         markers += 1;
         ensure!(markers <= 128, "Too many rebuild markers");
-        let result = bytes(&path, HISTORY_MAX_BYTES).and_then(|raw| {
+        let result = files::read(&path, owner, HISTORY_MAX_BYTES).and_then(|raw| {
             let report: Report = serde_json::from_slice(&raw)?;
             ensure!(
                 report.status == "running" && path == format!("{}.run.json", report.log.display()),
@@ -337,7 +310,7 @@ pub(super) fn read_log(path: &Path) -> Result<(String, bool)> {
         trusted_directory(path.parent().context("Missing log directory")?)?,
         "Rebuild log directory missing"
     );
-    let mut file = open_owned(path)?;
+    let mut file = files::open(path, rustix::process::geteuid().as_raw())?;
     let length = file.metadata()?.len();
     let truncated = length > 32768;
     file.seek(SeekFrom::Start(length.saturating_sub(32768)))?;

@@ -27,6 +27,16 @@ impl Entry {
         self.record.job.operation == "manual-rebuild"
     }
 
+    pub(super) fn retained_since(&self, cutoff: u64) -> bool {
+        self.outcome == "running"
+            || self
+                .record
+                .job
+                .finished_at
+                .unwrap_or(self.record.job.updated_at)
+                >= cutoff
+    }
+
     fn finished_at(&self) -> u64 {
         self.record
             .job
@@ -42,6 +52,14 @@ pub(crate) struct Catalog {
     pub errors: Vec<String>,
     pub open_issues: Vec<OpenIssue>,
 }
+impl Catalog {
+    pub(super) fn record_error(&mut self, source: impl std::fmt::Display, error: anyhow::Error) {
+        if self.errors.len() < 8 {
+            self.errors.push(format!("{source}: {error:#}"));
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct RunIssue {
     pub component: Option<usize>,
@@ -226,6 +244,20 @@ pub(super) fn test_entry(id: &str, at: u64, name: &str, error: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::{annotate, test_entry as run};
+    #[test]
+    fn retention_preserves_live_runs_and_the_cutoff_boundary() {
+        let mut entry = run("run", 10, "pi", None);
+        assert!(entry.retained_since(10));
+        assert!(!entry.retained_since(11));
+        entry.outcome = "running".into();
+        assert!(entry.retained_since(11));
+        entry.outcome = "interrupted".into();
+        entry.record.job.finished_at = None;
+        entry.record.job.updated_at = 12;
+        assert!(entry.retained_since(12));
+        assert!(!entry.retained_since(13));
+    }
+
     #[test]
     fn latest_failures_recover_independently_and_recurrences_remain_open() {
         let mut entries = vec![

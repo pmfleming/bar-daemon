@@ -46,6 +46,8 @@ fn load(root: &Path) -> Result<Catalog> {
         "Untrusted update history directory"
     );
     let owner = metadata.uid();
+    let cutoff = (crate::time::unix_ms() / 1000)
+        .saturating_sub(shelllist_update_status::HISTORY_DAYS * 86400);
     let mut result = Catalog {
         available: true,
         ..Default::default()
@@ -59,63 +61,45 @@ fn load(root: &Path) -> Result<Catalog> {
         if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
-        let read = || -> Result<RunRecord> {
-            let metadata = std::fs::symlink_metadata(&path)?;
-            ensure!(
-                metadata.is_file() && metadata.uid() == owner && metadata.mode() & 0o022 == 0,
-                "Untrusted history file"
-            );
-            let bytes = shelllist_daemon_core::read_bytes_bounded(&path, HISTORY_MAX_BYTES as u64)?
-                .context("History record disappeared")?;
-            let record = RunRecord::decode(&bytes)?;
-            ensure!(
-                path.file_stem().and_then(|n| n.to_str()) == Some(&record.job.id),
-                "History identity mismatch"
-            );
-            Ok(record)
-        };
-        match read() {
-            Ok(record) => {
-                let interrupted =
-                    record.job.status == JobState::Running && !super::jobs::is_running(&record.job);
-                let cutoff = (crate::time::unix_ms() / 1000)
-                    .saturating_sub(shelllist_update_status::HISTORY_DAYS * 86400);
-                if (interrupted || record.job.status != JobState::Running)
-                    && record.job.finished_at.unwrap_or(record.job.updated_at) < cutoff
-                {
-                    continue;
-                }
-                result.entries.push(Entry {
-                    outcome: if interrupted {
-                        "interrupted"
-                    } else {
-                        record.outcome()
-                    }
-                    .into(),
-                    title: if interrupted {
-                        "Update interrupted — completion unknown"
-                    } else {
-                        record.title()
-                    }
-                    .into(),
-                    record,
-                    failed_stage: None,
-                    deployed: None,
-                    issues: Vec::new(),
-                    manual_log: None,
-                });
-            }
-            Err(error) => {
-                if result.errors.len() < 8 {
-                    result.errors.push(format!(
-                        "{}: {error:#}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ));
-                }
-            }
+        match read_entry(&path, owner) {
+            Ok(entry) if entry.retained_since(cutoff) => result.entries.push(entry),
+            Ok(_) => {}
+            Err(error) => result.record_error(
+                path.file_name().unwrap_or_default().to_string_lossy(),
+                error,
+            ),
         }
     }
     Ok(result)
+}
+
+fn read_entry(path: &Path, owner: u32) -> Result<Entry> {
+    let record = RunRecord::decode(&super::files::read(path, owner, HISTORY_MAX_BYTES)?)?;
+    ensure!(
+        path.file_stem().and_then(|name| name.to_str()) == Some(&record.job.id),
+        "History identity mismatch"
+    );
+    let interrupted =
+        record.job.status == JobState::Running && !super::jobs::is_running(&record.job);
+    Ok(Entry {
+        outcome: if interrupted {
+            "interrupted"
+        } else {
+            record.outcome()
+        }
+        .into(),
+        title: if interrupted {
+            "Update interrupted — completion unknown"
+        } else {
+            record.title()
+        }
+        .into(),
+        record,
+        failed_stage: None,
+        deployed: None,
+        issues: Vec::new(),
+        manual_log: None,
+    })
 }
 
 pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
@@ -530,5 +514,33 @@ mod tests {
         let catalog = load(root.path()).unwrap();
         assert!(catalog.available);
         assert_eq!(catalog.errors.len(), 2);
+        let record =
+            super::super::catalog::test_entry("valid", crate::time::unix_ms() / 1000, "pi", None)
+                .record;
+        std::fs::write(
+            root.path().join("history/valid.json"),
+            record.encode().unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("history/mismatched.json"),
+            record.encode().unwrap(),
+        )
+        .unwrap();
+        for index in 0..20 {
+            std::fs::write(
+                root.path().join(format!("history/bad-{index}.json")),
+                "broken",
+            )
+            .unwrap();
+        }
+        let catalog = load(root.path()).unwrap();
+        assert_eq!(catalog.errors.len(), 8);
+        assert_eq!(
+            catalog.entries.len(),
+            1,
+            "bad records must not hide valid records"
+        );
+        assert_eq!(catalog.entries[0].record.job.id, "valid");
     }
 }
