@@ -83,3 +83,68 @@ waiters, and permit release on errors/panics. **40 update tests**, strict Clippy
 formatting, and diff checks passed. Query cyclomatic complexity **5 → 3**, effort
 **12,812 → 7,150**; overview effort **49,128 → 45,951**. Log-read effort increases
 **112,602 → 119,054** with its additional timeout boundary.
+
+## 5. Own refresh state and tray lifetime explicitly
+
+`HistoryMonitor` owns the last successfully published revision and optional outcome
+publisher. The watcher loop no longer implements hashing, invalidation, delivery,
+and reader error handling inline. Revision state advances only after invalidation;
+delivery errors do not hide that event or cause duplicate invalidations. Unchanged
+catalogs still retry delivery, including cursor persistence. Errors retain their
+context chain in logs. The tray module owns its shutdown guard and keeps its raw
+item type private; aborting the monitor closes the D-Bus item.
+
+Tests cover no-desktop invalidation, catalog error/recovery changes, delivery failure
+and retry without duplicate invalidation, and real private-bus tray disappearance
+on cancellation. RQLens `monitor_path`: baseline cognitive **21 → 9**, cyclomatic
+**12 → 7**, effort **98,636 → 41,967**. `HistoryMonitor::refresh` is **2 / 6 / 13,227**;
+the extracted work is counted in the totals below. **42 update tests** and strict
+Clippy passed; the full private-fixture suite passed **202 tests, zero ignored**.
+
+## Overall evidence and trade-offs
+
+Scope: `updates` and all child modules, unlike the previous review's child-only
+aggregate. Production rows exclude named test modules and the cfg-test-only
+`catalog::test_entry` helper. Numbers are authored-syntax observations, not expanded
+compiler totals. Halstead sums below sum function efforts, not whole-file effort.
+
+| RQLens production function measure | Baseline | After five changes |
+| --- | ---: | ---: |
+| Functions | 66 | 80 |
+| Cognitive sum | 246 | 222 |
+| Cyclomatic sum | 358 | 370 |
+| Halstead effort sum | 1,873,299 | 1,760,200 |
+| Function SLOC sum | 1,691 | 1,712 |
+
+Including tests/helpers, cognitive sum is **304 → 289**, cyclomatic **450 → 482**,
+and effort **2,969,101 → 3,121,986**. Repository Rust physical lines increase
+**40,651 → 41,069**; most added function SLOC is regression coverage. Explicit `.clone()`
+call-site counts rise **616 → 620** with tests; the cloned overview permit was
+removed. Clone groups stay **114**. Escape observations fall **36 → 35** (one explicit
+test import list), while reliability observations rise **1,030 → 1,076**, primarily
+test unwraps and the deliberate panic-cleanup fixture. These are **not** across-the-board
+metric reductions: admission/security guarantees and allocation removal justify the
+additional code, helpers, and tests.
+
+The reusable `files`, `json`, and `reader` primitives have leverage **20**, **20**, and
+**30** respectively and locality **100**, each with zero outbound internal dependencies.
+No forwarding facades were introduced. Consumers gain real dependencies: locality
+for `updates` is **88 → 85**, `history` **97 → 88**, and `desktop` **88 → 82** (the last
+includes new cross-module lifecycle tests). Catalog locality stays 100, with one
+pure JSON-measurement dependency. There is no claim of an aggregate locality gain.
+
+The three configured architecture rules have **zero observed violations**; all
+collected references resolve (**1,808 → 1,837**). RQLens still reports **partial**
+macro/lexical inventory evidence and `check --fail-on partial` still fails. This
+focused run does not supply complete practices/coverage/type-health evidence and
+must not be treated as strict certification. No policy limits or exclusions changed.
+
+Final validation includes formatting, strict workspace/all-target Clippy, full
+PipeWire/native-idle private fixtures, doctests (zero present), and diff checks.
+Evidence: `target/quality-next-e5b6c0b/step-{0..5}/`, `test-{1..5}.log`,
+`clippy-{1..5}.log`, `fixtures-validated/`, and `check-final.log`. Each intermediate
+commit has a fresh hotspot checkpoint; the baseline/final checkpoints additionally
+include clones, escapes, reliability, locality, leverage, and architecture rules.
+The copied analyzer SHA-256 is
+`f9b585a29d0cee1f0d3ffb39ae4390b09636ba5c39e9bd922540b5ca103b9113`
+(local checkout `7461a919f6b93cefc3066feb9a3fb9336ca30396`).

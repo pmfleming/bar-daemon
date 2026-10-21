@@ -270,6 +270,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delivery_failure_does_not_hide_invalidation_and_unchanged_catalogs_retry() {
+        use super::super::HistoryMonitor;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("delivery.json");
+        std::fs::write(&path, "broken").unwrap();
+        let mut monitor = HistoryMonitor {
+            last_revision: None,
+            publisher: Some(Publisher {
+                service: NotificationService::swaync(),
+                path: path.clone(),
+                first_scan: true,
+            }),
+        };
+        let store = crate::state::StateStore::default();
+        let mut events = store.subscribe();
+        for changed in [true, false] {
+            assert!(
+                monitor
+                    .refresh(
+                        &store,
+                        root.path().join("absent-worker"),
+                        Some(root.path().into())
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(events.try_recv().is_ok(), changed);
+        }
+        std::fs::remove_file(&path).unwrap();
+        monitor
+            .refresh(
+                &store,
+                root.path().join("absent-worker"),
+                Some(root.path().into()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            path.exists(),
+            "unchanged catalog still retries cursor persistence"
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn manual_rebuilds_notify_after_import_and_do_not_replay_after_restart() {
         use super::super::manual_tests::{publish, report};
         use crate::activity::notifications::engine::NotificationEngine;

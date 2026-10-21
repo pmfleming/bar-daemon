@@ -1,11 +1,16 @@
-use std::{fs, os::unix::fs::symlink, time::Duration};
+use std::{fs, os::unix::fs::symlink, path::Path, time::Duration};
 
 use shelllist_daemon_core::{AtomicFilePolicy, write_bytes_atomic};
-use shelllist_update_status::Candidate;
+use shelllist_update_status::{Candidate, FILE_NAME, MAX_BYTES, Readiness};
 use tempfile::tempdir;
 use tokio::time::timeout;
 
-use super::*;
+use super::{
+    HistoryMonitor,
+    manual_tests::{publish as publish_manual, report},
+    monitor_path, read_state,
+};
+use crate::{model::UpdateState, state::StateStore};
 
 fn candidate(root: &Path, revision: &str, created_at: u64) -> Candidate {
     let system = root.join(format!("system-{revision}"));
@@ -98,6 +103,44 @@ async fn next_state(
     })
     .await
     .expect("update monitor did not publish the expected state")
+}
+
+#[tokio::test]
+async fn history_invalidation_observes_catalog_errors_and_recovery_without_desktop_delivery() {
+    let root = tempdir().unwrap();
+    let directory = root.path().join("absent-worker");
+    let mut monitor = HistoryMonitor {
+        last_revision: None,
+        publisher: None,
+    };
+    let store = StateStore::default();
+    let mut events = store.subscribe();
+    for changed in [true, false] {
+        monitor
+            .refresh(&store, directory.clone(), Some(root.path().into()))
+            .await
+            .unwrap();
+        assert_eq!(events.try_recv().is_ok(), changed);
+    }
+    for contents in ["broken", "{}"] {
+        fs::write(root.path().join("history.jsonl"), contents).unwrap();
+        monitor
+            .refresh(&store, directory.clone(), Some(root.path().into()))
+            .await
+            .unwrap();
+        assert!(events.try_recv().is_ok());
+    }
+    publish_manual(root.path(), &[report(root.path(), 1, 0, true)]);
+    monitor
+        .refresh(&store, directory.clone(), Some(root.path().into()))
+        .await
+        .unwrap();
+    assert!(events.try_recv().is_ok());
+    monitor
+        .refresh(&store, directory, Some(root.path().into()))
+        .await
+        .unwrap();
+    assert!(events.try_recv().is_err());
 }
 
 #[tokio::test]

@@ -1,5 +1,20 @@
 //! Genuine StatusNotifierItem; ksni owns the D-Bus menu and watcher recovery.
-pub(super) struct Tray;
+
+pub(super) struct Guard(ksni::Handle<Tray>);
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // shutdown sends immediately; awaiting it is optional. Cancellation of
+        // the monitor must remove the item, not leave a detached tray service.
+        self.0.shutdown();
+    }
+}
+
+pub(super) async fn start() -> anyhow::Result<Guard> {
+    use ksni::TrayMethods;
+    Ok(Guard(Tray.assume_sni_available(true).spawn().await?))
+}
+
+struct Tray;
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
         "shelllist-updates".into()

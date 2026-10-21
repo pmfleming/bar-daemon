@@ -68,66 +68,68 @@ async fn monitor_path(
     directory: PathBuf,
     service: Option<std::sync::Arc<crate::activity::notifications::service::NotificationService>>,
 ) {
-    use ksni::TrayMethods;
     let enabled =
         service.is_some() && std::env::var("BAR_DAEMON_UPDATE_DESKTOP").as_deref() != Ok("0");
     let collect_history = service.is_some();
     let manual_directory = collect_history.then(manual::directory).flatten();
-    let mut publisher = service.filter(|_| enabled).map(desktop::Publisher::new);
-    let tray = if enabled {
-        tray::Tray
-            .assume_sni_available(true)
-            .spawn()
+    let mut history = service.map(|service| HistoryMonitor {
+        publisher: enabled.then(|| desktop::Publisher::new(service)),
+        last_revision: None,
+    });
+    let _tray = if enabled {
+        tray::start()
             .await
             .map_err(|error| tracing::warn!(%error, "Update tray unavailable"))
             .ok()
     } else {
         None
     };
-    // The library owns watcher loss/re-registration. Cancellation removes the item.
-    struct TrayGuard(Option<ksni::Handle<tray::Tray>>);
-    impl Drop for TrayGuard {
-        fn drop(&mut self) {
-            if let Some(handle) = &self.0 {
-                handle.shutdown();
-            }
-        }
-    }
-    let _tray = TrayGuard(tray);
     let mut watch = watch::Watch::new();
     let mut manual_watch = watch::Watch::new_rebuilds();
-    let mut last_catalog = None;
     loop {
         watch.refresh(&directory);
         if let Some(path) = &manual_directory {
             manual_watch.refresh(path);
         }
         refresh_path(&store, directory.clone()).await;
-        if collect_history {
-            let path = directory.clone();
-            let manual = manual_directory.clone();
-            match reader::run(move || Ok(history::load_catalog(&path, manual.as_deref()))).await {
-                Ok(catalog) => {
-                    match catalog.revision() {
-                        Ok(revision) if Some(revision) != last_catalog => {
-                            last_catalog = Some(revision);
-                            store.invalidate_update_history().await;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "Update history fingerprint unavailable")
-                        }
-                        _ => {}
-                    }
-                    if let Some(publisher) = &mut publisher
-                        && let Err(error) = publisher.reconcile(&catalog).await
-                    {
-                        tracing::warn!(%error, "Update outcome delivery unavailable");
-                    }
-                }
-                Err(error) => tracing::warn!(%error, "Update history reader stopped"),
-            }
+        if let Some(history) = &mut history
+            && let Err(error) = history
+                .refresh(&store, directory.clone(), manual_directory.clone())
+                .await
+        {
+            tracing::warn!(error = %format_args!("{error:#}"), "Update history refresh unavailable");
         }
         tokio::select! { _ = watch.wait() => {}, _ = manual_watch.wait(), if manual_directory.is_some() => {} }
+    }
+}
+
+struct HistoryMonitor {
+    last_revision: Option<u64>,
+    publisher: Option<desktop::Publisher>,
+}
+impl HistoryMonitor {
+    async fn refresh(
+        &mut self,
+        store: &StateStore,
+        directory: PathBuf,
+        manual: Option<PathBuf>,
+    ) -> Result<()> {
+        let catalog =
+            reader::run(move || Ok(history::load_catalog(&directory, manual.as_deref()))).await?;
+        let revision = catalog.revision().context("Fingerprint update catalog")?;
+        if self.last_revision != Some(revision) {
+            store.invalidate_update_history().await;
+            self.last_revision = Some(revision);
+        }
+        // Delivery retries even when the catalog is unchanged, but a delivery
+        // failure must not prevent or repeatedly emit history invalidation.
+        if let Some(publisher) = &mut self.publisher {
+            publisher
+                .reconcile(&catalog)
+                .await
+                .context("Deliver update outcomes")?;
+        }
+        Ok(())
     }
 }
 

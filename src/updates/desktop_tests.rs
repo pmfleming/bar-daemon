@@ -1,4 +1,3 @@
-use ksni::TrayMethods;
 use std::sync::{Arc, Mutex};
 
 struct Watcher(Arc<Mutex<Vec<String>>>);
@@ -92,11 +91,7 @@ async fn private_bus_child() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     // Applications may start before the shell's watcher. Registration must not
     // depend on a watcher being present when the Updates item is constructed.
-    let handle = super::tray::Tray
-        .assume_sni_available(true)
-        .spawn()
-        .await
-        .unwrap();
+    let guard = super::tray::start().await.unwrap();
     let watcher = zbus::connection::Builder::session()
         .unwrap()
         .name("org.kde.StatusNotifierWatcher")
@@ -158,7 +153,7 @@ async fn private_bus_child() {
     drop(menu_proxy);
     drop(watcher);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _watcher = zbus::connection::Builder::session()
+    let watcher = zbus::connection::Builder::session()
         .unwrap()
         .name("org.kde.StatusNotifierWatcher")
         .unwrap()
@@ -174,5 +169,19 @@ async fn private_bus_child() {
     })
     .await
     .unwrap();
-    handle.shutdown().await;
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let bus = zbus::fdo::DBusProxy::new(&watcher).await.unwrap();
+    let name = zbus::names::BusName::try_from(service.as_str()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while bus.name_has_owner(name.clone()).await.unwrap() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
