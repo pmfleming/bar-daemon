@@ -14,6 +14,9 @@ use notify::{
 };
 use tokio::{sync::mpsc, time};
 
+#[cfg(test)]
+mod tests;
+
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const COALESCE_WINDOW: Duration = Duration::from_millis(75);
@@ -99,7 +102,14 @@ impl Watch {
     }
 
     pub(super) fn refresh(&mut self, directory: &Path) {
-        let next = target(directory);
+        let next = target(directory).map(|mut next| {
+            // The manual ledger is flat. Its check-cache can point at enormous
+            // Nix closures; watching those trees cannot reveal a ledger change.
+            if self.rebuilds_only {
+                next.recursive = false;
+            }
+            next
+        });
         if self.rebuild.swap(false, Ordering::Relaxed) || self.target != next {
             // A pathname can refer to a new inode after removal/recreation.
             // Dropping the old watcher also clears stale recursive watches.
@@ -114,21 +124,26 @@ impl Watch {
         let rebuild = self.rebuild.clone();
         let rebuilds_only = self.rebuilds_only;
         let directory = directory.to_owned();
-        let result = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            let relevant = !rebuilds_only
-                || event.as_ref().map_or(true, |event| {
-                    event.need_rescan()
-                        || event.paths.iter().any(|path| {
-                            directory.starts_with(path)
-                                || path.file_name().and_then(|name| name.to_str()).is_some_and(
-                                    |name| name == "history.jsonl" || name.ends_with(".run.json"),
-                                )
-                        })
-                });
-            if relevant {
-                signal(&tx, &rebuild, event);
-            }
-        })
+        let result = RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let relevant = !rebuilds_only
+                    || event.as_ref().map_or(true, |event| {
+                        event.need_rescan()
+                            || event.paths.iter().any(|path| {
+                                directory.starts_with(path)
+                                    || path.file_name().and_then(|name| name.to_str()).is_some_and(
+                                        |name| {
+                                            name == "history.jsonl" || name.ends_with(".run.json")
+                                        },
+                                    )
+                            })
+                    });
+                if relevant {
+                    signal(&tx, &rebuild, event);
+                }
+            },
+            notify::Config::default().with_follow_symlinks(false),
+        )
         .and_then(|mut watcher| {
             watcher.watch(
                 &next.path,
