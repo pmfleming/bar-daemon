@@ -35,6 +35,11 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Added
 
+- Update-history lane/outcome filters (including Problems), local-calendar date
+  search, bounded retention anchors for atomic multi-page refresh and a typed
+  stale-cursor response. Filters/counts cover the retained catalog; recovery
+  annotations still include evidence outside the selected filter.
+
 - Read-only `updates.getOverview` for worker-authoritative deployment, baseline,
   installed tool/check times, schedules and bounded unresolved issues. Annotate
   historical recovery without changing outcomes; expose manual failed-stage and

@@ -166,7 +166,14 @@ impl ApiService {
             },
             "updates.queryHistory" => match crate::updates::history::query(params).await {
                 Ok(data) => success(data),
-                Err(failure) => error("update-history-error", failure.to_string()),
+                Err(failure) => error(
+                    if failure.is::<crate::updates::history::StaleCursor>() {
+                        "update-history-cursor-stale"
+                    } else {
+                        "update-history-error"
+                    },
+                    failure.to_string(),
+                ),
             },
             _ => unsupported_method(method),
         };

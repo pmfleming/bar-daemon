@@ -47,3 +47,20 @@ Holds, running/interrupted/cancelled runs and equal timestamps do not establish
 recovery. Incident identities are validated; a different component's success
 cannot erase an issue. Manual reports expose nullable `failed_stage` and
 `deployed`; search includes outcome codes as well as recorded fields.
+
+`updates.queryHistory` additionally accepts nullable `lane` and `outcome` filters
+and up to two validated `anchor_ids`. `problems` combines failed, partial, blocked
+and interrupted outcomes. Filtering precedes pagination/counts but follows recovery
+annotation; exact `run_id` bypasses filters/search. `retain_through` is the matching
+prefix length needed to include surviving anchors (zero if absent), not another
+unbounded page-size parameter. The caller keeps the same anchors throughout a
+cursor chain. Cursors fence catalog contents, filters, anchors and resolved dates;
+stale ones return `update-history-cursor-stale` without altering history.
+
+Date terms use run start dates in the daemon's local timezone: `today`, `yesterday`,
+`YYYY-MM-DD`, `on:DATE`, inclusive `since:DATE`, and exclusive `before:DATE`.
+Named bounds also accept today/yesterday. Other words remain case-insensitive
+AND substring terms. Impossible dates reject the read rather than silently
+broadening it. Local calendar comparison handles DST and relative terms invalidate
+cursors at midnight. Existing 100-record/128-KiB page and three-second read limits
+remain; the UI stages bounded continuations and allows one stale-cursor restart.

@@ -299,7 +299,7 @@ pub fn registry() -> Value {
             { "name": "notifications.invokeAction", "params": { "id": 1, "action_key": "default", "activation_token": null }, "result": "operation" },
             { "name": "notifications.reply", "params": { "id": 1, "text": "Reply" }, "result": "operation" },
             { "name": "updates.refresh", "params": {}, "result": "updates" },
-            { "name": "updates.queryHistory", "params": { "query": "", "cursor": null, "run_id": null, "limit": 50 }, "result": "history" },
+            { "name": "updates.queryHistory", "params": { "query": "", "cursor": null, "run_id": null, "limit": 50, "lane": null, "outcome": null, "anchor_ids": [] }, "result": "history" },
             { "name": "updates.getOverview", "params": {}, "result": "overview" },
             { "name": "updates.readLog", "params": { "run_id": "boot-123-run" }, "result": "log" }
         ],

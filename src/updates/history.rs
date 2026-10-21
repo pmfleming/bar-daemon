@@ -12,6 +12,17 @@ use std::{
     path::Path,
 };
 
+mod search;
+
+#[derive(Debug)]
+pub(crate) struct StaleCursor;
+impl std::fmt::Display for StaleCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Update history changed; refresh before continuing")
+    }
+}
+impl std::error::Error for StaleCursor {}
+
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Query {
@@ -19,6 +30,9 @@ pub(crate) struct Query {
     pub cursor: Option<String>,
     pub run_id: Option<String>,
     pub limit: Option<usize>,
+    pub lane: Option<String>,
+    pub outcome: Option<String>,
+    pub anchor_ids: Vec<String>,
 }
 #[derive(Clone, Serialize)]
 pub(crate) struct Entry {
@@ -189,25 +203,56 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
         query.run_id.as_ref().is_none_or(|id| valid_run_id(id)),
         "Invalid run identity"
     );
-    let words: Vec<_> = query
-        .query
-        .to_lowercase()
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect();
+    ensure!(
+        query
+            .lane
+            .as_deref()
+            .is_none_or(|lane| ["system", "ai-tools", "ai-tools-stale"].contains(&lane)),
+        "Invalid history lane filter"
+    );
+    ensure!(
+        query.outcome.as_deref().is_none_or(|outcome| [
+            "problems",
+            "running",
+            "failed",
+            "partial",
+            "blocked",
+            "interrupted",
+            "activated",
+            "staged",
+            "ready",
+            "queued",
+            "current",
+            "available",
+            "skipped",
+            "approved",
+            "completed"
+        ]
+        .contains(&outcome)),
+        "Invalid history outcome filter"
+    );
+    ensure!(
+        query.anchor_ids.len() <= 2 && query.anchor_ids.iter().all(|id| valid_run_id(id)),
+        "Invalid history anchors"
+    );
+    let now = chrono::Local::now();
+    let search = search::Search::parse(&query.query, &now)?;
     let mut hasher = DefaultHasher::new();
     serde_json::to_vec(&catalog.entries)?.hash(&mut hasher);
     query.query.hash(&mut hasher);
     query.run_id.hash(&mut hasher);
+    query.lane.hash(&mut hasher);
+    query.outcome.hash(&mut hasher);
+    query.anchor_ids.hash(&mut hasher);
+    search.hash(&mut hasher); // Relative dates fence cursors across local midnight.
     let revision = format!("{:016x}", hasher.finish());
     let offset = match query.cursor {
         Some(cursor) => {
             ensure!(cursor.len() < 100, "Invalid history cursor");
             let (rev, offset) = cursor.split_once(':').context("Invalid history cursor")?;
-            ensure!(
-                rev == revision,
-                "Update history changed; refresh before continuing"
-            );
+            if rev != revision {
+                return Err(StaleCursor.into());
+            }
             offset.parse::<usize>()?
         }
         None => 0,
@@ -218,6 +263,21 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
         .filter(|entry| {
             if let Some(id) = &query.run_id {
                 return &entry.record.job.id == id;
+            }
+            if query
+                .lane
+                .as_ref()
+                .is_some_and(|lane| lane != &entry.record.lane)
+                || query.outcome.as_ref().is_some_and(|outcome| {
+                    if outcome == "problems" {
+                        !["failed", "partial", "blocked", "interrupted"]
+                            .contains(&entry.outcome.as_str())
+                    } else {
+                        outcome != &entry.outcome
+                    }
+                })
+            {
+                return false;
             }
             let text = format!(
                 "{} {} {} {} {} {} {}",
@@ -230,9 +290,16 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
                 serde_json::to_string(&entry.record.components).unwrap_or_default()
             )
             .to_lowercase();
-            words.iter().all(|word| text.contains(word))
+            search.matches(&text, entry.record.job.started_at, &now.timezone())
         })
         .collect();
+    let retain_through = matching
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| query.anchor_ids.contains(&entry.record.job.id))
+        .map(|(index, _)| index + 1)
+        .max()
+        .unwrap_or(0);
     ensure!(offset <= matching.len(), "Invalid history offset");
     let mut end = offset;
     let mut bytes = 0;
@@ -245,7 +312,7 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
         end += 1;
     }
     Ok(json!({"history": {
-        "available": catalog.available, "revision": revision, "total": matching.len(),
+        "available": catalog.available, "revision": revision, "total": matching.len(), "retain_through": retain_through,
         "entries": &matching[offset..end], "cursor": (end < matching.len()).then(|| format!("{revision}:{end}")),
         "error": (!catalog.errors.is_empty()).then(|| catalog.errors.join("\n")),
         "coverage": "Manual rebuilds and worker-managed system/AI-tool runs; 90 days / 1,000 completed runs. Manual logs remain private to this user."
@@ -334,6 +401,132 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+
+    fn catalog() -> Catalog {
+        let outcomes = [
+            "failed",
+            "current",
+            "partial",
+            "staged",
+            "blocked",
+            "current",
+            "running",
+            "interrupted",
+        ];
+        let entries = outcomes.iter().enumerate().rev().map(|(index, outcome)| {
+            let at = chrono::Local.with_ymd_and_hms(2026, 10, 20 + (index / 4) as u32, 12, index as u32, 0).unwrap().timestamp();
+            Entry {
+                record: serde_json::from_value(json!({"schema_version":1,"lane":if index % 2 == 0 {"system"} else {"ai-tools"},
+                    "notification_owner":"desktop","components":[],
+                    "job":{"schema_version":1,"id":format!("run-{index}"),"operation":"check-delayed","status":"completed","phase":"current",
+                        "started_at":at,"updated_at":at+1,"finished_at":at+1,"pid":1,"boot_id":"boot","process_start":"1","exit_code":0,"error":null}})).unwrap(),
+                outcome: (*outcome).into(), title: "Opaque title".into(), failed_stage: None, deployed: None, issues: vec![], manual_log: None,
+            }
+        }).collect();
+        Catalog {
+            available: true,
+            entries,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn filters_dates_and_retention_anchors_apply_before_pagination() {
+        for (params, total) in [
+            (json!({"lane":"system","outcome":"problems"}), 3),
+            (
+                json!({"lane":"system","outcome":"problems","query":"2026-10-21"}),
+                1,
+            ),
+            (json!({"outcome":"current"}), 2),
+            (json!({"query":"since:2026-10-20 before:2026-10-21"}), 4),
+            (json!({"query":"opaque 2026-10-21"}), 4),
+            (
+                json!({"run_id":"run-1","lane":"system","outcome":"problems","query":"missing"}),
+                1,
+            ),
+        ] {
+            let result = page(catalog(), serde_json::from_value(params.clone()).unwrap()).unwrap();
+            assert_eq!(result["history"]["total"], total, "{params}");
+        }
+        let first = page(
+            catalog(),
+            serde_json::from_value(json!({"limit":2,"anchor_ids":["run-1","missing"]})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["history"]["retain_through"], 7);
+        let cursor = first["history"]["cursor"].as_str().unwrap();
+        let second = page(
+            catalog(),
+            serde_json::from_value(
+                json!({"limit":2,"anchor_ids":["run-1","missing"],"cursor":cursor}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second["history"]["entries"][0]["job"]["id"], "run-5");
+        assert_eq!(second["history"]["retain_through"], 7);
+        let error = page(
+            catalog(),
+            serde_json::from_value(
+                json!({"limit":2,"anchor_ids":["run-1","missing"],"cursor":cursor,"lane":"system"}),
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.is::<StaleCursor>());
+        let mut changed = catalog();
+        changed.entries.remove(0);
+        assert!(
+            page(
+                changed,
+                serde_json::from_value(json!({"cursor":cursor,"anchor_ids":["run-1","missing"]}))
+                    .unwrap()
+            )
+            .unwrap_err()
+            .is::<StaleCursor>()
+        );
+        for params in [
+            json!({"lane":"unknown"}),
+            json!({"outcome":"unknown"}),
+            json!({"query":"on:2025-02-29"}),
+            json!({"anchor_ids":["a","b","c"]}),
+            json!({"anchor_ids":["../bad"]}),
+        ] {
+            assert!(page(catalog(), serde_json::from_value(params).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn filtering_failures_does_not_hide_their_later_recovery() {
+        let mut catalog = catalog();
+        catalog
+            .entries
+            .retain(|entry| ["run-0", "run-1"].contains(&entry.record.job.id.as_str()));
+        for entry in &mut catalog.entries {
+            entry.record.lane = "ai-tools".into();
+            let failed = entry.outcome == "failed";
+            entry.record.components = vec![shelllist_update_status::ComponentResult {
+                name: "pi".into(),
+                phase: if failed { "failed" } else { "current" }.into(),
+                before: None,
+                after: None,
+                changed: false,
+                error: failed.then(|| "build failed".into()),
+                incident: None,
+            }];
+        }
+        super::super::issues::annotate(&mut catalog.entries);
+        let result = page(
+            catalog,
+            serde_json::from_value(json!({"outcome":"problems"})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["history"]["total"], 1);
+        assert_eq!(
+            result["history"]["entries"][0]["issues"][0]["recovered_run_id"],
+            "run-1"
+        );
+    }
     #[test]
     fn rejects_bad_queries_and_stale_cursors_without_effects() {
         for params in [
