@@ -1,5 +1,5 @@
 //! One session-owned publisher. Notification failures never affect update jobs.
-use super::history::{Catalog, Entry};
+use super::catalog::{Catalog, Entry};
 use crate::activity::notifications::{
     model::{IncomingNotification, NotificationAction, NotificationHints},
     service::NotificationService,
@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct Delivery {
     initialized: bool,
     #[serde(default)]
@@ -51,117 +51,9 @@ impl Publisher {
         })
         .await??;
         let old = serde_json::to_vec(&state)?;
-        let initial = !state.initialized;
-        let manual_initial = !state.manual_initialized;
-        let mut events = Vec::new();
-        // Process chronologically; a later recovery can retire an earlier issue.
-        for entry in catalog.entries.iter().rev().filter(|e| {
-            e.outcome != "running" && e.record.notification_owner == NotificationOwner::Desktop
-        }) {
-            if state.seen.contains(&entry.record.job.id) {
-                continue;
-            }
-            let new_problem = update_incidents(&mut state, entry);
-            let initial_source = if entry.record.job.operation == "manual-rebuild" {
-                manual_initial
-            } else {
-                initial
-            };
-            if new_problem
-                || (!initial_source
-                    && (matches!(entry.outcome.as_str(), "activated" | "staged" | "partial")
-                        || (entry.record.job.operation == "manual-rebuild"
-                            && matches!(entry.outcome.as_str(), "current" | "completed"))))
-            {
-                events.push(entry);
-            }
-            state.seen.insert(entry.record.job.id.clone());
-        }
-        state.initialized = true;
-        state.manual_initialized = true;
-        // Retention follows the producer's bounded catalog, not an unbounded outbox.
-        state
-            .seen
-            .retain(|id| catalog.entries.iter().any(|e| &e.record.job.id == id));
-        events.retain(|e| {
-            let initial_source = if e.record.job.operation == "manual-rebuild" {
-                manual_initial
-            } else {
-                initial
-            };
-            !initial_source
-                || incident_pairs(e)
-                    .iter()
-                    .any(|(key, value)| state.incidents.get(key) == Some(value))
-        });
+        let events = state.events(catalog);
         if let Some(last) = events.last() {
-            let catchup = self.first_scan || events.len() > 1;
-            let summary = if catchup {
-                "Recent updates to review"
-            } else {
-                &last.title
-            };
-            let body = if catchup {
-                format!(
-                    "{} update outcome(s); {} unresolved issue(s). Open Updates to review.",
-                    events.len(),
-                    state.incidents.len()
-                )
-            } else if matches!(
-                last.outcome.as_str(),
-                "failed" | "blocked" | "partial" | "interrupted"
-            ) {
-                // No raw journal/error body in desktop popups.
-                "Review the recorded outcome and diagnostics in Updates.".into()
-            } else if last.outcome == "staged" {
-                "The candidate is staged for the next boot, not activated in this session.".into()
-            } else if last.record.job.operation == "manual-rebuild" && last.outcome == "current" {
-                "The rebuild completed without changing the recorded system.".into()
-            } else if last.record.job.operation == "manual-rebuild" && last.outcome == "completed" {
-                "Rebuild command completed. Review the recorded deployment status in Updates."
-                    .into()
-            } else if last.record.lane == "system" {
-                "System activation completed. Review the recorded run for details.".into()
-            } else {
-                format!(
-                    "{} component(s) changed. Review the run for details.",
-                    last.record.components.iter().filter(|c| c.changed).count()
-                )
-            };
-            let notification = IncomingNotification {
-                app_name: "Shelllist Updates".into(),
-                app_icon: "shelllist-updates".into(),
-                summary: summary.into(),
-                body,
-                actions: if self.service.native_engine().is_some() {
-                    vec![NotificationAction {
-                        key: "default".into(),
-                        label: "Review update".into(),
-                    }]
-                } else {
-                    vec![]
-                },
-                hints: NotificationHints {
-                    desktop_entry: "shelllist-updates".into(),
-                    urgency: 1,
-                    category: "system.update".into(),
-                    suppress_sound: true,
-                    ..Default::default()
-                },
-                expire_timeout: -1,
-            };
-            let target = if catchup { "" } else { &last.record.job.id };
-            // Stable across a crash after delivery but before the cursor write.
-            let key = format!("updates:run:{}", last.record.job.id);
-            if let Some(engine) = self.service.native_engine() {
-                engine
-                    .notify_update_once(key, target.into(), notification)
-                    .await?;
-            } else {
-                // External Notify has no durable idempotency key or retained action
-                // owner. It gets a truthful summary and the desktop/tray fallback.
-                self.service.sink().send(notification).await?;
-            }
+            self.send(last, events.len(), state.incidents.len()).await?;
         }
         let bytes = serde_json::to_vec(&state)?;
         if bytes != old {
@@ -178,6 +70,122 @@ impl Publisher {
         }
         self.first_scan = false;
         Ok(())
+    }
+
+    async fn send(&self, last: &Entry, count: usize, unresolved: usize) -> Result<()> {
+        let catchup = self.first_scan || count > 1;
+        let summary = if catchup {
+            "Recent updates to review"
+        } else {
+            &last.title
+        };
+        let body = if catchup {
+            format!(
+                "{} update outcome(s); {} unresolved issue(s). Open Updates to review.",
+                count, unresolved
+            )
+        } else {
+            outcome_body(last)
+        };
+        let notification = IncomingNotification {
+            app_name: "Shelllist Updates".into(),
+            app_icon: "shelllist-updates".into(),
+            summary: summary.into(),
+            body,
+            actions: if self.service.native_engine().is_some() {
+                vec![NotificationAction {
+                    key: "default".into(),
+                    label: "Review update".into(),
+                }]
+            } else {
+                vec![]
+            },
+            hints: NotificationHints {
+                desktop_entry: "shelllist-updates".into(),
+                urgency: 1,
+                category: "system.update".into(),
+                suppress_sound: true,
+                ..Default::default()
+            },
+            expire_timeout: -1,
+        };
+        let target = if catchup { "" } else { &last.record.job.id };
+        // Stable across a crash after delivery but before the cursor write.
+        let key = format!("updates:run:{}", last.record.job.id);
+        if let Some(engine) = self.service.native_engine() {
+            engine
+                .notify_update_once(key, target.into(), notification)
+                .await?;
+        } else {
+            // External Notify has no durable idempotency key or retained action
+            // owner. It gets a truthful summary and the desktop/tray fallback.
+            self.service.sink().send(notification).await?;
+        }
+        Ok(())
+    }
+}
+
+impl Delivery {
+    fn events<'a>(&mut self, catalog: &'a Catalog) -> Vec<&'a Entry> {
+        let (worker_initial, manual_initial) = (!self.initialized, !self.manual_initialized);
+        let initial = |entry: &Entry| {
+            if entry.is_manual() {
+                manual_initial
+            } else {
+                worker_initial
+            }
+        };
+        let mut events = Vec::new();
+        // Process chronologically; a later recovery can retire an earlier issue.
+        for entry in catalog.entries.iter().rev().filter(|e| {
+            e.outcome != "running" && e.record.notification_owner == NotificationOwner::Desktop
+        }) {
+            if self.seen.contains(&entry.record.job.id) {
+                continue;
+            }
+            let new_problem = update_incidents(self, entry);
+            let completed = matches!(entry.outcome.as_str(), "activated" | "staged" | "partial")
+                || (entry.is_manual() && matches!(entry.outcome.as_str(), "current" | "completed"));
+            if new_problem || (!initial(entry) && completed) {
+                events.push(entry);
+            }
+            self.seen.insert(entry.record.job.id.clone());
+        }
+        self.initialized = true;
+        self.manual_initialized = true;
+        // Retention follows the producer's bounded catalog, not an unbounded outbox.
+        self.seen
+            .retain(|id| catalog.entries.iter().any(|e| &e.record.job.id == id));
+        events.retain(|entry| {
+            !initial(entry)
+                || incident_pairs(entry)
+                    .iter()
+                    .any(|(key, value)| self.incidents.get(key) == Some(value))
+        });
+        events
+    }
+}
+
+fn outcome_body(entry: &Entry) -> String {
+    // No raw journal/error body in desktop popups.
+    match entry.outcome.as_str() {
+        _ if entry.is_problem() => "Review the recorded outcome and diagnostics in Updates.".into(),
+        "staged" => {
+            "The candidate is staged for the next boot, not activated in this session.".into()
+        }
+        "current" if entry.is_manual() => {
+            "The rebuild completed without changing the recorded system.".into()
+        }
+        "completed" if entry.is_manual() => {
+            "Rebuild command completed. Review the recorded deployment status in Updates.".into()
+        }
+        _ if entry.record.lane == "system" => {
+            "System activation completed. Review the recorded run for details.".into()
+        }
+        _ => format!(
+            "{} component(s) changed. Review the run for details.",
+            entry.record.components.iter().filter(|c| c.changed).count()
+        ),
     }
 }
 
@@ -198,10 +206,7 @@ fn incident_pairs(entry: &Entry) -> Vec<(String, String)> {
         .collect();
     if pairs.is_empty()
         && !entry.record.components.iter().any(|c| c.phase == "held")
-        && matches!(
-            entry.outcome.as_str(),
-            "failed" | "blocked" | "interrupted" | "partial"
-        )
+        && entry.is_problem()
     {
         pairs.push((
             format!("{}:{}", entry.record.lane, entry.record.job.operation),
@@ -251,18 +256,27 @@ fn update_incidents(state: &mut Delivery, entry: &Entry) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Delivery, Entry, NotificationService, Publisher, incident_pairs, update_incidents,
+    };
+    async fn reconcile_manual(publisher: &mut Publisher, root: &std::path::Path) {
+        publisher
+            .reconcile(&super::super::history::load_catalog(
+                &root.join("absent-worker"),
+                Some(root),
+            ))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn manual_rebuilds_notify_after_import_and_do_not_replay_after_restart() {
-        use super::super::{
-            history,
-            manual_tests::{publish, report},
-        };
-        use crate::{activity::notifications::engine::NotificationEngine, state::StateStore};
+        use super::super::manual_tests::{publish, report};
+        use crate::activity::notifications::engine::NotificationEngine;
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let engine =
-            NotificationEngine::persistent(StateStore::default(), root.join("notifications.db"))
+            NotificationEngine::persistent(Default::default(), root.join("notifications.db"))
                 .await
                 .unwrap();
         let service = NotificationService::native(engine.clone());
@@ -280,26 +294,14 @@ mod tests {
         .unwrap();
         let mut reports = vec![report(root, 0, 1, false), report(root, 1, 0, true)];
         publish(root, &reports);
-        publisher
-            .reconcile(&history::load_catalog(
-                &root.join("absent-worker"),
-                Some(root),
-            ))
-            .await
-            .unwrap();
+        reconcile_manual(&mut publisher, root).await;
         assert!(
             engine.active().await.is_empty(),
             "old successful rebuilds import silently"
         );
         reports.push(report(root, 2, 1, false));
         publish(root, &reports);
-        publisher
-            .reconcile(&history::load_catalog(
-                &root.join("absent-worker"),
-                Some(root),
-            ))
-            .await
-            .unwrap();
+        reconcile_manual(&mut publisher, root).await;
         assert_eq!(engine.active().await.len(), 1);
         assert_eq!(engine.active().await[0].summary, "Manual rebuild failed");
         let mut publisher = Publisher {
@@ -307,23 +309,11 @@ mod tests {
             path: root.join("delivery.json"),
             first_scan: true,
         };
-        publisher
-            .reconcile(&history::load_catalog(
-                &root.join("absent-worker"),
-                Some(root),
-            ))
-            .await
-            .unwrap();
+        reconcile_manual(&mut publisher, root).await;
         assert_eq!(engine.active().await.len(), 1);
         reports.push(report(root, 3, 0, true));
         publish(root, &reports);
-        publisher
-            .reconcile(&history::load_catalog(
-                &root.join("absent-worker"),
-                Some(root),
-            ))
-            .await
-            .unwrap();
+        reconcile_manual(&mut publisher, root).await;
         assert_eq!(engine.active().await.len(), 2);
         assert!(
             engine
@@ -332,23 +322,11 @@ mod tests {
                 .iter()
                 .any(|n| n.summary == "System rebuilt successfully")
         );
-        publisher
-            .reconcile(&history::load_catalog(
-                &root.join("absent-worker"),
-                Some(root),
-            ))
-            .await
-            .unwrap();
+        reconcile_manual(&mut publisher, root).await;
         assert_eq!(engine.active().await.len(), 2);
         reports.push(report(root, 4, 0, false));
         publish(root, &reports);
-        publisher
-            .reconcile(&history::load_catalog(
-                &root.join("absent-worker"),
-                Some(root),
-            ))
-            .await
-            .unwrap();
+        reconcile_manual(&mut publisher, root).await;
         assert_eq!(
             engine.active().await.len(),
             3,
@@ -364,21 +342,7 @@ mod tests {
     }
 
     fn entry(name: &str, incident: Option<&str>) -> Entry {
-        let record: shelllist_update_status::RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version":1,"lane":"ai-tools","notification_owner":"desktop",
-            "components":[{"name":name,"before":"1","after":"1","changed":false,"phase":if incident.is_some(){"failed"}else{"current"},"error":incident,"incident":incident}],
-            "job":{"schema_version":1,"id":"run-1","operation":"ai-update","status":if incident.is_some(){"failed"}else{"completed"},"phase":"current",
-            "started_at":1,"updated_at":2,"finished_at":2,"pid":1,"boot_id":"boot","process_start":"1","exit_code":0,"error":null}
-        })).unwrap();
-        Entry {
-            failed_stage: None,
-            deployed: None,
-            issues: Vec::new(),
-            manual_log: None,
-            outcome: record.outcome().into(),
-            title: record.title().into(),
-            record,
-        }
+        super::super::catalog::test_entry("run-1", 1, name, incident)
     }
     #[test]
     fn failures_are_per_incident_and_unrelated_success_does_not_clear_them() {

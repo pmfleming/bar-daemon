@@ -23,7 +23,8 @@ fn history_reads_real_producer_runs_and_rejects_a_cursor_after_new_publication()
         status.phase(phase).unwrap();
         status.finish_report(Outcome::code(0)).unwrap();
     }
-    let catalog = history::load(root.path()).unwrap();
+    let catalog = history::load_catalog(root.path(), None);
+    assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
     assert_eq!(catalog.entries.len(), 2);
     assert_eq!(catalog.entries[0].outcome, "current");
     assert_eq!(catalog.entries[1].outcome, "staged");
@@ -42,7 +43,7 @@ fn history_reads_real_producer_runs_and_rejects_a_cursor_after_new_publication()
     }
     assert!(
         history::page(
-            history::load(root.path()).unwrap(),
+            history::load_catalog(root.path(), None),
             history::Query {
                 cursor: Some(cursor),
                 ..Default::default()
@@ -78,7 +79,7 @@ fn concurrent_actual_publication_is_whole_and_invalidation_precedes_retirement()
     let barrier = Arc::new(Barrier::new(3));
     let done = Arc::new(AtomicUsize::new(0));
     std::thread::scope(|scope| {
-        for value in candidates.clone() {
+        for value in &candidates {
             let barrier = barrier.clone();
             let done = done.clone();
             let lane = lane.clone();

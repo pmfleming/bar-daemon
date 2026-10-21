@@ -24,8 +24,7 @@ pub(super) fn publish(directory: &Path, reports: &[Value]) {
 fn imports_private_rebuild_history_without_worker_records_or_source_writes() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let success = report(root, 1, 0, true);
-    publish(root, &[success.clone(), report(root, 2, 0, false)]);
+    publish(root, &[report(root, 1, 0, true), report(root, 2, 0, false)]);
     let original = fs::read(root.join("history.jsonl")).unwrap();
     let catalog = history::load_catalog(&root.join("absent-worker"), Some(root));
     assert!(catalog.available);
@@ -110,6 +109,37 @@ fn preserves_activation_when_followup_fails_and_retains_failure_and_cancellation
             .contains("Building")
     );
 }
+#[test]
+fn deployment_requires_a_recorded_after_system_and_only_known_differences_count_as_changed() {
+    let directory = tempfile::tempdir().unwrap();
+    for (before, after, outcome, changed) in [
+        (None, None, "completed", false),
+        (Some("/nix/store/old"), None, "completed", false),
+        (None, Some("/nix/store/new"), "activated", false),
+        (
+            Some("/nix/store/same"),
+            Some("/nix/store/same"),
+            "current",
+            false,
+        ),
+        (
+            Some("/nix/store/old"),
+            Some("/nix/store/new"),
+            "activated",
+            true,
+        ),
+    ] {
+        let mut value = report(directory.path(), 1, 0, true);
+        value["system_before"] = json!(before);
+        value["system_after"] = json!(after);
+        publish(directory.path(), &[value]);
+        let catalog = manual::load(directory.path()).unwrap();
+        assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
+        assert_eq!(catalog.entries[0].outcome, outcome);
+        assert_eq!(catalog.entries[0].record.components[0].changed, changed);
+    }
+}
+
 #[test]
 fn terminal_publication_wins_over_live_marker_and_abandoned_markers_are_unknown() {
     let directory = tempfile::tempdir().unwrap();

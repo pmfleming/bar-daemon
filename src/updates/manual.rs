@@ -1,6 +1,6 @@
 //! Read the existing, user-owned `rebuild-report.py` ledger. Never executes a
 //! rebuild, changes its outcome, or writes into the privileged worker state.
-use super::history::{Catalog, Entry};
+use super::catalog::{Catalog, Entry};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use shelllist_update_status::{
@@ -88,9 +88,9 @@ struct Report {
     boot_id: Option<String>,
     process_start: Option<String>,
 }
-fn entry(directory: &Path, report: Report) -> Result<Entry> {
+fn validate(directory: &Path, report: &Report) -> Result<(String, JobState, PathBuf)> {
     ensure!(
-        report.schema_version == 1 && report.started_at > 0 && report.started_at < 253402300800,
+        report.schema_version == 1 && (1..253402300800).contains(&report.started_at),
         "Unsupported rebuild report"
     );
     ensure!(
@@ -128,24 +128,18 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
     );
     let id = format!("manual-{}-{stem}", report.started_at);
     let running = report.status == "running";
-    let status = match report.status.as_str() {
-        "running" => JobState::Running,
-        "completed" if report.exit_code == Some(0) => JobState::Completed,
-        "failed" if report.exit_code.is_some_and(|c| c != 0) => {
-            if report.exit_code == Some(130) {
-                JobState::Interrupted
-            } else {
-                JobState::Failed
-            }
-        }
-        "interrupted" => JobState::Interrupted,
+    let status = match (report.status.as_str(), report.exit_code) {
+        ("running", _) => JobState::Running,
+        ("completed", Some(0)) => JobState::Completed,
+        ("failed", Some(130)) | ("interrupted", _) => JobState::Interrupted,
+        ("failed", Some(code)) if code != 0 => JobState::Failed,
         _ => anyhow::bail!("Invalid rebuild outcome"),
     };
     ensure!(
         running
             || report
                 .finished_at
-                .is_some_and(|t| t > 0 && t < 253402300800),
+                .is_some_and(|t| (1..253402300800).contains(&t)),
         "Missing rebuild completion time"
     );
     ensure!(
@@ -155,6 +149,12 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
                 && report.process_start.is_some()),
         "Missing rebuild process identity"
     );
+    Ok((id, status, directory.join(filename)))
+}
+
+fn entry(directory: &Path, report: Report) -> Result<Entry> {
+    let (id, status, log) = validate(directory, &report)?;
+    let running = status == JobState::Running;
     let before = report.system_before.filter(|s| !s.is_empty());
     let after = report.system_after.filter(|s| !s.is_empty());
     for system in [&before, &after].into_iter().flatten() {
@@ -163,11 +163,10 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
             "Invalid recorded system identity"
         );
     }
-    let changed =
-        report.deployed == Some(true) && before.is_some() && after.is_some() && before != after;
-    let activated =
-        report.deployed == Some(true) && after.is_some() && (before.is_none() || changed);
-    let unchanged = report.deployed == Some(true) && before.is_some() && before == after;
+    let recorded_after = report.deployed == Some(true) && after.is_some();
+    let activated = recorded_after && before != after;
+    let changed = activated && before.is_some();
+    let unchanged = recorded_after && before == after;
     let phase = if running {
         Phase::Starting
     } else if activated {
@@ -199,32 +198,26 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
                 .failed_stage
                 .as_deref()
                 .unwrap_or("an unrecorded stage")
-                .chars()
-                .take(512)
-                .collect::<String>()
         ));
     }
-    let interrupted = running && !super::jobs::is_running(&job);
-    let (outcome, title) = if interrupted || status == JobState::Interrupted {
-        (
+    let (outcome, title) = match status {
+        JobState::Running if super::jobs::is_running(&job) => {
+            ("running", "Manual rebuild in progress")
+        }
+        JobState::Running | JobState::Interrupted => (
             "interrupted",
             "Manual rebuild interrupted — completion unknown",
-        )
-    } else if running {
-        ("running", "Manual rebuild in progress")
-    } else if status == JobState::Failed && report.deployed == Some(true) {
-        ("partial", "System rebuilt; follow-up failed")
-    } else if status == JobState::Failed {
-        ("failed", "Manual rebuild failed")
-    } else if activated {
-        ("activated", "System rebuilt successfully")
-    } else if unchanged {
-        ("current", "Manual rebuild completed — system unchanged")
-    } else {
-        (
+        ),
+        JobState::Failed if report.deployed == Some(true) => {
+            ("partial", "System rebuilt; follow-up failed")
+        }
+        JobState::Failed => ("failed", "Manual rebuild failed"),
+        _ if activated => ("activated", "System rebuilt successfully"),
+        _ if unchanged => ("current", "Manual rebuild completed — system unchanged"),
+        _ => (
             "completed",
             "Manual rebuild completed — activation not recorded",
-        )
+        ),
     };
     let components = vec![ComponentResult {
         name: "NixOS system".into(),
@@ -248,7 +241,7 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
         failed_stage: report.failed_stage,
         deployed: report.deployed,
         issues: Vec::new(),
-        manual_log: Some(directory.join(filename)),
+        manual_log: Some(log),
     })
 }
 

@@ -104,8 +104,9 @@ pub(super) fn is_running(record: &JobStatus) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::read;
     use serde_json::json;
+    use std::fs;
 
     fn record() -> serde_json::Value {
         json!({ "schema_version": 1, "id": "test-job", "updated_at": 1, "operation": "run-delayed", "status": "running", "phase": "building",

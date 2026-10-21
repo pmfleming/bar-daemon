@@ -1,6 +1,7 @@
 //! Bounded, read-only catalog of producer-owned run records. No deployment effects.
+use super::catalog::{Catalog, Entry};
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use shelllist_update_status::{
     HISTORY_LIMIT, HISTORY_MAX_BYTES, JobState, RunRecord, valid_run_id,
@@ -34,27 +35,7 @@ pub(crate) struct Query {
     pub outcome: Option<String>,
     pub anchor_ids: Vec<String>,
 }
-#[derive(Clone, Serialize)]
-pub(crate) struct Entry {
-    #[serde(flatten)]
-    pub record: RunRecord,
-    pub outcome: String,
-    pub title: String,
-    pub failed_stage: Option<String>,
-    pub deployed: Option<bool>,
-    pub issues: Vec<super::issues::RunIssue>,
-    #[serde(skip)]
-    pub manual_log: Option<std::path::PathBuf>,
-}
-#[derive(Default)]
-pub(crate) struct Catalog {
-    pub entries: Vec<Entry>,
-    pub available: bool,
-    pub errors: Vec<String>,
-    pub open_issues: Vec<super::issues::OpenIssue>,
-}
-
-pub(crate) fn load(root: &Path) -> Result<Catalog> {
+fn load(root: &Path) -> Result<Catalog> {
     let directory = root.join("history");
     let metadata = match std::fs::symlink_metadata(&directory) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Catalog::default()),
@@ -134,10 +115,6 @@ pub(crate) fn load(root: &Path) -> Result<Catalog> {
             }
         }
     }
-    result.entries.sort_by(|a, b| {
-        (b.record.job.started_at, &b.record.job.id)
-            .cmp(&(a.record.job.started_at, &a.record.job.id))
-    });
     Ok(result)
 }
 
@@ -159,6 +136,7 @@ pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
             Err(error) => catalog.errors.push(format!("Update history: {error:#}")),
         }
     }
+    // Sort once, after merging both sources.
     catalog.entries.sort_by(|a, b| {
         (b.record.job.started_at, &b.record.job.id)
             .cmp(&(a.record.job.started_at, &a.record.job.id))
@@ -171,7 +149,7 @@ pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
         completed += 1;
         completed <= HISTORY_LIMIT
     });
-    catalog.open_issues = super::issues::annotate(&mut catalog.entries);
+    catalog.open_issues = super::catalog::annotate(&mut catalog.entries);
     catalog
 }
 
@@ -270,8 +248,7 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
                 .is_some_and(|lane| lane != &entry.record.lane)
                 || query.outcome.as_ref().is_some_and(|outcome| {
                     if outcome == "problems" {
-                        !["failed", "partial", "blocked", "interrupted"]
-                            .contains(&entry.outcome.as_str())
+                        !entry.is_problem()
                     } else {
                         outcome != &entry.outcome
                     }
@@ -400,8 +377,9 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Catalog, Entry, Query, StaleCursor, load, page};
     use chrono::TimeZone;
+    use serde_json::json;
 
     fn catalog() -> Catalog {
         let outcomes = [
@@ -439,6 +417,8 @@ mod tests {
                 1,
             ),
             (json!({"outcome":"current"}), 2),
+            // Outcome codes are searchable independently of the opaque title/phase.
+            (json!({"query":"BLOCKED"}), 1),
             (json!({"query":"since:2026-10-20 before:2026-10-21"}), 4),
             (json!({"query":"opaque 2026-10-21"}), 4),
             (
@@ -515,7 +495,7 @@ mod tests {
                 incident: None,
             }];
         }
-        super::super::issues::annotate(&mut catalog.entries);
+        super::super::catalog::annotate(&mut catalog.entries);
         let result = page(
             catalog,
             serde_json::from_value(json!({"outcome":"problems"})).unwrap(),

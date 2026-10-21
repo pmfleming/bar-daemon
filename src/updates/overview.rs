@@ -55,7 +55,7 @@ async fn read_worker_with_timeout(path: &Path, deadline: Duration) -> Result<Val
         let status = child.wait().await?;
         group.0 = None;
         ensure!(status.success(), "Worker status failed: {status}");
-        normalize(serde_json::from_slice(&bytes).context("Decode worker overview")?)
+        normalize(&serde_json::from_slice(&bytes).context("Decode worker overview")?)
     };
     tokio::time::timeout(deadline, read)
         .await
@@ -65,17 +65,18 @@ fn text(value: &Value) -> Option<String> {
     value.as_str().map(|s| s.chars().take(512).collect())
 }
 fn stamp(value: &Value) -> Option<u64> {
-    value.as_u64().filter(|at| *at > 0 && *at < 253402300800)
+    value.as_u64().filter(|at| (1..253402300800).contains(at))
 }
-fn normalize(report: Value) -> Result<Value> {
+fn normalize(report: &Value) -> Result<Value> {
+    let tools = report["tools"]
+        .as_array()
+        .context("Invalid overview tools")?;
     ensure!(
         report["schema_version"] == 1
             && stamp(&report["observed_at"]).is_some()
             && report["system"].is_object()
             && report["baseline"].is_object()
-            && report["tools"]
-                .as_array()
-                .is_some_and(|tools| tools.len() <= 32)
+            && tools.len() <= 32
             && (report["timers"].is_object()
                 || report["timers"]
                     .as_array()
@@ -107,7 +108,7 @@ fn normalize(report: Value) -> Result<Value> {
     if let Some(reason) = text(&baseline["reason"]) {
         reasons.push(reason);
     }
-    let tools: Vec<_> = report["tools"].as_array().unwrap().iter().map(|tool| json!({
+    let tools: Vec<_> = tools.iter().map(|tool| json!({
         "name": text(&tool["tool"]), "installed_version": text(&tool["installed_version"]),
         "phase": text(&tool["phase"]), "last_successful_check": stamp(&tool["last_successful_check"]),
         "last_activation": stamp(&tool["last_activation"]), "error": text(&tool["error"])
@@ -180,7 +181,9 @@ pub(crate) async fn get(params: Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{get, normalize, read_worker, read_worker_with_timeout};
+    use serde_json::{Value, json};
+    use std::{path::Path, time::Duration};
     fn report() -> Value {
         json!({"schema_version":1,"observed_at":100,
             "system":{"active":"/nix/store/current","booted":"/nix/store/booted","profile":"/nix/store/staged",
@@ -192,18 +195,18 @@ mod tests {
     #[test]
     fn overview_preserves_unknowns_and_does_not_promote_a_transaction_to_staged() {
         let mut value = report();
-        let projected = normalize(value.clone()).unwrap();
+        let projected = normalize(&value).unwrap();
         assert_eq!(projected["system"]["staged_since"], 80);
         assert_eq!(projected["system"]["last_successful_check"], 90);
         assert_eq!(projected["timers"][0]["next_at"], 120);
         assert!(projected["timers"][1]["next_at"].is_null());
         assert_eq!(projected["tools"][0]["last_activation"], 85);
         value["system"]["pending_transaction"] = json!(true);
-        assert!(normalize(value.clone()).unwrap()["system"]["staged_for_next_boot"].is_null());
+        assert!(normalize(&value).unwrap()["system"]["staged_for_next_boot"].is_null());
         value["baseline"] = json!({"valid":null,"error":"Permission denied"});
-        assert!(normalize(value.clone()).unwrap()["baseline"]["valid"].is_null());
+        assert!(normalize(&value).unwrap()["baseline"]["valid"].is_null());
         value["schema_version"] = json!(2);
-        assert!(normalize(value).is_err());
+        assert!(normalize(&value).is_err());
     }
     #[tokio::test]
     async fn reader_runs_only_status_and_rejects_bad_output_and_nonzero_exit() {

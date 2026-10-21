@@ -2,13 +2,13 @@
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, NaiveDate, TimeZone};
 
-#[derive(Debug, Hash)]
+#[derive(Hash)]
 enum Day {
     On(NaiveDate),
     Since(NaiveDate),
     Before(NaiveDate),
 }
-#[derive(Debug, Hash)]
+#[derive(Hash)]
 pub(super) struct Search {
     words: Vec<String>,
     days: Vec<Day>,
@@ -74,7 +74,8 @@ impl Search {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Search;
+    use chrono::TimeZone;
     use chrono_tz::Europe::Amsterdam;
     #[test]
     fn relative_search_hashes_change_at_midnight_but_fixed_dates_do_not() {
