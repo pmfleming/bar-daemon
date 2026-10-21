@@ -70,6 +70,11 @@ pub async fn run_idle_sleep(
     Ok(())
 }
 
+/// Read the same bounded update catalog as the UI without sending notifications.
+pub async fn update_history() -> anyhow::Result<serde_json::Value> {
+    updates::history::query(serde_json::json!({})).await
+}
+
 /// Reports read-only kernel, swap and Lenovo/ThinkPad sleep diagnostics.
 pub fn sleep_diagnostics() -> serde_json::Value {
     serde_json::to_value(sleep::diagnostics::system()).expect("sleep diagnostics are serializable")

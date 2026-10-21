@@ -218,6 +218,12 @@ impl StateStore {
         update_media(MediaState) => media, crate::protocol::stream::MEDIA;
     }
 
+    /// The Updates catalog changed without changing the worker's current state.
+    pub(crate) async fn invalidate_update_history(&self) {
+        let snapshot = self.snapshot.read().await;
+        self.publish(crate::protocol::stream::UPDATES, &snapshot.updates);
+    }
+
     /// Lid ownership is independently observed; policy I/O must not overwrite it.
     pub(crate) async fn update_sleep_policy(
         &self,

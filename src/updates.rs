@@ -13,6 +13,9 @@ mod desktop;
 mod desktop_tests;
 pub(crate) mod history;
 mod jobs;
+mod manual;
+#[cfg(test)]
+mod manual_tests;
 mod tray;
 mod watch;
 
@@ -63,6 +66,8 @@ async fn monitor_path(
     use ksni::TrayMethods;
     let enabled =
         service.is_some() && std::env::var("BAR_DAEMON_UPDATE_DESKTOP").as_deref() != Ok("0");
+    let collect_history = service.is_some();
+    let manual_directory = collect_history.then(manual::directory).flatten();
     let mut publisher = service.filter(|_| enabled).map(desktop::Publisher::new);
     let tray = if enabled {
         tray::Tray
@@ -85,24 +90,43 @@ async fn monitor_path(
     }
     let _tray = TrayGuard(tray);
     let mut watch = watch::Watch::new();
+    let mut manual_watch = watch::Watch::new_rebuilds();
+    let mut last_catalog = None;
     loop {
         watch.refresh(&directory);
+        if let Some(path) = &manual_directory {
+            manual_watch.refresh(path);
+        }
         refresh_path(&store, directory.clone()).await;
-        if let Some(publisher) = &mut publisher {
+        if collect_history {
             let path = directory.clone();
-            match tokio::task::spawn_blocking(move || history::load(&path)).await {
-                Ok(Ok(catalog)) => {
-                    if let Err(error) = publisher.reconcile(&catalog).await {
+            let manual = manual_directory.clone();
+            match tokio::task::spawn_blocking(move || {
+                history::load_catalog(&path, manual.as_deref())
+            })
+            .await
+            {
+                Ok(catalog) => {
+                    use std::hash::{Hash, Hasher};
+                    let mut hash = std::collections::hash_map::DefaultHasher::new();
+                    serde_json::to_vec(&(&catalog.entries, &catalog.errors, catalog.available))
+                        .unwrap_or_default()
+                        .hash(&mut hash);
+                    let revision = Some(hash.finish());
+                    if revision != last_catalog {
+                        last_catalog = revision;
+                        store.invalidate_update_history().await;
+                    }
+                    if let Some(publisher) = &mut publisher
+                        && let Err(error) = publisher.reconcile(&catalog).await
+                    {
                         tracing::warn!(%error, "Update outcome delivery unavailable");
                     }
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "Update history reconciliation unavailable")
                 }
                 Err(error) => tracing::warn!(%error, "Update history reader stopped"),
             }
         }
-        watch.wait().await;
+        tokio::select! { _ = watch.wait() => {}, _ = manual_watch.wait(), if manual_directory.is_some() => {} }
     }
 }
 

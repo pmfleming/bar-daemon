@@ -26,6 +26,8 @@ pub(crate) struct Entry {
     pub record: RunRecord,
     pub outcome: String,
     pub title: String,
+    #[serde(skip)]
+    pub manual_log: Option<std::path::PathBuf>,
 }
 #[derive(Default)]
 pub(crate) struct Catalog {
@@ -98,6 +100,7 @@ pub(crate) fn load(root: &Path) -> Result<Catalog> {
                     }
                     .into(),
                     record,
+                    manual_log: None,
                 });
             }
             Err(error) => {
@@ -117,15 +120,49 @@ pub(crate) fn load(root: &Path) -> Result<Catalog> {
     Ok(result)
 }
 
+pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
+    let mut catalog = Catalog::default();
+    let sources = [
+        load(root),
+        manual
+            .map(super::manual::load)
+            .unwrap_or_else(|| Ok(Catalog::default())),
+    ];
+    for source in sources {
+        match source {
+            Ok(mut source) => {
+                catalog.available |= source.available;
+                catalog.entries.append(&mut source.entries);
+                catalog.errors.append(&mut source.errors);
+            }
+            Err(error) => catalog.errors.push(format!("Update history: {error:#}")),
+        }
+    }
+    catalog.entries.sort_by(|a, b| {
+        (b.record.job.started_at, &b.record.job.id)
+            .cmp(&(a.record.job.started_at, &a.record.job.id))
+    });
+    let mut completed = 0;
+    catalog.entries.retain(|entry| {
+        if entry.outcome == "running" {
+            return true;
+        }
+        completed += 1;
+        completed <= HISTORY_LIMIT
+    });
+    catalog
+}
+
 pub(crate) async fn query(params: Value) -> Result<Value> {
     static READERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
     let query: Query = serde_json::from_value(params)?;
     let directory = super::state_dir();
+    let manual = super::manual::directory();
     let read = async {
         let permit = READERS.acquire().await?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit; // Cancellation cannot admit unbounded abandoned scans.
-            page(load(&directory)?, query)
+            page(load_catalog(&directory, manual.as_deref()), query)
         })
         .await
         .context("Join update history read")?
@@ -202,7 +239,7 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
         "available": catalog.available, "revision": revision, "total": matching.len(),
         "entries": &matching[offset..end], "cursor": (end < matching.len()).then(|| format!("{revision}:{end}")),
         "error": (!catalog.errors.is_empty()).then(|| catalog.errors.join("\n")),
-        "coverage": "Worker-managed system and AI-tool runs; 90 days / 1,000 completed runs. Manual rebuilds are not included."
+        "coverage": "Manual rebuilds and worker-managed system/AI-tool runs; 90 days / 1,000 completed runs. Manual logs remain private to this user."
     }}))
 }
 
@@ -216,8 +253,9 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
     let request: Request = serde_json::from_value(params)?;
     ensure!(valid_run_id(&request.run_id), "Invalid run identity");
     let root = super::state_dir();
+    let manual = super::manual::directory();
     let entry = tokio::task::spawn_blocking(move || -> Result<Entry> {
-        load(&root)?
+        load_catalog(&root, manual.as_deref())
             .entries
             .into_iter()
             .find(|e| e.record.job.id == request.run_id)
@@ -225,6 +263,15 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
     })
     .await??;
     let job = entry.record.job;
+    if let Some(path) = entry.manual_log {
+        let (text, truncated) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::task::spawn_blocking(move || super::manual::read_log(&path)),
+        )
+        .await
+        .context("Manual rebuild log read timed out")???;
+        return Ok(json!({"log":{"run_id":job.id,"text":text,"truncated":truncated}}));
+    }
     ensure!(
         !job.boot_id.is_empty()
             && job.boot_id.len() <= 40

@@ -75,6 +75,7 @@ pub(super) struct Watch {
     rebuild: Arc<AtomicBool>,
     tx: mpsc::Sender<()>,
     rx: mpsc::Receiver<()>,
+    rebuilds_only: bool,
 }
 
 impl Watch {
@@ -86,6 +87,14 @@ impl Watch {
             rebuild: Arc::new(AtomicBool::new(false)),
             tx,
             rx,
+            rebuilds_only: false,
+        }
+    }
+
+    pub(super) fn new_rebuilds() -> Self {
+        Self {
+            rebuilds_only: true,
+            ..Self::new()
         }
     }
 
@@ -103,18 +112,34 @@ impl Watch {
         let Some(next) = next else { return };
         let tx = self.tx.clone();
         let rebuild = self.rebuild.clone();
-        let result = notify::recommended_watcher(move |event| signal(&tx, &rebuild, event))
-            .and_then(|mut watcher| {
-                watcher.watch(
-                    &next.path,
-                    if next.recursive {
-                        RecursiveMode::Recursive
-                    } else {
-                        RecursiveMode::NonRecursive
-                    },
-                )?;
-                Ok(watcher)
-            });
+        let rebuilds_only = self.rebuilds_only;
+        let directory = directory.to_owned();
+        let result = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let relevant = !rebuilds_only
+                || event.as_ref().map_or(true, |event| {
+                    event.need_rescan()
+                        || event.paths.iter().any(|path| {
+                            directory.starts_with(path)
+                                || path.file_name().and_then(|name| name.to_str()).is_some_and(
+                                    |name| name == "history.jsonl" || name.ends_with(".run.json"),
+                                )
+                        })
+                });
+            if relevant {
+                signal(&tx, &rebuild, event);
+            }
+        })
+        .and_then(|mut watcher| {
+            watcher.watch(
+                &next.path,
+                if next.recursive {
+                    RecursiveMode::Recursive
+                } else {
+                    RecursiveMode::NonRecursive
+                },
+            )?;
+            Ok(watcher)
+        });
         match result {
             Ok(watcher) => {
                 self.watcher = Some(watcher);
