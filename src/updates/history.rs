@@ -137,19 +137,10 @@ pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
 }
 
 pub(crate) async fn query(params: Value) -> Result<Value> {
-    static READERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
     let query: Query = serde_json::from_value(params)?;
     let directory = super::state_dir();
     let manual = super::manual::directory();
-    let read = async {
-        let permit = READERS.acquire().await?;
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit; // Cancellation cannot admit unbounded abandoned scans.
-            page(load_catalog(&directory, manual.as_deref()), query)
-        })
-        .await
-        .context("Join update history read")?
-    };
+    let read = super::reader::run(move || page(load_catalog(&directory, manual.as_deref()), query));
     tokio::time::timeout(std::time::Duration::from_secs(3), read)
         .await
         .context("Update history read timed out")?
@@ -289,22 +280,26 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
     ensure!(valid_run_id(&request.run_id), "Invalid run identity");
     let root = super::state_dir();
     let manual = super::manual::directory();
-    let entry = tokio::task::spawn_blocking(move || -> Result<Entry> {
-        load_catalog(&root, manual.as_deref())
-            .entries
-            .into_iter()
-            .find(|e| e.record.job.id == request.run_id)
-            .context("Run is no longer retained")
-    })
-    .await??;
+    let entry = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        super::reader::run(move || {
+            load_catalog(&root, manual.as_deref())
+                .entries
+                .into_iter()
+                .find(|e| e.record.job.id == request.run_id)
+                .context("Run is no longer retained")
+        }),
+    )
+    .await
+    .context("Update log lookup timed out")??;
     let job = entry.record.job;
     if let Some(path) = entry.manual_log {
         let (text, truncated) = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            tokio::task::spawn_blocking(move || super::manual::read_log(&path)),
+            super::reader::run(move || super::manual::read_log(&path)),
         )
         .await
-        .context("Manual rebuild log read timed out")???;
+        .context("Manual rebuild log read timed out")??;
         return Ok(json!({"log":{"run_id":job.id,"text":text,"truncated":truncated}}));
     }
     ensure!(

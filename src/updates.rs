@@ -20,6 +20,7 @@ mod manual;
 #[cfg(test)]
 mod manual_tests;
 pub(crate) mod overview;
+mod reader;
 mod tray;
 mod watch;
 
@@ -105,11 +106,7 @@ async fn monitor_path(
         if collect_history {
             let path = directory.clone();
             let manual = manual_directory.clone();
-            match tokio::task::spawn_blocking(move || {
-                history::load_catalog(&path, manual.as_deref())
-            })
-            .await
-            {
+            match reader::run(move || Ok(history::load_catalog(&path, manual.as_deref()))).await {
                 Ok(catalog) => {
                     match catalog.revision() {
                         Ok(revision) if Some(revision) != last_catalog => {

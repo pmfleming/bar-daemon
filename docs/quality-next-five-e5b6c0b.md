@@ -61,3 +61,25 @@ Tests compare streamed counts/hashes against serialized Unicode/escaped bytes,
 reject serialization failure, exercise revision inputs, and ensure byte-limited
 pages progress even with one oversized entry. **38 update tests**, strict Clippy,
 formatting, and diff checks passed.
+
+## 4. Shared, cancellation-safe blocking-read admission
+
+`updates/reader.rs` provides two shared blocking-read slots for history pagination,
+overview catalog scans, log lookup/manual tails, and background catalog scans.
+Previously the endpoints used separate budgets and log lookup had neither admission
+nor a timeout. Permits live inside the blocking closure: cancelling or timing out
+its waiter cannot admit replacement filesystem work until that closure exits.
+Waiting requests never spawn work before acquiring a slot.
+
+Log lookup now has a three-second timeout, including admission; its existing
+three-second tail/journal deadline remains separate. Overview still independently
+limits external worker processes to two, without cloning an `Arc` permit. This is
+not a global limit on all filesystem work (e.g. readiness reads), and does not make
+blocking OS operations cancellable. Slow scans can now backpressure other readers;
+that is the intended resource bound.
+
+Deterministic channel/poll tests cover cancelled active readers, cancelled queued
+waiters, and permit release on errors/panics. **40 update tests**, strict Clippy,
+formatting, and diff checks passed. Query cyclomatic complexity **5 → 3**, effort
+**12,812 → 7,150**; overview effort **49,128 → 45,951**. Log-read effort increases
+**112,602 → 119,054** with its additional timeout boundary.

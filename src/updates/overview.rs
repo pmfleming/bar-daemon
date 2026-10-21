@@ -1,7 +1,7 @@
 //! Read-only worker overview. No shell, sudo, caller-supplied command or deployment effect.
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, time::Duration};
 use tokio::io::AsyncReadExt;
 
 const MAX_REPORT_BYTES: usize = 256 * 1024;
@@ -145,14 +145,13 @@ pub(crate) async fn get(params: Value) -> Result<Value> {
     );
     static READERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
     let read = async {
-        let permit = Arc::new(READERS.acquire().await?);
-        let catalog_permit = permit.clone();
+        // Bound worker processes independently; blocking catalog work keeps its
+        // own shared permit even if this request is cancelled.
+        let _permit = READERS.acquire().await?;
         let root = super::state_dir();
         let manual = super::manual::directory();
-        let catalog = tokio::task::spawn_blocking(move || {
-            let _permit = catalog_permit;
-            super::history::load_catalog(&root, manual.as_deref())
-        });
+        let catalog =
+            super::reader::run(move || Ok(super::history::load_catalog(&root, manual.as_deref())));
         let worker = std::env::var_os("BAR_DAEMON_UPDATE_WORKER")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| "/run/current-system/sw/bin/update-worker".into());
@@ -171,7 +170,6 @@ pub(crate) async fn get(params: Value) -> Result<Value> {
                 .take(MAX_ISSUES)
                 .collect::<Vec<_>>()
         );
-        drop(permit);
         Ok(json!({"overview": report}))
     };
     tokio::time::timeout(Duration::from_secs(6), read)
