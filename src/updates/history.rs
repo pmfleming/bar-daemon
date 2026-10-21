@@ -229,18 +229,19 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
             {
                 return false;
             }
-            let text = format!(
-                "{} {} {} {} {} {} {}",
-                entry.outcome,
-                entry.title,
-                entry.record.lane,
-                entry.record.job.operation,
-                entry.record.job.id,
-                entry.record.job.error.as_deref().unwrap_or_default(),
-                serde_json::to_string(&entry.record.components).unwrap_or_default()
-            )
-            .to_lowercase();
-            search.matches(&text, entry.record.job.started_at, &now.timezone())
+            search.matches_with(entry.record.job.started_at, &now.timezone(), || {
+                format!(
+                    "{} {} {} {} {} {} {}",
+                    entry.outcome,
+                    entry.title,
+                    entry.record.lane,
+                    entry.record.job.operation,
+                    entry.record.job.id,
+                    entry.record.job.error.as_deref().unwrap_or_default(),
+                    serde_json::to_string(&entry.record.components).unwrap_or_default()
+                )
+                .to_lowercase()
+            })
         })
         .collect();
     let retain_through = matching
@@ -385,6 +386,51 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    #[ignore = "manual default-history performance probe; setup excluded"]
+    fn profile_default_history_pages() {
+        use std::{hint::black_box, time::Instant};
+        let catalogs: Vec<_> = (0..8)
+            .map(|_| {
+                let entries = (0..1000)
+                    .map(|index| {
+                        let mut entry = super::super::catalog::test_entry(
+                            &format!("run-{index}"),
+                            1_790_000_000,
+                            "test",
+                            None,
+                        );
+                        entry.record.components = (0..8)
+                            .map(|n| shelllist_update_status::ComponentResult {
+                                name: format!("component-{n}"),
+                                phase: "current".into(),
+                                before: None,
+                                after: None,
+                                changed: false,
+                                error: Some("retained diagnostic context ".repeat(12)),
+                                incident: None,
+                            })
+                            .collect();
+                        entry
+                    })
+                    .collect();
+                Catalog {
+                    available: true,
+                    entries,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let start = Instant::now();
+        for catalog in catalogs {
+            black_box(page(catalog, Query::default()).unwrap());
+        }
+        println!(
+            "8 default pages / 1000 rows with 8 components: {:.3} ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
     #[test]
     fn filters_dates_and_retention_anchors_apply_before_pagination() {
         for (params, total) in [

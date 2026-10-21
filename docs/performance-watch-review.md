@@ -48,3 +48,21 @@ The full Updates tests retain create/replace/remove recovery and terminal-ledger
 publication. The live daemon was **not restarted or redeployed**; its measured
 CPU reduction remains a deployment acceptance check. No update, notification,
 power or display operation was issued by the review.
+
+## Follow-up: default history projection
+
+History pagination built and lowercased a complete search string (including JSON
+serialization of every component) even for an empty query or date-only filtering.
+`Search::matches_with` now evaluates date predicates first and invokes a lazy text
+producer only when actual text terms remain. Serialization for revision fencing,
+page byte limits and response payloads is unchanged. Exact-run targeting, native
+ordering, date/DST semantics, retention anchors and stale-cursor checks remain.
+
+The ignored `updates::history::tests::profile_default_history_pages` measures eight
+default pages over independently prepared 1,000-row catalogs with eight components
+per row. In the same debug profile, timed projection decreased from **1719.152 ms
+to 954.398 ms** (44% in this synthetic run). Fixture construction is excluded; this
+includes fingerprinting, pagination, response construction and dropping consumed
+catalogs, not filesystem/D-Bus/UI latency. The new lazy-producer test proves empty,
+date-only and date-rejected queries never build text; combined text/date queries
+build it once. All 45 Updates tests pass (two opt-in performance probes excluded).

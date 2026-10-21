@@ -52,24 +52,39 @@ impl Search {
         }
         Ok(search)
     }
-    pub fn matches<T: TimeZone>(&self, text: &str, started_at: u64, timezone: &T) -> bool {
-        if !self.words.iter().all(|word| text.contains(word)) {
-            return false;
+    pub fn matches_with<T: TimeZone>(
+        &self,
+        started_at: u64,
+        timezone: &T,
+        text: impl FnOnce() -> String,
+    ) -> bool {
+        // Date filters are cheap and don't need a serialized component payload.
+        // In particular, ordinary unfiltered browsing needs no search text at all.
+        if !self.days.is_empty() {
+            let date = i64::try_from(started_at)
+                .ok()
+                .and_then(|at| DateTime::from_timestamp(at, 0))
+                .map(|at| at.with_timezone(timezone).date_naive());
+            if !self.days.iter().all(|day| {
+                date.is_some_and(|date| match day {
+                    Day::On(at) => date == *at,
+                    Day::Since(at) => date >= *at,
+                    Day::Before(at) => date < *at,
+                })
+            }) {
+                return false;
+            }
         }
-        if self.days.is_empty() {
+        if self.words.is_empty() {
             return true;
         }
-        let date = i64::try_from(started_at)
-            .ok()
-            .and_then(|at| DateTime::from_timestamp(at, 0))
-            .map(|at| at.with_timezone(timezone).date_naive());
-        self.days.iter().all(|day| {
-            date.is_some_and(|date| match day {
-                Day::On(at) => date == *at,
-                Day::Since(at) => date >= *at,
-                Day::Before(at) => date < *at,
-            })
-        })
+        let text = text();
+        self.words.iter().all(|word| text.contains(word))
+    }
+
+    #[cfg(test)]
+    fn matches<T: TimeZone>(&self, text: &str, started_at: u64, timezone: &T) -> bool {
+        self.matches_with(started_at, timezone, || text.to_owned())
     }
 }
 #[cfg(test)]
@@ -77,6 +92,37 @@ mod tests {
     use super::Search;
     use chrono::TimeZone;
     use chrono_tz::Europe::Amsterdam;
+    #[test]
+    fn builds_search_text_only_for_text_terms_that_survive_dates() {
+        let now = Amsterdam.with_ymd_and_hms(2026, 10, 24, 12, 0, 0).unwrap();
+        let at = now.timestamp() as u64;
+        for (query, expected) in [
+            ("", true),
+            ("today", true),
+            ("before:today", false),
+            ("failed before:today", false),
+        ] {
+            assert_eq!(
+                Search::parse(query, &now)
+                    .unwrap()
+                    .matches_with(at, &Amsterdam, || panic!(
+                        "unnecessary text construction: {query}"
+                    )),
+                expected
+            );
+        }
+        let calls = std::cell::Cell::new(0);
+        assert!(
+            Search::parse("failed today component", &now)
+                .unwrap()
+                .matches_with(at, &Amsterdam, || {
+                    calls.set(calls.get() + 1);
+                    "failed component".into()
+                })
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
     #[test]
     fn relative_search_hashes_change_at_midnight_but_fixed_dates_do_not() {
         use std::hash::{Hash, Hasher};
