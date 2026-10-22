@@ -67,6 +67,36 @@ fn text(value: &Value) -> Option<String> {
 fn stamp(value: &Value) -> Option<u64> {
     value.as_u64().filter(|at| (1..253402300800).contains(at))
 }
+fn git_overview(value: &Value) -> Result<Value> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    ensure!(
+        value.is_object() && value["available"].is_boolean(),
+        "Invalid repository overview"
+    );
+    if value["available"] == false {
+        return Ok(
+            json!({"available":false,"path":text(&value["path"]),"error":text(&value["error"])}),
+        );
+    }
+    let count =
+        |key| value[key].is_null() || value[key].as_u64().is_some_and(|n| n <= u32::MAX as u64);
+    ensure!(
+        count("ahead")
+            && count("behind")
+            && value["dirty"].is_boolean()
+            && value["shallow"].is_boolean()
+            && stamp(&value["observed_at"]).is_some(),
+        "Invalid repository comparison"
+    );
+    Ok(
+        json!({"available":true,"path":text(&value["path"]),"revision":text(&value["revision"]),
+        "branch":text(&value["branch"]),"upstream":text(&value["upstream"]),"ahead":value["ahead"],"behind":value["behind"],
+        "dirty":value["dirty"],"shallow":value["shallow"],"observed_at":stamp(&value["observed_at"]),
+        "target_observed_at":stamp(&value["target_observed_at"]),"error":null}),
+    )
+}
 fn normalize(report: &Value) -> Result<Value> {
     let tools = report["tools"]
         .as_array()
@@ -111,7 +141,14 @@ fn normalize(report: &Value) -> Result<Value> {
     let tools: Vec<_> = tools.iter().map(|tool| json!({
         "name": text(&tool["tool"]), "installed_version": text(&tool["installed_version"]),
         "phase": text(&tool["phase"]), "last_successful_check": stamp(&tool["last_successful_check"]),
-        "last_activation": stamp(&tool["last_activation"]), "error": text(&tool["error"])
+        "last_activation": stamp(&tool["last_activation"]), "error": text(&tool["error"]),
+        "freshness": {
+            "latest_version":text(&tool["latest_version"]), "source":text(&tool["latest_release"]["source"]),
+            "published_at":text(&tool["latest_release"]["published_at"]), "origin":text(&tool["origin"]),
+            "comparison":tool["comparison"].as_str().filter(|value| ["current","newer","ahead","rebuild"].contains(value)),
+            "stale":tool["stale"].as_bool(), "held": if tool.get("hold").is_some() { Some(tool["hold"].is_object()) } else { None },
+            "hold_since":stamp(&tool["hold"]["since"]), "hold_reason":text(&tool["hold"]["reason"])
+        }
     })).collect();
     let timers: Vec<_> = report["timers"]
         .as_array()
@@ -135,7 +172,8 @@ fn normalize(report: &Value) -> Result<Value> {
             "last_successful_check":stamp(&system["last_successful_check"]),"errors":system_errors},
         "baseline":{"valid":baseline["valid"].as_bool(),"approved_at":stamp(&baseline["approval"]["approved_at"]),
             "revision":text(&baseline["approval"]["revision"]),"reasons":reasons,"error":text(&baseline["error"])},
-        "tools":tools,"timers":timers,"timers_error":text(&report["timers"]["error"])
+        "tools":tools,"timers":timers,"timers_error":text(&report["timers"]["error"]),
+        "git":git_overview(&report["git"])?
     }))
 }
 pub(crate) async fn get(params: Value) -> Result<Value> {
@@ -205,6 +243,27 @@ mod tests {
         assert!(normalize(&value).unwrap()["baseline"]["valid"].is_null());
         value["schema_version"] = json!(2);
         assert!(normalize(&value).is_err());
+    }
+    #[test]
+    fn freshness_retains_source_and_uncertainty_without_guessing_from_versions() {
+        let mut value = report();
+        value["tools"][0] = json!({"tool":"pi","installed_version":"1.0.0","latest_version":"1.0.0",
+            "latest_release":{"source":"registry","published_at":"2026-10-01"},"comparison":"rebuild",
+            "stale":true,"hold":{"since":90,"reason":"deliberate rollback"}});
+        value["git"] = json!({"available":true,"path":"/configuration","revision":"abc","branch":"main",
+            "upstream":"origin/main","ahead":2,"behind":4,"dirty":true,"shallow":false,"observed_at":100,"target_observed_at":null});
+        let output = normalize(&value).unwrap();
+        assert_eq!(output["tools"][0]["freshness"]["comparison"], "rebuild");
+        assert_eq!(output["tools"][0]["freshness"]["latest_version"], "1.0.0");
+        assert_eq!(output["tools"][0]["freshness"]["held"], true);
+        assert_eq!(output["tools"][0]["freshness"]["stale"], true);
+        assert!(output["git"]["target_observed_at"].is_null());
+        assert_eq!(output["git"]["behind"], 4);
+        value["git"]["behind"] = json!(-1);
+        assert!(normalize(&value).is_err());
+        let old = normalize(&report()).unwrap();
+        assert!(old["tools"][0]["freshness"]["comparison"].is_null());
+        assert!(old["git"].is_null());
     }
     #[tokio::test]
     async fn reader_runs_only_status_and_rejects_bad_output_and_nonzero_exit() {

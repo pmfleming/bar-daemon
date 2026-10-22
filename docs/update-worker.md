@@ -40,6 +40,20 @@ inside a six-second admission/read budget. The matching worker retires its repor
 and nested subprocess groups after four seconds. Errors remain separate from
 readable history; older workers may lack added timestamps.
 
+Optional `git` evidence describes only the worker-configured local repository:
+branch/revision, cached upstream, ahead/behind, dirty/shallow state and local
+observation time. It never represents a fresh remote check. The worker bounds
+this read to 750 ms, suppresses optional index writes and lazy fetching, and
+fences concurrent observations. Shallow graphs/no upstream leave distance null;
+older workers or inaccessible repositories leave the capability unavailable.
+
+Optional tool `freshness` retains latest-known version/release time, source,
+comparison, stale/hold state, hold time/reason and installed origin. The worker
+recomputes comparison from receipts, release evidence and packaging fingerprints;
+serialized comparison fields are not trusted. Current/newer/ahead/rebuild/unknown
+remain distinct. Job success is not freshness, and stale discovery is labeled.
+No application release inventory or exact system release distance is fabricated.
+
 The same bounded catalog provides up to 50 latest unresolved issues, with total
 and partial-read diagnostics. Recovery annotations are display-only: later
 matching component success recovers earlier failures, without rewriting outcomes.
