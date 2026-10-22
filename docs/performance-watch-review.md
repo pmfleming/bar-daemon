@@ -49,6 +49,33 @@ publication. The live daemon was **not restarted or redeployed**; its measured
 CPU reduction remains a deployment acceptance check. No update, notification,
 power or display operation was issued by the review.
 
+## Deployment verification (2026-10-22)
+
+The fix was already deployed when this follow-up started; no service restart or
+system switch was necessary. The running executable was
+`/nix/store/813kqrax0vl0qjvzchf1cr6rg6x0jyq1-bar-daemon-0.1.0/bin/.bar-daemon-wrapped`
+(SHA-256 `49fe1c22afe4c2b0583e7915306a55f6048edaadfcb79fd1f42db92c542cf1a8`).
+Its derivation's source `if5hbyqlsfvkwqzs6wsxxrgpwnaj5q8c-source` contains a
+byte-identical `src/updates/watch.rs` to commit `0b91219`.
+
+Three independent 20-second passive release-lens captures (500 ms task cadence,
+5 s detail, 1 s settling, no concurrent build) measured **1.590%, 1.538%, 1.692%**
+of one core for the daemon. The two `notify-rs inoti` tasks retained the same IDs
+across all three captures and recorded zero observed CPU ticks. Actual fdinfo
+showed one registration on the manual ledger inode, plus five on the other
+inotify descriptor; no enormous recursive closure registration remained.
+Local artifacts: `/tmp/shelllist-perf-rollout/bar-captures/`, run IDs
+`1792654214660-17479-0`, `1792654235706-17494-0`, `1792654256782-17499-0`.
+The primary label is `ui-host` because the daemon was the explicit capture PID;
+it is not a Quickshell measurement.
+
+Release Updates tests: **45 passed, two opt-in probes excluded**. Three release
+registration probes measured **2.749, 2.518, 2.673 ms** for 25 registrations.
+These validate the deployed condition, not a matched causal A/B estimate against
+the old 96.83% observation: the old build was not reintroduced into the desktop,
+and the earlier registration timings used debug builds. Read-event suppression,
+create/replace/remove recovery and publication remain covered by the tests.
+
 ## Follow-up: default history projection
 
 History pagination built and lowercased a complete search string (including JSON
