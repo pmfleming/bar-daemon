@@ -51,6 +51,53 @@ fn worker_watch_keeps_real_subdirectories_but_not_symlink_targets() {
     assert!(!watches_inode(closure.path()));
 }
 
+#[test]
+fn rebuild_storms_back_off_and_watch_budget_falls_back_to_polling() {
+    let state = tempfile::tempdir().unwrap();
+    let mut watch = Watch::new();
+    let mut now = Instant::now();
+    watch.refresh_at(state.path(), now);
+    for delay in [1, 2, 4, 8, 16, 30, 30] {
+        assert!(watch.watcher.is_some());
+        watch.rebuild.store(true, Ordering::Relaxed);
+        watch.refresh_at(state.path(), now);
+        assert!(watch.watcher.is_none());
+        assert_eq!(watch.recovery.deadline() - now, Duration::from_secs(delay));
+        watch.rebuild.store(true, Ordering::Relaxed);
+        watch.refresh_at(state.path(), now);
+        assert_eq!(watch.recovery.deadline() - now, Duration::from_secs(delay));
+        now = watch.recovery.deadline();
+        watch.refresh_at(state.path(), now);
+    }
+    drop(watch);
+    for i in 0..DEFAULT_WATCH_LIMIT {
+        fs::create_dir(state.path().join(i.to_string())).unwrap();
+    }
+    let mut watch = Watch::new();
+    watch.refresh(state.path());
+    assert!(watch.watcher.is_none());
+    assert!(
+        !watches_inode(state.path()),
+        "budget failure must not leave partial watches"
+    );
+}
+
+#[tokio::test]
+async fn new_subdirectories_are_registered_after_bounded_recovery() {
+    let state = tempfile::tempdir().unwrap();
+    let mut watch = Watch::new();
+    watch.refresh(state.path());
+    let child = state.path().join("new-history");
+    fs::create_dir(&child).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), watch.wait())
+        .await
+        .unwrap();
+    watch.refresh(state.path());
+    assert!(watch.watcher.is_none());
+    watch.refresh_at(state.path(), watch.recovery.deadline());
+    assert!(watches_inode(&child));
+}
+
 /// Reproducible registration work, not a real-window responsiveness benchmark.
 #[test]
 #[ignore = "manual performance probe; run alone with --ignored --nocapture"]

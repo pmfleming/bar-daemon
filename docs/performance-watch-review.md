@@ -76,6 +76,23 @@ the old 96.83% observation: the old build was not reintroduced into the desktop,
 and the earlier registration timings used debug builds. Read-event suppression,
 create/replace/remove recovery and publication remain covered by the tests.
 
+## Bounded recovery follow-up
+
+Watcher rebuilds now use framework sustained-health backoff (1–30 seconds,
+reset only after 60 seconds healthy). Repeated errors/rescans cannot reset or
+postpone an already scheduled retry. While watching is unavailable, read-only
+reconciliation still runs at most two seconds apart, independently of backoff.
+
+Recursive worker watches are planned as at most 512 explicit nonrecursive
+registrations, without descendant symlink traversal. Exceeding the cap rejects
+the entire watch plan and leaves polling active. Directory creation/removal and
+watched-directory renames invalidate the registration plan; ordinary atomic file
+replacement does not rebuild it. Logs expose registration count and degraded
+recovery. The manual ledger remains flat. Release Updates tests: 47 passed, two
+opt-in probes excluded, including real fdinfo cap checks, rebuild storms, new
+subdirectory registration, and existing replacement/removal/publication tests.
+These hardening changes are not yet deployed.
+
 ## Follow-up: default history projection
 
 History pagination built and lowercased a complete search string (including JSON
