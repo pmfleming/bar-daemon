@@ -83,6 +83,9 @@ pub(crate) struct ActiveNotification {
     pub identity_icon: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_actions: Vec<super::context_actions::ContextAction>,
+    /// Frozen reading placeholder for a replaced card; never actionable.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub interaction_blocked: bool,
     pub app_name: String,
     pub app_icon: String,
     pub summary: String,
@@ -185,6 +188,7 @@ impl ActiveNotification {
             id,
             identity_icon: super::identity::icon(&incoming.hints.desktop_entry, &incoming.app_name),
             context_actions: Vec::new(),
+            interaction_blocked: false,
             app_name: incoming.app_name,
             app_icon: incoming.app_icon,
             summary: incoming.summary,
@@ -210,9 +214,16 @@ impl ActiveNotification {
 
     pub(crate) fn replace_from(&mut self, incoming: IncomingNotification, now: u64) {
         let created = self.created_unix_ms;
-        *self = Self::from_incoming(self.id, incoming, now);
+        // Also an action-version fence: two replacements in one clock tick must
+        // not let an old card execute a newly extracted target.
+        let updated = now.max(self.updated_unix_ms.saturating_add(1));
+        *self = Self::from_incoming(self.id, incoming, updated);
         self.created_unix_ms = created;
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn default_toast_visible() -> bool {

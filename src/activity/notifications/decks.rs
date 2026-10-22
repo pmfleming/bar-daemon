@@ -79,10 +79,19 @@ impl Decks {
                             .filter(eligible)
                             .find(|n| {
                                 n.id == old.id
+                                    && n.source_monitor == deck.monitor
                                     && n.created_unix_ms == old.created_unix_ms
-                                    && n.updated_unix_ms == old.updated_unix_ms
                             })
-                            .cloned()
+                            .map(|n| {
+                                if n.updated_unix_ms == old.updated_unix_ms {
+                                    return n.clone();
+                                }
+                                // A replacement is an arrival, not an acknowledged
+                                // dismissal. Keep its old geometry inert until leave.
+                                let mut frozen = old.clone();
+                                frozen.interaction_blocked = true;
+                                frozen
+                            })
                     })
                     .collect();
                 (!records.is_empty()).then(|| ToastDeck {
@@ -169,10 +178,11 @@ mod tests {
         decks.set_reading("DP-1".into(), true, 100, &mut active);
         decks.set_reading("DP-1".into(), true, 200, &mut active);
         active.get_mut(&1).unwrap().updated_unix_ms = 201;
-        assert!(
-            decks
-                .project(&active.values().cloned().collect::<Vec<_>>(), false)
-                .is_empty()
+        let frozen = decks.project(&active.values().cloned().collect::<Vec<_>>(), false);
+        assert!(frozen[0].records[0].interaction_blocked);
+        assert_ne!(
+            frozen[0].records[0].updated_unix_ms,
+            active[&1].updated_unix_ms
         );
         decks.expire(3_100, &mut active);
         assert!(decks.reading("DP-1"));

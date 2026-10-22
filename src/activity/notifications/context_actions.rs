@@ -51,10 +51,12 @@ pub(super) fn extract(n: &ActiveNotification) -> Vec<Target> {
         {
             continue;
         }
-        if let Ok(url) = reqwest::Url::parse(candidate) {
-            if url.host_str().is_some() && url.username().is_empty() && url.password().is_none() {
-                urls.insert(url.to_string());
-            }
+        if let Ok(url) = reqwest::Url::parse(candidate)
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+        {
+            urls.insert(url.to_string());
         }
     }
     if urls.len() == 1 {

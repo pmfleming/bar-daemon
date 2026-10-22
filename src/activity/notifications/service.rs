@@ -42,6 +42,7 @@ impl NotificationService {
             NotificationBackend::Native(engine) => {
                 tokio::join!(
                     Arc::clone(engine).run_expiry(),
+                    Arc::clone(engine).run_routes(),
                     super::server::forward_signals(Arc::clone(engine), connection),
                     super::sharing::monitor(Arc::clone(engine))
                 );

@@ -1015,6 +1015,21 @@ impl NotificationEngine {
         Ok(())
     }
 
+    pub(crate) async fn run_routes(self: Arc<Self>) {
+        let mut events = self
+            .state
+            .subscribe_domains(&[crate::protocol::stream::WORKSPACES]);
+        loop {
+            match events.recv().await {
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let _mutation = self.mutations.lock().await;
+                    self.publish_summary().await;
+                }
+            }
+        }
+    }
+
     pub(crate) async fn run_expiry(self: Arc<Self>) {
         loop {
             let delay = self.next_expiry_delay().await;
@@ -1483,6 +1498,53 @@ mod tests {
         assert_eq!(snapshot.notifications.count, 1);
         assert!(!snapshot.notifications.dnd);
         assert_eq!(snapshot.notification_active.notifications, before);
+    }
+
+    #[tokio::test]
+    async fn arrival_monitor_is_pinned_until_unplug_and_same_tick_replacements_are_fenced() {
+        use crate::model::{MonitorState, WorkspaceState};
+        let state = StateStore::default();
+        let monitors = ["DP-1", "DP-2"]
+            .into_iter()
+            .enumerate()
+            .map(|(id, name)| MonitorState {
+                id: id as i64,
+                name: name.into(),
+                focused: id == 0,
+                active_workspace_id: 1,
+            })
+            .collect();
+        let mut workspaces = WorkspaceState {
+            available: true,
+            focused_monitor: Some("DP-1".into()),
+            monitors,
+            ..Default::default()
+        };
+        state.update_workspaces(workspaces.clone()).await;
+        let engine = NotificationEngine::new(state.clone()).await;
+        let id = engine.notify(0, notification("Pinned", -1)).await.unwrap();
+        engine.set_reading("DP-1".into(), true).await.unwrap();
+        {
+            let mut data = engine.data.lock().await;
+            data.active.get_mut(&id).unwrap().toast_expires_unix_ms = Some(0);
+        }
+        engine.expire_due().await;
+        assert!(
+            engine.active().await[0].toast_visible,
+            "reading pauses popup-only expiry"
+        );
+        workspaces.focused_monitor = Some("DP-2".into());
+        state.update_workspaces(workspaces.clone()).await;
+        engine.publish_summary().await;
+        assert_eq!(engine.active().await[0].source_monitor, "DP-1");
+        workspaces.monitors.remove(0);
+        state.update_workspaces(workspaces).await;
+        engine.publish_summary().await;
+        assert_eq!(engine.active().await[0].source_monitor, "DP-2");
+        let mut record = engine.active().await.remove(0);
+        let old = record.updated_unix_ms;
+        record.replace_from(notification("Verification code 123456", 0), old);
+        assert!(record.updated_unix_ms > old);
     }
 
     #[tokio::test]
