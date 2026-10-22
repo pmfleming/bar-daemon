@@ -62,6 +62,7 @@ pub(super) async fn fixture() -> Value {
         available: true,
         revision: 1,
         notifications: vec![record.clone()],
+        toast_decks: vec![],
         error: None,
     };
     let store = StateStore::default();
@@ -265,6 +266,7 @@ pub(super) async fn fixture() -> Value {
             available: true,
             revision: 3,
             notifications: vec![],
+            toast_decks: vec![],
             error: None,
         })
         .await;

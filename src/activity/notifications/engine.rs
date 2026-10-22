@@ -32,6 +32,7 @@ struct EngineData {
     history_revision: u64,
     app_policies: BTreeMap<String, super::policy::AppPolicy>,
     delete_tickets: BTreeMap<String, (u64, Vec<history::Position>)>,
+    decks: super::decks::Decks,
 }
 
 #[derive(Default)]
@@ -52,7 +53,9 @@ impl EngineData {
     ) -> (ActiveNotification, Option<u32>) {
         let mut evicted = None;
         let mut stored = if let Some(mut existing) = self.active.remove(&id) {
+            let monitor = existing.source_monitor.clone();
             existing.replace_from(incoming, now);
+            existing.source_monitor = monitor;
             existing
         } else {
             if self.active.len() >= maximum_active
@@ -67,7 +70,9 @@ impl EngineData {
             }
             ActiveNotification::from_incoming(id, incoming, now)
         };
-        stored.source_monitor = source_monitor;
+        if stored.source_monitor.is_empty() {
+            stored.source_monitor = source_monitor;
+        }
         let key = stored.app_key();
         if self
             .app_policies
@@ -83,13 +88,22 @@ impl EngineData {
 
     fn expire(&mut self, now: u64) -> ExpiryBatch {
         let mut batch = ExpiryBatch::default();
+        self.decks.expire(now, &mut self.active);
         for policy in self.app_policies.values_mut() {
             if policy.silent && policy.expire(now) {
                 self.history_revision = self.history_revision.wrapping_add(1);
             }
         }
         for notification in self.active.values_mut() {
+            // Reading pauses popup lifetime only; sender protocol expiry remains authoritative.
+            let held = self.decks.reading(&notification.source_monitor);
+            let deadline = held
+                .then(|| notification.toast_expires_unix_ms.take())
+                .flatten();
             let (woke, expired) = notification.advance(now);
+            if held {
+                notification.toast_expires_unix_ms = deadline;
+            }
             if expired {
                 batch.expired_ids.push(notification.id);
             }
@@ -199,6 +213,7 @@ impl NotificationEngine {
                 history_revision: 0,
                 app_policies,
                 delete_tickets: BTreeMap::new(),
+                decks: super::decks::Decks::default(),
             }),
             next_id: AtomicU32::new(last_id),
             ingress: Semaphore::new(256),
@@ -867,6 +882,27 @@ impl NotificationEngine {
         Ok(true)
     }
 
+    pub(crate) async fn set_reading(&self, monitor: String, reading: bool) -> Result<()> {
+        anyhow::ensure!(
+            !monitor.is_empty() && monitor.len() <= 256,
+            "Invalid toast monitor"
+        );
+        anyhow::ensure!(
+            self.state
+                .read(|s| s.workspaces.monitors.iter().any(|m| m.name == monitor))
+                .await,
+            "Toast monitor unavailable"
+        );
+        let _mutation = self.mutations.lock().await;
+        let mut data = self.data.lock().await;
+        let EngineData { decks, active, .. } = &mut *data;
+        decks.set_reading(monitor, reading, unix_ms(), active);
+        drop(data);
+        self.expiry_wakeup.notify_one();
+        self.publish_summary().await;
+        Ok(())
+    }
+
     pub(crate) async fn run_expiry(self: Arc<Self>) {
         loop {
             let delay = self.next_expiry_delay().await;
@@ -884,11 +920,15 @@ impl NotificationEngine {
 
     async fn next_expiry_delay(&self) -> Option<Duration> {
         let data = self.data.lock().await;
-        let notification_wakeup = data
-            .active
-            .values()
-            .filter_map(ActiveNotification::next_deadline);
+        let notification_wakeup = data.active.values().filter_map(|n| {
+            if data.decks.reading(&n.source_monitor) {
+                n.snoozed_until_unix_ms.or(n.expires_unix_ms)
+            } else {
+                n.next_deadline()
+            }
+        });
         let next = notification_wakeup
+            .chain(data.decks.deadline())
             .chain(data.dnd_until_unix_ms)
             .chain(
                 data.app_policies
@@ -946,8 +986,23 @@ impl NotificationEngine {
     }
 
     async fn publish_summary(&self) {
+        let workspaces = self.state.read(|s| s.workspaces.clone()).await;
         let (summary, active) = {
-            let data = self.data.lock().await;
+            let mut data = self.data.lock().await;
+            for n in data.active.values_mut() {
+                if !workspaces
+                    .monitors
+                    .iter()
+                    .any(|m| m.name == n.source_monitor)
+                {
+                    n.source_monitor = workspaces
+                        .focused_monitor
+                        .clone()
+                        .filter(|name| workspaces.monitors.iter().any(|m| &m.name == name))
+                        .or_else(|| workspaces.monitors.first().map(|m| m.name.clone()))
+                        .unwrap_or_default();
+                }
+            }
             let visible = data
                 .active
                 .values()
@@ -965,6 +1020,8 @@ impl NotificationEngine {
                     item
                 })
                 .collect::<Vec<_>>();
+            let dnd = data.dnd;
+            let toast_decks = data.decks.project(&visible, dnd);
             let count = visible.len().try_into().unwrap_or(u32::MAX);
             let noun = if count == 1 {
                 "Notification"
@@ -996,6 +1053,7 @@ impl NotificationEngine {
                     available: true,
                     revision: data.history_revision,
                     notifications: visible,
+                    toast_decks,
                     error: None,
                 },
             )
@@ -1085,6 +1143,7 @@ mod tests {
             history_revision: u64::MAX,
             app_policies: Default::default(),
             delete_tickets: Default::default(),
+            decks: Default::default(),
         };
         for (id, snooze, expiry) in [
             (1, Some(101), Some(99)),

@@ -64,6 +64,7 @@ pub(super) async fn fixture() -> Value {
             available: true,
             revision: REVISION,
             notifications: records.clone(),
+            toast_decks: vec![],
             error: None,
         })
         .await;

@@ -26,6 +26,7 @@ impl NotificationApi {
             "notifications.togglePanel" => self.action(false).await,
             "notifications.toggleDnd" => self.action(true).await,
             "notifications.setDnd" => self.set_dnd(params).await,
+            "notifications.setReading" => self.set_reading(params).await,
             "notifications.setAppPolicy" => self.set_app_policy(params).await,
             "notifications.prepareDelete" => self.prepare_delete(params).await,
             "notifications.delete" => self.delete(params).await,
@@ -102,6 +103,21 @@ impl NotificationApi {
             .map_err(delete_error)?;
         Ok(Reply::Deleted { deleted: count }.body())
     }
+    async fn set_reading(&self, params: Value) -> Response {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            monitor: String,
+            reading: bool,
+        }
+        let request: Request = decode_request(params, "notifications.setReading")?;
+        self.engine()?
+            .set_reading(request.monitor, request.reading)
+            .await
+            .map_err(operation_error)?;
+        Ok(serde_json::json!({"reading": request.reading}))
+    }
+
     async fn set_dnd(&self, params: Value) -> Response {
         let request: DndRequest = decode_request(params, "notifications.setDnd")?;
         let state = self

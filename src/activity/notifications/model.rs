@@ -5,6 +5,8 @@ pub(crate) struct NotificationActiveState {
     pub available: bool,
     pub revision: u64,
     pub notifications: Vec<ActiveNotification>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toast_decks: Vec<super::decks::ToastDeck>,
     pub error: Option<String>,
 }
 
