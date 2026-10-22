@@ -35,6 +35,13 @@ enum Mutation {
 
 #[derive(Debug)]
 enum PersistenceCommand {
+    Settings {
+        value: Option<super::settings::Settings>,
+        response: oneshot::Sender<Result<super::settings::Settings>>,
+    },
+    Prune {
+        response: oneshot::Sender<Result<usize>>,
+    },
     Once {
         key: String,
         notification: Box<ActiveNotification>,
@@ -125,6 +132,19 @@ impl NotificationPersistence {
             ),
             mutations: Vec::new(),
         })
+    }
+
+    pub(crate) async fn settings(
+        &self,
+        value: Option<super::settings::Settings>,
+    ) -> Result<super::settings::Settings> {
+        self.request(|response| PersistenceCommand::Settings { value, response })
+            .await
+    }
+
+    pub(crate) async fn prune(&self) -> Result<usize> {
+        self.request(|response| PersistenceCommand::Prune { response })
+            .await
     }
 
     pub(crate) async fn save_once(
@@ -295,6 +315,12 @@ fn persistence_worker(
     let mut history_error = None;
     while let Some(command) = receiver.blocking_recv() {
         match command {
+            PersistenceCommand::Settings { value, response } => {
+                reply(response, history_error.as_deref(), || store.settings(value))
+            }
+            PersistenceCommand::Prune { response } => {
+                reply(response, history_error.as_deref(), || store.prune())
+            }
             PersistenceCommand::Once {
                 key,
                 notification,
@@ -472,6 +498,7 @@ impl NotificationStore {
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
                  PRAGMA synchronous=NORMAL;
+                 PRAGMA secure_delete=ON;
                  CREATE TABLE IF NOT EXISTS notifications (
                    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
                    session_id INTEGER NOT NULL,
@@ -597,18 +624,47 @@ impl NotificationStore {
         Ok(())
     }
 
-    fn prune(&self) -> Result<()> {
-        self.connection
-            .execute(
-                "DELETE FROM notifications WHERE closed_unix_ms IS NOT NULL
-             AND history_id < COALESCE((SELECT history_id FROM notifications
-                 ORDER BY history_id DESC LIMIT 1 OFFSET ?1), 0)",
-                [RETAINED_HISTORY - 1],
+    fn settings(
+        &self,
+        value: Option<super::settings::Settings>,
+    ) -> Result<super::settings::Settings> {
+        if let Some(value) = value {
+            value.validate()?;
+            let transaction = self.connection.unchecked_transaction()?;
+            transaction.execute("INSERT INTO notification_meta(key, value) VALUES ('settings', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&value)?])?;
+            self.prune()?;
+            transaction.commit()?;
+            return Ok(value);
+        }
+        let encoded: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM notification_meta WHERE key='settings'",
+                [],
+                |r| r.get(0),
             )
-            .context("prune notification history")?;
-        // SQLite reuses freed pages; deliberately avoid blocking VACUUM on the
-        // ingress worker. Retention bounds growth, not the existing file size.
-        Ok(())
+            .optional()?;
+        let settings: super::settings::Settings = encoded
+            .map(|v| serde_json::from_str(&v))
+            .transpose()?
+            .unwrap_or_default();
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    fn prune(&self) -> Result<usize> {
+        let cutoff = crate::time::unix_ms()
+            .saturating_sub(u64::from(self.settings(None)?.history_days) * 86_400_000);
+        let removed = self.connection.execute(
+            "DELETE FROM notifications WHERE created_unix_ms < ?2 OR (closed_unix_ms IS NOT NULL
+             AND history_id < COALESCE((SELECT history_id FROM notifications
+                 ORDER BY history_id DESC LIMIT 1 OFFSET ?1), 0))",
+            params![RETAINED_HISTORY - 1, cutoff],
+        ).context("prune notification history")?;
+        // Live conversations remain in memory; retention never emits Closed or
+        // replays actions. SQLite reuses pages; this is not a secure-erasure claim
+        // for WAL snapshots, filesystem snapshots or backups.
+        Ok(removed)
     }
 
     fn save_once(&mut self, key: &str, notification: &ActiveNotification) -> Result<bool> {
@@ -628,6 +684,7 @@ impl NotificationStore {
                 .created_unix_ms
                 .saturating_sub(180 * 86400 * 1000)],
         )?;
+        self.prune()?;
         transaction.commit()?;
         Ok(inserted)
     }
@@ -986,6 +1043,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn age_retention_and_settings_commit_together_and_survive_restart() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("history.db");
+        let store = NotificationStore::open(&path).unwrap();
+        let mut old = notification(1, false);
+        old.created_unix_ms = crate::time::unix_ms() - 2 * 86_400_000;
+        store.save(&old).unwrap();
+        store.save(&notification(2, false)).unwrap();
+        let settings = super::super::settings::Settings {
+            history_days: 1,
+            countdown: false,
+            code_expiry_seconds: 45,
+        };
+        store.settings(Some(settings.clone())).unwrap();
+        assert_eq!(
+            store.list(None, 10).unwrap().len(),
+            1,
+            "age pruning includes disk copies of live conversations"
+        );
+        assert_eq!(store.last_id().unwrap(), 2);
+        drop(store);
+        let (persistence, _, _, _) = NotificationPersistence::open(&path).unwrap();
+        assert_eq!(persistence.settings(None).await.unwrap(), settings);
+        assert_eq!(
+            persistence.list(None, 10).await.unwrap()[0].notification.id,
+            2
+        );
+        assert_eq!(persistence.prune().await.unwrap(), 0);
+    }
+
+    #[test]
+    fn failed_age_pruning_rolls_back_settings() {
+        let directory = tempdir().unwrap();
+        let store = NotificationStore::open(&directory.path().join("history.db")).unwrap();
+        let mut old = notification(1, false);
+        old.created_unix_ms = crate::time::unix_ms() - 2 * 86_400_000;
+        store.save(&old).unwrap();
+        store.connection.execute_batch("CREATE TRIGGER fail_prune BEFORE DELETE ON notifications BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
+        assert!(
+            store
+                .settings(Some(super::super::settings::Settings {
+                    history_days: 1,
+                    ..Default::default()
+                }))
+                .is_err()
+        );
+        assert_eq!(store.settings(None).unwrap().history_days, 30);
+        assert_eq!(store.list(None, 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn retention_runs_on_writes_and_restart_without_losing_live_rows_or_ids() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("history.db");
@@ -1062,7 +1170,7 @@ mod tests {
     fn notification(id: u32, transient: bool) -> ActiveNotification {
         let mut n = super::super::model::incoming("test", &format!("notification {id}"), "");
         n.hints.transient = transient;
-        ActiveNotification::from_incoming(id, n, 100)
+        ActiveNotification::from_incoming(id, n, crate::time::unix_ms())
     }
 
     #[tokio::test]

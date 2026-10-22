@@ -33,6 +33,9 @@ struct EngineData {
     app_policies: BTreeMap<String, super::policy::AppPolicy>,
     delete_tickets: BTreeMap<String, (u64, Vec<history::Position>)>,
     decks: super::decks::Decks,
+    settings: super::settings::Settings,
+    next_prune_ms: u64,
+    retention_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -204,6 +207,11 @@ impl NotificationEngine {
         for policy in app_policies.values_mut() {
             policy.expire(unix_ms());
         }
+        let settings = if let Some(store) = &persistence {
+            store.settings(None).await?
+        } else {
+            Default::default()
+        };
         let engine = Arc::new(Self {
             mutations: Mutex::new(()),
             data: Mutex::new(EngineData {
@@ -214,6 +222,9 @@ impl NotificationEngine {
                 app_policies,
                 delete_tickets: BTreeMap::new(),
                 decks: super::decks::Decks::default(),
+                settings,
+                next_prune_ms: unix_ms().saturating_add(60_000),
+                retention_error: None,
             }),
             next_id: AtomicU32::new(last_id),
             ingress: Semaphore::new(256),
@@ -360,6 +371,28 @@ impl NotificationEngine {
         self.expiry_wakeup.notify_one();
         self.publish_summary().await;
         Ok(())
+    }
+
+    pub(crate) async fn set_settings(
+        self: &Arc<Self>,
+        patch: super::settings::SettingsPatch,
+    ) -> Result<NotificationState> {
+        let engine = Arc::clone(self);
+        tokio::spawn(async move {
+            let _mutation = engine.mutations.lock().await;
+            let settings = engine.data.lock().await.settings.patched(patch)?;
+            if let Some(store) = &engine.persistence {
+                store.settings(Some(settings.clone())).await?;
+            }
+            let mut data = engine.data.lock().await;
+            data.settings = settings;
+            data.history_revision = data.history_revision.wrapping_add(1);
+            drop(data);
+            engine.publish_summary().await;
+            Ok(engine.state.read(|s| s.notifications.clone()).await)
+        })
+        .await
+        .context("join notification settings operation")?
     }
 
     pub(crate) async fn set_app_policy(
@@ -929,6 +962,7 @@ impl NotificationEngine {
         });
         let next = notification_wakeup
             .chain(data.decks.deadline())
+            .chain(Some(data.next_prune_ms))
             .chain(data.dnd_until_unix_ms)
             .chain(
                 data.app_policies
@@ -951,6 +985,26 @@ impl NotificationEngine {
                 return;
             }
         };
+        let prune_due = self.data.lock().await.next_prune_ms <= unix_ms();
+        if prune_due {
+            let result = match &self.persistence {
+                Some(store) => store.prune().await,
+                None => Ok(0),
+            };
+            let mut data = self.data.lock().await;
+            data.next_prune_ms = unix_ms().saturating_add(60_000);
+            match result {
+                Ok(removed) => {
+                    data.retention_error = None;
+                    if removed > 0 {
+                        data.history_revision = data.history_revision.wrapping_add(1);
+                    }
+                }
+                Err(error) => {
+                    data.retention_error = Some(format!("Notification retention failed: {error}"))
+                }
+            }
+        }
         let batch = self.data.lock().await.expire(unix_ms());
         if let Some(persistence) = &mut writes {
             for notification in batch.changed {
@@ -1046,8 +1100,9 @@ impl NotificationEngine {
                     class_name: class_name.into(),
                     backend: "native".into(),
                     history_revision: data.history_revision,
+                    settings: Some(data.settings.clone()),
                     app_policies: data.app_policies.clone(),
-                    error: None,
+                    error: data.retention_error.clone(),
                 },
                 NotificationActiveState {
                     available: true,
@@ -1144,6 +1199,9 @@ mod tests {
             app_policies: Default::default(),
             delete_tickets: Default::default(),
             decks: Default::default(),
+            settings: Default::default(),
+            next_prune_ms: u64::MAX,
+            retention_error: None,
         };
         for (id, snooze, expiry) in [
             (1, Some(101), Some(99)),

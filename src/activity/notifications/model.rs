@@ -23,6 +23,8 @@ pub(crate) struct NotificationState {
     pub class_name: String,
     pub backend: String,
     pub history_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<super::settings::Settings>,
     #[serde(default)]
     pub app_policies: std::collections::BTreeMap<String, super::policy::AppPolicy>,
     pub error: Option<String>,

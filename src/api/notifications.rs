@@ -27,6 +27,7 @@ impl NotificationApi {
             "notifications.toggleDnd" => self.action(true).await,
             "notifications.setDnd" => self.set_dnd(params).await,
             "notifications.setReading" => self.set_reading(params).await,
+            "notifications.setSettings" => self.set_settings(params).await,
             "notifications.setAppPolicy" => self.set_app_policy(params).await,
             "notifications.prepareDelete" => self.prepare_delete(params).await,
             "notifications.delete" => self.delete(params).await,
@@ -103,6 +104,19 @@ impl NotificationApi {
             .map_err(delete_error)?;
         Ok(Reply::Deleted { deleted: count }.body())
     }
+    async fn set_settings(&self, params: Value) -> Response {
+        let request = decode_request(params, "notifications.setSettings")?;
+        let state = self
+            .engine()?
+            .set_settings(request)
+            .await
+            .map_err(operation_error)?;
+        Ok(Reply::Notifications {
+            notifications: &state,
+        }
+        .body())
+    }
+
     async fn set_reading(&self, params: Value) -> Response {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
