@@ -5,6 +5,7 @@
 
 pub(crate) mod center;
 mod decks;
+mod context_actions;
 pub(crate) mod engine;
 pub(crate) mod history;
 #[cfg(test)]

@@ -28,6 +28,7 @@ impl NotificationApi {
             "notifications.setDnd" => self.set_dnd(params).await,
             "notifications.setReading" => self.set_reading(params).await,
             "notifications.setSettings" => self.set_settings(params).await,
+            "notifications.contextAction" => self.context_action(params).await,
             "notifications.setAppPolicy" => self.set_app_policy(params).await,
             "notifications.prepareDelete" => self.prepare_delete(params).await,
             "notifications.delete" => self.delete(params).await,
@@ -104,6 +105,24 @@ impl NotificationApi {
             .map_err(delete_error)?;
         Ok(Reply::Deleted { deleted: count }.body())
     }
+    async fn context_action(&self, params: Value) -> Response {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            id: u32,
+            created_unix_ms: u64,
+            updated_unix_ms: u64,
+            key: String,
+        }
+        let r: Request = decode_request(params, "notifications.contextAction")?;
+        let copied = self
+            .engine()?
+            .context_action(r.id, r.created_unix_ms, r.updated_unix_ms, &r.key)
+            .await
+            .map_err(operation_error)?;
+        Ok(serde_json::json!({"copied": copied}))
+    }
+
     async fn set_settings(&self, params: Value) -> Response {
         let request = decode_request(params, "notifications.setSettings")?;
         let state = self

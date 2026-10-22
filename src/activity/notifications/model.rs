@@ -79,6 +79,8 @@ pub(crate) struct ActiveNotification {
     pub id: u32,
     #[serde(default)]
     pub identity_icon: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_actions: Vec<super::context_actions::ContextAction>,
     pub app_name: String,
     pub app_icon: String,
     pub summary: String,
@@ -177,9 +179,10 @@ impl ActiveNotification {
         } else {
             "unknown".into()
         };
-        Self {
+        let mut record = Self {
             id,
             identity_icon: super::identity::icon(&incoming.hints.desktop_entry, &incoming.app_name),
+            context_actions: Vec::new(),
             app_name: incoming.app_name,
             app_icon: incoming.app_icon,
             summary: incoming.summary,
@@ -195,7 +198,12 @@ impl ActiveNotification {
             group_key,
             source_monitor: String::new(),
             snoozed_until_unix_ms: None,
-        }
+        };
+        record.context_actions = super::context_actions::extract(&record)
+            .iter()
+            .map(super::context_actions::Target::descriptor)
+            .collect();
+        record
     }
 
     pub(crate) fn replace_from(&mut self, incoming: IncomingNotification, now: u64) {

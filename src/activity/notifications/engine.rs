@@ -138,6 +138,7 @@ pub(crate) struct NotificationEngine {
     persistence: Option<NotificationPersistence>,
     history_epoch: String,
     history_readers: Semaphore,
+    context_effects: Mutex<()>,
     // Internal targets cannot be supplied by freedesktop notification senders.
     update_targets: Mutex<BTreeMap<u32, String>>,
 }
@@ -235,6 +236,7 @@ impl NotificationEngine {
             persistence,
             history_epoch: history::new_epoch()?,
             history_readers: Semaphore::new(2),
+            context_effects: Mutex::new(()),
             update_targets: Mutex::new(BTreeMap::new()),
         });
         if dnd_expired && let Some(persistence) = &engine.persistence {
@@ -915,6 +917,43 @@ impl NotificationEngine {
         Ok(true)
     }
 
+    pub(crate) async fn context_action(
+        &self,
+        id: u32,
+        created: u64,
+        updated: u64,
+        key: &str,
+    ) -> Result<bool> {
+        let _effect = self
+            .context_effects
+            .try_lock()
+            .context("Notification action already pending")?;
+        let (record, seconds) = {
+            let _mutation = self.mutations.lock().await;
+            let data = self.data.lock().await;
+            let record = data
+                .active
+                .get(&id)
+                .filter(|n| {
+                    n.created_unix_ms == created
+                        && n.updated_unix_ms == updated
+                        && n.expires_unix_ms.is_none_or(|until| until > unix_ms())
+                })
+                .context("Notification changed or expired")?
+                .clone();
+            (record, data.settings.code_expiry_seconds)
+        };
+        if key == "focus" {
+            super::context_actions::focus(&record.hints.desktop_entry).await?;
+            return Ok(false);
+        }
+        let target = super::context_actions::extract(&record)
+            .into_iter()
+            .find(|t| t.descriptor().key == key)
+            .context("Notification action unavailable")?;
+        super::context_actions::execute(target, seconds).await
+    }
+
     pub(crate) async fn set_reading(&self, monitor: String, reading: bool) -> Result<()> {
         anyhow::ensure!(
             !monitor.is_empty() && monitor.len() <= 256,
@@ -1398,6 +1437,62 @@ mod tests {
         assert_eq!(snapshot.notifications.count, 1);
         assert!(!snapshot.notifications.dnd);
         assert_eq!(snapshot.notification_active.notifications, before);
+    }
+
+    #[tokio::test]
+    async fn context_actions_reject_stale_identity_and_arbitrary_keys_before_effects() {
+        let engine = NotificationEngine::new(StateStore::default()).await;
+        let id = engine
+            .notify(0, notification("Verification code 001234", 0))
+            .await
+            .unwrap();
+        let record = engine.active().await.remove(0);
+        assert_eq!(record.context_actions[0].key, "copy-code");
+        assert!(
+            engine
+                .context_action(
+                    id,
+                    record.created_unix_ms + 1,
+                    record.updated_unix_ms,
+                    "copy-code"
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .context_action(
+                    id,
+                    record.created_unix_ms,
+                    record.updated_unix_ms + 1,
+                    "copy-code"
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .context_action(
+                    id,
+                    record.created_unix_ms,
+                    record.updated_unix_ms,
+                    "javascript:bad"
+                )
+                .await
+                .is_err()
+        );
+        engine.dismiss(id).await.unwrap();
+        assert!(
+            engine
+                .context_action(
+                    id,
+                    record.created_unix_ms,
+                    record.updated_unix_ms,
+                    "copy-code"
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

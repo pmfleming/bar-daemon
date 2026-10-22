@@ -16,6 +16,7 @@ futures = "0.3"
 ksni = "0.3"
 notify = "8"
 pipewire = { version = "0.10", features = ["v1_2_0"] }
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rustix = { version = "1", features = ["fs", "process"] }

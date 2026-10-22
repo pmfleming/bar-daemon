@@ -262,6 +262,7 @@ dependencies = [
  "ksni",
  "notify",
  "pipewire",
+ "regex",
  "reqwest",
  "rusqlite",
  "rustix",
