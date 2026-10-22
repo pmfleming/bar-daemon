@@ -56,6 +56,8 @@ pub(super) async fn fixture() -> Value {
         class_name: "notification".into(),
         backend: "native".into(),
         history_revision: 1,
+        settings: Some(Default::default()),
+        sharing: Some(Default::default()),
         ..Default::default()
     };
     let active = NotificationActiveState {

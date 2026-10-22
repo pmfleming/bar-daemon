@@ -29,6 +29,7 @@ impl NotificationApi {
             "notifications.setReading" => self.set_reading(params).await,
             "notifications.setSettings" => self.set_settings(params).await,
             "notifications.contextAction" => self.context_action(params).await,
+            "notifications.snoozeSharing" => self.snooze_sharing(params).await,
             "notifications.setAppPolicy" => self.set_app_policy(params).await,
             "notifications.prepareDelete" => self.prepare_delete(params).await,
             "notifications.delete" => self.delete(params).await,
@@ -105,6 +106,25 @@ impl NotificationApi {
             .map_err(delete_error)?;
         Ok(Reply::Deleted { deleted: count }.body())
     }
+    async fn snooze_sharing(&self, params: Value) -> Response {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            generation: u64,
+            minutes: u16,
+        }
+        let r: Request = decode_request(params, "notifications.snoozeSharing")?;
+        let state = self
+            .engine()?
+            .snooze_sharing(r.generation, r.minutes)
+            .await
+            .map_err(operation_error)?;
+        Ok(Reply::Notifications {
+            notifications: &state,
+        }
+        .body())
+    }
+
     async fn context_action(&self, params: Value) -> Response {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]

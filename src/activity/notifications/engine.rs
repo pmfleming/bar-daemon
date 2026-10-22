@@ -36,6 +36,7 @@ struct EngineData {
     settings: super::settings::Settings,
     next_prune_ms: u64,
     retention_error: Option<String>,
+    sharing: super::sharing::Sharing,
 }
 
 #[derive(Default)]
@@ -84,6 +85,9 @@ impl EngineData {
         {
             stored.toast_visible = false;
         }
+        if self.sharing.suppressed(now) {
+            stored.toast_visible = false;
+        }
         self.active.insert(id, stored.clone());
         self.history_revision = self.history_revision.wrapping_add(1);
         (stored, evicted)
@@ -92,6 +96,7 @@ impl EngineData {
     fn expire(&mut self, now: u64) -> ExpiryBatch {
         let mut batch = ExpiryBatch::default();
         self.decks.expire(now, &mut self.active);
+        self.sharing.expire(now);
         for policy in self.app_policies.values_mut() {
             if policy.silent && policy.expire(now) {
                 self.history_revision = self.history_revision.wrapping_add(1);
@@ -226,6 +231,7 @@ impl NotificationEngine {
                 settings,
                 next_prune_ms: unix_ms().saturating_add(60_000),
                 retention_error: None,
+                sharing: Default::default(),
             }),
             next_id: AtomicU32::new(last_id),
             ingress: Semaphore::new(256),
@@ -345,6 +351,9 @@ impl NotificationEngine {
         {
             stored.toast_visible = false;
         }
+        if data.sharing.suppressed(now) {
+            stored.toast_visible = false;
+        }
         if !store.save_once(key, stored.clone()).await? {
             return Ok(());
         }
@@ -373,6 +382,37 @@ impl NotificationEngine {
         self.expiry_wakeup.notify_one();
         self.publish_summary().await;
         Ok(())
+    }
+
+    pub(crate) async fn observe_sharing(&self, observation: Option<bool>) {
+        let _mutation = self.mutations.lock().await;
+        let mut data = self.data.lock().await;
+        data.sharing.observe(observation);
+        if data.sharing.suppressed(unix_ms()) {
+            for n in data.active.values_mut() {
+                n.toast_visible = false;
+                n.toast_expires_unix_ms = None;
+            }
+        }
+        drop(data);
+        self.expiry_wakeup.notify_one();
+        self.publish_summary().await;
+    }
+
+    pub(crate) async fn snooze_sharing(
+        &self,
+        generation: u64,
+        minutes: u16,
+    ) -> Result<NotificationState> {
+        let _mutation = self.mutations.lock().await;
+        self.data
+            .lock()
+            .await
+            .sharing
+            .snooze(generation, minutes, unix_ms())?;
+        self.expiry_wakeup.notify_one();
+        self.publish_summary().await;
+        Ok(self.state.read(|s| s.notifications.clone()).await)
     }
 
     pub(crate) async fn set_settings(
@@ -1001,6 +1041,7 @@ impl NotificationEngine {
         });
         let next = notification_wakeup
             .chain(data.decks.deadline())
+            .chain(data.sharing.until_unix_ms)
             .chain(Some(data.next_prune_ms))
             .chain(data.dnd_until_unix_ms)
             .chain(
@@ -1110,6 +1151,9 @@ impl NotificationEngine {
                             item.hints.suppress_sound = true;
                         }
                     }
+                    if data.sharing.suppressed(unix_ms()) {
+                        item.toast_visible = false;
+                    }
                     item
                 })
                 .collect::<Vec<_>>();
@@ -1140,6 +1184,7 @@ impl NotificationEngine {
                     backend: "native".into(),
                     history_revision: data.history_revision,
                     settings: Some(data.settings.clone()),
+                    sharing: Some(data.sharing.clone()),
                     app_policies: data.app_policies.clone(),
                     error: data.retention_error.clone(),
                 },
@@ -1241,6 +1286,7 @@ mod tests {
             settings: Default::default(),
             next_prune_ms: u64::MAX,
             retention_error: None,
+            sharing: Default::default(),
         };
         for (id, snooze, expiry) in [
             (1, Some(101), Some(99)),
@@ -1437,6 +1483,73 @@ mod tests {
         assert_eq!(snapshot.notifications.count, 1);
         assert!(!snapshot.notifications.dnd);
         assert_eq!(snapshot.notification_active.notifications, before);
+    }
+
+    #[tokio::test]
+    async fn sharing_suppresses_bypass_and_never_replays_messages_or_changes_dnd() {
+        let state = StateStore::default();
+        let engine = NotificationEngine::new(state.clone()).await;
+        let id = engine
+            .notify(0, notification("Before sharing", 0))
+            .await
+            .unwrap();
+        engine.observe_sharing(Some(true)).await;
+        let generation = state
+            .read(|s| s.notifications.sharing.as_ref().unwrap().generation)
+            .await;
+        engine
+            .set_app_policy(
+                "named:test".into(),
+                super::super::policy::AppPolicy {
+                    bypass_dnd: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let during = engine
+            .notify(0, notification("Private message", 0))
+            .await
+            .unwrap();
+        assert!(
+            state
+                .read(|s| s.notification_active.toast_decks.is_empty())
+                .await
+        );
+        assert!(!state.read(|s| s.notifications.dnd).await);
+        engine.observe_sharing(None).await;
+        assert!(
+            state
+                .read(|s| s.notifications.sharing.as_ref().unwrap().active)
+                .await
+        );
+        engine.snooze_sharing(generation, 0).await.unwrap();
+        engine.observe_sharing(Some(false)).await;
+        assert!(
+            state
+                .read(|s| s.notification_active.toast_decks.is_empty())
+                .await,
+            "No replay after sharing ends"
+        );
+        assert_eq!(
+            engine
+                .active()
+                .await
+                .iter()
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+            [id, during]
+        );
+        engine
+            .notify(0, notification("After sharing", 0))
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .read(|s| s.notification_active.toast_decks.len())
+                .await,
+            1
+        );
     }
 
     #[tokio::test]

@@ -19,5 +19,6 @@ mod redesign_tests;
 pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod settings;
+mod sharing;
 mod swaync;
 mod timeline;

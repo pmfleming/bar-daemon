@@ -25,6 +25,8 @@ pub(crate) struct NotificationState {
     pub history_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<super::settings::Settings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<super::sharing::Sharing>,
     #[serde(default)]
     pub app_policies: std::collections::BTreeMap<String, super::policy::AppPolicy>,
     pub error: Option<String>,

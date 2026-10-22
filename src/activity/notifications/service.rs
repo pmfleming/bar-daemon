@@ -42,7 +42,8 @@ impl NotificationService {
             NotificationBackend::Native(engine) => {
                 tokio::join!(
                     Arc::clone(engine).run_expiry(),
-                    super::server::forward_signals(Arc::clone(engine), connection)
+                    super::server::forward_signals(Arc::clone(engine), connection),
+                    super::sharing::monitor(Arc::clone(engine))
                 );
             }
             NotificationBackend::SwayNc => swaync::monitor(state).await,

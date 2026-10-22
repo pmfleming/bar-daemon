@@ -1769,6 +1769,41 @@
         "result": "operation"
       },
       {
+        "name": "notifications.snoozeSharing",
+        "params": {
+          "generation": 1,
+          "minutes": 15
+        },
+        "result": "notifications (0 minutes means until sharing ends)"
+      },
+      {
+        "name": "notifications.contextAction",
+        "params": {
+          "created_unix_ms": 1,
+          "id": 1,
+          "key": "copy-code",
+          "updated_unix_ms": 1
+        },
+        "result": "copied (true only after clipboard ownership acknowledgement)"
+      },
+      {
+        "name": "notifications.setSettings",
+        "params": {
+          "code_expiry_seconds": 0,
+          "countdown": true,
+          "history_days": 30
+        },
+        "result": "notifications (optional field patch; persisted before acknowledgement)"
+      },
+      {
+        "name": "notifications.setReading",
+        "params": {
+          "monitor": "DP-1",
+          "reading": true
+        },
+        "result": "reading (renewable 3-second lease)"
+      },
+      {
         "name": "notifications.clear",
         "params": {},
         "result": "operation"
