@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 use tokio::io::AsyncReadExt;
 
-const MAX_REPORT_BYTES: usize = 256 * 1024;
+const MAX_REPORT_BYTES: usize = 1024 * 1024;
 const MAX_ISSUES: usize = 50;
 
 struct ProcessGroup(Option<rustix::process::Pid>);
@@ -50,7 +50,7 @@ async fn read_worker_with_timeout(path: &Path, deadline: Duration) -> Result<Val
             .await?;
         ensure!(
             bytes.len() <= MAX_REPORT_BYTES,
-            "Worker status exceeds 256 KiB"
+            "Worker status exceeds 1 MiB"
         );
         let status = child.wait().await?;
         group.0 = None;
@@ -96,6 +96,86 @@ fn git_overview(value: &Value) -> Result<Value> {
         "dirty":value["dirty"],"shallow":value["shallow"],"observed_at":stamp(&value["observed_at"]),
         "target_observed_at":stamp(&value["target_observed_at"]),"error":null}),
     )
+}
+fn applications_overview(value: &Value) -> Result<Value> {
+    // Optional for older workers. Missing inventory is never an empty success.
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    ensure!(
+        value.is_object() && value["available"].is_boolean(),
+        "Invalid application inventory"
+    );
+    if value["available"] == false {
+        return Ok(
+            json!({"available":false,"active_system":null,"observed_at":null,
+            "packages":[],"total":0,"error":text(&value["error"])}),
+        );
+    }
+    let packages = value["packages"]
+        .as_array()
+        .context("Invalid application packages")?;
+    let field = |value: &Value, max| {
+        value
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control))
+    };
+    ensure!(
+        packages.len() <= 512
+            && value["total"]
+                .as_u64()
+                .is_some_and(|n| n >= packages.len() as u64 && n <= 4096)
+            && field(&value["active_system"], 512)
+            && stamp(&value["observed_at"]).is_some()
+            && packages.iter().all(|p| field(&p["name"], 160)
+                && field(&p["scope"], 80)
+                && (p["version"].is_null() || field(&p["version"], 80))),
+        "Invalid application package metadata"
+    );
+    let packages: Vec<_> = packages
+        .iter()
+        .map(|p| {
+            Ok(json!({
+                "name":p["name"],"scope":p["scope"],"version":p["version"],
+                "release":application_release(&p["release"])?
+            }))
+        })
+        .collect::<Result<_>>()?;
+    Ok(
+        json!({"available":true,"active_system":value["active_system"],
+        "observed_at":stamp(&value["observed_at"]),"packages":packages,"total":value["total"],"error":null}),
+    )
+}
+fn application_release(value: &Value) -> Result<Value> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let field = |value: &Value, max| {
+        value
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control))
+    };
+    ensure!(
+        value.is_object()
+            && field(&value["source"], 512)
+            && value["source"]
+                .as_str()
+                .is_some_and(|source| source.starts_with("https://"))
+            && (value["version"].is_null() || field(&value["version"], 80))
+            && (value["checked_at"].is_null() || stamp(&value["checked_at"]).is_some())
+            && (value["attempted_at"].is_null() || stamp(&value["attempted_at"]).is_some())
+            && value["version"].is_null() == value["checked_at"].is_null()
+            && (value["checked_at"].is_null() || !value["attempted_at"].is_null())
+            && value["stale"].is_boolean()
+            && (value["error"].is_null()
+                || value["error"].as_str().is_some_and(|s| s.len() <= 512))
+            && (value["stale"] == true
+                || (!value["version"].is_null() && value["error"].is_null())),
+        "Invalid application release metadata"
+    );
+    Ok(json!({"version":value["version"],"source":value["source"],
+        "checked_at":value["checked_at"],"attempted_at":value["attempted_at"],
+        "stale":value["stale"],"error":value["error"]}))
 }
 fn normalize(report: &Value) -> Result<Value> {
     let tools = report["tools"]
@@ -173,7 +253,8 @@ fn normalize(report: &Value) -> Result<Value> {
         "baseline":{"valid":baseline["valid"].as_bool(),"approved_at":stamp(&baseline["approval"]["approved_at"]),
             "revision":text(&baseline["approval"]["revision"]),"reasons":reasons,"error":text(&baseline["error"])},
         "tools":tools,"timers":timers,"timers_error":text(&report["timers"]["error"]),
-        "git":git_overview(&report["git"])?
+        "git":git_overview(&report["git"])?,
+        "applications":applications_overview(&report["applications"])?
     }))
 }
 pub(crate) async fn get(params: Value) -> Result<Value> {
@@ -265,6 +346,55 @@ mod tests {
         assert!(old["tools"][0]["freshness"]["comparison"].is_null());
         assert!(old["git"].is_null());
     }
+    #[test]
+    fn applications_preserve_versions_scope_and_missing_evidence() {
+        let mut report = report();
+        assert!(normalize(&report).unwrap()["applications"].is_null());
+        report["applications"] = json!({"available":true,"active_system":"/nix/store/active",
+            "observed_at":100,"total":2,"packages":[
+                {"name":"editor","scope":"system","version":"1.2"},
+                {"name":"local-tool","scope":"user:test","version":null}]});
+        let value = normalize(&report).unwrap();
+        assert_eq!(value["applications"]["packages"][0]["version"], "1.2");
+        assert!(value["applications"]["packages"][1]["version"].is_null());
+        report["applications"]["total"] = json!(1);
+        assert!(normalize(&report).is_err());
+        report["applications"]["total"] = json!(3); // bounded partial inventory
+        assert!(normalize(&report).is_ok());
+        report["applications"]["packages"][0]["version"] = json!(12);
+        assert!(normalize(&report).is_err());
+        report["applications"] = json!({"available":false,"error":"No generation inventory"});
+        assert_eq!(
+            normalize(&report).unwrap()["applications"]["available"],
+            false
+        );
+    }
+    #[test]
+    fn application_releases_preserve_sources_staleness_and_failed_last_known_values() {
+        let mut report = report();
+        let release = json!({"version":"2.0","source":"https://api.github.com/repos/example/app/releases/latest",
+            "checked_at":90,"attempted_at":100,"stale":true,"error":"HTTP 429"});
+        report["applications"] = json!({"available":true,"active_system":"/nix/store/active",
+            "observed_at":100,"total":1,"packages":[{"name":"app","scope":"system","version":"1.0","release":release}]});
+        let output = normalize(&report).unwrap();
+        assert_eq!(output["applications"]["packages"][0]["release"], release);
+        assert_eq!(output["applications"]["packages"][0]["version"], "1.0");
+        for (field, value) in [
+            ("version", json!(12)),
+            ("source", json!("file:///tmp/release")),
+            ("checked_at", Value::Null),
+            ("attempted_at", Value::Null),
+            ("stale", json!(false)),
+        ] {
+            let mut invalid = report.clone();
+            invalid["applications"]["packages"][0]["release"][field] = value;
+            assert!(normalize(&invalid).is_err(), "{field}");
+        }
+        report["applications"]["packages"][0]["release"] = json!({"version":null,
+            "source":"https://api.github.com/repos/example/app/releases/latest","checked_at":null,
+            "attempted_at":null,"stale":true,"error":null});
+        assert!(normalize(&report).is_ok());
+    }
     #[tokio::test]
     async fn reader_runs_only_status_and_rejects_bad_output_and_nonzero_exit() {
         use std::os::unix::fs::PermissionsExt;
@@ -278,7 +408,7 @@ mod tests {
         for body in [
             format!("printf '%s' '{}'", report()),
             "printf invalid".into(),
-            "printf '%0262145d' 0".into(),
+            "printf '%01048577d' 0".into(),
             "exit 1".into(),
         ] {
             std::fs::write(&program, format!("#!{}\n[ \"$1\" = status ] && [ \"$2\" = --json ] && [ $# = 2 ] || exit 9\n{body}\n", shell.trim())).unwrap();

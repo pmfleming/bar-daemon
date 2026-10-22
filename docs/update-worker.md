@@ -35,7 +35,8 @@ the worker, never inferred from session presence. See [Updates](../../shelllist/
 It normalizes booted/active/profile systems, validated boot staging and known age,
 baseline validity, tool versions/successful checks and actual systemd next times.
 Missing evidence remains null; historical staging is never used as current state.
-The report is bounded to 256 KiB, two readers and a five-second child deadline
+The report is bounded to 1 MiB (including bounded per-package release evidence),
+two readers and a five-second child deadline
 inside a six-second admission/read budget. The matching worker retires its report
 and nested subprocess groups after four seconds. Errors remain separate from
 readable history; older workers may lack added timestamps.
@@ -53,6 +54,24 @@ recomputes comparison from receipts, release evidence and packaging fingerprints
 serialized comparison fields are not trusted. Current/newer/ahead/rebuild/unknown
 remain distinct. Job success is not freshness, and stale discovery is labeled.
 No application release inventory or exact system release distance is fabricated.
+
+Optional `applications` evidence carries active-generation package metadata:
+`available`, `active_system`, `observed_at`, `packages` (name/scope/nullable version
+and optional cached `release`),
+`total` and `error`. The worker reads a generation-owned manifest, never evaluates
+Nix or checks a release service. The projection validates up to 512 entries and
+preserves total coverage (up to 4096 source entries). Missing old-worker support
+stays null; a missing manifest is explicitly unavailable. These are system and
+Home Manager declarations, not proof of successful home activation or the current
+versions of independent/vendor profiles. Invalid payloads cannot become a
+successful empty inventory. `release` preserves upstream version/source URL,
+successful-check and attempted-check timestamps, stale state and error. Missing
+old-worker fields stay null; failed checks may retain a last-known version but
+cannot claim freshness. Invalid release metadata rejects the overview without
+replacing the frontend's previous evidence. The worker's separate scheduled
+`check-applications` command owns network acquisition and cache writes;
+`updates.getOverview` still invokes only read-only `status --json`. No new D-Bus
+mutation or network-on-refresh route is introduced.
 
 The same bounded catalog provides up to 50 latest unresolved issues, with total
 and partial-read diagnostics. Recovery annotations are display-only: later
