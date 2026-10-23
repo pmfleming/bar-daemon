@@ -145,16 +145,15 @@ impl StateStore {
             return response;
         }
         if let Some(data) = response.get_mut("data") {
-            for stream in crate::protocol::STREAMS {
-                let key = crate::protocol::read_wire::snapshot_key(stream);
-                if let Some(value) = data.get_mut(key) {
-                    self.unhealthy(stream, value);
+            for spec in crate::protocol::read_wire::STREAM_SPECS {
+                if let Some(value) = data.get_mut(spec.snapshot_key) {
+                    self.unhealthy(spec.name, value);
                 }
                 if let Some(value) = data
                     .get_mut("snapshot")
-                    .and_then(|snapshot| snapshot.get_mut(key))
+                    .and_then(|snapshot| snapshot.get_mut(spec.snapshot_key))
                 {
-                    self.unhealthy(stream, value);
+                    self.unhealthy(spec.name, value);
                 }
             }
         }
@@ -166,11 +165,8 @@ impl StateStore {
             return snapshot.clone();
         }
         let mut value = to_value(snapshot).expect("snapshot serialization");
-        for stream in crate::protocol::STREAMS {
-            self.unhealthy(
-                stream,
-                &mut value[crate::protocol::read_wire::snapshot_key(stream)],
-            );
+        for spec in crate::protocol::read_wire::STREAM_SPECS {
+            self.unhealthy(spec.name, &mut value[spec.snapshot_key]);
         }
         serde_json::from_value(value).expect("availability overlay preserves snapshot types")
     }

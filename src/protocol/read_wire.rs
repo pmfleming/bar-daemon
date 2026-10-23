@@ -1,6 +1,6 @@
 //! Read-only bar-api v1 envelopes, shared by live dispatch and contract fixtures.
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, to_value};
 use shelllist_daemon_core::{
     ApiIdentity, Correlation,
     wire::{Event as Envelope, Gap},
@@ -86,49 +86,84 @@ impl Event {
     }
 }
 
-pub(crate) fn snapshot_key(stream: &str) -> &'static str {
-    match stream {
-        stream::ACTIVITY => "activity",
-        stream::WORKAREA => "workarea",
-        stream::COMPOSITOR => "compositor",
-        stream::WORKSPACES => "workspaces",
-        stream::MEDIA => "media",
-        stream::AUDIO => "audio",
-        stream::BRIGHTNESS => "brightness",
-        stream::BATTERY => "battery",
-        stream::POWER_PROFILE => "power_profile",
-        stream::POWER_SLEEP => "power_sleep",
-        stream::SLEEP_POLICY => "sleep_policy",
-        stream::DISPLAY_POLICY => "display_policy",
-        stream::OSD_HARDWARE => "osd_hardware",
-        stream::NOTIFICATIONS => "notifications",
-        stream::NOTIFICATION_ACTIVE => "notification_active",
-        stream::UPDATES => "updates",
-        stream::TIMEZONE => "timezone",
-        _ => unreachable!("validated stream"),
+pub(crate) struct StreamSpec {
+    pub name: &'static str,
+    pub snapshot_key: &'static str,
+    read: fn(&BarSnapshot) -> serde_json::Result<Value>,
+}
+impl StreamSpec {
+    pub fn project(&self, snapshot: &BarSnapshot) -> Value {
+        (self.read)(snapshot).unwrap_or(Value::Null)
+    }
+}
+const fn spec(
+    name: &'static str,
+    snapshot_key: &'static str,
+    read: fn(&BarSnapshot) -> serde_json::Result<Value>,
+) -> StreamSpec {
+    StreamSpec {
+        name,
+        snapshot_key,
+        read,
     }
 }
 
-pub(crate) fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
-    match stream {
-        stream::ACTIVITY => serde_json::to_value(&snapshot.activity),
-        stream::WORKAREA => serde_json::to_value(&snapshot.workarea),
-        stream::COMPOSITOR => serde_json::to_value(&snapshot.compositor),
-        stream::WORKSPACES => serde_json::to_value(&snapshot.workspaces),
-        stream::MEDIA => serde_json::to_value(&snapshot.media),
-        stream::AUDIO => serde_json::to_value(&snapshot.audio),
-        stream::BRIGHTNESS => serde_json::to_value(&snapshot.brightness),
-        stream::BATTERY => serde_json::to_value(&snapshot.battery),
-        stream::POWER_PROFILE => serde_json::to_value(&snapshot.power_profile),
-        stream::POWER_SLEEP => serde_json::to_value(&snapshot.power_sleep),
-        stream::SLEEP_POLICY => serde_json::to_value(&snapshot.sleep_policy),
-        stream::DISPLAY_POLICY => serde_json::to_value(&snapshot.display_policy),
-        stream::OSD_HARDWARE => serde_json::to_value(&snapshot.osd_hardware),
-        stream::NOTIFICATIONS => serde_json::to_value(&snapshot.notifications),
-        stream::NOTIFICATION_ACTIVE => serde_json::to_value(&snapshot.notification_active),
-        stream::UPDATES => serde_json::to_value(&snapshot.updates),
-        stream::TIMEZONE => serde_json::to_value(&snapshot.timezone),
-        _ => return Value::Null,
+// Authoritative order, snapshot key, and typed field projection for each stream.
+pub(crate) const STREAM_SPECS: &[StreamSpec] = &[
+    spec(stream::ACTIVITY, "activity", |s| to_value(&s.activity)),
+    spec(stream::WORKSPACES, "workspaces", |s| {
+        to_value(&s.workspaces)
+    }),
+    spec(stream::WORKAREA, "workarea", |s| to_value(&s.workarea)),
+    spec(stream::COMPOSITOR, "compositor", |s| {
+        to_value(&s.compositor)
+    }),
+    spec(stream::MEDIA, "media", |s| to_value(&s.media)),
+    spec(stream::AUDIO, "audio", |s| to_value(&s.audio)),
+    spec(stream::BRIGHTNESS, "brightness", |s| {
+        to_value(&s.brightness)
+    }),
+    spec(stream::BATTERY, "battery", |s| to_value(&s.battery)),
+    spec(stream::POWER_PROFILE, "power_profile", |s| {
+        to_value(&s.power_profile)
+    }),
+    spec(stream::POWER_SLEEP, "power_sleep", |s| {
+        to_value(&s.power_sleep)
+    }),
+    spec(stream::SLEEP_POLICY, "sleep_policy", |s| {
+        to_value(&s.sleep_policy)
+    }),
+    spec(stream::DISPLAY_POLICY, "display_policy", |s| {
+        to_value(&s.display_policy)
+    }),
+    spec(stream::OSD_HARDWARE, "osd_hardware", |s| {
+        to_value(&s.osd_hardware)
+    }),
+    spec(stream::NOTIFICATIONS, "notifications", |s| {
+        to_value(&s.notifications)
+    }),
+    spec(stream::NOTIFICATION_ACTIVE, "notification_active", |s| {
+        to_value(&s.notification_active)
+    }),
+    spec(stream::UPDATES, "updates", |s| to_value(&s.updates)),
+    spec(stream::TIMEZONE, "timezone", |s| to_value(&s.timezone)),
+];
+
+// Preserve the public &[&str] contract without maintaining another registry.
+pub(super) const STREAM_NAMES: [&str; STREAM_SPECS.len()] = {
+    let mut names = [""; STREAM_SPECS.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = STREAM_SPECS[i].name;
+        i += 1;
     }
-    .unwrap_or(Value::Null)
+    names
+};
+
+pub(crate) fn stream_spec(name: &str) -> Option<&'static StreamSpec> {
+    STREAM_SPECS.iter().find(|spec| spec.name == name)
+}
+
+pub(crate) fn initial_stream_data(stream: &str, snapshot: &BarSnapshot) -> Value {
+    stream_spec(stream).map_or(Value::Null, |spec| spec.project(snapshot))
 }

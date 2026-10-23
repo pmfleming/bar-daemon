@@ -215,25 +215,7 @@ pub const METHODS: &[&str] = &[
     "updates.readLog",
 ];
 /// Complete ordered event-stream registry for protocol version 1.
-pub const STREAMS: &[&str] = &[
-    stream::ACTIVITY,
-    stream::WORKSPACES,
-    stream::WORKAREA,
-    stream::COMPOSITOR,
-    stream::MEDIA,
-    stream::AUDIO,
-    stream::BRIGHTNESS,
-    stream::BATTERY,
-    stream::POWER_PROFILE,
-    stream::POWER_SLEEP,
-    stream::SLEEP_POLICY,
-    stream::DISPLAY_POLICY,
-    stream::OSD_HARDWARE,
-    stream::NOTIFICATIONS,
-    stream::NOTIFICATION_ACTIVE,
-    stream::UPDATES,
-    stream::TIMEZONE,
-];
+pub const STREAMS: &[&str] = &read_wire::STREAM_NAMES;
 
 /// Only declared policies participate in deadline enforcement during migration.
 pub(crate) fn method_policy(name: &str) -> Option<shelllist_daemon_core::MethodPolicy> {

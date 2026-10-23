@@ -75,10 +75,12 @@ impl ApiService {
 
     async fn project_snapshot(&self, streams: &Value) -> Value {
         let streams = <Vec<&str> as serde::Deserialize>::deserialize(streams);
-        let Some(streams) = streams
-            .ok()
-            .filter(|streams| streams.iter().all(|s| protocol::STREAMS.contains(s)))
-        else {
+        let Some(streams) = streams.ok().and_then(|streams| {
+            streams
+                .into_iter()
+                .map(protocol::read_wire::stream_spec)
+                .collect::<Option<Vec<_>>>()
+        }) else {
             return error(
                 "validation-error",
                 "streams must be a list of registered bar streams",
@@ -88,12 +90,7 @@ impl ApiService {
             .read(|snapshot| {
                 let projection: serde_json::Map<String, Value> = streams
                     .iter()
-                    .map(|stream| {
-                        (
-                            protocol::read_wire::snapshot_key(stream).into(),
-                            protocol::read_wire::initial_stream_data(stream, snapshot),
-                        )
-                    })
+                    .map(|stream| (stream.snapshot_key.into(), stream.project(snapshot)))
                     .collect();
                 success(serde_json::json!({"snapshot": projection}))
             })

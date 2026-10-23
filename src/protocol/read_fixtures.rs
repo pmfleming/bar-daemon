@@ -112,7 +112,8 @@ pub(super) async fn fixture() -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BarSnapshot, Event, Result, STREAMS, SUBSCRIPTION, fixture, read_wire};
+    use std::collections::BTreeSet;
 
     #[tokio::test]
     async fn committed_changes_and_resubscription_project_the_same_snapshot_for_every_stream()
@@ -120,7 +121,19 @@ mod tests {
         let fixture = fixture().await?;
         let snapshot: BarSnapshot =
             serde_json::from_value(fixture["snapshot"]["data"]["snapshot"].clone())?;
+        let keys: BTreeSet<_> = read_wire::STREAM_SPECS
+            .iter()
+            .map(|s| s.snapshot_key)
+            .collect();
+        let fields = fixture["snapshot"]["data"]["snapshot"].as_object().unwrap();
+        assert_eq!(keys, fields.keys().map(String::as_str).collect());
+        assert_eq!(keys.len(), STREAMS.len());
+        assert_eq!(STREAMS.iter().collect::<BTreeSet<_>>().len(), STREAMS.len());
+        assert!(read_wire::stream_spec("unknown.changed").is_none());
+        assert!(read_wire::initial_stream_data("unknown.changed", &snapshot).is_null());
         for stream in STREAMS {
+            let spec = read_wire::stream_spec(stream).unwrap();
+            assert_eq!(spec.project(&snapshot), fields[spec.snapshot_key]);
             let changed = &fixture["changed"][stream];
             let resubscribed = Event::subscribed(stream, SUBSCRIPTION, &snapshot).into_value();
             assert_eq!(

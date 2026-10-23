@@ -25,3 +25,23 @@ retention anchors, and lazy search-text construction are unchanged.
   and cross-midnight revision tests; existing oversized-page tests still pass.
 - Targeted history tests, strict all-target Clippy, formatting, and the full private
   fixture suite pass (226 tests, zero ignored in the full run).
+
+## 2. Authoritative stream descriptors
+
+`protocol::read_wire` now owns stream order, snapshot keys, and typed projection
+functions in one ordinary descriptor table. The public `STREAMS: &[&str]` remains
+a compile-time constant derived from that table. API snapshot requests resolve
+names once; state failure overlays iterate descriptors without repeated lookups.
+The two parallel projection/key matches and their unreachable assertion are gone.
+There is no new code-generation macro or full-snapshot serialization shortcut.
+
+Across `protocol.rs`, `protocol/read_wire.rs`, `protocol/read_fixtures.rs`, `api.rs`,
+and `state.rs`, non-test-module cognitive/cyclomatic/effort totals change from
+**56 / 186 / 1,155,548 → 54 / 152 / 1,130,085**. The descriptor table is data, not
+hidden branching; function metrics do not count its field-selection closures as
+standalone functions. One test glob import is also removed.
+
+Tests verify unique names/keys, complete snapshot-field coverage, typed projection
+against serialized snapshots, unknown-stream behavior, and real committed events
+versus resubscription. Formatting, strict all-target Clippy, and the full private
+fixture suite pass (226 tests, zero ignored).
