@@ -205,7 +205,7 @@ impl ActiveNotification {
             source_monitor: String::new(),
             snoozed_until_unix_ms: None,
         };
-        record.context_actions = super::context_actions::extract(&record)
+        record.context_actions = super::context_actions::extract(&record.summary, &record.body)
             .iter()
             .map(super::context_actions::Target::descriptor)
             .collect();
@@ -217,8 +217,10 @@ impl ActiveNotification {
         // Also an action-version fence: two replacements in one clock tick must
         // not let an old card execute a newly extracted target.
         let updated = now.max(self.updated_unix_ms.saturating_add(1));
+        let source_monitor = std::mem::take(&mut self.source_monitor);
         *self = Self::from_incoming(self.id, incoming, updated);
         self.created_unix_ms = created;
+        self.source_monitor = source_monitor;
     }
 }
 

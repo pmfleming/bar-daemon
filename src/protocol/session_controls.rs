@@ -1,8 +1,5 @@
 //! Media, workspace and update-refresh v1 contracts. Effects remain in their domains.
-use crate::{
-    api,
-    model::{MediaControlMode, MediaState, UpdateState},
-};
+use crate::model::{MediaControlMode, MediaState, UpdateState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -48,11 +45,6 @@ enum Reply<'a> {
         updates: &'a UpdateState,
     },
 }
-impl Reply<'_> {
-    fn envelope(self) -> Value {
-        api::success(serde_json::to_value(self).expect("serializable session control reply"))
-    }
-}
 #[derive(Clone, Copy)]
 pub(crate) enum ErrorCode {
     Media,
@@ -62,7 +54,7 @@ pub(crate) enum ErrorCode {
 }
 impl ErrorCode {
     pub(crate) fn reply(self, message: impl Into<String>) -> Value {
-        api::error(
+        super::error(
             match self {
                 Self::Media => "media-operation-failed",
                 Self::Workspace => "workspace-focus-failed",
@@ -75,50 +67,46 @@ impl ErrorCode {
 }
 pub(crate) fn preference(operation: &str, result: anyhow::Result<MediaState>) -> Value {
     match result {
-        Ok(state) => Reply::Media {
+        Ok(state) => super::serialized_success(Reply::Media {
             operation,
             player_id: state.active_player.as_deref(),
             media: &state,
-        }
-        .envelope(),
+        }),
         Err(error) => ErrorCode::Media.reply(error.to_string()),
     }
 }
 pub(crate) fn playback(operation: &str, result: anyhow::Result<String>) -> Value {
     match result {
-        Ok(player_id) => Reply::Playback {
+        Ok(player_id) => super::serialized_success(Reply::Playback {
             operation,
             player_id: &player_id,
-        }
-        .envelope(),
+        }),
         Err(error) => ErrorCode::Media.reply(error.to_string()),
     }
 }
 pub(crate) fn seek(operation: &str, offset_seconds: i64, result: anyhow::Result<String>) -> Value {
     match result {
-        Ok(player_id) => Reply::Seek {
+        Ok(player_id) => super::serialized_success(Reply::Seek {
             operation,
             player_id: &player_id,
             offset_seconds,
-        }
-        .envelope(),
+        }),
         Err(error) => ErrorCode::Media.reply(error.to_string()),
     }
 }
 pub(crate) fn workspace(request: &WorkspaceRequest, result: anyhow::Result<()>) -> Value {
     match result {
-        Ok(()) => Reply::Workspace {
+        Ok(()) => super::serialized_success(Reply::Workspace {
             operation: "workspace.focus",
             workspace_id: request.workspace_id,
             on_current_monitor: request.on_current_monitor,
-        }
-        .envelope(),
+        }),
         Err(error) => ErrorCode::Workspace.reply(error.to_string()),
     }
 }
 pub(crate) fn updates(result: anyhow::Result<UpdateState>) -> Value {
     match result {
-        Ok(state) => Reply::Updates { updates: &state }.envelope(),
+        Ok(state) => super::serialized_success(Reply::Updates { updates: &state }),
         Err(error) => ErrorCode::Updates.reply(error.to_string()),
     }
 }

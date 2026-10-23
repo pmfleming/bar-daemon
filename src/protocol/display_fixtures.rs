@@ -5,7 +5,6 @@ use super::{
     read_wire,
 };
 use crate::{
-    api,
     display_policy::{DisplayPolicy, contract_examples, layout::Preview},
     state::StateStore,
 };
@@ -94,7 +93,8 @@ pub(super) async fn fixture() -> Value {
             ),
             "displayPolicy.set" => (
                 serde_json::to_value(&states["policy"].policy).unwrap(),
-                api::decode_request::<DisplayPolicy>(json!({"unknown": true}), method).unwrap_err(),
+                super::decode_request::<DisplayPolicy>(json!({"unknown": true}), method)
+                    .unwrap_err(),
             ),
             _ => unreachable!(),
         };

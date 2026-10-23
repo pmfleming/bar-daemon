@@ -1,11 +1,8 @@
 //! v1 notification mutation DTOs. Keep legacy request names and error messages.
-use crate::{
-    activity::notifications::{
-        history::Position,
-        model::{DeleteConfirmation, NotificationState},
-        policy::AppPolicy,
-    },
-    api,
+use crate::activity::notifications::{
+    history::Position,
+    model::{DeleteConfirmation, NotificationState},
+    policy::AppPolicy,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -108,7 +105,7 @@ pub(crate) enum ErrorCode {
 }
 impl ErrorCode {
     pub(crate) fn reply(self, message: impl Into<String>) -> Value {
-        api::error(
+        super::error(
             match self {
                 Self::NativeRequired => "native-notifications-required",
                 Self::PolicyFailed => "notification-policy-failed",

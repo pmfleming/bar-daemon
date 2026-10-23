@@ -7,7 +7,7 @@ use shelllist_daemon_core::{
 };
 
 use super::{NAME, VERSION, stream};
-use crate::{api, model::BarSnapshot, state::DomainEvent};
+use crate::{model::BarSnapshot, state::DomainEvent};
 
 #[derive(Serialize)]
 struct SnapshotReply<'a> {
@@ -15,9 +15,7 @@ struct SnapshotReply<'a> {
 }
 
 pub(crate) fn snapshot(snapshot: &BarSnapshot) -> Value {
-    api::success(
-        serde_json::to_value(SnapshotReply { snapshot }).expect("serializable bar snapshot"),
-    )
+    super::serialized_success(SnapshotReply { snapshot })
 }
 
 enum Kind {

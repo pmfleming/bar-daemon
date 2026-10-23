@@ -4,7 +4,6 @@ use super::{
     sleep_wire::{self, Action, Failure, IdleRequest, KeepAwakeRequest},
 };
 use crate::{
-    api,
     model::PowerSleepState,
     sleep,
     sleep_policy::{SleepPolicy, SleepPolicyState, critical},
@@ -14,7 +13,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
 fn rejection<T: DeserializeOwned>(method: &str) -> Value {
-    api::decode_request::<T>(json!({"unexpected": true}), method)
+    super::decode_request::<T>(json!({"unexpected": true}), method)
         .err()
         .expect("unknown fields are rejected")
 }

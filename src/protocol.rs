@@ -76,6 +76,23 @@ const API: shelllist_daemon_core::ApiIdentity =
 pub(crate) fn success(data: Value) -> Value {
     shelllist_daemon_core::success(API, data)
 }
+
+/// Serialize typed wire DTOs at the protocol boundary, not in transport handlers.
+pub(crate) fn serialized_success(data: impl serde::Serialize) -> Value {
+    success(serde_json::to_value(data).expect("serializable bar reply"))
+}
+
+pub(crate) fn decode_request<T: serde::de::DeserializeOwned>(
+    params: Value,
+    method: &str,
+) -> Result<T, Value> {
+    serde_json::from_value(params).map_err(|value| {
+        error(
+            "validation-error",
+            format!("{method} parameters are invalid: {value}"),
+        )
+    })
+}
 pub(crate) fn error(code: &str, message: impl Into<String>) -> Value {
     shelllist_daemon_core::error(API, shelllist_daemon_core::ApiError::new(code, message))
 }

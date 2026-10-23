@@ -1,6 +1,6 @@
 //! v1 display control DTOs. Layout/focus decoding errors retain their domain codes.
 //! Keep legacy DTO names: Serde uses them in malformed-request messages.
-use crate::{api, display_policy::DisplayPolicyState};
+use crate::display_policy::DisplayPolicyState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -31,7 +31,7 @@ pub(crate) enum Failure {
 }
 impl Failure {
     pub(crate) fn reply(self, error: &anyhow::Error) -> Value {
-        api::error(
+        super::error(
             match self {
                 Self::Layout => "display-layout-failed",
                 Self::Focus => "display-focus-failed",
@@ -43,12 +43,9 @@ impl Failure {
 }
 pub(crate) fn reply(result: anyhow::Result<DisplayPolicyState>, failure: Failure) -> Value {
     match result {
-        Ok(state) => api::success(
-            serde_json::to_value(Reply {
-                display_policy: &state,
-            })
-            .expect("serializable display reply"),
-        ),
+        Ok(state) => super::serialized_success(Reply {
+            display_policy: &state,
+        }),
         Err(error) => failure.reply(&error),
     }
 }

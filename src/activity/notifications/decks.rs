@@ -65,41 +65,28 @@ impl Decks {
         let eligible = |n: &&ActiveNotification| n.toast_visible && (!dnd || n.dnd_bypass);
         // Reading freezes *all* decks on that monitor, not just the hovered app.
         // Acknowledged removals still compact; no arrival/replacement can steal a slot.
-        let mut next: Vec<_> = self
-            .published
-            .iter()
-            .filter(|d| self.reading(&d.monitor))
-            .filter_map(|deck| {
-                let records: Vec<_> = deck
-                    .records
-                    .iter()
-                    .filter_map(|old| {
-                        records
-                            .iter()
-                            .filter(eligible)
-                            .find(|n| {
-                                n.id == old.id
-                                    && n.source_monitor == deck.monitor
-                                    && n.created_unix_ms == old.created_unix_ms
-                            })
-                            .map(|n| {
-                                if n.updated_unix_ms == old.updated_unix_ms {
-                                    return n.clone();
-                                }
-                                // A replacement is an arrival, not an acknowledged
-                                // dismissal. Keep its old geometry inert until leave.
-                                let mut frozen = old.clone();
-                                frozen.interaction_blocked = true;
-                                frozen
-                            })
-                    })
-                    .collect();
-                (!records.is_empty()).then(|| ToastDeck {
-                    records,
-                    ..deck.clone()
-                })
-            })
-            .collect();
+        let mut next = std::mem::take(&mut self.published);
+        next.retain(|deck| self.reading(&deck.monitor));
+        next.retain_mut(|deck| {
+            deck.records.retain_mut(|old| {
+                let Some(current) = records.iter().filter(eligible).find(|n| {
+                    n.id == old.id
+                        && n.source_monitor == deck.monitor
+                        && n.created_unix_ms == old.created_unix_ms
+                }) else {
+                    return false;
+                };
+                if current.updated_unix_ms == old.updated_unix_ms {
+                    old.clone_from(current);
+                } else {
+                    // A replacement is an arrival, not an acknowledged dismissal.
+                    // Keep its old geometry inert until leave.
+                    old.interaction_blocked = true;
+                }
+                true
+            });
+            !deck.records.is_empty()
+        });
         let mut ordered: Vec<_> = records
             .iter()
             .filter(eligible)
@@ -134,7 +121,7 @@ impl Decks {
 #[cfg(test)]
 mod tests {
     use super::super::model::incoming;
-    use super::*;
+    use super::{ActiveNotification, BTreeMap, Decks};
 
     fn record(id: u32, app: &str) -> ActiveNotification {
         let mut n =
@@ -184,6 +171,11 @@ mod tests {
             frozen[0].records[0].updated_unix_ms,
             active[&1].updated_unix_ms
         );
+        assert_eq!(
+            decks.project(&active.values().cloned().collect::<Vec<_>>(), false),
+            frozen
+        );
+        assert!(decks.project(&[], false).is_empty());
         decks.expire(3_100, &mut active);
         assert!(decks.reading("DP-1"));
         decks.expire(3_200, &mut active);

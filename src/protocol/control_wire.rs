@@ -2,10 +2,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    api,
-    model::{AudioState, BrightnessState, PowerProfileState},
-};
+use crate::model::{BrightnessState, PowerProfileState};
 
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct ProfileRequest {
@@ -37,20 +34,12 @@ pub(crate) struct MuteRequest {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum Reply<'a> {
-    Audio {
-        audio: &'a AudioState,
-    },
     Brightness {
         brightness: &'a BrightnessState,
     },
     PowerProfile {
         power_profile: &'a PowerProfileState,
     },
-}
-impl Reply<'_> {
-    fn envelope(self) -> Value {
-        api::success(serde_json::to_value(self).expect("serializable control reply"))
-    }
 }
 
 /// Reuse the exact live decoder/result DTOs; examples do not define schemas.
@@ -80,45 +69,18 @@ pub(crate) fn policy(key: &str) -> shelllist_daemon_core::MethodPolicy {
     )
 }
 
-enum Failure<'a> {
-    Audio(&'a str),
-    Brightness(&'a anyhow::Error),
-    PowerProfile(&'a anyhow::Error),
-}
-impl Failure<'_> {
-    fn envelope(self) -> Value {
-        match self {
-            Self::Audio(message) => api::error("audio-operation-failed", message),
-            // Preserve existing formatting: brightness includes the error chain,
-            // while power-profile replies expose only the top-level message.
-            Self::Brightness(error) => {
-                api::error("brightness-operation-failed", format!("{error:#}"))
-            }
-            Self::PowerProfile(error) => {
-                api::error("power-profile-operation-failed", error.to_string())
-            }
-        }
-    }
-}
-
-pub(crate) fn audio(result: Result<AudioState, String>) -> Value {
-    match result {
-        Ok(state) => Reply::Audio { audio: &state }.envelope(),
-        Err(error) => Failure::Audio(&error).envelope(),
-    }
-}
 pub(crate) fn brightness(result: anyhow::Result<BrightnessState>) -> Value {
     match result {
-        Ok(state) => Reply::Brightness { brightness: &state }.envelope(),
-        Err(error) => Failure::Brightness(&error).envelope(),
+        Ok(state) => super::serialized_success(Reply::Brightness { brightness: &state }),
+        // Brightness includes the error chain; power-profile exposes only the top-level message.
+        Err(error) => super::error("brightness-operation-failed", format!("{error:#}")),
     }
 }
 pub(crate) fn power_profile(result: &anyhow::Result<PowerProfileState>) -> Value {
     match result {
-        Ok(state) => Reply::PowerProfile {
+        Ok(state) => super::serialized_success(Reply::PowerProfile {
             power_profile: state,
-        }
-        .envelope(),
-        Err(error) => Failure::PowerProfile(error).envelope(),
+        }),
+        Err(error) => super::error("power-profile-operation-failed", error.to_string()),
     }
 }

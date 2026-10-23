@@ -9,7 +9,6 @@ use crate::{
         history::{self, HistoryError, HistoryQuery},
         model::*,
     },
-    api,
     state::StateStore,
 };
 use serde_json::{Map, Value, json};
@@ -17,7 +16,7 @@ const EPOCH: &str = "contract-epoch";
 const REVISION: u64 = 7;
 const NOW: u64 = 1_700_001_000_000;
 fn envelope(result: Result<Value, Value>) -> Value {
-    result.map_or_else(std::convert::identity, api::success)
+    result.map_or_else(std::convert::identity, super::success)
 }
 
 pub(super) async fn fixture() -> Value {
@@ -111,7 +110,7 @@ pub(super) async fn fixture() -> Value {
         ),
     ] {
         let mut query: CenterQuery =
-            api::decode_request(params.clone(), "notifications.queryCenter").unwrap();
+            super::decode_request(params.clone(), "notifications.queryCenter").unwrap();
         query.normalize().unwrap();
         let page = center::project_at(
             records
@@ -137,7 +136,7 @@ pub(super) async fn fixture() -> Value {
     for key in ["history", "history-next"] {
         let params = json!({"query":"chat", "cursor":cursor, "anchor":null, "limit":2});
         let mut query: HistoryQuery =
-            api::decode_request(params.clone(), "notifications.queryHistory").unwrap();
+            super::decode_request(params.clone(), "notifications.queryHistory").unwrap();
         query.normalize().unwrap();
         let before = query.position(EPOCH, REVISION, NOW).unwrap();
         let page = history::page(
@@ -170,9 +169,9 @@ pub(super) async fn fixture() -> Value {
         "stale":query_wire::history_error(stale.validate_revision(EPOCH, REVISION).unwrap_err()),
         "busy":query_wire::history_error(HistoryError::Busy),
         "unavailable":query_wire::history_error(HistoryError::Unavailable(anyhow::anyhow!("History read unavailable"))),
-        "centerRejected":api::decode_request::<CenterQuery>(Value::Null, "notifications.queryCenter").err().unwrap(),
-        "historyRejected":api::decode_request::<HistoryQuery>(Value::Null, "notifications.queryHistory").err().unwrap(),
-        "listRejected":api::decode_request::<HistoryRequest>(Value::Null, "notifications.list").err().unwrap(),
+        "centerRejected":super::decode_request::<CenterQuery>(Value::Null, "notifications.queryCenter").err().unwrap(),
+        "historyRejected":super::decode_request::<HistoryQuery>(Value::Null, "notifications.queryHistory").err().unwrap(),
+        "listRejected":super::decode_request::<HistoryRequest>(Value::Null, "notifications.list").err().unwrap(),
         "listInvalid":HistoryRequest { before_history_id:Some(0), limit:50 }.bounded_limit().unwrap_err(),
         "listFailed":query_wire::list(Err(anyhow::anyhow!("History read unavailable"))).unwrap_err()
     }})

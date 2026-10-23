@@ -1,6 +1,5 @@
 //! Battery v1 requests and outcomes; hardware and persistence stay in the battery domain.
 use crate::{
-    api,
     battery::helper::ThresholdWriteResult,
     model::{BatteryHistoryState, BatteryProfileAction, BatteryState},
 };
@@ -63,7 +62,7 @@ pub(crate) enum ErrorCode {
     ValidationError,
 }
 pub(crate) fn error(code: ErrorCode, message: impl Into<String>) -> Value {
-    api::error(
+    super::error(
         match code {
             ErrorCode::ConfigFailed => "battery-config-failed",
             ErrorCode::NotPlugged => "battery-not-plugged",
@@ -98,18 +97,15 @@ pub(crate) fn response(
     operation: Option<(&str, ThresholdWriteResult)>,
 ) -> Value {
     match result {
-        Ok(battery) => api::success(
-            serde_json::to_value(BatteryReply {
-                battery,
-                operation: operation.map(|(battery_id, result)| ThresholdOutcome {
-                    battery_id,
-                    start_percent: result.actual_start_percent,
-                    end_percent: result.actual_end_percent,
-                    verified: result.verified,
-                }),
-            })
-            .expect("serializable battery reply"),
-        ),
+        Ok(battery) => super::serialized_success(BatteryReply {
+            battery,
+            operation: operation.map(|(battery_id, result)| ThresholdOutcome {
+                battery_id,
+                start_percent: result.actual_start_percent,
+                end_percent: result.actual_end_percent,
+                verified: result.verified,
+            }),
+        }),
         Err(value) => error(ErrorCode::RefreshFailed, value.to_string()),
     }
 }
@@ -118,7 +114,5 @@ pub(crate) fn history(history: BatteryHistoryState) -> Value {
     struct HistoryReply {
         history: BatteryHistoryState,
     }
-    api::success(
-        serde_json::to_value(HistoryReply { history }).expect("serializable battery history"),
-    )
+    super::serialized_success(HistoryReply { history })
 }

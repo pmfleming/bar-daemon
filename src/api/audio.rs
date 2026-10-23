@@ -15,10 +15,7 @@ pub(super) async fn dispatch(api: &ApiService, method: &str, params: Value) -> V
         Ok(request) => request.dispatch(api, None).await,
         Err(error) => return error,
     };
-    result.map_or_else(
-        |error| error,
-        |reply| super::success(serde_json::to_value(reply).expect("audio reply")),
-    )
+    result.map_or_else(std::convert::identity, crate::protocol::serialized_success)
 }
 
 impl AudioHandler for ApiService {

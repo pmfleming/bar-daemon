@@ -4,13 +4,14 @@ use super::{
 };
 use crate::{
     activity::{contract_examples, model::ActivityState},
-    api,
     state::StateStore,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 fn rejected<T: DeserializeOwned>(method: &str) -> Value {
-    api::decode_request::<T>(Value::Null, method).err().unwrap()
+    super::decode_request::<T>(Value::Null, method)
+        .err()
+        .unwrap()
 }
 
 pub(super) async fn fixture() -> Value {

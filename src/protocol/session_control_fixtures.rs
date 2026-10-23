@@ -4,7 +4,6 @@ use super::{
     session_controls::{self, ErrorCode, MediaRequest, WorkspaceRequest},
 };
 use crate::{
-    api,
     media::MediaService,
     model::{MediaControlMode, MediaPlayer, MediaState, UpdateState},
     state::StateStore,
@@ -88,7 +87,7 @@ pub(super) async fn fixture() -> Value {
         };
         cases.insert(operation.into(), json!({"method":"media.operation", "params":params, "success":success,
             "failed":ErrorCode::Media.reply("Player disappeared; command outcome unknown"),
-            "rejected":api::decode_request::<MediaRequest>(Value::Null, "media.operation").err().unwrap()}));
+            "rejected":super::decode_request::<MediaRequest>(Value::Null, "media.operation").err().unwrap()}));
     }
     let request = WorkspaceRequest {
         workspace_id: 2,
@@ -97,7 +96,7 @@ pub(super) async fn fixture() -> Value {
     cases.insert("workspace".into(), json!({"method":"workspace.focus", "params":request,
         "success":session_controls::workspace(&request, Ok(())),
         "failed":ErrorCode::Workspace.reply("Compositor reply lost; focus outcome unknown"),
-        "rejected":api::decode_request::<WorkspaceRequest>(Value::Null, "workspace.focus").err().unwrap()}));
+        "rejected":super::decode_request::<WorkspaceRequest>(Value::Null, "workspace.focus").err().unwrap()}));
     cases.insert("updates".into(), json!({"method":"updates.refresh", "params":{},
         "success":session_controls::updates(Ok(UpdateState { available:true, ..Default::default() })),
         "failed":ErrorCode::Updates.reply("Update state unavailable"), "rejected":null}));

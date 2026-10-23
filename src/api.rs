@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-pub(crate) use crate::protocol::{error, success, unsupported_method};
+pub(crate) use crate::protocol::{decode_request, error, success, unsupported_method};
 use crate::{
     activity::{ActivityService, notifications::service::NotificationService},
     media::MediaService,
     protocol,
     state::StateStore,
 };
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 macro_rules! request {
@@ -34,14 +33,6 @@ use self::{
 pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
 pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon2";
-pub(crate) fn decode_request<T: DeserializeOwned>(params: Value, method: &str) -> Result<T, Value> {
-    serde_json::from_value(params).map_err(|value| {
-        error(
-            "validation-error",
-            format!("{method} parameters are invalid: {value}"),
-        )
-    })
-}
 
 pub(crate) struct ApiService {
     state: StateStore,

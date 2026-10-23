@@ -1,11 +1,10 @@
 //! Conservative local extraction. Targets never come back from the UI and never
 //! pass through a shell; sender-defined actions retain their original semantics.
-use super::model::ActiveNotification;
 use anyhow::{Context, Result, ensure};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::LazyLock, time::Duration};
+use std::{sync::LazyLock, time::Duration};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ContextAction {
@@ -19,15 +18,25 @@ pub(super) enum Target {
     Number(String),
     Link(String),
     Join(String),
+    Focus(String),
 }
 impl Target {
-    pub(super) fn descriptor(&self) -> ContextAction {
-        let (key, label, icon) = match self {
+    pub(super) fn key(&self) -> &'static str {
+        self.metadata().0
+    }
+
+    fn metadata(&self) -> (&'static str, &'static str, &'static str) {
+        match self {
             Self::Code(_) => ("copy-code", "Copy code", "content_copy"),
             Self::Number(_) => ("copy-number", "Copy number", "content_copy"),
             Self::Link(_) => ("open-link", "Open link", "open_in_new"),
             Self::Join(_) => ("join", "Join", "videocam"),
-        };
+            Self::Focus(_) => ("focus", "Open application", "open_in_new"),
+        }
+    }
+
+    pub(super) fn descriptor(&self) -> ContextAction {
+        let (key, label, icon) = self.metadata();
         ContextAction {
             key: key.into(),
             label: label.into(),
@@ -39,43 +48,52 @@ static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[0-9]{4,8}\b").un
 static PHONE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\+[0-9][0-9 ()-]{6,24}[0-9]").unwrap());
 
-pub(super) fn extract(n: &ActiveNotification) -> Vec<Target> {
-    let text = format!("{}\n{}", n.summary, n.body);
+// Repeated identical targets are unambiguous; stop at the first distinct one.
+fn unique<T: PartialEq>(mut values: impl Iterator<Item = T>) -> Option<T> {
+    let first = values.next()?;
+    values.all(|value| value == first).then_some(first)
+}
+
+fn link(word: &str) -> Option<reqwest::Url> {
+    let candidate = word.trim_end_matches(['.', ',', ';', '!', ')', ']']);
+    if candidate.len() > 4096
+        || !candidate.starts_with("https://") && !candidate.starts_with("http://")
+    {
+        return None;
+    }
+    let url = reqwest::Url::parse(candidate).ok()?;
+    (url.host_str().is_some() && url.username().is_empty() && url.password().is_none())
+        .then_some(url)
+}
+
+fn meeting(url: &reqwest::Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    match url.host_str().unwrap_or_default() {
+        "meet.google.com" | "meet.jit.si" => url.path().len() > 1,
+        "teams.microsoft.com" | "teams.live.com" => url.path().starts_with("/l/meetup-join/"),
+        host if host == "zoom.us" || host.ends_with(".zoom.us") => {
+            url.path().starts_with("/j/") || url.path().starts_with("/my/")
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn extract(summary: &str, body: &str) -> Vec<Target> {
+    let text = format!("{summary}\n{body}");
     let lower = text.to_ascii_lowercase();
-    let mut result = Vec::new();
-    let mut urls = BTreeSet::new();
-    for word in text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'')) {
-        let candidate = word.trim_end_matches(['.', ',', ';', '!', ')', ']']);
-        if candidate.len() > 4096
-            || !candidate.starts_with("https://") && !candidate.starts_with("http://")
-        {
-            continue;
-        }
-        if let Ok(url) = reqwest::Url::parse(candidate)
-            && url.host_str().is_some()
-            && url.username().is_empty()
-            && url.password().is_none()
-        {
-            urls.insert(url.to_string());
-        }
-    }
-    if urls.len() == 1 {
-        let url = urls.into_iter().next().unwrap();
-        let parsed = reqwest::Url::parse(&url).unwrap();
-        let host = parsed.host_str().unwrap_or_default();
-        let meeting = parsed.scheme() == "https"
-            && (host == "meet.google.com" && parsed.path().len() > 1
-                || (host == "zoom.us" || host.ends_with(".zoom.us"))
-                    && (parsed.path().starts_with("/j/") || parsed.path().starts_with("/my/"))
-                || ["teams.microsoft.com", "teams.live.com"].contains(&host)
-                    && parsed.path().starts_with("/l/meetup-join/")
-                || host == "meet.jit.si" && parsed.path().len() > 1);
-        result.push(if meeting {
-            Target::Join(url)
-        } else {
-            Target::Link(url)
-        });
-    }
+    let words = text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''));
+    let mut result: Vec<_> = unique(words.filter_map(link))
+        .map(|url| {
+            if meeting(&url) {
+                Target::Join(url.into())
+            } else {
+                Target::Link(url.into())
+            }
+        })
+        .into_iter()
+        .collect();
     let code_context = [
         "verification code",
         "login code",
@@ -89,21 +107,20 @@ pub(super) fn extract(n: &ActiveNotification) -> Vec<Target> {
     .iter()
     .any(|s| lower.contains(s));
     // Links/numbers in a code message are not guessed as additional clipboard targets.
-    if code_context && !lower.contains("https://") && !lower.contains("http://") {
-        let candidates: BTreeSet<_> = CODE.find_iter(&text).map(|m| m.as_str()).collect();
-        if candidates.len() == 1 {
-            result.push(Target::Code((*candidates.first().unwrap()).into()));
-        }
-    } else if !code_context {
-        let numbers: BTreeSet<_> = PHONE
-            .find_iter(&text)
-            .map(|m| m.as_str())
-            .filter(|s| (8..=15).contains(&s.bytes().filter(u8::is_ascii_digit).count()))
-            .collect();
-        if numbers.len() == 1 {
-            result.push(Target::Number((*numbers.first().unwrap()).into()));
-        }
-    }
+    let clipboard = if !code_context {
+        unique(
+            PHONE
+                .find_iter(&text)
+                .map(|m| m.as_str())
+                .filter(|s| (8..=15).contains(&s.bytes().filter(u8::is_ascii_digit).count())),
+        )
+        .map(|number| Target::Number(number.into()))
+    } else if lower.contains("https://") || lower.contains("http://") {
+        None
+    } else {
+        unique(CODE.find_iter(&text).map(|m| m.as_str())).map(|code| Target::Code(code.into()))
+    };
+    result.extend(clipboard);
     result
 }
 
@@ -118,7 +135,7 @@ async fn daemon_call(
         let connection = zbus::Connection::session().await?;
         let proxy = zbus::Proxy::new(&connection, name, path, interface).await?;
         let response: String = proxy.call("Call", &(method, params.to_string())).await?;
-        let value: Value = serde_json::from_str(&response)?;
+        let mut value: Value = serde_json::from_str(&response)?;
         ensure!(
             value["ok"] == true,
             "{}",
@@ -126,7 +143,7 @@ async fn daemon_call(
                 .as_str()
                 .unwrap_or("Notification action failed")
         );
-        Ok(value["data"].clone())
+        Ok(value["data"].take())
     })
     .await
     .context("Notification action outcome unknown; do not automatically retry")?
@@ -139,6 +156,10 @@ pub(super) async fn execute(target: Target, seconds: u16) -> Result<bool> {
         seconds
     };
     match target {
+        Target::Focus(desktop) => {
+            focus(&desktop).await?;
+            Ok(false)
+        }
         Target::Code(text) | Target::Number(text) => {
             // Numbers also use the memory-only publisher, with no automatic expiry.
             let value = daemon_call(
@@ -178,7 +199,7 @@ pub(super) async fn execute(target: Target, seconds: u16) -> Result<bool> {
     }
 }
 
-pub(super) async fn focus(desktop: &str) -> Result<()> {
+async fn focus(desktop: &str) -> Result<()> {
     ensure!(
         !desktop.is_empty()
             && desktop.len() <= 1024
@@ -201,37 +222,49 @@ pub(super) async fn focus(desktop: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::incoming;
-    use super::*;
-    fn actions(body: &str) -> Vec<ContextAction> {
-        extract(&ActiveNotification::from_incoming(
-            1,
-            incoming("Chat", "", body),
-            1,
-        ))
-        .iter()
-        .map(Target::descriptor)
-        .collect()
-    }
+    use super::{Target, extract};
+
     #[test]
     fn extracts_only_unambiguous_targets_and_exact_meeting_hosts() {
-        assert_eq!(
-            actions("Your verification code is 001234")[0].key,
-            "copy-code"
+        for (body, expected) in [
+            ("Your verification code is 001234", &["copy-code"][..]),
+            ("OTP 001234 repeated 001234", &["copy-code"]),
+            ("Verification code 123456 or 654321", &[]),
+            ("Order 123456", &[]),
+            ("Call +31 20 123 4567", &["copy-number"]),
+            ("+31 20 123 4567 or +31 20 765 4321", &[]),
+            ("+1234567890123456", &[]),
+            ("https://meet.google.com/abc-defg-hij", &["join"]),
+            ("https://meet.google.com.evil.test/abc", &["open-link"]),
+            ("http://meet.google.com/abc", &["open-link"]),
+            ("https://meet.google.com/", &["open-link"]),
+            ("https://us02.zoom.us/j/123", &["join"]),
+            ("https://zoom.us/my/room", &["join"]),
+            ("https://notzoom.us/j/123", &["open-link"]),
+            ("https://teams.live.com/l/meetup-join/123", &["join"]),
+            ("https://meet.jit.si/room", &["join"]),
+            ("https://user:pass@example.com", &[]),
+            ("javascript:alert(1) file:///etc/passwd", &[]),
+            ("https://one.test https://two.test", &[]),
+            ("<https://ONE.test> https://one.test/", &["open-link"]),
+            ("OTP 123456 https://example.com", &["open-link"]),
+            ("OTP 123456 HTTPS://example.com", &[]),
+            (
+                "https://one.test +31 20 123 4567",
+                &["open-link", "copy-number"],
+            ),
+        ] {
+            let actions = extract("", body);
+            assert_eq!(
+                actions.iter().map(Target::key).collect::<Vec<_>>(),
+                expected,
+                "{body}"
+            );
+            assert!(actions.iter().all(|t| t.descriptor().key == t.key()));
+        }
+        assert!(extract("", &format!("https://example.com/{}", "a".repeat(4096))).is_empty());
+        assert!(
+            matches!(extract("Verification code", "001234").as_slice(), [Target::Code(code)] if code == "001234")
         );
-        assert!(actions("Verification code 123456 or 654321").is_empty());
-        assert!(actions("Order 123456").is_empty());
-        assert_eq!(actions("Call +31 20 123 4567")[0].key, "copy-number");
-        assert_eq!(
-            actions("https://meet.google.com/abc-defg-hij")[0].key,
-            "join"
-        );
-        assert_eq!(
-            actions("https://meet.google.com.evil.test/abc")[0].key,
-            "open-link"
-        );
-        assert!(actions("https://user:pass@example.com").is_empty());
-        assert!(actions("javascript:alert(1) file:///etc/passwd").is_empty());
-        assert!(actions("https://one.test https://two.test").is_empty());
     }
 }

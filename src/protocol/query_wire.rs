@@ -1,12 +1,9 @@
 //! Notification read bodies. NotificationApi owns the single outer envelope.
 use super::notification_wire::ErrorCode;
-use crate::{
-    activity::notifications::{
-        center::CenterPage,
-        history::{HistoryError, HistoryPage},
-        model::HistoryNotification,
-    },
-    api,
+use crate::activity::notifications::{
+    center::CenterPage,
+    history::{HistoryError, HistoryPage},
+    model::HistoryNotification,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,7 +44,7 @@ impl Reply {
     }
 }
 pub(crate) fn history_error(error: HistoryError) -> Value {
-    api::error(error.code(), error.message())
+    super::error(error.code(), error.message())
 }
 pub(crate) fn center(result: Result<CenterPage, HistoryError>) -> Result<Value, Value> {
     result
@@ -72,5 +69,5 @@ pub(crate) fn list(result: anyhow::Result<Vec<HistoryNotification>>) -> Result<V
             }
             .body()
         })
-        .map_err(|e| api::error("notification-history-failed", e.to_string()))
+        .map_err(|e| super::error("notification-history-failed", e.to_string()))
 }

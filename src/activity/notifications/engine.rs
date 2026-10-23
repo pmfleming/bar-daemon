@@ -57,9 +57,7 @@ impl EngineData {
     ) -> (ActiveNotification, Option<u32>) {
         let mut evicted = None;
         let mut stored = if let Some(mut existing) = self.active.remove(&id) {
-            let monitor = existing.source_monitor.clone();
             existing.replace_from(incoming, now);
-            existing.source_monitor = monitor;
             existing
         } else {
             if self.active.len() >= maximum_active
@@ -968,7 +966,8 @@ impl NotificationEngine {
             .context_effects
             .try_lock()
             .context("Notification action already pending")?;
-        let (record, seconds) = {
+        let (target, seconds) = {
+            use super::context_actions::Target;
             let _mutation = self.mutations.lock().await;
             let data = self.data.lock().await;
             let record = data
@@ -979,18 +978,17 @@ impl NotificationEngine {
                         && n.updated_unix_ms == updated
                         && n.expires_unix_ms.is_none_or(|until| until > unix_ms())
                 })
-                .context("Notification changed or expired")?
-                .clone();
-            (record, data.settings.code_expiry_seconds)
+                .context("Notification changed or expired")?;
+            let target = if key == "focus" {
+                Target::Focus(record.hints.desktop_entry.clone())
+            } else {
+                super::context_actions::extract(&record.summary, &record.body)
+                    .into_iter()
+                    .find(|t| t.key() == key)
+                    .context("Notification action unavailable")?
+            };
+            (target, data.settings.code_expiry_seconds)
         };
-        if key == "focus" {
-            super::context_actions::focus(&record.hints.desktop_entry).await?;
-            return Ok(false);
-        }
-        let target = super::context_actions::extract(&record)
-            .into_iter()
-            .find(|t| t.descriptor().key == key)
-            .context("Notification action unavailable")?;
         super::context_actions::execute(target, seconds).await
     }
 
@@ -1135,22 +1133,36 @@ impl NotificationEngine {
     }
 
     async fn publish_summary(&self) {
-        let workspaces = self.state.read(|s| s.workspaces.clone()).await;
-        let (summary, active) = {
-            let mut data = self.data.lock().await;
-            for n in data.active.values_mut() {
-                if !workspaces
+        // Copy routing identity only, not the workspace/window snapshot. Compute
+        // the fallback once, preserving compositor monitor order.
+        let (monitors, fallback) = self
+            .state
+            .read(|s| {
+                let monitors: Vec<_> = s
+                    .workspaces
                     .monitors
                     .iter()
-                    .any(|m| m.name == n.source_monitor)
-                {
-                    n.source_monitor = workspaces
-                        .focused_monitor
-                        .clone()
-                        .filter(|name| workspaces.monitors.iter().any(|m| &m.name == name))
-                        .or_else(|| workspaces.monitors.first().map(|m| m.name.clone()))
-                        .unwrap_or_default();
-                }
+                    .map(|m| m.name.clone())
+                    .collect();
+                let fallback = s
+                    .workspaces
+                    .focused_monitor
+                    .as_ref()
+                    .filter(|name| monitors.contains(name))
+                    .or_else(|| monitors.first())
+                    .cloned()
+                    .unwrap_or_default();
+                (monitors, fallback)
+            })
+            .await;
+        let (summary, active) = {
+            let mut data = self.data.lock().await;
+            for n in data
+                .active
+                .values_mut()
+                .filter(|n| !monitors.contains(&n.source_monitor))
+            {
+                n.source_monitor.clone_from(&fallback);
             }
             let visible = data
                 .active
@@ -1545,6 +1557,7 @@ mod tests {
         let old = record.updated_unix_ms;
         record.replace_from(notification("Verification code 123456", 0), old);
         assert!(record.updated_unix_ms > old);
+        assert_eq!(record.source_monitor, "DP-2");
     }
 
     #[tokio::test]

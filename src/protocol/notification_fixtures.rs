@@ -3,7 +3,6 @@
 use super::{notification_wire::*, read_wire};
 use crate::{
     activity::notifications::{model::*, policy::AppPolicy},
-    api,
     state::StateStore,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -14,7 +13,7 @@ fn value(value: impl Serialize) -> Value {
 }
 fn rejected<T: DeserializeOwned>(method: &str) -> Option<Value> {
     Some(
-        api::decode_request::<T>(Value::Null, method)
+        super::decode_request::<T>(Value::Null, method)
             .err()
             .expect("invalid request"),
     )
@@ -247,7 +246,7 @@ pub(super) async fn fixture() -> Value {
             }
             _ => None,
         };
-        replies.insert(key.into(), json!({"method": method, "params": params, "success": api::success(body.body()), "failed": error, "rejected": rejected, "stale": stale}));
+        replies.insert(key.into(), json!({"method": method, "params": params, "success": super::success(body.body()), "failed": error, "rejected": rejected, "stale": stale}));
     }
     let mut changes = store.subscribe();
     store.update_notifications(dnd).await;

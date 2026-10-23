@@ -7,7 +7,6 @@ use super::{
     read_wire,
 };
 use crate::{
-    api,
     battery::{
         self,
         config::{BatteryConfig, BatteryRuntimeState, OperationPhase},
@@ -22,7 +21,9 @@ use serde_json::{Map, Value, json};
 fn params<T: Serialize + serde::de::DeserializeOwned>(request: T, method: &str) -> (Value, Value) {
     (
         serde_json::to_value(request).unwrap(),
-        api::decode_request::<T>(Value::Null, method).err().unwrap(),
+        super::decode_request::<T>(Value::Null, method)
+            .err()
+            .unwrap(),
     )
 }
 fn observed(
@@ -246,6 +247,6 @@ pub(super) async fn fixture() -> Value {
         "operationCancelled": crate::daemon::battery_operations::status("battery-operation-example", None, true),
         "operationRestorationFailed": crate::daemon::battery_operations::status("battery-operation-example", Some(restoration_failed.clone()), false),
         "operationFinished": cases.iter().map(|(method, case)| (method.clone(), Value::Object(case.as_object().unwrap().iter().filter(|(_, response)| response.get("ok").is_some()).map(|(outcome, response)| (outcome.clone(), crate::daemon::battery_operations::status("battery-operation-example", Some(response.clone()), false))).collect()))).collect::<Map<_, _>>(),
-        "operationUnknown": crate::daemon::battery_operations::status("battery-operation-example", Some(crate::api::error("outcome-unknown", "Battery write outcome unknown; reconcile state")), false)
+        "operationUnknown": crate::daemon::battery_operations::status("battery-operation-example", Some(super::error("outcome-unknown", "Battery write outcome unknown; reconcile state")), false)
     })
 }

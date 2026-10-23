@@ -5,11 +5,10 @@ use serde_json::{Map, Value, json};
 
 use super::control_wire::{
     DeltaRequest, EnabledRequest, MuteRequest, PercentRequest, ProfileActionRequest,
-    ProfileRequest, audio, brightness, power_profile,
+    ProfileRequest, brightness, power_profile,
 };
-use crate::{
-    api,
-    model::{AudioState, BrightnessState, PowerProfile, PowerProfileAction, PowerProfileState},
+use crate::model::{
+    AudioState, BrightnessState, PowerProfile, PowerProfileAction, PowerProfileState,
 };
 
 #[derive(Serialize)]
@@ -23,7 +22,7 @@ struct Case {
 }
 
 fn rejection<T: DeserializeOwned>(method: &str, params: Value) -> (Option<Value>, Option<Value>) {
-    let reply = api::decode_request::<T>(params.clone(), method)
+    let reply = super::decode_request::<T>(params.clone(), method)
         .err()
         .expect("invalid example must be rejected");
     (Some(params), Some(reply))
@@ -86,9 +85,12 @@ pub(super) fn fixture() -> Value {
             method.into(),
             case(
                 params,
-                audio(Ok(state)),
-                audio(Ok(limited)),
-                audio(Err("PipeWire disconnected before readback".into())),
+                super::serialized_success(super::audio_wire::Reply::Audio { audio: state }),
+                super::serialized_success(super::audio_wire::Reply::Audio { audio: limited }),
+                super::error(
+                    "audio-operation-failed",
+                    "PipeWire disconnected before readback",
+                ),
                 rejected,
             ),
         );

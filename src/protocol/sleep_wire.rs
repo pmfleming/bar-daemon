@@ -1,5 +1,5 @@
 //! v1 sleep replies. Publishing must retain the store-owned operation and resume generation.
-use crate::{api, model::PowerSleepState, sleep_policy::SleepPolicyState, state::StateStore};
+use crate::{model::PowerSleepState, sleep_policy::SleepPolicyState, state::StateStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -62,7 +62,7 @@ impl Failure {
             Self::CriticalCancel => "critical-battery-cancel-failed",
             Self::Automatic => "automatic-sleep-failed",
         };
-        api::error(code, format!("{error:#}"))
+        super::error(code, format!("{error:#}"))
     }
 }
 
@@ -74,24 +74,18 @@ pub(crate) async fn publish(
     store.update_power_sleep(state).await;
     store
         .read(|s| {
-            api::success(
-                serde_json::to_value(SleepReply {
-                    power_sleep: &s.power_sleep,
-                    operation: action,
-                })
-                .expect("serializable sleep reply"),
-            )
+            super::serialized_success(SleepReply {
+                power_sleep: &s.power_sleep,
+                operation: action,
+            })
         })
         .await
 }
 
 pub(crate) fn policy(state: &SleepPolicyState) -> Value {
-    api::success(
-        serde_json::to_value(PolicyReply {
-            sleep_policy: state,
-        })
-        .expect("serializable sleep policy reply"),
-    )
+    super::serialized_success(PolicyReply {
+        sleep_policy: state,
+    })
 }
 pub(crate) fn policy_result(result: anyhow::Result<SleepPolicyState>, failure: Failure) -> Value {
     match result {

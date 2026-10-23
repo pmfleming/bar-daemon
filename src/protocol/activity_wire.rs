@@ -1,8 +1,5 @@
 //! Activity/todo v1 boundary. Refresh acceptance is not provider completion.
-use crate::{
-    activity::model::{ActivityRange, ActivityState, TodoItem},
-    api,
-};
+use crate::activity::model::{ActivityRange, ActivityState, TodoItem};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -59,11 +56,6 @@ enum Reply<'a> {
         deleted: &'a str,
     },
 }
-impl Reply<'_> {
-    fn envelope(self) -> Value {
-        api::success(serde_json::to_value(self).expect("serializable activity reply"))
-    }
-}
 #[derive(Clone, Copy)]
 pub(crate) enum Failure {
     Query,
@@ -73,7 +65,7 @@ pub(crate) enum Failure {
 }
 impl Failure {
     pub(crate) fn reply(self, error: anyhow::Error) -> Value {
-        api::error(
+        super::error(
             match self {
                 Self::Query => "activity-query-failed",
                 Self::Create => "todo-create-failed",
@@ -86,31 +78,29 @@ impl Failure {
 }
 pub(crate) fn range(result: anyhow::Result<ActivityRange>) -> Value {
     match result {
-        Ok(activity_range) => Reply::Range {
+        Ok(activity_range) => super::serialized_success(Reply::Range {
             activity_range: &activity_range,
-        }
-        .envelope(),
+        }),
         Err(error) => Failure::Query.reply(error),
     }
 }
 pub(crate) fn refreshed(activity: ActivityState) -> Value {
-    Reply::Refresh {
+    super::serialized_success(Reply::Refresh {
         activity: &activity,
         operation: RefreshOperation {
             state: RefreshState::Accepted,
         },
-    }
-    .envelope()
+    })
 }
 pub(crate) fn todo(result: anyhow::Result<TodoItem>, failure: Failure) -> Value {
     match result {
-        Ok(todo) => Reply::Todo { todo: &todo }.envelope(),
+        Ok(todo) => super::serialized_success(Reply::Todo { todo: &todo }),
         Err(error) => failure.reply(error),
     }
 }
 pub(crate) fn deleted(id: String, result: anyhow::Result<()>) -> Value {
     match result {
-        Ok(()) => Reply::Deleted { deleted: &id }.envelope(),
+        Ok(()) => super::serialized_success(Reply::Deleted { deleted: &id }),
         Err(error) => Failure::Delete.reply(error),
     }
 }

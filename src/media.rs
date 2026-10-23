@@ -573,7 +573,11 @@ async fn raise_player(connection: &zbus::Connection, player_id: &str) -> Result<
         };
         let destination = owner.as_ref().map_or(player_id, |owner| owner.as_str());
         let proxy = zbus::Proxy::new(connection, destination, PATH, ROOT_INTERFACE).await?;
-        if !proxy.get_property::<bool>("CanRaise").await.unwrap_or(false) {
+        if !proxy
+            .get_property::<bool>("CanRaise")
+            .await
+            .unwrap_or(false)
+        {
             bail!("media player does not support showing its application");
         }
         proxy.call_method("Raise", &()).await?;

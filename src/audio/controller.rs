@@ -135,7 +135,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[tokio::test]
-    async fn failed_readback_preserves_state_and_uses_the_control_error_contract() {
+    async fn failed_readback_preserves_state_and_returns_the_error() {
         let state = StateStore::default();
         let before = AudioState {
             available: true,
@@ -153,8 +153,8 @@ mod tests {
         )
         .await;
         assert_eq!(
-            crate::protocol::control_wire::audio(response.await.unwrap()),
-            crate::protocol::control_contract_fixture()["audio.setMuted"]["failed"]
+            response.await.unwrap(),
+            Err("PipeWire disconnected before readback".into())
         );
         assert_eq!(state.snapshot().await.audio, before);
         assert!(events.try_recv().is_err());
