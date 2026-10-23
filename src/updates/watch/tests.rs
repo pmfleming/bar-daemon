@@ -1,8 +1,9 @@
-use super::{DEFAULT_WATCH_LIMIT, EventPolicy, Watch};
+use super::{EventPolicy, Watch};
 use notify::{
     Event, EventKind,
     event::{AccessKind, AccessMode, CreateKind, Flag, ModifyKind, RemoveKind, RenameMode},
 };
+use shelllist_daemon_core::watch::DEFAULT_WATCH_LIMIT;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, symlink},

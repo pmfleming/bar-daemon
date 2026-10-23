@@ -5,8 +5,9 @@ each directory has a derived `rqlens.toml`, RQLens reports, and validation logs.
 The local analyzer executable is pinned by copying the previous review's binary.
 Existing `src/activity/notifications/mod.rs` edits are left uncommitted.
 
-Metrics below sum functions in the named files outside `::tests::` modules,
-including new helpers and removed functions. Effort is rounded Halstead effort,
+Per-step metrics sum functions in the named files outside test modules,
+including new helpers and removed functions. The combined comparison also excludes
+external `_tests` modules from its outside-test-module subtotal. Effort is rounded Halstead effort,
 not elapsed time. Macro inventories remain partial; this is not certification.
 No policy thresholds or exclusions are changed.
 
@@ -87,3 +88,64 @@ scope isolation, and repeated annotation. Existing cancellation, equal-time,
 retention, partial-publication, and recovery tests pass. Targeted update tests,
 formatting, strict all-target Clippy, and full fixtures pass (230 tests, zero
 ignored in the full run).
+
+## 5. Explicit timezone observation lifecycle
+
+`timezone.rs` shares a `Cached<T>` lifecycle between timezone and accepted-location
+reads: pending admission, retained verified value, last error, bounded retry, and
+success reset. Idle read futures are never polled. `Observations` owns projection
+and status-revision invalidation; the monitor retains subscribe-before-read ordering,
+sequential reads, owner-change handling, and local time ticks. A failed timezone
+read clears availability without discarding cached location; location-reader errors
+still do not override public status or the timezone error.
+
+Production cognitive/cyclomatic/effort: **40 / 77 / 267,733 → 31 / 79 / 224,428**.
+`monitor_connection` changes **16 / 17 → 3 / 10** cognitive/cyclomatic. Paused-clock
+tests exercise idle-future laziness, exponential retry capping/reset, retained values,
+and projection/invalidation distinctions. The private D-Bus test continues to check
+idle service behavior, revision changes, recovery, owner changes, and torn reads.
+
+The final architecture run also prompted a small import follow-up in watcher tests:
+import `DEFAULT_WATCH_LIMIT` directly from its defining dependency instead of via a
+parent import. After forcing a fresh semantic cache, every collected reference
+resolves. No rule is waived or disabled to accomplish this.
+
+Targeted timezone tests, formatting, strict all-target Clippy, doctests, cargo-shear,
+`git diff --check`, and full private fixtures pass. The final fixture run executes
+**232 tests with zero ignored** (200 library, 30 location-daemon, two integration).
+
+## Combined evidence and trade-offs
+
+Across all 13 changed Rust files, baseline `00` versus final `05`:
+
+| Signal | Before | After |
+| --- | ---: | ---: |
+| Function cognitive sum, including tests | 259 | 236 |
+| Function cyclomatic sum, including tests | 541 | 541 |
+| Function Halstead effort, including tests | 3,514,872 | 3,417,292 |
+| Outside-test-module cognitive sum | 225 | 193 |
+| Outside-test-module cyclomatic sum | 464 | 449 |
+| Outside-test-module Halstead effort | 2,602,003 | 2,271,407 |
+| Whole-file Halstead effort, including tests/data | 15,436,994 | 18,094,363 |
+| Project duplicated lines | 1,602 | 1,599 |
+| Project escape-hatch occurrences | 39 | 36 |
+| Literal `.clone()` calls, `src/` + `tests/` | 652 | 652 |
+| Physical Rust lines, `src/` + `tests/` | 42,945 | 43,365 |
+
+The explicit state/types and broader regression coverage add **420 Rust lines**;
+this pass does not achieve an overall LOC reduction. Whole-file effort also rises:
+Halstead is nonlinear and file totals include table declarations and added tests,
+unlike per-function totals. Helpers and tests are not omitted from their respective
+aggregate measurements. Raw clone-call counts are unchanged, although production
+recovery-key string allocations and deep watcher path-list copies are removed.
+
+Architecture evidence uses frozen before/after project sources against identical
+frozen local dependencies in `architecture/{before,after}`. All three configured
+rules have zero observed violations and zero unresolved collected references;
+macro/impl inventories remain partial. `read_wire` reach rises **11 → 12** and the
+new generic cache is reused by both readers. Observed timezone/watch leverage scores
+rise **20 → 30** and **10 → 20**, but these gains include explicit test dependencies,
+not new production consumers. Protocol locality risk rises **52.5 → 55.5** with the
+new authoritative descriptor dependency; state risk rises **48 → 48.75**. Therefore
+no across-the-board module-locality improvement is claimed. Correct ownership and
+within-module reuse, rather than graph-score manipulation, motivate these changes.

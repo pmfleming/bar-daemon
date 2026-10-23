@@ -3,7 +3,7 @@ use std::{path::Path, time::Duration};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Offset, Utc};
 use chrono_tz::Tz;
-use futures::StreamExt;
+use futures::{StreamExt, TryFutureExt};
 use tokio::{
     io::AsyncReadExt,
     time::{Instant, MissedTickBehavior, interval_at, sleep},
@@ -84,6 +84,86 @@ struct PublicStatus {
     revision: Option<u64>,
 }
 
+// Both readers retain verified values on failure and only retry when invalidated or due.
+struct Cached<T> {
+    value: T,
+    error: Option<String>,
+    retry: Retry,
+    pending: bool,
+}
+impl<T> Cached<T> {
+    fn new(value: T) -> Self {
+        Self {
+            value,
+            error: None,
+            retry: Retry::default(),
+            pending: true,
+        }
+    }
+
+    async fn refresh(
+        &mut self,
+        read: impl std::future::Future<Output = Result<T>>,
+        base: Duration,
+    ) -> bool {
+        if !self.pending {
+            return false;
+        }
+        let result = read.await;
+        self.pending = false;
+        self.retry.completed(result.is_ok(), base);
+        match result {
+            Ok(value) => {
+                self.value = value;
+                self.error = None;
+            }
+            Err(error) => {
+                tracing::debug!(%error, "timezone observation unavailable; retaining verified data");
+                self.error = Some(error.to_string());
+            }
+        }
+        true
+    }
+}
+
+type LocationSnapshot = (Option<AcceptedLocation>, Option<LocationControl>);
+struct Observations {
+    zone: Cached<Option<String>>,
+    location: Cached<LocationSnapshot>,
+    status: PublicStatus,
+}
+impl Observations {
+    fn project(&self, now: DateTime<Utc>) -> TimezoneState {
+        let mut state = self
+            .zone
+            .value
+            .as_deref()
+            .and_then(|name| state_for_timezone(name, now).ok())
+            .unwrap_or_default();
+        // Cached timezone data is useful for recovery, but a failed read is not verified.
+        state.available &= self.zone.error.is_none();
+        state.error = self
+            .zone
+            .error
+            .clone()
+            .or_else(|| self.status.message.clone());
+        state.accepted_location = self.location.value.0.clone();
+        state.location_control = self.location.value.1.clone();
+        state
+    }
+
+    fn update_status(&mut self, next: PublicStatus) -> bool {
+        if next == self.status {
+            return false;
+        }
+        // Revisions catch accepted updates even if checking -> empty happened between polls.
+        // A same-revision message change is presentation only; legacy messages still work.
+        self.location.pending |= next.revision != self.status.revision || next.revision.is_none();
+        self.status = next;
+        true
+    }
+}
+
 async fn monitor_connection(
     connection: &zbus::Connection,
     store: &StateStore,
@@ -105,61 +185,32 @@ async fn monitor_connection(
     let mut local_tick = interval_at(Instant::now() + timing.local, timing.local);
     status_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     local_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut status = location_status(status_path).await;
-    let mut zone: Option<String> = None;
-    let mut zone_error = None;
-    let mut accepted = store.read(|s| s.timezone.accepted_location.clone()).await;
-    let mut location_control = None;
-    let mut zone_retry = Retry::default();
-    let mut accepted_retry = Retry::default();
-    let (mut read_zone, mut read_accepted, mut dirty) = (true, true, true);
+    let mut observed = Observations {
+        status: location_status(status_path).await,
+        zone: Cached::new(None),
+        location: Cached::new((
+            store.read(|s| s.timezone.accepted_location.clone()).await,
+            None,
+        )),
+    };
+    let mut dirty = true;
     loop {
-        if read_zone {
-            let result = read_timezone(connection).await;
-            zone_retry.completed(result.is_ok(), timing.retry);
-            match result {
-                Ok(name) => {
-                    zone = Some(name);
-                    zone_error = None;
-                }
-                Err(error) => {
-                    zone_error = Some(error.to_string());
-                }
-            }
-            dirty = true;
-            read_zone = false;
-        }
-        if read_accepted {
-            let result = read_location(connection).await;
-            accepted_retry.completed(result.is_ok(), timing.retry);
-            match result {
-                Ok(snapshot) => (accepted, location_control) = snapshot,
-                Err(error) => {
-                    tracing::debug!(%error, "accepted location reader unavailable; retaining last verified fix")
-                }
-            }
-            dirty = true;
-            read_accepted = false;
-        }
+        dirty |= observed
+            .zone
+            .refresh(read_timezone(connection).map_ok(Some), timing.retry)
+            .await;
+        dirty |= observed
+            .location
+            .refresh(read_location(connection), timing.retry)
+            .await;
         if dirty {
-            let mut state = zone
-                .as_deref()
-                .and_then(|name| state_for_timezone(name, Utc::now()).ok())
-                .unwrap_or_default();
-            // Retain cached data for recovery, but don't claim a failed read is verified.
-            if zone_error.is_some() {
-                state.available = false;
-            }
-            state.error = zone_error.clone().or_else(|| status.message.clone());
-            state.accepted_location = accepted.clone();
-            state.location_control = location_control.clone();
-            store.update_timezone(state).await;
+            store.update_timezone(observed.project(Utc::now())).await;
             dirty = false;
         }
         tokio::select! {
             signal = changes.next() => {
                 let signal = signal.context("timedate1 property stream ended")?;
-                read_zone |= timezone_changed(&signal)?;
+                observed.zone.pending |= timezone_changed(&signal)?;
             }
             signal = owners.next() => {
                 let signal = signal.context("D-Bus owner stream ended")?;
@@ -167,25 +218,15 @@ async fn monitor_connection(
                 // Idle timedated disappearance is normal, not an error or reason
                 // to reactivate it. Re-read when an external caller starts it.
                 if args.new_owner().as_ref().is_some() {
-                    match args.name().as_str() {
-                        BUS => read_zone = true,
-                        LOCATION => read_accepted = true,
-                        _ => {},
-                    }
+                    observed.zone.pending |= args.name().as_str() == BUS;
+                    observed.location.pending |= args.name().as_str() == LOCATION;
                 }
             }
             _ = local_tick.tick() => dirty = true,
             _ = status_poll.tick() => {
-                let next = location_status(status_path).await;
-                if next != status {
-                    // Revisions catch accepted updates even if checking -> empty
-                    // occurred entirely between polls. Legacy messages still work.
-                    read_accepted |= next.revision != status.revision || next.revision.is_none();
-                    status = next;
-                    dirty = true;
-                }
-                read_zone |= zone_retry.ready();
-                read_accepted |= accepted_retry.ready();
+                dirty |= observed.update_status(location_status(status_path).await);
+                observed.zone.pending |= observed.zone.retry.ready();
+                observed.location.pending |= observed.location.retry.ready();
             }
         }
     }
@@ -203,9 +244,7 @@ fn timezone_changed(signal: &zbus::Message) -> Result<bool> {
 
 // Read the control revision on both sides of the accepted fix. An older service
 // without GetControl remains supported; a torn modern snapshot is retried.
-async fn read_location(
-    connection: &zbus::Connection,
-) -> Result<(Option<AcceptedLocation>, Option<LocationControl>)> {
+async fn read_location(connection: &zbus::Connection) -> Result<LocationSnapshot> {
     let control = read_control(connection).await.ok();
     let location = accepted_location(connection).await;
     if let Some(before) = &control {

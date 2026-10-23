@@ -1,9 +1,18 @@
-use super::*;
-use crate::model::LocationSource;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use super::{
+    BUS, Cached, LOCATION, Observations, PATH, PublicStatus, Timing, monitor_connection,
+    parse_accepted_location, parse_location_status, read_location, state_for_timezone,
 };
+use crate::{model::LocationSource, state::StateStore};
+use chrono::{DateTime, Utc};
+use std::{
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use tokio::time::sleep;
 
 fn accepted_json(source: &str, latitude: f64) -> String {
     serde_json::json!({"timezone":"Europe/Dublin", "latitude":latitude, "longitude":-6.2,
@@ -100,6 +109,81 @@ fn cached_zone_recomputes_dst_and_fractional_offset_locally() {
             .utc_offset_seconds,
         20700
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cached_reader_is_lazy_retains_verified_data_and_resets_bounded_backoff() {
+    let mut cached = Cached::new("verified");
+    let base = Duration::from_secs(2);
+    for seconds in [2, 4, 8, 16, 32, 64, 128, 256, 300, 300] {
+        assert!(
+            cached
+                .refresh(async { Err(anyhow::anyhow!("offline")) }, base)
+                .await
+        );
+        assert_eq!(cached.value, "verified");
+        assert_eq!(cached.error.as_deref(), Some("offline"));
+        assert!(!cached.pending && !cached.retry.ready());
+        assert!(
+            !cached
+                .refresh(async { panic!("idle reader was polled") }, base)
+                .await
+        );
+        let delay = Duration::from_secs(seconds);
+        assert_eq!(
+            cached.retry.due.unwrap() - tokio::time::Instant::now(),
+            delay
+        );
+        tokio::time::advance(delay).await;
+        cached.pending = cached.retry.ready();
+        assert!(cached.pending);
+    }
+    assert!(cached.refresh(async { Ok("updated") }, base).await);
+    assert_eq!(cached.value, "updated");
+    assert!(cached.error.is_none() && cached.retry.due.is_none());
+    assert_eq!(cached.retry.failures, 0);
+}
+
+#[test]
+fn observation_projection_and_status_keep_availability_and_invalidation_distinct() {
+    let mut observed = Observations {
+        zone: Cached::new(Some("Europe/Dublin".into())),
+        location: Cached::new((
+            parse_accepted_location(&accepted_json("ip", 53.3)).unwrap(),
+            None,
+        )),
+        status: PublicStatus {
+            message: Some("Checking".into()),
+            revision: Some(1),
+        },
+    };
+    observed.zone.error = Some("timezone offline".into());
+    observed.location.error = Some("location offline".into());
+    let now = "2026-10-20T12:00:00Z".parse().unwrap();
+    let state = observed.project(now);
+    assert!(!state.available);
+    assert_eq!(state.error.as_deref(), Some("timezone offline"));
+    assert_eq!(state.accepted_location.unwrap().latitude, 53.3);
+    observed.zone.error = None;
+    let state = observed.project(now);
+    assert!(state.available);
+    assert_eq!(state.error.as_deref(), Some("Checking"));
+    observed.location.pending = false;
+    assert!(observed.update_status(PublicStatus {
+        message: None,
+        revision: Some(1)
+    }));
+    assert!(!observed.location.pending);
+    assert!(observed.update_status(PublicStatus {
+        message: None,
+        revision: Some(2)
+    }));
+    assert!(observed.location.pending);
+    assert!(!observed.update_status(observed.status.clone()));
+    assert!(observed.location.pending); // Presentation must not cancel a pending read.
+    observed.location.pending = false;
+    assert!(observed.update_status(PublicStatus::default()));
+    assert!(observed.location.pending); // Legacy status without a revision still invalidates.
 }
 
 #[derive(Default)]
