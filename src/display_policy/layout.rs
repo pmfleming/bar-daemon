@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+mod draft;
 mod outputs;
 pub(super) use outputs::serialize_outputs;
 
@@ -427,6 +428,7 @@ async fn apply_setting<B: Backend>(
 #[serde(deny_unknown_fields)]
 pub(crate) struct Preview {
     pub baseline: String,
+    #[serde(deserialize_with = "draft::decode")]
     pub outputs: Vec<Setting>,
 }
 
@@ -505,6 +507,7 @@ async fn preview_at<B: Backend>(
     let previous = Layout::observed(&outputs);
     // Reject a non-recoverable snapshot before touching the compositor.
     previous.validate(&outputs, true)?;
+    draft::validate_arrangement(&proposed, &previous)?;
     let id = SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_nanos()

@@ -158,6 +158,7 @@ async fn source_unplug_promotes_surviving_mirrors_for_rollback_and_saved_layouts
         if !saved_layout {
             let mut extended = Layout::observed(&f.backend.outputs.borrow());
             extended.outputs[1].mirror_of.clear();
+            extended.outputs[1].x = 1536;
             f.preview(extended).await.unwrap();
         }
         f.backend.outputs.borrow_mut().remove(0);

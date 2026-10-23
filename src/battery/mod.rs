@@ -21,6 +21,7 @@ pub(crate) mod authorization;
 pub(crate) mod config;
 pub(crate) mod derived;
 mod history;
+pub(crate) mod history_chart;
 pub(crate) mod levels;
 mod model;
 mod monitor;

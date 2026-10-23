@@ -1095,6 +1095,9 @@
       },
       {
         "name": "battery.history",
+        "optional_params": {
+          "hours": "6, 24 or 168 observed hours; default 6"
+        },
         "params": {},
         "result": "history"
       },

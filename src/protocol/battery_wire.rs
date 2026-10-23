@@ -110,9 +110,27 @@ pub(crate) fn response(
     }
 }
 pub(crate) fn history(history: BatteryHistoryState) -> Value {
+    history_window(history, 6)
+}
+
+pub(crate) fn history_window(history: BatteryHistoryState, hours: u16) -> Value {
+    #[derive(Serialize)]
+    struct HistoryView {
+        #[serde(flatten)]
+        history: BatteryHistoryState,
+        hours: u16,
+        chart: crate::battery::history_chart::Chart,
+    }
     #[derive(Serialize)]
     struct HistoryReply {
-        history: BatteryHistoryState,
+        history: HistoryView,
     }
-    super::serialized_success(HistoryReply { history })
+    let chart = crate::battery::history_chart::project(&history, hours);
+    super::serialized_success(HistoryReply {
+        history: HistoryView {
+            history,
+            hours,
+            chart,
+        },
+    })
 }

@@ -58,8 +58,8 @@ pub(super) async fn fixture() -> Value {
         ("displayPolicy.set", "policy", Failure::Policy),
     ] {
         let (params, rejected) = match method {
-            "displayLayout.preview" => (
-                serde_json::to_value(Preview {
+            "displayLayout.preview" => {
+                let normalized = serde_json::to_value(Preview {
                     baseline: states["initial"].baseline.clone(),
                     outputs: states["preview"]
                         .layout
@@ -70,9 +70,27 @@ pub(super) async fn fixture() -> Value {
                         .outputs
                         .clone(),
                 })
-                .unwrap(),
-                rejected::<Preview>(failure),
-            ),
+                .unwrap();
+                let mut draft = normalized.clone();
+                let observed = serde_json::to_value(&states["initial"]).unwrap();
+                for setting in draft["outputs"].as_array_mut().unwrap() {
+                    let output = observed["outputs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|o| o["name"] == setting["name"])
+                        .unwrap();
+                    for key in ["modes", "internal", "width", "height"] {
+                        setting[key] = output[key].clone();
+                    }
+                }
+                assert_eq!(
+                    serde_json::to_value(serde_json::from_value::<Preview>(draft.clone()).unwrap())
+                        .unwrap(),
+                    normalized
+                );
+                (draft, rejected::<Preview>(failure))
+            }
             "displayLayout.confirm" | "displayLayout.revert" => (
                 serde_json::to_value(Token {
                     id: "trial-example".into(),
@@ -111,5 +129,11 @@ pub(super) async fn fixture() -> Value {
             "invalid_params": {"unknown": true}, "rejected": rejected, "recovery": state,
         }));
     }
-    json!({"snapshots": snapshots, "events": events, "replies": replies})
+    let mut invalid_draft = replies["displayLayout.preview"]["params"].clone();
+    invalid_draft["outputs"][0]["scale"] = json!("");
+    let error = serde_json::from_value::<Preview>(invalid_draft.clone())
+        .err()
+        .unwrap();
+    json!({"snapshots": snapshots, "events": events, "replies": replies,
+        "invalidDraft": {"params":invalid_draft, "reply":Failure::Layout.reply(&error.into())}})
 }

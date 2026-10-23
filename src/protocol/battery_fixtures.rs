@@ -242,7 +242,16 @@ pub(super) async fn fixture() -> Value {
         read_wire::Event::changed("subscription-example", receiver.recv().await.unwrap())
             .into_value(),
     );
-    json!({"snapshot":snapshot, "cases":cases, "history":battery_wire::history(base.history), "events":events, "restorationFailed":restoration_failed,
+    let windows: Map<String, Value> = [6, 24, 168]
+        .into_iter()
+        .map(|hours| {
+            (
+                hours.to_string(),
+                battery_wire::history_window(base.history.clone(), hours),
+            )
+        })
+        .collect();
+    json!({"snapshot":snapshot, "cases":cases, "windows":windows, "history":battery_wire::history(base.history), "events":events, "restorationFailed":restoration_failed,
         "operationStarted": crate::daemon::battery_operations::started("battery-operation-example"),
         "operationCancelled": crate::daemon::battery_operations::status("battery-operation-example", None, true),
         "operationRestorationFailed": crate::daemon::battery_operations::status("battery-operation-example", Some(restoration_failed.clone()), false),

@@ -263,7 +263,7 @@ pub fn registry() -> Value {
             audio_wire::Method::SetInputMuted.registry_entry(),
             control_wire::contract::<control_wire::DeltaRequest, crate::model::BrightnessState>("brightness.adjust", "brightness", json!({"delta_percent": 5})),
             control_wire::contract::<control_wire::PercentRequest, crate::model::BrightnessState>("brightness.set", "brightness", json!({"percent": 50})),
-            { "name": "battery.history", "params": {}, "result": "history" },
+            { "name": "battery.history", "params": {}, "optional_params": {"hours": "6, 24 or 168 observed hours; default 6"}, "result": "history" },
             { "name": "battery.operation.start", "params": { "method": "battery.setProtection", "params": { "battery_id": "BAT0", "enabled": true } }, "result": "operation", "execution": { "mode": "operation", "ack_budget_ms": 1000, "budget_ms": 300000, "owner_scoped": true, "replay": "never" } },
             { "name": "battery.operation.status", "params": { "operation_id": "battery-operation-1" }, "result": "operation" },
             { "name": "battery.operation.cancel", "params": { "operation_id": "battery-operation-1" }, "result": "operation", "cancellation": "intent-not-rollback" },

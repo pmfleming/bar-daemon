@@ -238,6 +238,7 @@ async fn any_output_can_be_disabled_but_not_the_last_and_rollback_preserves_enab
         let mut external = f.backend.outputs.borrow()[0].clone();
         external.name = "DP-1".into();
         external.id = 1;
+        external.x = 1536; // Independent extended outputs must not newly overlap.
         f.backend.outputs.borrow_mut().push(external);
         let mut proposed = Layout::observed(&f.backend.outputs.borrow());
         proposed.outputs[disabled].enabled = false;
@@ -300,6 +301,27 @@ async fn any_output_can_be_disabled_but_not_the_last_and_rollback_preserves_enab
         assert!(kept.trial.is_none());
         assert_eq!(f.document().await, kept);
     }
+}
+
+#[tokio::test]
+async fn overlapping_draft_is_rejected_before_persistence_or_compositor_writes() {
+    let mut f = Fixture::new();
+    let mut external = f.backend.outputs.borrow()[0].clone();
+    external.name = "DP-1".into();
+    external.id = 1;
+    external.x = 1536;
+    f.backend.outputs.borrow_mut().push(external);
+    let mut proposed = Layout::observed(&f.backend.outputs.borrow());
+    proposed.outputs[1].x = 10;
+    assert!(
+        f.preview(proposed)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("overlaps")
+    );
+    assert!(f.backend.calls.borrow().is_empty());
+    assert!(!f.path.exists(), "rejected drafts must not create a trial");
 }
 
 #[tokio::test]

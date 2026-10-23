@@ -59,7 +59,29 @@ impl BatteryApi {
 
     pub(super) async fn dispatch(&self, method: &str, params: Value) -> Value {
         let result = match method {
-            "battery.history" => Ok(battery_wire::history(battery::history_snapshot())),
+            "battery.history" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Request {
+                    #[serde(default)]
+                    hours: Option<u16>,
+                }
+                let request: Request = match super::decode_request(params, method) {
+                    Ok(request) => request,
+                    Err(error) => return error,
+                };
+                let hours = request.hours.unwrap_or(6);
+                if ![6, 24, 168].contains(&hours) {
+                    return super::error(
+                        "validation-error",
+                        "Battery history range must be 6, 24 or 168 hours",
+                    );
+                }
+                Ok(battery_wire::history_window(
+                    battery::history_snapshot(),
+                    hours,
+                ))
+            }
             "battery.setThresholds" => self.battery_set_thresholds(params).await,
             "battery.setProtection" => self.battery_set_protection(params).await,
             "battery.chargeOnce" => self.battery_charge_once(params).await,
@@ -614,6 +636,33 @@ async fn requested_battery_id(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn history_windows_are_bounded_read_only_requests() {
+        use serde_json::json;
+        let api = super::BatteryApi::new(crate::state::StateStore::default());
+        for hours in [6, 24, 168] {
+            let reply = api
+                .dispatch("battery.history", json!({"hours":hours}))
+                .await;
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["data"]["history"]["hours"], hours);
+            assert!(reply["data"]["history"]["chart"]["percentage"]["segments"].is_array());
+        }
+        assert_eq!(
+            api.dispatch("battery.history", json!({})).await["data"]["history"]["hours"],
+            6
+        );
+        for params in [
+            json!({"hours":0}),
+            json!({"hours":7}),
+            json!({"hours":-6}),
+            json!({"hours":6.5}),
+            json!({"hours":"6"}),
+            json!({"unexpected":true}),
+        ] {
+            assert_eq!(api.dispatch("battery.history", params).await["ok"], false);
+        }
+    }
     #[tokio::test]
     async fn live_decoder_rejections_match_contract_without_dispatching_effects() {
         let fixture = crate::protocol::battery_contract_fixture().await;
