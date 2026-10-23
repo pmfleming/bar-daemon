@@ -64,3 +64,26 @@ cloning every `PathBuf`. Fixed-window coalescing is unchanged.
 - Targeted watcher tests, strict all-target Clippy, formatting, and full private
   fixtures pass (228 tests, zero ignored in the full run), including real inode
   replacement, watch-budget exhaustion, symlink exclusion, and recovery backoff.
+
+## 4. Deployment evidence and catalog recovery
+
+`updates/manual.rs` classifies deployment evidence once as unrecorded, first
+recorded, changed, or unchanged. The phase and completed outcome derive from that
+classification; execution failure/cancellation remains an independent fact. Thus
+partial failure can retain activation, but a claimed deployment without an after
+system cannot invent an activation or a known version change.
+
+`updates/catalog.rs` indexes borrowed `(lane, scope, name)` tuples instead of
+formatting owned recovery keys. Annotation vectors are temporarily detached so
+catalog identity can stay immutably borrowed; their capacity is retained. Recovery
+is owned by `RunIssue`, explicitly requiring a strictly later timestamp. The final
+annotations and open-issue wire representation remain unchanged.
+
+Across these two production files: cognitive/effort **65 / 512,656 → 56 / 486,723**;
+cyclomatic **103 → 109**, including the new classification/recovery boundaries.
+This adds explicit types/helpers rather than claiming a reduction in every signal.
+Tests extend deployment/failure combinations, untrusted system identities, lane and
+scope isolation, and repeated annotation. Existing cancellation, equal-time,
+retention, partial-publication, and recovery tests pass. Targeted update tests,
+formatting, strict all-target Clippy, and full fixtures pass (230 tests, zero
+ignored in the full run).

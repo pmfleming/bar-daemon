@@ -153,30 +153,60 @@ fn validate(directory: &Path, report: &Report) -> Result<(String, JobState, Path
     Ok((id, status, directory.join(filename)))
 }
 
+#[derive(Clone, Copy)]
+enum Deployment {
+    Unrecorded,
+    FirstRecorded,
+    Changed,
+    Unchanged,
+}
+impl Deployment {
+    fn classify(
+        before: &Option<String>,
+        after: &Option<String>,
+        deployed: Option<bool>,
+    ) -> Result<Self> {
+        for system in [before, after].into_iter().flatten() {
+            ensure!(
+                system.len() <= 512 && system.starts_with("/nix/store/") && !system.contains('\n'),
+                "Invalid recorded system identity"
+            );
+        }
+        Ok(match (deployed, before.as_deref(), after.as_deref()) {
+            (Some(true), Some(before), Some(after)) if before == after => Self::Unchanged,
+            (Some(true), Some(_), Some(_)) => Self::Changed,
+            (Some(true), None, Some(_)) => Self::FirstRecorded,
+            _ => Self::Unrecorded,
+        })
+    }
+
+    fn phase(self, status: JobState) -> Phase {
+        match (status, self) {
+            (JobState::Running, _) => Phase::Starting,
+            (_, Self::Changed | Self::FirstRecorded) => Phase::Activated,
+            (JobState::Completed, Self::Unchanged) => Phase::Current,
+            _ => Phase::Checking,
+        }
+    }
+
+    fn completed(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Changed | Self::FirstRecorded => ("activated", "System rebuilt successfully"),
+            Self::Unchanged => ("current", "Manual rebuild completed — system unchanged"),
+            Self::Unrecorded => (
+                "completed",
+                "Manual rebuild completed — activation not recorded",
+            ),
+        }
+    }
+}
+
 fn entry(directory: &Path, report: Report) -> Result<Entry> {
     let (id, status, log) = validate(directory, &report)?;
-    let running = status == JobState::Running;
     let before = report.system_before.filter(|s| !s.is_empty());
     let after = report.system_after.filter(|s| !s.is_empty());
-    for system in [&before, &after].into_iter().flatten() {
-        ensure!(
-            system.len() <= 512 && system.starts_with("/nix/store/") && !system.contains('\n'),
-            "Invalid recorded system identity"
-        );
-    }
-    let recorded_after = report.deployed == Some(true) && after.is_some();
-    let activated = recorded_after && before != after;
-    let changed = activated && before.is_some();
-    let unchanged = recorded_after && before == after;
-    let phase = if running {
-        Phase::Starting
-    } else if activated {
-        Phase::Activated
-    } else if status == JobState::Completed && unchanged {
-        Phase::Current
-    } else {
-        Phase::Checking
-    };
+    let deployment = Deployment::classify(&before, &after, report.deployed)?;
+    let phase = deployment.phase(status);
     let mut job = JobStatus {
         schema_version: 1,
         id,
@@ -213,18 +243,13 @@ fn entry(directory: &Path, report: Report) -> Result<Entry> {
             ("partial", "System rebuilt; follow-up failed")
         }
         JobState::Failed => ("failed", "Manual rebuild failed"),
-        _ if activated => ("activated", "System rebuilt successfully"),
-        _ if unchanged => ("current", "Manual rebuild completed — system unchanged"),
-        _ => (
-            "completed",
-            "Manual rebuild completed — activation not recorded",
-        ),
+        _ => deployment.completed(),
     };
     let components = vec![ComponentResult {
         name: "NixOS system".into(),
         before,
         after,
-        changed,
+        changed: matches!(deployment, Deployment::Changed),
         phase: phase.as_str().into(),
         error: None,
         incident: None,

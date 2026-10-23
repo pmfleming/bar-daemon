@@ -141,6 +141,71 @@ fn deployment_requires_a_recorded_after_system_and_only_known_differences_count_
 }
 
 #[test]
+fn failure_classification_keeps_deployment_evidence_separate() {
+    use shelllist_update_status::Phase;
+    let directory = tempfile::tempdir().unwrap();
+    for (code, deployed, after, outcome, phase, changed) in [
+        (1, Some(true), None, "partial", Phase::Checking, false),
+        (
+            1,
+            Some(true),
+            Some("/nix/store/new"),
+            "partial",
+            Phase::Activated,
+            true,
+        ),
+        (
+            1,
+            Some(true),
+            Some("/nix/store/old-system"),
+            "partial",
+            Phase::Checking,
+            false,
+        ),
+        (
+            130,
+            Some(true),
+            Some("/nix/store/new"),
+            "interrupted",
+            Phase::Activated,
+            true,
+        ),
+        (
+            0,
+            None,
+            Some("/nix/store/new"),
+            "completed",
+            Phase::Checking,
+            false,
+        ),
+        (
+            0,
+            Some(false),
+            Some("/nix/store/new"),
+            "completed",
+            Phase::Checking,
+            false,
+        ),
+    ] {
+        let mut value = report(directory.path(), 1, code, true);
+        value["deployed"] = json!(deployed);
+        value["system_after"] = json!(after);
+        publish(directory.path(), &[value]);
+        let catalog = manual::load(directory.path()).unwrap();
+        assert!(catalog.errors.is_empty());
+        let entry = &catalog.entries[0];
+        assert_eq!(
+            (
+                &*entry.outcome,
+                entry.record.job.phase,
+                entry.record.components[0].changed
+            ),
+            (outcome, phase, changed)
+        );
+    }
+}
+
+#[test]
 fn terminal_publication_wins_over_live_marker_and_abandoned_markers_are_unknown() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -185,7 +250,13 @@ fn terminal_publication_wins_over_live_marker_and_abandoned_markers_are_unknown(
 fn rejects_untrusted_sources_and_log_paths_and_bounds_reads() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    for field in ["log", "run_id", "schema_version"] {
+    for field in [
+        "log",
+        "run_id",
+        "schema_version",
+        "system_before",
+        "system_after",
+    ] {
         let mut invalid = report(root, 1, 0, true);
         invalid[field] = if field == "schema_version" {
             json!(2)

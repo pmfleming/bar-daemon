@@ -75,6 +75,18 @@ pub(crate) struct RunIssue {
     pub recovered_at: Option<u64>,
     pub recovered_run_id: Option<String>,
 }
+impl RunIssue {
+    fn recover(&mut self, at: u64, run_id: &str) -> bool {
+        // Equal timestamps do not establish ordering between distinct runs.
+        if at <= self.failed_at {
+            return false;
+        }
+        self.recovered_at = Some(at);
+        self.recovered_run_id = Some(run_id.into());
+        true
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct OpenIssue {
     pub run_id: String,
@@ -85,28 +97,30 @@ pub(crate) struct OpenIssue {
     pub failed_at: u64,
 }
 
-fn component_key(entry: &Entry, name: &str) -> String {
+// Borrow catalog identity; recovery indexing needs neither formatted keys nor cloned records.
+type IssueKey<'a> = (&'a str, &'static str, &'a str);
+fn component_key<'a>(entry: &'a Entry, name: &'a str) -> IssueKey<'a> {
     // AI updates and freshness checks observe the same tools; unrelated system
     // components and run-level follow-up failures must not clear them.
-    format!(
-        "{}:component:{name}",
-        if entry.record.lane == "ai-tools-stale" {
-            "ai-tools"
-        } else {
-            &entry.record.lane
-        }
-    )
+    let lane = if entry.record.lane == "ai-tools-stale" {
+        "ai-tools"
+    } else {
+        &entry.record.lane
+    };
+    (lane, "component", name)
 }
-fn job_key(entry: &Entry) -> String {
-    format!(
-        "{}:operation:{}",
-        entry.record.lane, entry.record.job.operation
-    )
+fn job_key(entry: &Entry) -> IssueKey<'_> {
+    (&entry.record.lane, "operation", &entry.record.job.operation)
 }
 pub(super) fn annotate(entries: &mut [Entry]) -> Vec<OpenIssue> {
-    for entry in entries.iter_mut() {
-        entry.issues.clear();
-    }
+    // Keep identity immutable while indexing borrowed keys; publish annotations together.
+    let mut issues: Vec<_> = entries
+        .iter_mut()
+        .map(|entry| {
+            entry.issues.clear();
+            std::mem::take(&mut entry.issues)
+        })
+        .collect();
     let mut order: Vec<_> = (0..entries.len()).collect();
     order.sort_by_key(|&index| {
         let entry = &entries[index];
@@ -116,7 +130,7 @@ pub(super) fn annotate(entries: &mut [Entry]) -> Vec<OpenIssue> {
             &entry.record.job.id,
         )
     });
-    let mut pending: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    let mut pending: BTreeMap<IssueKey<'_>, Vec<(usize, usize)>> = BTreeMap::new();
     for index in order {
         let entry = &entries[index];
         if entry.outcome == "running" || entry.record.job.exit_code == Some(130) {
@@ -126,22 +140,13 @@ pub(super) fn annotate(entries: &mut [Entry]) -> Vec<OpenIssue> {
         let changes = Changes::for_entry(entry);
         for key in changes.recoveries {
             if let Some(previous) = pending.get_mut(&key) {
-                previous.retain(|&(run, issue)| {
-                    // Equal timestamps do not establish ordering between distinct runs.
-                    if at <= entries[run].issues[issue].failed_at {
-                        return true;
-                    }
-                    let id = entries[index].record.job.id.clone();
-                    let issue = &mut entries[run].issues[issue];
-                    issue.recovered_at = Some(at);
-                    issue.recovered_run_id = Some(id);
-                    false
-                });
+                previous
+                    .retain(|&(run, issue)| !issues[run][issue].recover(at, &entry.record.job.id));
             }
         }
         for (key, component) in changes.failures {
-            let issue_index = entries[index].issues.len();
-            entries[index].issues.push(RunIssue {
+            let issue_index = issues[index].len();
+            issues[index].push(RunIssue {
                 component,
                 failed_at: at,
                 recovered_at: None,
@@ -155,7 +160,7 @@ pub(super) fn annotate(entries: &mut [Entry]) -> Vec<OpenIssue> {
         .filter_map(|runs| runs.last())
         .map(|&(index, issue)| {
             let entry = &entries[index];
-            let issue = &entry.issues[issue];
+            let issue = &issues[index][issue];
             let part = issue
                 .component
                 .and_then(|index| entry.record.components.get(index));
@@ -181,16 +186,19 @@ pub(super) fn annotate(entries: &mut [Entry]) -> Vec<OpenIssue> {
     open.sort_by(|a, b| {
         (b.failed_at, &b.run_id, &b.component).cmp(&(a.failed_at, &a.run_id, &a.component))
     });
+    for (entry, issues) in entries.iter_mut().zip(issues) {
+        entry.issues = issues;
+    }
     open
 }
 
 #[derive(Default)]
-struct Changes {
-    failures: Vec<(String, Option<usize>)>,
-    recoveries: Vec<String>,
+struct Changes<'a> {
+    failures: Vec<(IssueKey<'a>, Option<usize>)>,
+    recoveries: Vec<IssueKey<'a>>,
 }
-impl Changes {
-    fn for_entry(entry: &Entry) -> Self {
+impl<'a> Changes<'a> {
+    fn for_entry(entry: &'a Entry) -> Self {
         let mut changes = Self::default();
         for (index, part) in entry
             .record
@@ -322,6 +330,28 @@ mod tests {
         assert_eq!(annotate(&mut entries)[0].run_id, "held");
         assert!(entries[0].issues[0].recovered_at.is_none());
     }
+    #[test]
+    fn recovery_keys_separate_scope_and_lane_and_annotations_are_repeatable() {
+        for (lane, job_only, recovered) in [
+            ("ai-tools", true, false),
+            ("system", false, false),
+            ("ai-tools-stale", false, true),
+        ] {
+            let mut next = run("next", 2, "pi", None);
+            next.record.lane = lane.into();
+            if job_only {
+                next.record.components.clear();
+            }
+            let mut entries = vec![run("failed", 1, "pi", Some("build")), next];
+            let open = annotate(&mut entries);
+            assert_eq!(open.is_empty(), recovered, "{lane}/{job_only}");
+            assert_eq!(entries[0].issues[0].recovered_at.is_some(), recovered);
+            let first = serde_json::to_value(&entries).unwrap();
+            annotate(&mut entries);
+            assert_eq!(serde_json::to_value(&entries).unwrap(), first);
+        }
+    }
+
     #[test]
     fn running_held_cancelled_and_equal_time_results_do_not_invent_recovery() {
         for variant in ["running", "interrupted", "held", "cancelled", "same-time"] {
