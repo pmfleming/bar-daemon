@@ -1,9 +1,19 @@
-use super::*;
+use super::{DEFAULT_WATCH_LIMIT, EventPolicy, Watch};
+use notify::{
+    Event, EventKind,
+    event::{AccessKind, AccessMode, CreateKind, Flag, ModifyKind, RemoveKind, RenameMode},
+};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, symlink},
-    time::Instant,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
+use tokio::sync::mpsc;
 
 fn watches_inode(path: &Path) -> bool {
     let needle = format!(" ino:{:x} ", path.metadata().unwrap().ino());
@@ -96,6 +106,78 @@ async fn new_subdirectories_are_registered_after_bounded_recovery() {
     assert!(watch.watcher.is_none());
     watch.refresh_at(state.path(), watch.recovery.deadline());
     assert!(watches_inode(&child));
+}
+
+#[test]
+fn event_policy_distinguishes_ledger_changes_and_topology() {
+    let directory = tempfile::tempdir().unwrap();
+    let manual = EventPolicy {
+        directory: directory.path().to_owned(),
+        rebuilds_only: true,
+        recursive: false,
+        registered: Arc::from([directory.path().join("removed")]),
+    };
+    for (name, relevant) in [
+        ("history.jsonl", true),
+        ("rebuild.run.json", true),
+        ("build.log", false),
+        ("check-cache", false),
+    ] {
+        let event = Event::new(EventKind::Any).add_path(directory.path().join(name));
+        assert_eq!(manual.relevant(&event), relevant);
+        assert!(!manual.topology_changed(&event));
+    }
+    let parent = Event::new(EventKind::Any).add_path(directory.path().parent().unwrap().into());
+    assert!(manual.relevant(&parent));
+    let worker = EventPolicy {
+        rebuilds_only: false,
+        recursive: true,
+        ..manual
+    };
+    for kind in [
+        EventKind::Create(CreateKind::Folder),
+        EventKind::Remove(RemoveKind::Folder),
+        EventKind::Any,
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+    ] {
+        let event = Event::new(kind).add_path(worker.registered[0].clone());
+        assert!(worker.topology_changed(&event)); // Includes a removed registered directory.
+    }
+    let rename = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To)));
+    assert!(worker.topology_changed(&rename.clone().add_path(directory.path().to_owned())));
+    assert!(!worker.topology_changed(&rename.add_path(directory.path().join("missing-file"))));
+}
+
+#[test]
+fn overflow_and_errors_survive_a_full_queue_but_reads_do_not_invalidate() {
+    let policy = EventPolicy {
+        directory: "/ledger".into(),
+        rebuilds_only: true,
+        recursive: false,
+        registered: Arc::from([]),
+    };
+    let (tx, mut rx) = mpsc::channel(1);
+    let rebuild = AtomicBool::new(false);
+    for mode in [AccessMode::Read, AccessMode::Write] {
+        policy.signal(
+            &tx,
+            &rebuild,
+            Ok(Event::new(EventKind::Access(AccessKind::Close(mode)))
+                .add_path("/ledger/history.jsonl".into())),
+        );
+        assert_eq!(rx.try_recv().is_ok(), mode == AccessMode::Write);
+    }
+    tx.try_send(()).unwrap();
+    policy.signal(
+        &tx,
+        &rebuild,
+        Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)),
+    );
+    assert!(rebuild.swap(false, Ordering::Relaxed));
+    policy.signal(&tx, &rebuild, Err(notify::Error::generic("watch failed")));
+    assert!(rebuild.load(Ordering::Relaxed));
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_err());
 }
 
 /// Reproducible registration work, not a real-window responsiveness benchmark.

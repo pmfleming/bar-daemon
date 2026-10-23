@@ -45,3 +45,22 @@ Tests verify unique names/keys, complete snapshot-field coverage, typed projecti
 against serialized snapshots, unknown-stream behavior, and real committed events
 versus resubscription. Formatting, strict all-target Clippy, and the full private
 fixture suite pass (226 tests, zero ignored).
+
+## 3. Watcher policy, installation, and recovery
+
+`updates/watch.rs`: event relevance and topology rules live in `EventPolicy`;
+installation owns the complete bounded watch plan and registration. `refresh_at`
+only reconciles target identity and backoff. Planning/registration failures share
+one recovery path (and warning), and partial installation is dropped on failure.
+The registration loop and callback share an immutable path slice rather than
+cloning every `PathBuf`. Fixed-window coalescing is unchanged.
+
+- Whole production file cognitive/effort: **26 / 180,341 → 23 / 91,893**.
+- Cyclomatic total: **39 → 44** (four additional function bases plus propagation).
+  `refresh_at` itself changes **17 / 23 → 8 / 9** cognitive/cyclomatic.
+- Removed a test glob import. Added direct tests for ledger/log relevance,
+  ancestor events, removed/new-directory renames, read/write-close distinction,
+  and rescan/errors behind a full invalidation queue.
+- Targeted watcher tests, strict all-target Clippy, formatting, and full private
+  fixtures pass (228 tests, zero ignored in the full run), including real inode
+  replacement, watch-budget exhaustion, symlink exclusion, and recovery backoff.

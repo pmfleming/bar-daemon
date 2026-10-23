@@ -10,7 +10,7 @@ use std::{
 
 use notify::{
     EventKind, RecommendedWatcher, RecursiveMode, Watcher,
-    event::{AccessKind, AccessMode},
+    event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind},
 };
 use shelllist_daemon_core::watch::{DEFAULT_WATCH_LIMIT, WatchBackoff, bounded_watch_paths};
 use tokio::{sync::mpsc, time};
@@ -72,6 +72,57 @@ fn signal(tx: &mpsc::Sender<()>, rebuild: &AtomicBool, result: notify::Result<no
     let _ = tx.try_send(());
 }
 
+struct EventPolicy {
+    directory: PathBuf,
+    rebuilds_only: bool,
+    recursive: bool,
+    registered: Arc<[PathBuf]>,
+}
+impl EventPolicy {
+    fn relevant(&self, event: &notify::Event) -> bool {
+        !self.rebuilds_only
+            || event.need_rescan()
+            || event.paths.iter().any(|path| {
+                self.directory.starts_with(path)
+                    || path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name == "history.jsonl" || name.ends_with(".run.json"))
+            })
+    }
+
+    fn topology_changed(&self, event: &notify::Event) -> bool {
+        self.recursive
+            && match event.kind {
+                EventKind::Create(CreateKind::Folder)
+                | EventKind::Remove(RemoveKind::Folder)
+                | EventKind::Any => true,
+                EventKind::Modify(ModifyKind::Name(_)) => event
+                    .paths
+                    .iter()
+                    .any(|path| self.registered.contains(path) || path.is_dir()),
+                _ => false,
+            }
+    }
+
+    fn signal(
+        &self,
+        tx: &mpsc::Sender<()>,
+        rebuild: &AtomicBool,
+        event: notify::Result<notify::Event>,
+    ) {
+        if event
+            .as_ref()
+            .is_ok_and(|event| self.topology_changed(event))
+        {
+            rebuild.store(true, Ordering::Relaxed);
+        }
+        if event.as_ref().map_or(true, |event| self.relevant(event)) {
+            signal(tx, rebuild, event);
+        }
+    }
+}
+
 pub(super) struct Watch {
     watcher: Option<RecommendedWatcher>,
     target: Option<Target>,
@@ -129,77 +180,39 @@ impl Watch {
             self.recovery.failed(now);
             return;
         };
-        let paths =
-            match bounded_watch_paths([(next.path.clone(), next.recursive)], DEFAULT_WATCH_LIMIT) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    self.recovery.failed(now);
-                    tracing::warn!(%error, "update watch unavailable; polling continues");
-                    return;
-                }
-            };
-        let tx = self.tx.clone();
-        let rebuild = self.rebuild.clone();
-        let rebuilds_only = self.rebuilds_only;
-        let directory = directory.to_owned();
-        let recursive = next.recursive;
-        let registered_paths = paths.clone();
-        let result = RecommendedWatcher::new(
-            move |event: notify::Result<notify::Event>| {
-                let relevant = !rebuilds_only
-                    || event.as_ref().map_or(true, |event| {
-                        event.need_rescan()
-                            || event.paths.iter().any(|path| {
-                                directory.starts_with(path)
-                                    || path.file_name().and_then(|name| name.to_str()).is_some_and(
-                                        |name| {
-                                            name == "history.jsonl" || name.ends_with(".run.json")
-                                        },
-                                    )
-                            })
-                    });
-                if recursive
-                    && event.as_ref().is_ok_and(|event| {
-                        matches!(
-                            event.kind,
-                            EventKind::Create(notify::event::CreateKind::Folder)
-                                | EventKind::Remove(notify::event::RemoveKind::Folder)
-                                | EventKind::Any
-                        ) || (matches!(
-                            event.kind,
-                            EventKind::Modify(notify::event::ModifyKind::Name(_))
-                        ) && event
-                            .paths
-                            .iter()
-                            .any(|path| registered_paths.contains(path) || path.is_dir()))
-                    })
-                {
-                    rebuild.store(true, Ordering::Relaxed);
-                }
-                if relevant {
-                    signal(&tx, &rebuild, event);
-                }
-            },
-            notify::Config::default().with_follow_symlinks(false),
-        )
-        .and_then(|mut watcher| {
-            for path in &paths {
-                watcher.watch(path, RecursiveMode::NonRecursive)?;
-            }
-            Ok(watcher)
-        });
-        match result {
+        match self.install(directory, &next) {
             Ok(watcher) => {
                 self.watcher = Some(watcher);
                 self.target = Some(next);
                 self.recovery.started(now);
-                tracing::debug!(watch_count = paths.len(), "update watcher installed");
             }
             Err(error) => {
                 self.recovery.failed(now);
-                tracing::debug!(%error, path = %next.path.display(), "NixOS update watcher unavailable; polling continues");
+                tracing::warn!(%error, path = %next.path.display(), "NixOS update watcher unavailable; polling continues");
             }
         }
+    }
+
+    fn install(&self, directory: &Path, next: &Target) -> anyhow::Result<RecommendedWatcher> {
+        let paths: Arc<[PathBuf]> =
+            bounded_watch_paths([(next.path.clone(), next.recursive)], DEFAULT_WATCH_LIMIT)?.into();
+        let policy = EventPolicy {
+            directory: directory.to_owned(),
+            rebuilds_only: self.rebuilds_only,
+            recursive: next.recursive,
+            registered: Arc::clone(&paths),
+        };
+        let tx = self.tx.clone();
+        let rebuild = Arc::clone(&self.rebuild);
+        let mut watcher = RecommendedWatcher::new(
+            move |event| policy.signal(&tx, &rebuild, event),
+            notify::Config::default().with_follow_symlinks(false),
+        )?;
+        for path in paths.iter() {
+            watcher.watch(path, RecursiveMode::NonRecursive)?;
+        }
+        tracing::debug!(watch_count = paths.len(), "update watcher installed");
+        Ok(watcher)
     }
 
     pub(super) async fn wait(&mut self) {
