@@ -100,6 +100,22 @@ impl ApiService {
     pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
         let response = match method {
             "bar.snapshot" => self.snapshot(params).await,
+            "theme.configure" | "theme.resolve" => {
+                let request =
+                    match protocol::decode_request::<crate::theme::ThemeRequest>(params, method) {
+                        Ok(request) => request,
+                        Err(error) => return error,
+                    };
+                match request.resolve() {
+                    Ok(roles) => {
+                        if method == "theme.configure" {
+                            self.state.update_theme(roles.clone()).await;
+                        }
+                        crate::theme::reply(roles)
+                    }
+                    Err(message) => error("validation-error", message),
+                }
+            }
             "activity.queryRange" => self.activity.activity_query_range(params).await,
             "activity.refresh" => self.activity.activity_refresh().await,
             "locations.search" | "locations.add" | "locations.remove" => {

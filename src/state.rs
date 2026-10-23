@@ -199,6 +199,7 @@ impl StateStore {
     }
 
     state_updates! {
+        update_theme(crate::theme::ThemeRoles) => theme, crate::protocol::stream::THEME;
         update_activity(ActivityState) => activity, crate::protocol::stream::ACTIVITY;
         update_workspaces(WorkspaceState) => workspaces, crate::protocol::stream::WORKSPACES;
         update_timezone(TimezoneState) => timezone, crate::protocol::stream::TIMEZONE;

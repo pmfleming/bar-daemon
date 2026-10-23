@@ -6,6 +6,8 @@ pub(crate) use crate::activity::model::ActivityState;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BarSnapshot {
+    #[serde(default)]
+    pub theme: crate::theme::ThemeRoles,
     pub activity: ActivityState,
     pub workspaces: WorkspaceState,
     #[serde(default)]

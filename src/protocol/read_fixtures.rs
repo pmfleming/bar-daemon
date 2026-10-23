@@ -16,6 +16,7 @@ pub(super) async fn fixture() -> Result<Value> {
     // directly onto the wire: domain types and production serializers own it.
     let mut sample: BarSnapshot =
         serde_json::from_value(super::contract_fixture()?["snapshot"].take())?;
+    sample.theme = crate::theme::scheme(material_colors::color::Argb::from_u32(0xff008577), true);
     sample.workarea.available = true;
     sample.workarea.monitors.insert(
         "eDP-1".into(),
@@ -28,6 +29,7 @@ pub(super) async fn fixture() -> Result<Value> {
     );
     let state = StateStore::default();
     let (initial, mut events) = state.snapshot_and_subscribe().await;
+    state.update_theme(sample.theme).await;
     state.update_activity(sample.activity).await;
     state.update_workspaces(sample.workspaces).await;
     state.update_work_area(sample.workarea).await;
@@ -143,7 +145,14 @@ mod tests {
             assert_eq!(changed["event"], "changed");
             assert_eq!(changed["stream"], *stream);
             assert_eq!(changed["subscription_id"], SUBSCRIPTION);
-            assert_eq!(fixture["subscribed"][stream]["data"]["available"], false);
+            if *stream == super::super::stream::THEME {
+                assert_eq!(
+                    fixture["subscribed"][stream]["data"],
+                    serde_json::to_value(crate::theme::ThemeRoles::default())?
+                );
+            } else {
+                assert_eq!(fixture["subscribed"][stream]["data"]["available"], false);
+            }
             assert_eq!(fixture["lagged"][stream]["event"], "gap");
             assert_eq!(fixture["lagged"][stream]["data"]["dropped_events"], "4");
         }

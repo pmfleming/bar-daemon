@@ -55,6 +55,24 @@ fn case(
 
 pub(super) fn fixture() -> Value {
     let mut fixture = Map::new();
+    for method in ["theme.configure", "theme.resolve"] {
+        let params = json!({"seed":"#6750a4", "dark":method == "theme.resolve"});
+        let request: crate::theme::ThemeRequest = serde_json::from_value(params.clone()).unwrap();
+        let reply = crate::theme::reply(request.resolve().unwrap());
+        fixture.insert(
+            method.into(),
+            case(
+                params,
+                reply.clone(),
+                reply,
+                super::error("validation-error", "seed must be an opaque #rrggbb color"),
+                rejection::<crate::theme::ThemeRequest>(
+                    method,
+                    json!({"seed":"#6750a4", "dark":"false"}),
+                ),
+            ),
+        );
+    }
     for method in super::audio_wire::METHODS.iter().copied() {
         let mut state = AudioState {
             available: true,

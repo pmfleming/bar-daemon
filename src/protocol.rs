@@ -105,6 +105,8 @@ pub(crate) fn unsupported_method(method: &str) -> Value {
 
 /// Event stream names accepted by subscriptions.
 pub mod stream {
+    /// Complete Material Tonal Spot role-to-hex map changed.
+    pub const THEME: &str = "theme.changed";
     /// Activity summary changed.
     pub const ACTIVITY: &str = "activity.changed";
     /// Workspace state changed.
@@ -142,6 +144,8 @@ pub mod stream {
 
 /// Complete ordered method registry for protocol version 1.
 pub const METHODS: &[&str] = &[
+    "theme.configure",
+    "theme.resolve",
     "bar.snapshot",
     "activity.queryRange",
     "activity.refresh",
@@ -238,6 +242,8 @@ pub fn registry() -> Value {
         "protocol": NAME,
         "version": VERSION,
         "methods": [
+            control_wire::contract::<crate::theme::ThemeRequest, crate::theme::ThemeRoles>("theme.configure", "theme", json!({"seed":"#6750a4", "dark":false})),
+            control_wire::contract::<crate::theme::ThemeRequest, crate::theme::ThemeRoles>("theme.resolve", "theme", json!({"seed":"#6750a4", "dark":false})),
             { "name": "bar.snapshot", "params": {}, "optional_params": { "streams": "registered stream names; omitted means full snapshot" }, "result": "snapshot" },
             { "name": "activity.queryRange", "params": { "from_unix_ms": 1767225600000_i64, "to_unix_ms": 1769904000000_i64 }, "result": "activity_range" },
             { "name": "activity.refresh", "params": {}, "result": "activity" },
@@ -316,6 +322,10 @@ pub fn registry() -> Value {
 
 fn stream_metadata(name: &str) -> Value {
     let schema = match name {
+        stream::THEME => Some(shelllist_daemon_core::method_schemas::<
+            Value,
+            crate::theme::ThemeRoles,
+        >()),
         stream::AUDIO => Some(shelllist_daemon_core::method_schemas::<
             Value,
             crate::model::AudioState,
@@ -627,6 +637,8 @@ fn generated_contract_fixture() -> Value {
             chrono::DateTime::from_timestamp_millis(1766400000000).expect("fixture instant"),
         ))
         .expect("native locations");
+    fixture["snapshot"]["theme"] =
+        serde_json::to_value(crate::theme::ThemeRoles::default()).expect("theme fixture");
     fixture
 }
 

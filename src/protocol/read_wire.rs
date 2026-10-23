@@ -110,6 +110,7 @@ const fn spec(
 
 // Authoritative order, snapshot key, and typed field projection for each stream.
 pub(crate) const STREAM_SPECS: &[StreamSpec] = &[
+    spec(stream::THEME, "theme", |s| to_value(&s.theme)),
     spec(stream::ACTIVITY, "activity", |s| to_value(&s.activity)),
     spec(stream::WORKSPACES, "workspaces", |s| {
         to_value(&s.workspaces)

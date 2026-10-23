@@ -27,6 +27,7 @@ pub mod protocol;
 mod sleep;
 mod sleep_policy;
 mod state;
+mod theme;
 mod time;
 mod timezone;
 mod timezone_regions;

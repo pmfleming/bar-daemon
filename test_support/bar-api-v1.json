@@ -173,6 +173,402 @@
   "registry": {
     "methods": [
       {
+        "name": "theme.configure",
+        "params_example": {
+          "dark": false,
+          "seed": "#6750a4"
+        },
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "dark": {
+              "type": "boolean"
+            },
+            "seed": {
+              "description": "Opaque sRGB seed, exactly #rrggbb.",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "seed",
+            "dark"
+          ],
+          "title": "ThemeRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "power-profile",
+          "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "theme",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "errorContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onError": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onErrorContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onPrimary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onPrimaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSecondary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSecondaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSuccess": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSurface": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSurfaceVariant": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onTertiary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onTertiaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onWarning": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "outline": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "outlineVariant": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "primary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "primaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "secondary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "secondaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "success": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surface": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerHigh": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerHighest": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerLow": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerLowest": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "tertiary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "tertiaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "warning": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "errorContainer",
+            "onError",
+            "onErrorContainer",
+            "onPrimary",
+            "onPrimaryContainer",
+            "onSecondary",
+            "onSecondaryContainer",
+            "onSuccess",
+            "onSurface",
+            "onSurfaceVariant",
+            "onTertiary",
+            "onTertiaryContainer",
+            "onWarning",
+            "outline",
+            "outlineVariant",
+            "primary",
+            "primaryContainer",
+            "secondary",
+            "secondaryContainer",
+            "success",
+            "surface",
+            "surfaceContainer",
+            "surfaceContainerHigh",
+            "surfaceContainerHighest",
+            "surfaceContainerLow",
+            "surfaceContainerLowest",
+            "tertiary",
+            "tertiaryContainer",
+            "warning"
+          ],
+          "title": "ThemeRoles",
+          "type": "object"
+        }
+      },
+      {
+        "name": "theme.resolve",
+        "params_example": {
+          "dark": false,
+          "seed": "#6750a4"
+        },
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "dark": {
+              "type": "boolean"
+            },
+            "seed": {
+              "description": "Opaque sRGB seed, exactly #rrggbb.",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "seed",
+            "dark"
+          ],
+          "title": "ThemeRequest",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "power-profile",
+          "execution": "effect",
+          "max_in_flight": 16,
+          "max_owner_in_flight": 8,
+          "request_bytes": 1048576,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "theme",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "errorContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onError": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onErrorContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onPrimary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onPrimaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSecondary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSecondaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSuccess": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSurface": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onSurfaceVariant": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onTertiary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onTertiaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "onWarning": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "outline": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "outlineVariant": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "primary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "primaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "secondary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "secondaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "success": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surface": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerHigh": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerHighest": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerLow": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surfaceContainerLowest": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "tertiary": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "tertiaryContainer": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "warning": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "errorContainer",
+            "onError",
+            "onErrorContainer",
+            "onPrimary",
+            "onPrimaryContainer",
+            "onSecondary",
+            "onSecondaryContainer",
+            "onSuccess",
+            "onSurface",
+            "onSurfaceVariant",
+            "onTertiary",
+            "onTertiaryContainer",
+            "onWarning",
+            "outline",
+            "outlineVariant",
+            "primary",
+            "primaryContainer",
+            "secondary",
+            "secondaryContainer",
+            "success",
+            "surface",
+            "surfaceContainer",
+            "surfaceContainerHigh",
+            "surfaceContainerHighest",
+            "surfaceContainerLow",
+            "surfaceContainerLowest",
+            "tertiary",
+            "tertiaryContainer",
+            "warning"
+          ],
+          "title": "ThemeRoles",
+          "type": "object"
+        }
+      },
+      {
         "name": "bar.snapshot",
         "optional_params": {
           "streams": "registered stream names; omitted means full snapshot"
@@ -1873,6 +2269,378 @@
     ],
     "protocol": "bar-api",
     "streams": [
+      {
+        "delivery": "replaceable-state",
+        "events": [
+          {
+            "data_schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "errorContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onError": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onErrorContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onPrimary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onPrimaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSecondary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSecondaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSuccess": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSurface": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSurfaceVariant": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onTertiary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onTertiaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onWarning": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "outline": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "outlineVariant": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "primary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "primaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "secondary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "secondaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "success": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surface": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerHigh": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerHighest": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerLow": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerLowest": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "tertiary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "tertiaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "warning": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "errorContainer",
+                "onError",
+                "onErrorContainer",
+                "onPrimary",
+                "onPrimaryContainer",
+                "onSecondary",
+                "onSecondaryContainer",
+                "onSuccess",
+                "onSurface",
+                "onSurfaceVariant",
+                "onTertiary",
+                "onTertiaryContainer",
+                "onWarning",
+                "outline",
+                "outlineVariant",
+                "primary",
+                "primaryContainer",
+                "secondary",
+                "secondaryContainer",
+                "success",
+                "surface",
+                "surfaceContainer",
+                "surfaceContainerHigh",
+                "surfaceContainerHighest",
+                "surfaceContainerLow",
+                "surfaceContainerLowest",
+                "tertiary",
+                "tertiaryContainer",
+                "warning"
+              ],
+              "title": "ThemeRoles",
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "errorContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onError": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onErrorContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onPrimary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onPrimaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSecondary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSecondaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSuccess": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSurface": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onSurfaceVariant": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onTertiary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onTertiaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "onWarning": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "outline": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "outlineVariant": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "primary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "primaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "secondary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "secondaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "success": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surface": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerHigh": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerHighest": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerLow": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "surfaceContainerLowest": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "tertiary": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "tertiaryContainer": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                },
+                "warning": {
+                  "pattern": "^#[0-9a-fA-F]{6}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error",
+                "errorContainer",
+                "onError",
+                "onErrorContainer",
+                "onPrimary",
+                "onPrimaryContainer",
+                "onSecondary",
+                "onSecondaryContainer",
+                "onSuccess",
+                "onSurface",
+                "onSurfaceVariant",
+                "onTertiary",
+                "onTertiaryContainer",
+                "onWarning",
+                "outline",
+                "outlineVariant",
+                "primary",
+                "primaryContainer",
+                "secondary",
+                "secondaryContainer",
+                "success",
+                "surface",
+                "surfaceContainer",
+                "surfaceContainerHigh",
+                "surfaceContainerHighest",
+                "surfaceContainerLow",
+                "surfaceContainerLowest",
+                "tertiary",
+                "tertiaryContainer",
+                "warning"
+              ],
+              "title": "ThemeRoles",
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
+        ],
+        "initial": "snapshot-under-commit-lock",
+        "name": "theme.changed",
+        "recovery": {
+          "method": "bar.snapshot",
+          "params": {
+            "streams": [
+              "theme.changed"
+            ]
+          }
+        }
+      },
       {
         "delivery": "replaceable-state",
         "events": [
@@ -3585,6 +4353,38 @@
         },
         "same_profile": true
       }
+    },
+    "theme": {
+      "error": "#ba1a1a",
+      "errorContainer": "#ffdad6",
+      "onError": "#ffffff",
+      "onErrorContainer": "#93000a",
+      "onPrimary": "#ffffff",
+      "onPrimaryContainer": "#4d3d75",
+      "onSecondary": "#ffffff",
+      "onSecondaryContainer": "#4a4458",
+      "onSuccess": "#ffffff",
+      "onSurface": "#1d1b20",
+      "onSurfaceVariant": "#49454e",
+      "onTertiary": "#ffffff",
+      "onTertiaryContainer": "#633b48",
+      "onWarning": "#ffffff",
+      "outline": "#7a757f",
+      "outlineVariant": "#cac4cf",
+      "primary": "#65558f",
+      "primaryContainer": "#e9ddff",
+      "secondary": "#625b71",
+      "secondaryContainer": "#e8def8",
+      "success": "#3c6839",
+      "surface": "#fdf7ff",
+      "surfaceContainer": "#f2ecf4",
+      "surfaceContainerHigh": "#ece6ee",
+      "surfaceContainerHighest": "#e6e0e9",
+      "surfaceContainerLow": "#f8f2fa",
+      "surfaceContainerLowest": "#ffffff",
+      "tertiary": "#7e5260",
+      "tertiaryContainer": "#ffd9e3",
+      "warning": "#78590c"
     },
     "timezone": {
       "abbreviation": "CEST",
