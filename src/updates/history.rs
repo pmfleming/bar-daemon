@@ -146,90 +146,80 @@ pub(crate) async fn query(params: Value) -> Result<Value> {
         .context("Update history read timed out")?
 }
 
-pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
-    ensure!(
-        query.query.len() <= 512 && (1..=100).contains(&query.limit.unwrap_or(50)),
-        "Invalid update history query"
-    );
-    ensure!(
-        query.run_id.as_ref().is_none_or(|id| valid_run_id(id)),
-        "Invalid run identity"
-    );
-    ensure!(
-        query
-            .lane
-            .as_deref()
-            .is_none_or(|lane| ["system", "ai-tools", "ai-tools-stale"].contains(&lane)),
-        "Invalid history lane filter"
-    );
-    ensure!(
-        query.outcome.as_deref().is_none_or(|outcome| [
-            "problems",
-            "running",
-            "failed",
-            "partial",
-            "blocked",
-            "interrupted",
-            "activated",
-            "staged",
-            "ready",
-            "queued",
-            "current",
-            "available",
-            "skipped",
-            "approved",
-            "completed"
-        ]
-        .contains(&outcome)),
-        "Invalid history outcome filter"
-    );
-    ensure!(
-        query.anchor_ids.len() <= 2 && query.anchor_ids.iter().all(|id| valid_run_id(id)),
-        "Invalid history anchors"
-    );
-    let now = chrono::Local::now();
-    let search = search::Search::parse(&query.query, &now)?;
-    let mut hasher = super::json::Measure::of(&catalog.entries)?.hash;
-    query.query.hash(&mut hasher);
-    query.run_id.hash(&mut hasher);
-    query.lane.hash(&mut hasher);
-    query.outcome.hash(&mut hasher);
-    query.anchor_ids.hash(&mut hasher);
-    search.hash(&mut hasher); // Relative dates fence cursors across local midnight.
-    let revision = format!("{:016x}", hasher.finish());
-    let offset = match query.cursor {
-        Some(cursor) => {
-            ensure!(cursor.len() < 100, "Invalid history cursor");
-            let (rev, offset) = cursor.split_once(':').context("Invalid history cursor")?;
-            if rev != revision {
-                return Err(StaleCursor.into());
-            }
-            offset.parse::<usize>()?
+impl Query {
+    fn validate(&self) -> Result<usize> {
+        let limit = self.limit.unwrap_or(50);
+        ensure!(
+            self.query.len() <= 512 && (1..=100).contains(&limit),
+            "Invalid update history query"
+        );
+        ensure!(
+            self.run_id.as_ref().is_none_or(|id| valid_run_id(id)),
+            "Invalid run identity"
+        );
+        ensure!(
+            self.lane
+                .as_deref()
+                .is_none_or(|lane| ["system", "ai-tools", "ai-tools-stale"].contains(&lane)),
+            "Invalid history lane filter"
+        );
+        ensure!(
+            self.outcome.as_deref().is_none_or(|outcome| [
+                "problems",
+                "running",
+                "failed",
+                "partial",
+                "blocked",
+                "interrupted",
+                "activated",
+                "staged",
+                "ready",
+                "queued",
+                "current",
+                "available",
+                "skipped",
+                "approved",
+                "completed"
+            ]
+            .contains(&outcome)),
+            "Invalid history outcome filter"
+        );
+        ensure!(
+            self.anchor_ids.len() <= 2 && self.anchor_ids.iter().all(|id| valid_run_id(id)),
+            "Invalid history anchors"
+        );
+        Ok(limit)
+    }
+
+    fn offset(&self, revision: &str) -> Result<usize> {
+        let Some(cursor) = &self.cursor else {
+            return Ok(0);
+        };
+        ensure!(cursor.len() < 100, "Invalid history cursor");
+        let (rev, offset) = cursor.split_once(':').context("Invalid history cursor")?;
+        ensure!(rev == revision, StaleCursor);
+        Ok(offset.parse()?)
+    }
+
+    fn matches(
+        &self,
+        entry: &Entry,
+        search: &search::Search,
+        now: &chrono::DateTime<chrono::Local>,
+    ) -> bool {
+        // A selected run intentionally overrides the otherwise-valid filters.
+        if let Some(id) = &self.run_id {
+            return &entry.record.job.id == id;
         }
-        None => 0,
-    };
-    let matching: Vec<_> = catalog
-        .entries
-        .into_iter()
-        .filter(|entry| {
-            if let Some(id) = &query.run_id {
-                return &entry.record.job.id == id;
-            }
-            if query
-                .lane
-                .as_ref()
-                .is_some_and(|lane| lane != &entry.record.lane)
-                || query.outcome.as_ref().is_some_and(|outcome| {
-                    if outcome == "problems" {
-                        !entry.is_problem()
-                    } else {
-                        outcome != &entry.outcome
-                    }
-                })
-            {
-                return false;
-            }
-            search.matches_with(entry.record.job.started_at, &now.timezone(), || {
+        let outcome_matches = self.outcome.as_deref().is_none_or(|outcome| match outcome {
+            "problems" => entry.is_problem(),
+            outcome => outcome == entry.outcome,
+        });
+        self.lane
+            .as_ref()
+            .is_none_or(|lane| lane == &entry.record.lane)
+            && outcome_matches
+            && search.matches_with(entry.record.job.started_at, &now.timezone(), || {
                 format!(
                     "{} {} {} {} {} {} {}",
                     entry.outcome,
@@ -242,7 +232,45 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
                 )
                 .to_lowercase()
             })
-        })
+    }
+}
+
+// Always admit the first row, even if it exceeds the byte budget: cursors must advance.
+fn page_end(entries: &[Entry], offset: usize, limit: usize) -> Result<usize> {
+    ensure!(offset <= entries.len(), "Invalid history offset");
+    let mut end = offset;
+    let mut bytes = 0;
+    for entry in entries.iter().skip(offset).take(limit) {
+        let size = super::json::Measure::of(entry)?.bytes;
+        if end > offset && bytes + size > 128 * 1024 {
+            break;
+        }
+        bytes += size;
+        end += 1;
+    }
+    Ok(end)
+}
+
+pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
+    page_at(catalog, query, chrono::Local::now())
+}
+
+fn page_at(catalog: Catalog, query: Query, now: chrono::DateTime<chrono::Local>) -> Result<Value> {
+    let limit = query.validate()?;
+    let search = search::Search::parse(&query.query, &now)?;
+    let mut hasher = super::json::Measure::of(&catalog.entries)?.hash;
+    query.query.hash(&mut hasher);
+    query.run_id.hash(&mut hasher);
+    query.lane.hash(&mut hasher);
+    query.outcome.hash(&mut hasher);
+    query.anchor_ids.hash(&mut hasher);
+    search.hash(&mut hasher); // Relative dates fence cursors across local midnight.
+    let revision = format!("{:016x}", hasher.finish());
+    let offset = query.offset(&revision)?;
+    let matching: Vec<_> = catalog
+        .entries
+        .into_iter()
+        .filter(|entry| query.matches(entry, &search, &now))
         .collect();
     let retain_through = matching
         .iter()
@@ -251,17 +279,7 @@ pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
         .map(|(index, _)| index + 1)
         .max()
         .unwrap_or(0);
-    ensure!(offset <= matching.len(), "Invalid history offset");
-    let mut end = offset;
-    let mut bytes = 0;
-    for entry in matching.iter().skip(offset).take(query.limit.unwrap_or(50)) {
-        let size = super::json::Measure::of(entry)?.bytes;
-        if end > offset && bytes + size > 128 * 1024 {
-            break;
-        }
-        bytes += size;
-        end += 1;
-    }
+    let end = page_end(&matching, offset, limit)?;
     Ok(json!({"history": {
         "available": catalog.available, "revision": revision, "total": matching.len(), "retain_through": retain_through,
         "entries": &matching[offset..end], "cursor": (end < matching.len()).then(|| format!("{revision}:{end}")),
@@ -548,6 +566,8 @@ mod tests {
         for params in [
             json!({"query":"x".repeat(513)}),
             json!({"limit":101}),
+            json!({"limit":0}),
+            json!({"run_id":"run-1", "lane":"invalid"}),
             json!({"run_id":"../outside"}),
             json!({"cursor":"old:0"}),
         ] {
@@ -557,6 +577,38 @@ mod tests {
         assert_eq!(empty["history"]["available"], false);
         assert_eq!(empty["history"]["entries"], json!([]));
     }
+    #[test]
+    fn cursor_boundaries_and_relative_dates_are_fenced() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 20, 12, 0, 0)
+            .unwrap();
+        let query = || Query {
+            query: "today".into(),
+            ..Default::default()
+        };
+        let first = super::page_at(Catalog::default(), query(), now).unwrap();
+        let revision = first["history"]["revision"].as_str().unwrap();
+        for offset in ["-1", "overflow", "1", "184467440737095516160"] {
+            let query = Query {
+                cursor: Some(format!("{revision}:{offset}")),
+                ..query()
+            };
+            assert!(super::page_at(Catalog::default(), query, now).is_err());
+        }
+        let query = Query {
+            cursor: Some(format!("{revision}:0")),
+            ..query()
+        };
+        assert!(
+            super::page_at(Catalog::default(), query, now + chrono::Duration::days(1))
+                .unwrap_err()
+                .is::<StaleCursor>()
+        );
+        assert_eq!(super::page_end(&[], 0, 50).unwrap(), 0);
+        assert!(super::page_end(&[], 1, 50).is_err());
+    }
+
     #[test]
     fn malformed_and_symlinked_files_are_partial_errors() {
         let root = tempfile::tempdir().unwrap();
