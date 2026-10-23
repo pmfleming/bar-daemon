@@ -4,8 +4,8 @@
 //! retained as an optional compatibility backend.
 
 pub(crate) mod center;
-mod decks;
 mod context_actions;
+mod decks;
 pub(crate) mod engine;
 pub(crate) mod history;
 #[cfg(test)]
