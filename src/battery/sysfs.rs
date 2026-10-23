@@ -128,6 +128,7 @@ fn aggregate(snapshot: &NativeSnapshot) -> BatteryState {
         .unwrap_or_default();
 
     BatteryState {
+        display: Default::default(),
         available: !present.is_empty(),
         native_path: present
             .first()
@@ -261,6 +262,7 @@ fn device_state(battery: &NativeBattery) -> BatteryDeviceState {
         error: None,
     };
     BatteryDeviceState {
+        display: Default::default(),
         id: battery.identity.id.clone(),
         vendor: battery.identity.vendor.clone(),
         model: battery.identity.model.clone(),

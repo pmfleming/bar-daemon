@@ -663,6 +663,7 @@ pub(crate) fn decorate(
         .map(|device| device.protection.clone())
         .unwrap_or_default();
     state.state = semantic_state(&state);
+    crate::presentation::battery(&mut state);
     state
 }
 

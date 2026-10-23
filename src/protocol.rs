@@ -625,18 +625,21 @@ fn generated_contract_fixture() -> Value {
         fixture[name] = serde_json::to_value(center).expect("center wire projection");
     }
     fixture["notification_page"] = serde_json::to_value(page).expect("catalog wire projection");
-    let activity =
+    let mut activity: crate::activity::model::ActivityState =
         serde_json::from_value(fixture["snapshot"]["activity"].clone()).expect("activity fixture");
     let local =
         serde_json::from_value(fixture["snapshot"]["timezone"].clone()).expect("timezone fixture");
     // Match the example's observation time, not the season in which tests run.
-    fixture["snapshot"]["activity"]["locations"] =
-        serde_json::to_value(crate::activity::locations::project_at(
-            &activity,
-            &local,
-            chrono::DateTime::from_timestamp_millis(1766400000000).expect("fixture instant"),
-        ))
-        .expect("native locations");
+    let instant = chrono::DateTime::from_timestamp_millis(1766400000000).expect("fixture instant");
+    activity.locations = crate::activity::locations::project_at(&activity, &local, instant);
+    crate::activity::presentation::update(&mut activity, instant);
+    fixture["snapshot"]["activity"] =
+        serde_json::to_value(activity).expect("native activity presentation");
+    let mut battery =
+        serde_json::from_value(fixture["snapshot"]["battery"].clone()).expect("battery fixture");
+    crate::presentation::battery(&mut battery);
+    fixture["snapshot"]["battery"] =
+        serde_json::to_value(battery).expect("native battery presentation");
     fixture["snapshot"]["theme"] =
         serde_json::to_value(crate::theme::ThemeRoles::default()).expect("theme fixture");
     fixture

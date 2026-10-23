@@ -74,6 +74,8 @@ pub(crate) struct TodoItem {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorldClockState {
+    #[serde(default)]
+    pub clock_display: serde_json::Value,
     pub timezone: String,
     pub label: String,
     pub city: String,
@@ -99,6 +101,7 @@ impl WorldClockState {
             .replace('_', " ");
         let utc_offset_seconds = now.offset().fix().local_minus_utc();
         Ok(Self {
+            clock_display: super::presentation::clock_display(now, utc_offset_seconds),
             timezone: timezone.into(),
             label: if label.is_empty() {
                 city.clone()
@@ -118,6 +121,8 @@ impl WorldClockState {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WeatherState {
+    #[serde(default)]
+    pub display: serde_json::Value,
     pub available: bool,
     pub id: String,
     pub location: String,
@@ -151,6 +156,8 @@ pub(crate) struct WeatherState {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WeatherHour {
+    #[serde(default)]
+    pub display: serde_json::Value,
     pub time_unix_ms: i64,
     pub temperature_c: f64,
     pub precipitation_probability: u8,
@@ -164,6 +171,8 @@ pub(crate) struct WeatherHour {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WeatherDay {
+    #[serde(default)]
+    pub display: serde_json::Value,
     pub date_unix_ms: i64,
     pub high_c: f64,
     pub low_c: f64,

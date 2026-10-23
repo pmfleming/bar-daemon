@@ -22,6 +22,7 @@ mod model;
 mod osd_hardware;
 mod paths;
 mod power;
+mod presentation;
 /// Stable metadata and contract fixtures for the JSON/D-Bus protocol.
 pub mod protocol;
 mod sleep;

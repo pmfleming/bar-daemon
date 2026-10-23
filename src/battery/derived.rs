@@ -19,6 +19,7 @@ pub(crate) fn forecast(battery: &BatteryState) -> ChargeForecast {
         None => "unavailable",
     };
     ChargeForecast {
+        duration_label: crate::presentation::estimate(estimate.unwrap_or(0.0)),
         limit,
         target,
         percentage: battery.percentage,

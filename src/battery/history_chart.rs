@@ -9,6 +9,7 @@ pub(crate) struct Point {
     value: f64,
     timestamp_ms: u64,
     charging: bool,
+    label: String,
 }
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct Break {
@@ -21,7 +22,10 @@ pub(crate) struct Series {
     segments: Vec<Vec<Point>>,
     breaks: Vec<Break>,
     maximum: f64,
+    axis_maximum: f64,
+    tick_labels: Vec<String>,
     active_duration_ms: u64,
+    duration_label: String,
     has_active_timeline: bool,
 }
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -63,7 +67,10 @@ fn series(points: &[&BatteryHistoryPoint], power: bool) -> Series {
         segments: vec![],
         breaks: vec![],
         maximum: if power { 1.0 } else { 100.0 },
+        axis_maximum: 0.0,
+        tick_labels: vec![],
         active_duration_ms: duration,
+        duration_label: crate::presentation::estimate(duration as f64 / 1000.0),
         has_active_timeline: !points.is_empty(),
     };
     let mut previous: Option<&BatteryHistoryPoint> = None;
@@ -81,6 +88,14 @@ fn series(points: &[&BatteryHistoryPoint], power: bool) -> Series {
             value,
             timestamp_ms: point.timestamp_ms,
             charging: point.charging,
+            label: if power {
+                format!(
+                    "{} W",
+                    crate::presentation::fixed_decimal(value, 1).unwrap()
+                )
+            } else {
+                format!("{value:.0}%")
+            },
         };
         let continuous = previous.is_some_and(|old| {
             point.continuous
@@ -100,6 +115,16 @@ fn series(points: &[&BatteryHistoryPoint], power: bool) -> Series {
         result.maximum = result.maximum.max(value);
         previous = Some(point);
     }
+    result.axis_maximum = if power {
+        (result.maximum / 10.0).ceil().max(1.0) * 10.0
+    } else {
+        100.0
+    };
+    result.tick_labels = vec![
+        format!("+{:.0}", result.axis_maximum),
+        "0".into(),
+        format!("−{:.0}", result.axis_maximum),
+    ];
     result
 }
 

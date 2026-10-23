@@ -3587,6 +3587,11 @@
         {
           "abbreviation": "JST",
           "city": "Tokyo",
+          "clock_display": {
+            "date": "Monday, 22 December 2025",
+            "offset": "UTC+9",
+            "time": "19:40"
+          },
           "has_coordinates": false,
           "has_weather": false,
           "home": false,
@@ -3604,6 +3609,7 @@
             "phase": "waxing-crescent",
             "time_basis": "utc"
           },
+          "subtitle": "Asia/Tokyo",
           "timezone": "Asia/Tokyo",
           "timezone_region_ids": [
             "Asia-Tokyo"
@@ -3614,6 +3620,11 @@
         {
           "abbreviation": "CET",
           "city": "Amsterdam",
+          "clock_display": {
+            "date": "Monday, 22 December 2025",
+            "offset": "UTC+1",
+            "time": "11:40"
+          },
           "has_coordinates": true,
           "has_weather": true,
           "home": true,
@@ -3631,6 +3642,7 @@
             "phase": "waxing-crescent",
             "time_basis": "utc"
           },
+          "subtitle": "Europe/Amsterdam",
           "timezone": "Europe/Amsterdam",
           "timezone_region_ids": [
             "Africa-Lagos",
@@ -3648,6 +3660,14 @@
                 "condition": "Clear",
                 "condition_code": 0,
                 "date_unix_ms": 1766361600000,
+                "display": {
+                  "day": "MON",
+                  "high": "21°",
+                  "low": "13°",
+                  "low_fraction": 0.0,
+                  "precipitation": "5%",
+                  "span_fraction": 1.0
+                },
                 "high_c": 21.0,
                 "low_c": 13.0,
                 "precipitation_probability": 5,
@@ -3655,6 +3675,27 @@
                 "sunset_unix_ms": 1766436420000
               }
             ],
+            "display": {
+              "apparent_temperature": "16°",
+              "daylight": "14 h 15 min",
+              "daylight_fraction": 0.59375,
+              "high": "21°",
+              "hour_indices": [
+                0
+              ],
+              "low": "13°",
+              "palette": "clear",
+              "precipitation": "5%",
+              "solar_noon": "14:39",
+              "sun_available": true,
+              "sun_progress": 0.29005847953216374,
+              "sunrise": "07:32",
+              "sunset": "21:47",
+              "temperature": "17°",
+              "time": "11:40",
+              "updated": "11:40",
+              "wind": "NW 12 km/h"
+            },
             "error": null,
             "high_c": 21.0,
             "home": true,
@@ -3662,6 +3703,12 @@
               {
                 "condition": "Clear",
                 "condition_code": 0,
+                "display": {
+                  "precipitation": "5%",
+                  "temperature": "17°",
+                  "temperature_fraction": 0.0,
+                  "time": "01:00"
+                },
                 "is_day": true,
                 "precipitation_mm": 0.0,
                 "precipitation_probability": 5,
@@ -3750,6 +3797,14 @@
             "condition": "Clear",
             "condition_code": 0,
             "date_unix_ms": 1766361600000,
+            "display": {
+              "day": "MON",
+              "high": "21°",
+              "low": "13°",
+              "low_fraction": 0.0,
+              "precipitation": "5%",
+              "span_fraction": 1.0
+            },
             "high_c": 21.0,
             "low_c": 13.0,
             "precipitation_probability": 5,
@@ -3757,6 +3812,27 @@
             "sunset_unix_ms": 1766436420000
           }
         ],
+        "display": {
+          "apparent_temperature": "16°",
+          "daylight": "14 h 15 min",
+          "daylight_fraction": 0.59375,
+          "high": "21°",
+          "hour_indices": [
+            0
+          ],
+          "low": "13°",
+          "palette": "clear",
+          "precipitation": "5%",
+          "solar_noon": "14:39",
+          "sun_available": true,
+          "sun_progress": 0.29005847953216374,
+          "sunrise": "07:32",
+          "sunset": "21:47",
+          "temperature": "17°",
+          "time": "11:40",
+          "updated": "11:40",
+          "wind": "NW 12 km/h"
+        },
         "error": null,
         "high_c": 21.0,
         "home": true,
@@ -3764,6 +3840,12 @@
           {
             "condition": "Clear",
             "condition_code": 0,
+            "display": {
+              "precipitation": "5%",
+              "temperature": "17°",
+              "temperature_fraction": 0.0,
+              "time": "01:00"
+            },
             "is_day": true,
             "precipitation_mm": 0.0,
             "precipitation_probability": 5,
@@ -3815,6 +3897,14 @@
               "condition": "Clear",
               "condition_code": 0,
               "date_unix_ms": 1766361600000,
+              "display": {
+                "day": "MON",
+                "high": "21°",
+                "low": "13°",
+                "low_fraction": 0.0,
+                "precipitation": "5%",
+                "span_fraction": 1.0
+              },
               "high_c": 21.0,
               "low_c": 13.0,
               "precipitation_probability": 5,
@@ -3822,6 +3912,27 @@
               "sunset_unix_ms": 1766436420000
             }
           ],
+          "display": {
+            "apparent_temperature": "16°",
+            "daylight": "14 h 15 min",
+            "daylight_fraction": 0.59375,
+            "high": "21°",
+            "hour_indices": [
+              0
+            ],
+            "low": "13°",
+            "palette": "clear",
+            "precipitation": "5%",
+            "solar_noon": "14:39",
+            "sun_available": true,
+            "sun_progress": 0.29005847953216374,
+            "sunrise": "07:32",
+            "sunset": "21:47",
+            "temperature": "17°",
+            "time": "11:40",
+            "updated": "11:40",
+            "wind": "NW 12 km/h"
+          },
           "error": null,
           "high_c": 21.0,
           "home": true,
@@ -3829,6 +3940,12 @@
             {
               "condition": "Clear",
               "condition_code": 0,
+              "display": {
+                "precipitation": "5%",
+                "temperature": "17°",
+                "temperature_fraction": 0.0,
+                "time": "01:00"
+              },
               "is_day": true,
               "precipitation_mm": 0.0,
               "precipitation_probability": 5,
@@ -3874,6 +3991,11 @@
         {
           "abbreviation": "JST",
           "city": "Tokyo",
+          "clock_display": {
+            "date": "Monday, 22 December 2025",
+            "offset": "UTC+9",
+            "time": "19:40"
+          },
           "label": "Tokyo",
           "timezone": "Asia/Tokyo",
           "timezone_region_ids": [
@@ -3903,6 +4025,12 @@
       "devices": [
         {
           "cycles": 101,
+          "display": {
+            "desired_range": "75–80%",
+            "energy_design": "52.5 Wh",
+            "energy_full": "44.8 Wh",
+            "energy_now": "35.8 Wh"
+          },
           "energy_full_design_wh": 52.5,
           "energy_full_wh": 44.75,
           "energy_now_wh": 35.8,
@@ -3941,9 +4069,14 @@
           "voltage_volts": 15.48
         }
       ],
+      "display": {
+        "percentage": "80%",
+        "power": "8.2 W"
+      },
       "error": null,
       "forecast": {
         "approximate": true,
+        "duration_label": "4h 0m",
         "estimating": false,
         "limit": 80,
         "percentage": 80,

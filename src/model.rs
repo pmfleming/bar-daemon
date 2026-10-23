@@ -223,6 +223,8 @@ pub(crate) struct PowerProfileHold {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BatteryState {
+    #[serde(default)]
+    pub display: serde_json::Value,
     pub available: bool,
     pub native_path: String,
     pub percentage: u8,
@@ -284,6 +286,8 @@ pub(crate) struct EnergyBin {
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ChargeForecast {
+    #[serde(default)]
+    pub duration_label: String,
     pub limit: Option<u8>,
     pub target: u8,
     pub percentage: u8,
@@ -386,6 +390,8 @@ impl Default for BatteryPolicyState {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BatteryDeviceState {
+    #[serde(default)]
+    pub display: serde_json::Value,
     pub id: String,
     pub vendor: String,
     pub model: String,

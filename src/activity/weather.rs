@@ -119,6 +119,7 @@ impl ForecastResponse {
         let default_day = WeatherDay::default();
         let today = daily.first().unwrap_or(&default_day);
         Ok(WeatherState {
+            display: Default::default(),
             available: true,
             id: config.id.clone(),
             location: config.location.clone(),
@@ -175,6 +176,7 @@ impl HourlyWeather {
     fn hour(&self, index: usize, time_unix_ms: i64) -> WeatherHour {
         let condition_code = value(&self.weather_code, index);
         WeatherHour {
+            display: Default::default(),
             time_unix_ms,
             temperature_c: value(&self.temperature_2m, index),
             precipitation_probability: value(&self.precipitation_probability, index),
@@ -197,6 +199,7 @@ impl DailyWeather {
             .map(|(index, time)| {
                 let condition_code = value(&self.weather_code, index);
                 Ok(WeatherDay {
+                    display: Default::default(),
                     date_unix_ms: milliseconds(*time)?,
                     high_c: value(&self.temperature_2m_max, index),
                     low_c: value(&self.temperature_2m_min, index),

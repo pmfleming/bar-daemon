@@ -54,6 +54,8 @@ fn same_zone(left: &str, right: &str) -> bool {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Location {
+    #[serde(default)]
+    pub subtitle: String,
     pub id: String,
     #[serde(flatten)]
     pub clock: WorldClockState,

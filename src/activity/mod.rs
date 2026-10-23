@@ -8,6 +8,7 @@ pub(crate) mod locations;
 pub(crate) mod model;
 pub(crate) mod notifications;
 pub(crate) mod place_search;
+pub(crate) mod presentation;
 pub(crate) mod provider;
 mod service;
 mod weather;

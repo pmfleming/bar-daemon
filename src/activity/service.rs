@@ -143,6 +143,28 @@ impl ActivityService {
     }
 
     pub(crate) async fn monitor(self: Arc<Self>) {
+        tokio::select! {
+            _ = Arc::clone(&self).monitor_sources() => {},
+            _ = self.monitor_clock() => {},
+        }
+    }
+
+    async fn monitor_clock(&self) {
+        loop {
+            tokio::time::sleep(super::presentation::next_minute(chrono::Utc::now())).await;
+            self.publish_clock(chrono::Utc::now()).await;
+        }
+    }
+
+    async fn publish_clock(&self, now: chrono::DateTime<chrono::Utc>) {
+        // Independent of provider I/O; publication shares the existing guard.
+        let _publication = self.publication_guard.lock().await;
+        let mut state = self.state.read(|s| s.activity.clone()).await;
+        super::presentation::update(&mut state, now);
+        self.state.update_activity(state).await;
+    }
+
+    async fn monitor_sources(self: Arc<Self>) {
         let mut events = self
             .state
             .subscribe_domains(&[crate::protocol::stream::TIMEZONE]);
@@ -567,6 +589,7 @@ impl ActivityService {
         } else {
             state.locations = super::locations::project(&state, &local);
         }
+        super::presentation::update(&mut state, chrono::Utc::now());
         self.state.update_activity(state).await;
     }
 }
@@ -579,6 +602,43 @@ mod tests {
 
     use super::ActivityService;
 
+    #[tokio::test]
+    async fn clock_publication_preserves_provider_outcomes_and_catalog_identity() {
+        use chrono::TimeZone;
+        let directory = tempdir().unwrap();
+        let service = service_in(&directory).await;
+        let mut initial = service.state.read(|s| s.activity.clone()).await;
+        initial.error = Some("Provider unavailable".into());
+        initial.syncing = true;
+        let ids: Vec<_> = initial.locations.iter().map(|l| l.id.clone()).collect();
+        let catalog = initial.location_catalog.clone();
+        service.state.update_activity(initial).await;
+        service
+            .publish_clock(chrono::Utc.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap())
+            .await;
+        let published = service.state.read(|s| s.activity.clone()).await;
+        assert_eq!(published.error.as_deref(), Some("Provider unavailable"));
+        assert!(published.syncing);
+        assert_eq!(published.location_catalog, catalog);
+        assert_eq!(
+            published
+                .locations
+                .iter()
+                .map(|l| l.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            published
+                .locations
+                .iter()
+                .find(|l| l.home)
+                .unwrap()
+                .clock
+                .clock_display["time"],
+            "03:00"
+        );
+    }
     #[tokio::test]
     async fn city_catalog_survives_bad_config_and_corruption_never_moves_home() {
         let directory = tempdir().unwrap();
