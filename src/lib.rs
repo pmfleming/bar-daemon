@@ -36,6 +36,8 @@ mod updates;
 mod work_area;
 
 #[cfg(test)]
+mod frontend_contract;
+#[cfg(test)]
 mod test_support;
 
 /// Runs the session D-Bus daemon until it receives a termination signal.

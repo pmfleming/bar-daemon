@@ -83,12 +83,14 @@ impl CenterQuery {
 
 // Only artwork metadata is needed by compact views, not sound/action hints.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub(crate) struct PreviewHints {
     pub desktop_entry: String,
     pub image_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub(crate) struct Preview {
     pub id: u32,
     pub created_unix_ms: u64,
@@ -163,6 +165,7 @@ pub(super) fn repeat_key(
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub(crate) struct AppSummary {
     pub key: String,
     pub count: usize,

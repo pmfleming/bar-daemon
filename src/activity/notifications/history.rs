@@ -52,6 +52,7 @@ struct Cursor {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub(crate) struct CatalogRecord {
     pub history_id: Option<i64>,
     pub notification: ActiveNotification,
@@ -70,6 +71,7 @@ impl From<ActiveNotification> for CatalogRecord {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub(crate) struct HistoryPage {
     pub epoch: String,
     // Strings preserve exact u64 revisions in JavaScript clients.
