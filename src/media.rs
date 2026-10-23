@@ -20,6 +20,9 @@ mod enrichment;
 mod source;
 mod youtube;
 
+#[cfg(test)]
+mod tests;
+
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
@@ -126,7 +129,11 @@ impl MediaService {
         let method = operation_method(operation)?;
         let connection = self.connection().await?;
         let selected = resolve_player(&connection, player_id).await?;
-        call_player(&connection, &selected, method, &()).await?;
+        if operation == "raise" {
+            raise_player(&connection, &selected).await?;
+        } else {
+            call_player(&connection, &selected, method, &()).await?;
+        }
         Ok(selected)
     }
 
@@ -442,6 +449,7 @@ async fn read_player(connection: &zbus::Connection, name: &str) -> Result<MediaP
         position_us,
         position_observed_at_unix_ms: unix_time_ms(),
         playback_rate,
+        can_raise: root.get_property("CanRaise").await.unwrap_or(false),
         can_control: player.get_property("CanControl").await.unwrap_or(false),
         can_play: player.get_property("CanPlay").await.unwrap_or(false),
         can_pause: player.get_property("CanPause").await.unwrap_or(false),
@@ -507,6 +515,7 @@ fn select_active_player(players: &[MediaPlayer]) -> Option<&MediaPlayer> {
 
 fn operation_method(operation: &str) -> Result<&'static str> {
     match operation {
+        "raise" => Ok("Raise"),
         "play-pause" => Ok("PlayPause"),
         "play" => Ok("Play"),
         "pause" => Ok("Pause"),
@@ -543,6 +552,36 @@ fn seek_offset_microseconds(offset_seconds: i64) -> Result<i64> {
     offset_seconds
         .checked_mul(1_000_000)
         .context("MPRIS seek offset overflow")
+}
+
+// Raise belongs to the root interface, independently of playback CanControl.
+// Browsers own the media-session -> tab mapping; never open the content URL or
+// guess a window from a title (which could focus unrelated/private content).
+async fn raise_player(connection: &zbus::Connection, player_id: &str) -> Result<()> {
+    tokio::time::timeout(MPRIS_OPERATION_TIMEOUT, async {
+        // Pin capability validation and activation to the same live owner. A
+        // vanished name must not start a new process or target its replacement.
+        let owner = if connection.is_bus() {
+            Some(
+                zbus::fdo::DBusProxy::new(connection)
+                    .await?
+                    .get_name_owner(player_id.try_into()?)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let destination = owner.as_ref().map_or(player_id, |owner| owner.as_str());
+        let proxy = zbus::Proxy::new(connection, destination, PATH, ROOT_INTERFACE).await?;
+        if !proxy.get_property::<bool>("CanRaise").await.unwrap_or(false) {
+            bail!("media player does not support showing its application");
+        }
+        proxy.call_method("Raise", &()).await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("MPRIS application activation timed out")??;
+    Ok(())
 }
 
 async fn call_player<B>(

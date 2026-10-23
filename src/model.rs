@@ -530,6 +530,8 @@ pub(crate) struct MediaPlayer {
     pub position_us: u64,
     pub position_observed_at_unix_ms: u64,
     pub playback_rate: f64,
+    #[serde(default)]
+    pub can_raise: bool,
     pub can_control: bool,
     pub can_play: bool,
     pub can_pause: bool,

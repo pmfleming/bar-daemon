@@ -44,6 +44,23 @@ that original player ID. Supplied title, artist, album, artwork, rate and timing
 remain unchanged. The optional online fallback below fills only missing title,
 artist/channel and artwork; it never fabricates an album, rate or duration.
 
+## Application activation
+
+Players expose additive `can_raise` from the MPRIS root `CanRaise` property;
+missing/failed reads and older snapshots default to false. `media.operation` with
+`operation: "raise"` and an explicit `player_id` targets that player, independently
+of `CanControl`, playback status or pinning. The daemon binds to its live unique
+D-Bus owner, rechecks `CanRaise`, then calls root `org.mpris.MediaPlayer2.Raise`
+within a two-second deadline. Missing owners/capabilities and method errors fail
+without retry, fallback launch, URL opening or transport commands.
+
+Browsers can use Raise to select their media-session tab as well as their window.
+This is browser/compositor-dependent: success acknowledges the method, not verified
+keyboard focus or a particular tab. No browser debug port, extension, profile
+inspection or synthetic keyboard input is used. Peer-D-Bus tests in
+`media::tests` cover root-interface routing, playback-independent capabilities,
+capability changes, missing support, invalid IDs, error propagation and no replay.
+
 ## Recognition policy
 
 Only exact parsed hostnames and deliberately supported aliases are recognized;

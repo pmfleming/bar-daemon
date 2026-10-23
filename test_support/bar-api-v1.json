@@ -3393,6 +3393,7 @@
           "can_pause": true,
           "can_play": true,
           "can_previous": true,
+          "can_raise": true,
           "can_seek": true,
           "content_type": "music",
           "content_type_source": "url",
