@@ -13,6 +13,8 @@ use crate::{
 use self::{subscriptions::BarDaemon, tasks::MonitorTasks};
 
 pub(crate) mod battery_operations;
+mod owner;
+mod socket;
 mod subscriptions;
 mod tasks;
 
@@ -76,7 +78,7 @@ pub(crate) async fn run() -> Result<()> {
         notification_service,
         media,
         brightness,
-        connection,
+        connection.clone(),
     );
 
     tracing::info!(
@@ -84,7 +86,23 @@ pub(crate) async fn run() -> Result<()> {
         object_path = OBJECT_PATH,
         "bar-daemon started"
     );
-    let result = shelllist_daemon_tokio::wait_for_shutdown().await;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut listener = tokio::spawn(socket::listen(connection, async {
+        let _ = stopped.await;
+    }));
+    let (mut result, joined) = tokio::select! {
+        result = shelllist_daemon_tokio::wait_for_shutdown() => (result, false),
+        result = &mut listener => (result.context("join bar socket listener").and_then(|r| r), true),
+    };
+    let _ = stop.send(());
+    if !joined {
+        result = result.and(
+            listener
+                .await
+                .context("join bar socket shutdown")
+                .and_then(|r| r),
+        );
+    }
     subscriptions.shutdown().await;
     tasks.shutdown().await;
     result

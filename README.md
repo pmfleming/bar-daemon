@@ -33,7 +33,7 @@ See `../shelllist/docs/updates.md` for behavior, coverage, migration and evidenc
 
 Rust status, policy, and action service for a Quickshell desktop bar.
 
-Quickshell owns layout, rendering, animation, input, and system-tray menu hosting. `bar-daemon` owns session/system integration, normalized state, policy, and effects. It exposes `bar-api` version 1 over session D-Bus and through a JSON Lines client suitable for QML `Process` integration.
+Quickshell owns layout, rendering, animation, input, and system-tray menu hosting. `bar-daemon` owns session/system integration, normalized state, policy, and effects. It exposes `bar-api` version 2 over session D-Bus and through the retained JSON Lines client.
 
 ## Current domains
 
@@ -113,6 +113,37 @@ D-Bus endpoint:
 - Bus: `org.laufan.BarDaemon`
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
+
+## Direct Unix JSONL ingress (producer stage)
+
+The shared listener serves `$XDG_RUNTIME_DIR/bar-daemon.sock`. Runtime directory
+and socket must be private `0700`, canonical and owned by this UID; the framework
+checks kernel peer identity. Listener failure fails the daemon, also for D-Bus
+users. The socket invokes the same exported in-process service boundary, domain
+coordinators and state store. It does not proxy D-Bus or start another set of
+state monitors. Event destinations are transport-neutral and each subscription
+retains its existing independent domain workers and bounded/coalesced sources.
+
+Ownership follows socket lifetime, never a frontend-supplied string. Subscription
+loss releases work-area demand and forwarders only for that owner. Interactive
+battery operations use that same lifetime rather than attempting to resolve a
+socket identity on D-Bus. Cancellation signals authorization and waits for durable
+reconciliation; admission remains occupied until the work settles. Acknowledging
+cancellation is not rollback. D-Bus ownership uses the shared connection monitor;
+foreign operation/status access remains denied.
+
+This is **not** completed bar/frontend migration: Shelllist's bar path still uses
+the bridge. Native ordering of reads versus replacement/transition streams,
+domain-specific quiet-loss recovery, frontend opt-in and real shared-Quickshell
+acceptance remain prerequisites. Startup activation, maximum payload, sustained
+load, matched release performance and OS-process-crash acceptance remain open.
+
+Private producer tests exercise actual Unix/D-Bus dispatch and validation parity,
+mixed subscriptions, unrelated audio bursts, foreign cancellation and independent
+work-area lifetime cleanup. A real-socket test runs the actual battery coordinator
+with fake authorization work and proves disconnect retains admission until
+reconciliation. No battery helper or hardware mutation is invoked. These are not
+full-desktop or native Quickshell transport acceptance tests.
 
 ## Browser media sources
 

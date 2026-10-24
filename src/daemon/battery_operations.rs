@@ -1,5 +1,6 @@
 //! Additive v1 operation API. Legacy immediate methods retain their reply shape.
-//! IDs/status belong to the initiating bus owner, not a frontend route string.
+//! IDs/status belong to the initiating transport owner, not a frontend route string.
+use super::owner::Owner;
 use crate::{
     api::{self, ApiService},
     battery::authorization,
@@ -56,8 +57,7 @@ impl Operations {
         &self,
         method: &str,
         params: Value,
-        owner: &str,
-        connection: &zbus::Connection,
+        owner: &Owner,
         api: Arc<ApiService>,
     ) -> Value {
         if method == "battery.operation.start" {
@@ -71,17 +71,16 @@ impl Operations {
                     "method is not an interactive battery operation",
                 );
             }
-            return self.start(owner, connection, async move {
+            return self.start(owner.clone(), async move {
                 api.dispatch(&request.method, request.params).await
             });
         }
-        self.lookup(method, params, owner)
+        self.lookup(method, params, owner.name())
     }
 
     fn start(
         &self,
-        owner: &str,
-        connection: &zbus::Connection,
+        owner: Owner,
         work: impl std::future::Future<Output = Value> + Send + 'static,
     ) -> Value {
         let mut store = self.0.lock().unwrap();
@@ -95,22 +94,13 @@ impl Operations {
             );
         }
         store.next += 1;
-        // Include bus and service generations: a restart must never make
-        // an old opaque ID refer to a new operation by the same caller.
-        let id = format!(
-            "battery-operation-{}-{}-{}",
-            connection.server_guid(),
-            connection
-                .unique_name()
-                .map(|name| name.as_str())
-                .unwrap_or("peer"),
-            store.next
-        );
+        // Bus/service identity or fresh socket-owner entropy prevents reuse.
+        let id = format!("battery-operation-{}-{}", owner.namespace(), store.next);
         let (cancel, receiver) = watch::channel(false);
         store.entries.insert(
             id.clone(),
             Entry {
-                owner: owner.into(),
+                owner: owner.name().into(),
                 cancel: cancel.clone(),
                 response: None,
                 finished: None,
@@ -118,11 +108,8 @@ impl Operations {
         );
         let operations = self.clone();
         let task_id = id.clone();
-        let owner = owner.to_string();
-        let connection = connection.clone();
         tokio::spawn(async move {
-            let monitor = shelllist_daemon_tokio::OwnerLossMonitor::new(connection);
-            if !matches!(monitor.has_owner(&owner).await, Ok(true)) {
+            if !owner.exists().await {
                 operations.0.lock().unwrap().entries.remove(&task_id);
                 return;
             }
@@ -140,7 +127,7 @@ impl Operations {
             tokio::pin!(work);
             let (response, owner_lost) = tokio::select! {
                 response = &mut work => (response, false),
-                _ = monitor.wait(&owner) => {
+                _ = owner.closed() => {
                     cancel.send_replace(true);
                     (work.await, true)
                 }
@@ -199,6 +186,9 @@ pub(crate) fn status(id: &str, response: Option<Value>, cancellation_requested: 
 }
 
 #[cfg(test)]
+mod socket_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -206,19 +196,23 @@ mod tests {
     async fn bounded_ack_admission_and_owner_loss_cancel_without_replay() {
         let bus = crate::battery::helper::authorization_tests::Bus::new();
         let server = bus.connection().await;
+        let monitor = shelllist_daemon_tokio::OwnerLossMonitor::new(server.clone());
         let caller = bus.connection().await;
         let owner = caller.unique_name().unwrap().to_string();
         let operations = Operations::default();
         let (entered, started) = tokio::sync::oneshot::channel();
-        let accepted = operations.start(&owner, &server, async move {
-            entered.send(()).unwrap();
-            let mut cancellation = authorization::cancellation().unwrap();
-            authorization::cancelled(&mut cancellation).await;
-            api::error(
-                "outcome-unknown",
-                "already-started effect is not rolled back",
-            )
-        });
+        let accepted = operations.start(
+            Owner::bus(&server, owner.clone(), monitor.clone()),
+            async move {
+                entered.send(()).unwrap();
+                let mut cancellation = authorization::cancellation().unwrap();
+                authorization::cancelled(&mut cancellation).await;
+                api::error(
+                    "outcome-unknown",
+                    "already-started effect is not rolled back",
+                )
+            },
+        );
         assert_eq!(accepted["data"]["operation"]["state"], "running");
         let id = accepted["data"]["operation"]["id"]
             .as_str()
@@ -229,7 +223,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            operations.start(&owner, &server, async {
+            operations.start(Owner::bus(&server, owner.clone(), monitor.clone()), async {
                 panic!("rejected work must not execute")
             })["error"]["code"],
             "operation-active"
@@ -255,11 +249,12 @@ mod tests {
         })
         .await
         .unwrap();
-        let accepted = operations.start(&owner, &server, async {
-            let mut cancellation = authorization::cancellation().unwrap();
-            authorization::cancelled(&mut cancellation).await;
-            api::error("outcome-unknown", "owner lost")
-        });
+        let accepted =
+            operations.start(Owner::bus(&server, owner.clone(), monitor.clone()), async {
+                let mut cancellation = authorization::cancellation().unwrap();
+                authorization::cancelled(&mut cancellation).await;
+                api::error("outcome-unknown", "owner lost")
+            });
         let id = accepted["data"]["operation"]["id"]
             .as_str()
             .unwrap()

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use super::owner::Owner;
 use serde_json::{Value, json};
-use shelllist_daemon_tokio::{OwnedTaskRegistry, directed_emitter};
+use shelllist_daemon_tokio::{EventEmitter, OwnedTaskRegistry, directed_emitter};
 use tokio::sync::broadcast::error::RecvError;
 use zbus::{message::Header, object_server::SignalEmitter};
 
@@ -33,17 +34,15 @@ impl BarDaemon {
     }
 }
 
-#[zbus::interface(name = "org.laufan.BarDaemon2")]
 impl BarDaemon {
-    async fn call(
+    pub(super) async fn call_owned(
         &self,
         method: &str,
         params_json: &str,
-        #[zbus(header)] header: Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
+        lifetime: Option<Owner>,
     ) -> String {
         let policy = protocol::method_policy(method);
-        let owner = header.sender().map(|s| s.as_str());
+        let owner = lifetime.as_ref().map(Owner::name);
         let admission = match policy {
             Some(policy) => self
                 .boundary
@@ -65,16 +64,15 @@ impl BarDaemon {
             method,
             "battery.operation.start" | "battery.operation.status" | "battery.operation.cancel"
         ) {
-            let Some(owner) = header.sender() else {
-                return api::error("owner-required", "operation requires a bus owner").to_string();
+            let Some(owner) = lifetime.as_ref() else {
+                return api::error("owner-required", "operation requires a transport owner")
+                    .to_string();
             };
-            return admitted.encode(&self.operations.call(
-                method,
-                params,
-                owner.as_str(),
-                connection,
-                self.api.clone(),
-            ));
+            return admitted.encode(
+                &self
+                    .operations
+                    .call(method, params, owner, self.api.clone()),
+            );
         }
         if policy.is_some() {
             let api = self.api.clone();
@@ -87,15 +85,15 @@ impl BarDaemon {
         }
     }
 
-    async fn subscribe(
+    pub(super) async fn subscribe_owned(
         &self,
         streams: Vec<String>,
-        #[zbus(header)] header: Header<'_>,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        owner: Option<Owner>,
+        emitter: EventEmitter<'static>,
     ) -> String {
         let _admitted = match self
             .boundary
-            .subscribe(header.sender().map(|s| s.as_str()), &streams)
+            .subscribe(owner.as_ref().map(Owner::name), &streams)
         {
             Ok(admitted) => admitted,
             Err(response) => return response,
@@ -111,35 +109,30 @@ impl BarDaemon {
             .to_string();
         }
         let id = self.subscriptions.next_id("subscription");
-        let owner = header.sender().map(ToString::to_string);
-        let connection = emitter.connection().clone();
-        let directed = directed_emitter(&emitter, &header);
         let state = self.state.clone();
-        if let Err(error) = self.subscriptions.spawn_for_owner(
+        if let Err(error) = self.subscriptions.spawn_until(
             id.clone(),
-            owner,
-            &connection,
-            forward_events(state, directed, id.clone(), streams),
+            owner.as_ref().map(|owner| owner.name().to_owned()),
+            async move {
+                if let Some(owner) = owner {
+                    owner.closed().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            },
+            forward_events(state, emitter, id.clone(), streams),
         ) {
             return api::error("subscription-unavailable", error.to_string()).to_string();
         }
         api::success(json!({ "subscription": { "id": id } })).to_string()
     }
 
-    async fn cancel(&self, request_id: &str, #[zbus(header)] header: Header<'_>) -> String {
-        let _admitted = match self
-            .boundary
-            .cancel(header.sender().map(|s| s.as_str()), request_id)
-        {
+    pub(super) async fn cancel_owned(&self, request_id: &str, owner: Option<&str>) -> String {
+        let _admitted = match self.boundary.cancel(owner, request_id) {
             Ok(admitted) => admitted,
             Err(response) => return response,
         };
-        let owner = header.sender().map(ToString::to_string);
-        if self
-            .subscriptions
-            .cancel_owned(request_id, owner.as_deref())
-            .await
-        {
+        if self.subscriptions.cancel_owned(request_id, owner).await {
             return api::success(json!({ "cancelled": request_id, "kind": "subscription" }))
                 .to_string();
         }
@@ -149,7 +142,50 @@ impl BarDaemon {
         )
         .to_string()
     }
+}
 
+#[zbus::interface(name = "org.laufan.BarDaemon2")]
+impl BarDaemon {
+    async fn call(
+        &self,
+        method: &str,
+        params_json: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> String {
+        self.call_owned(
+            method,
+            params_json,
+            header.sender().map(|name| {
+                Owner::bus(
+                    connection,
+                    name.to_string(),
+                    self.subscriptions.owner_monitor(connection),
+                )
+            }),
+        )
+        .await
+    }
+    async fn subscribe(
+        &self,
+        streams: Vec<String>,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> String {
+        let owner = header.sender().map(|name| {
+            Owner::bus(
+                emitter.connection(),
+                name.to_string(),
+                self.subscriptions.owner_monitor(emitter.connection()),
+            )
+        });
+        self.subscribe_owned(streams, owner, directed_emitter(&emitter, &header).into())
+            .await
+    }
+    async fn cancel(&self, request_id: &str, #[zbus(header)] header: Header<'_>) -> String {
+        self.cancel_owned(request_id, header.sender().map(|name| name.as_str()))
+            .await
+    }
     #[zbus(signal)]
     async fn event(emitter: &SignalEmitter<'_>, stream: &str, event_json: &str)
     -> zbus::Result<()>;
@@ -157,7 +193,7 @@ impl BarDaemon {
 
 async fn forward_events(
     state: StateStore,
-    emitter: SignalEmitter<'static>,
+    emitter: EventEmitter<'static>,
     subscription_id: String,
     streams: Vec<String>,
 ) {
@@ -202,14 +238,10 @@ async fn forward_events(
     }
 }
 
-async fn emit_event(emitter: &SignalEmitter<'_>, event: Event) {
+async fn emit_event(emitter: &EventEmitter<'_>, event: Event) {
     let stream = event.stream();
     if let Err(error) = emitter
-        .emit(
-            api::INTERFACE,
-            "Event",
-            &(stream, event.value().to_string()),
-        )
+        .emit(api::INTERFACE, stream, event.value().clone())
         .await
     {
         tracing::warn!(%stream, %error, "bar-api event could not be emitted");
@@ -247,7 +279,7 @@ mod tests {
             .to_owned();
         let forwarder = tokio::spawn(forward_events(
             state.clone(),
-            emitter,
+            emitter.into(),
             "test-sub".into(),
             vec![
                 protocol::stream::BATTERY.into(),
@@ -306,7 +338,7 @@ mod tests {
             .to_owned();
         let forwarder = tokio::spawn(forward_events(
             state.clone(),
-            emitter,
+            emitter.into(),
             "geometry".into(),
             vec![protocol::stream::WORKAREA.into()],
         ));
