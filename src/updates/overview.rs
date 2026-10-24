@@ -64,8 +64,16 @@ async fn read_worker_with_timeout(path: &Path, deadline: Duration) -> Result<Val
 fn text(value: &Value) -> Option<String> {
     value.as_str().map(|s| s.chars().take(512).collect())
 }
+fn timestamp(at: u64) -> Option<u64> {
+    (1..253402300800).contains(&at).then_some(at)
+}
 fn stamp(value: &Value) -> Option<u64> {
-    value.as_u64().filter(|at| (1..253402300800).contains(at))
+    timestamp(value.as_u64()?)
+}
+fn field(value: &Value, max: usize) -> bool {
+    value
+        .as_str()
+        .is_some_and(|s| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control))
 }
 fn git_overview(value: &Value) -> Result<Value> {
     if value.is_null() {
@@ -115,11 +123,6 @@ fn applications_overview(value: &Value) -> Result<Value> {
     let packages = value["packages"]
         .as_array()
         .context("Invalid application packages")?;
-    let field = |value: &Value, max| {
-        value
-            .as_str()
-            .is_some_and(|s| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control))
-    };
     ensure!(
         packages.len() <= 512
             && value["total"]
@@ -150,11 +153,6 @@ fn application_release(value: &Value) -> Result<Value> {
     if value.is_null() {
         return Ok(Value::Null);
     }
-    let field = |value: &Value, max| {
-        value
-            .as_str()
-            .is_some_and(|s| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control))
-    };
     ensure!(
         value.is_object()
             && field(&value["source"], 512)
@@ -177,6 +175,57 @@ fn application_release(value: &Value) -> Result<Value> {
         "checked_at":value["checked_at"],"attempted_at":value["attempted_at"],
         "stale":value["stale"],"error":value["error"]}))
 }
+fn system_overview(system: &Value, baseline: &Value) -> Value {
+    let pending = system["pending_transaction"].as_bool();
+    let staged = if pending == Some(false)
+        && system["active"].is_string()
+        && system["profile"].is_string()
+    {
+        system["staged_for_next_boot"].as_bool()
+    } else {
+        None
+    };
+    let system_errors: Vec<_> = ["active", "booted", "profile", "last_successful_check"]
+        .iter()
+        .filter_map(|key| text(&system[key]["error"]))
+        .collect();
+    json!({"active":text(&system["active"]),"booted":text(&system["booted"]),"profile":text(&system["profile"]),
+        "staged_for_next_boot":staged,"staged_since": if staged == Some(true) { stamp(&system["staged_since"]).or_else(|| stamp(&baseline["approval"]["approved_at"])) } else { None },
+        "pending_transaction":pending,"queued":system["queued"].as_bool(),
+        "last_successful_check":stamp(&system["last_successful_check"]),"errors":system_errors})
+}
+fn baseline_overview(baseline: &Value) -> Value {
+    let mut reasons: Vec<_> = baseline["reasons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(32)
+        .filter_map(text)
+        .collect();
+    if let Some(reason) = text(&baseline["reason"]) {
+        reasons.push(reason);
+    }
+    json!({"valid":baseline["valid"].as_bool(),"approved_at":stamp(&baseline["approval"]["approved_at"]),
+        "revision":text(&baseline["approval"]["revision"]),"reasons":reasons,"error":text(&baseline["error"])})
+}
+fn tool_overview(tool: &Value) -> Value {
+    json!({
+        "name": text(&tool["tool"]), "installed_version": text(&tool["installed_version"]),
+        "phase": text(&tool["phase"]), "last_successful_check": stamp(&tool["last_successful_check"]),
+        "last_activation": stamp(&tool["last_activation"]), "error": text(&tool["error"]),
+        "freshness": {
+            "latest_version":text(&tool["latest_version"]), "source":text(&tool["latest_release"]["source"]),
+            "published_at":text(&tool["latest_release"]["published_at"]), "origin":text(&tool["origin"]),
+            "comparison":tool["comparison"].as_str().filter(|value| ["current","newer","ahead","rebuild"].contains(value)),
+            "stale":tool["stale"].as_bool(), "held": if tool.get("hold").is_some() { Some(tool["hold"].is_object()) } else { None },
+            "hold_since":stamp(&tool["hold"]["since"]), "hold_reason":text(&tool["hold"]["reason"])
+        }
+    })
+}
+fn timer_overview(timer: &Value) -> Value {
+    let time = |key| timestamp(timer[key].as_u64()? / 1_000_000);
+    json!({"unit": text(&timer["unit"]), "next_at": time("next"), "last_at": time("last")})
+}
 fn normalize(report: &Value) -> Result<Value> {
     let tools = report["tools"]
         .as_array()
@@ -193,65 +242,17 @@ fn normalize(report: &Value) -> Result<Value> {
                     .is_some_and(|timers| timers.len() <= 64)),
         "Invalid or unsupported worker overview"
     );
-    let system = &report["system"];
-    let baseline = &report["baseline"];
-    let pending = system["pending_transaction"].as_bool();
-    let staged = if pending == Some(false)
-        && system["active"].is_string()
-        && system["profile"].is_string()
-    {
-        system["staged_for_next_boot"].as_bool()
-    } else {
-        None
-    };
-    let system_errors: Vec<_> = ["active", "booted", "profile", "last_successful_check"]
-        .iter()
-        .filter_map(|key| text(&system[key]["error"]))
-        .collect();
-    let mut reasons: Vec<_> = baseline["reasons"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .take(32)
-        .filter_map(text)
-        .collect();
-    if let Some(reason) = text(&baseline["reason"]) {
-        reasons.push(reason);
-    }
-    let tools: Vec<_> = tools.iter().map(|tool| json!({
-        "name": text(&tool["tool"]), "installed_version": text(&tool["installed_version"]),
-        "phase": text(&tool["phase"]), "last_successful_check": stamp(&tool["last_successful_check"]),
-        "last_activation": stamp(&tool["last_activation"]), "error": text(&tool["error"]),
-        "freshness": {
-            "latest_version":text(&tool["latest_version"]), "source":text(&tool["latest_release"]["source"]),
-            "published_at":text(&tool["latest_release"]["published_at"]), "origin":text(&tool["origin"]),
-            "comparison":tool["comparison"].as_str().filter(|value| ["current","newer","ahead","rebuild"].contains(value)),
-            "stale":tool["stale"].as_bool(), "held": if tool.get("hold").is_some() { Some(tool["hold"].is_object()) } else { None },
-            "hold_since":stamp(&tool["hold"]["since"]), "hold_reason":text(&tool["hold"]["reason"])
-        }
-    })).collect();
+    let tools: Vec<_> = tools.iter().map(tool_overview).collect();
     let timers: Vec<_> = report["timers"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|timer| {
-            let time = |key| {
-                timer[key]
-                    .as_u64()
-                    .filter(|at| *at != u64::MAX)
-                    .and_then(|at| stamp(&json!(at / 1_000_000)))
-            };
-            json!({"unit": text(&timer["unit"]), "next_at": time("next"), "last_at": time("last")})
-        })
+        .map(timer_overview)
         .collect();
     Ok(json!({
         "schema_version":1,"available":true,"observed_at":stamp(&report["observed_at"]),"error":null,
-        "system": {"active":text(&system["active"]),"booted":text(&system["booted"]),"profile":text(&system["profile"]),
-            "staged_for_next_boot":staged,"staged_since": if staged == Some(true) { stamp(&system["staged_since"]).or_else(|| stamp(&baseline["approval"]["approved_at"])) } else { None },
-            "pending_transaction":pending,"queued":system["queued"].as_bool(),
-            "last_successful_check":stamp(&system["last_successful_check"]),"errors":system_errors},
-        "baseline":{"valid":baseline["valid"].as_bool(),"approved_at":stamp(&baseline["approval"]["approved_at"]),
-            "revision":text(&baseline["approval"]["revision"]),"reasons":reasons,"error":text(&baseline["error"])},
+        "system":system_overview(&report["system"], &report["baseline"]),
+        "baseline":baseline_overview(&report["baseline"]),
         "tools":tools,"timers":timers,"timers_error":text(&report["timers"]["error"]),
         "git":git_overview(&report["git"])?,
         "applications":applications_overview(&report["applications"])?
@@ -282,13 +283,7 @@ pub(crate) async fn get(params: Value) -> Result<Value> {
         report["history_error"] =
             json!((!catalog.errors.is_empty()).then(|| catalog.errors.join("\n")));
         report["issue_total"] = json!(catalog.open_issues.len());
-        report["issues"] = json!(
-            catalog
-                .open_issues
-                .iter()
-                .take(MAX_ISSUES)
-                .collect::<Vec<_>>()
-        );
+        report["issues"] = json!(&catalog.open_issues[..catalog.open_issues.len().min(MAX_ISSUES)]);
         Ok(json!({"overview": report}))
     };
     tokio::time::timeout(Duration::from_secs(6), read)
@@ -322,8 +317,44 @@ mod tests {
         assert!(normalize(&value).unwrap()["system"]["staged_for_next_boot"].is_null());
         value["baseline"] = json!({"valid":null,"error":"Permission denied"});
         assert!(normalize(&value).unwrap()["baseline"]["valid"].is_null());
-        value["schema_version"] = json!(2);
-        assert!(normalize(&value).is_err());
+        for (pointer, invalid) in [
+            ("/schema_version", json!(2)),
+            ("/observed_at", json!(0)),
+            ("/observed_at", json!(253402300800_u64)),
+            ("/system", Value::Null),
+            ("/baseline", Value::Null),
+            ("/tools", json!({})),
+            ("/tools", json!(vec![Value::Null; 33])),
+            ("/timers", json!(vec![Value::Null; 65])),
+        ] {
+            let mut candidate = report();
+            *candidate.pointer_mut(pointer).unwrap() = invalid;
+            assert!(normalize(&candidate).is_err(), "{pointer}");
+        }
+        for (micros, expected) in [
+            (0, None),
+            (999999, None),
+            (1000000, Some(1)),
+            (u64::MAX, None),
+            (253402300800000000, None),
+            (253402300799000000, Some(253402300799)),
+        ] {
+            let mut candidate = report();
+            candidate["timers"][0]["next"] = json!(micros);
+            assert_eq!(
+                normalize(&candidate).unwrap()["timers"][0]["next_at"].as_u64(),
+                expected
+            );
+        }
+        value["timers"] = json!({"error":"No timer access"});
+        value["system"]["pending_transaction"] = json!(false);
+        value["system"]["staged_since"] = Value::Null;
+        value["baseline"] = json!({"approval":{"approved_at":70}, "reasons":["a"], "reason":"b"});
+        let projected = normalize(&value).unwrap();
+        assert_eq!(projected["system"]["staged_since"], 70);
+        assert_eq!(projected["timers"], json!([]));
+        assert_eq!(projected["timers_error"], "No timer access");
+        assert_eq!(projected["baseline"]["reasons"], json!(["a", "b"]));
     }
     #[test]
     fn freshness_retains_source_and_uncertainty_without_guessing_from_versions() {
@@ -357,12 +388,22 @@ mod tests {
         let value = normalize(&report).unwrap();
         assert_eq!(value["applications"]["packages"][0]["version"], "1.2");
         assert!(value["applications"]["packages"][1]["version"].is_null());
-        report["applications"]["total"] = json!(1);
-        assert!(normalize(&report).is_err());
+        for (pointer, invalid) in [
+            ("/total", json!(1)),
+            ("/total", json!(4097)),
+            ("/active_system", json!("")),
+            ("/observed_at", json!(0)),
+            ("/packages/0/name", json!("x".repeat(161))),
+            ("/packages/0/scope", json!("bad\nlabel")),
+            ("/packages/0/version", json!(12)),
+            ("/packages/0/version", json!("")),
+        ] {
+            let mut invalid_report = report.clone();
+            *invalid_report["applications"].pointer_mut(pointer).unwrap() = invalid;
+            assert!(normalize(&invalid_report).is_err(), "{pointer}");
+        }
         report["applications"]["total"] = json!(3); // bounded partial inventory
         assert!(normalize(&report).is_ok());
-        report["applications"]["packages"][0]["version"] = json!(12);
-        assert!(normalize(&report).is_err());
         report["applications"] = json!({"available":false,"error":"No generation inventory"});
         assert_eq!(
             normalize(&report).unwrap()["applications"]["available"],
@@ -382,6 +423,11 @@ mod tests {
         for (field, value) in [
             ("version", json!(12)),
             ("source", json!("file:///tmp/release")),
+            ("source", json!(format!("https://{}", "x".repeat(505)))),
+            ("version", json!("bad\nversion")),
+            ("error", json!("x".repeat(513))),
+            ("checked_at", json!(253402300800_u64)),
+            ("attempted_at", json!(0)),
             ("checked_at", Value::Null),
             ("attempted_at", Value::Null),
             ("stale", json!(false)),
