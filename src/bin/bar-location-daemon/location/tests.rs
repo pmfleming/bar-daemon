@@ -353,14 +353,15 @@ fn invalid_stale_future_and_unresolved_evidence_are_retry_not_disagreement() {
 
 #[test]
 fn recent_evidence_is_reusable_within_network_epoch_but_not_across_it() {
-    let now = wall_time();
+    let zones = zones();
+    // Zone-index startup can exceed the evidence's five-second future tolerance
+    // under instrumentation. Both fixes must use the same observation instant.
+    let now = 1_790_000_000.0;
+    let mut ip = fix(Source::Ip);
+    ip.timestamp = now;
     let mut geo = fix(Source::NonIp);
     geo.timestamp = now - 30.0;
-    assert!(
-        zones()
-            .decide(&geo, Some(&fix(Source::Ip)), now - 60.0, now)
-            .is_ok()
-    );
+    assert!(zones.decide(&geo, Some(&ip), now - 60.0, now).is_ok());
     assert!(!geo.usable_geoclue(now - 10.0, now));
     geo.timestamp = now - 91.0;
     assert!(!geo.usable_geoclue(now - 120.0, now));

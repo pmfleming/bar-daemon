@@ -55,6 +55,26 @@ fn metric(point: &BatteryHistoryPoint, power: bool) -> Option<f64> {
     }
     Some(value)
 }
+impl Point {
+    fn new(point: &BatteryHistoryPoint, first: u64, duration: u64, power: bool) -> Option<Self> {
+        let value = metric(point, power)?;
+        Some(Self {
+            x: if duration > 0 {
+                (point.active_time_ms - first) as f64 / duration as f64
+            } else {
+                0.5
+            },
+            value,
+            timestamp_ms: point.timestamp_ms,
+            charging: point.charging,
+            label: if power {
+                crate::presentation::measurement(value, " W")?
+            } else {
+                format!("{value:.0}%")
+            },
+        })
+    }
+}
 fn series(points: &[&BatteryHistoryPoint], power: bool) -> Series {
     let first = points.iter().map(|p| p.active_time_ms).min().unwrap_or(0);
     let last = points
@@ -75,44 +95,16 @@ fn series(points: &[&BatteryHistoryPoint], power: bool) -> Series {
     };
     let mut previous: Option<&BatteryHistoryPoint> = None;
     for point in points {
-        let Some(value) = metric(point, power) else {
+        let Some(next) = Point::new(point, first, duration, power) else {
             previous = None;
             continue;
-        };
-        let next = Point {
-            x: if duration > 0 {
-                (point.active_time_ms - first) as f64 / duration as f64
-            } else {
-                0.5
-            },
-            value,
-            timestamp_ms: point.timestamp_ms,
-            charging: point.charging,
-            label: if power {
-                format!(
-                    "{} W",
-                    crate::presentation::fixed_decimal(value, 1).unwrap()
-                )
-            } else {
-                format!("{value:.0}%")
-            },
         };
         let continuous = previous.is_some_and(|old| {
             point.continuous
                 && point.active_time_ms > old.active_time_ms
                 && point.timestamp_ms > old.timestamp_ms
         });
-        if !continuous {
-            if previous.is_some() {
-                result.breaks.push(Break {
-                    from: result.segments.last().unwrap().last().unwrap().clone(),
-                    to: next.clone(),
-                });
-            }
-            result.segments.push(vec![]);
-        }
-        result.segments.last_mut().unwrap().push(next);
-        result.maximum = result.maximum.max(value);
+        result.push(next, continuous, previous.is_some());
         previous = Some(point);
     }
     result.axis_maximum = if power {
@@ -126,6 +118,24 @@ fn series(points: &[&BatteryHistoryPoint], power: bool) -> Series {
         format!("−{:.0}", result.axis_maximum),
     ];
     result
+}
+
+impl Series {
+    fn push(&mut self, next: Point, continuous: bool, previous_valid: bool) {
+        self.maximum = self.maximum.max(next.value);
+        let last = self.segments.last_mut();
+        if continuous && let Some(segment) = last {
+            segment.push(next);
+            return;
+        }
+        if previous_valid && let Some(from) = last.and_then(|segment| segment.last()) {
+            self.breaks.push(Break {
+                from: from.clone(),
+                to: next.clone(),
+            });
+        }
+        self.segments.push(vec![next]);
+    }
 }
 
 pub(crate) fn project(history: &BatteryHistoryState, hours: u16) -> Chart {
@@ -159,7 +169,8 @@ pub(crate) fn project(history: &BatteryHistoryState, hours: u16) -> Chart {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{metric, project};
+    use crate::model::{BatteryHistoryPoint, BatteryHistoryState};
     fn point(
         active: u64,
         wall: u64,
@@ -189,31 +200,37 @@ mod tests {
             ..Default::default()
         };
         let chart = project(&history, 6);
-        assert_eq!(
-            chart
-                .percentage
-                .segments
-                .iter()
-                .map(Vec::len)
-                .collect::<Vec<_>>(),
-            [2, 2]
-        );
-        assert_eq!(chart.percentage.breaks.len(), 1);
-        assert_eq!(
-            chart
-                .power
-                .segments
-                .iter()
-                .map(Vec::len)
-                .collect::<Vec<_>>(),
-            [2, 1]
-        );
-        assert!(
-            chart.power.breaks.is_empty(),
-            "missing readings must not be interpolated"
-        );
+        for (series, lengths, breaks) in [(&chart.percentage, [2, 2], 1), (&chart.power, [2, 1], 0)]
+        {
+            assert_eq!(
+                series.segments.iter().map(Vec::len).collect::<Vec<_>>(),
+                lengths
+            );
+            assert_eq!(
+                series.breaks.len(),
+                breaks,
+                "missing readings must not be interpolated"
+            );
+        }
         assert_eq!(chart.power.segments[0][0].value, 0.0);
         assert_eq!(chart.percentage.active_duration_ms, 30);
+        assert_eq!(chart.power.segments[0][0].label, "0.0 W");
+        assert_eq!(chart.power.axis_maximum, 10.0);
+        for (watts, valid, expected) in [
+            (0.0, None, None),
+            (2.0, Some(false), None),
+            (-1.0, Some(true), None),
+            (f64::NAN, Some(true), None),
+            (f64::INFINITY, Some(true), None),
+            (12.25, None, Some(12.25)),
+        ] {
+            assert_eq!(metric(&point(0, 1, false, watts, valid), true), expected);
+        }
+        let mut invalid = point(0, 0, false, 2.0, None);
+        assert_eq!(metric(&invalid, false), None);
+        invalid.timestamp_ms = 1;
+        invalid.percentage = 101;
+        assert_eq!(metric(&invalid, false), None);
     }
     #[test]
     fn windows_use_active_time_and_do_not_append_stale_live_samples() {

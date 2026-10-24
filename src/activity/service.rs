@@ -569,13 +569,9 @@ impl ActivityService {
                 writable: data.catalog_error.is_none(),
             }),
             lunar: super::astronomy::lunar(now),
-            weather: super::astronomy::weather(data.weather.clone(), now),
-            weather_locations: data
-                .weather_locations
-                .iter()
-                .cloned()
-                .map(|weather| super::astronomy::weather(weather, now))
-                .collect(),
+            // Presentation projects astronomy and labels once, in place, after routing.
+            weather: data.weather.clone(),
+            weather_locations: data.weather_locations.clone(),
             error,
         };
         drop(data);

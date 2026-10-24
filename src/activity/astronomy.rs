@@ -3,8 +3,6 @@ use chrono::{DateTime, Datelike, Offset, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
-use super::model::WeatherState;
-
 const DAY_MS: i64 = 86_400_000;
 const SYNODIC_DAYS: f64 = 29.530_588_853;
 const NEW_MOON_MS: i64 = 947_182_440_000; // 2000-01-06 18:14 UTC
@@ -101,19 +99,4 @@ pub(crate) fn solar_noon(sunrise: i64, sunset: i64, now: i64, timezone: &str) ->
         approximate: true,
         method: "sunrise-sunset-midpoint".into(),
     })
-}
-
-pub(crate) fn weather(mut weather: WeatherState, now: i64) -> WeatherState {
-    weather.solar_noon = weather
-        .available
-        .then(|| {
-            solar_noon(
-                weather.sunrise_unix_ms,
-                weather.sunset_unix_ms,
-                now,
-                &weather.timezone,
-            )
-        })
-        .flatten();
-    weather
 }

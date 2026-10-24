@@ -16,7 +16,28 @@ impl ActivityApi {
     pub(super) fn new(state: StateStore, activity: Arc<ActivityService>) -> Self {
         Self { state, activity }
     }
-    pub(super) async fn locations(&self, method: &str, params: Value) -> Value {
+    pub(super) async fn dispatch(&self, method: &str, params: Value) -> Value {
+        let result = match method {
+            "activity.queryRange" => return self.activity_query_range(params).await,
+            "activity.refresh" => return self.activity_refresh().await,
+            "todos.create" => return self.todo_create(params).await,
+            "todos.complete" => return self.todo_complete(params).await,
+            "todos.delete" => return self.todo_delete(params).await,
+            "locations.search" | "locations.add" | "locations.remove" => {
+                self.locations(method, params).await
+            }
+            "location.status" | "location.setManual" | "location.returnToAutomatic" => {
+                crate::timezone::location_control(method, params).await
+            }
+            _ => return super::unsupported_method(method),
+        };
+        match result {
+            Ok(data) => super::success(data),
+            Err(error) => super::error("location-error", error.to_string()),
+        }
+    }
+
+    async fn locations(&self, method: &str, params: Value) -> anyhow::Result<Value> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Search {
@@ -34,21 +55,32 @@ impl ActivityApi {
             id: String,
             revision: u64,
         }
-        let result: anyhow::Result<Value> = async {
-            match method {
-                "locations.search" => {let request:Search=serde_json::from_value(params)?; Ok(serde_json::json!({"places":crate::activity::place_search::search(&request.query).await?}))},
-                "locations.add" => {let request:Add=serde_json::from_value(params)?;let id=self.activity.add_city(request.place,request.revision).await?;Ok(serde_json::json!({"id":id,"activity":self.state.read(|s|s.activity.clone()).await}))},
-                "locations.remove" => {let request:Remove=serde_json::from_value(params)?;self.activity.remove_city(&request.id,request.revision).await?;Ok(serde_json::json!({"id":request.id,"activity":self.state.read(|s|s.activity.clone()).await}))},
-                _=>anyhow::bail!("Unknown location operation")
+        let id = match method {
+            "locations.search" => {
+                let request: Search = serde_json::from_value(params)?;
+                return Ok(
+                    serde_json::json!({"places":crate::activity::place_search::search(&request.query).await?}),
+                );
             }
-        }.await;
-        match result {
-            Ok(data) => super::success(data),
-            Err(error) => super::error("location-error", error.to_string()),
-        }
+            "locations.add" => {
+                let request: Add = serde_json::from_value(params)?;
+                self.activity
+                    .add_city(request.place, request.revision)
+                    .await?
+            }
+            "locations.remove" => {
+                let request: Remove = serde_json::from_value(params)?;
+                self.activity
+                    .remove_city(&request.id, request.revision)
+                    .await?;
+                request.id
+            }
+            _ => anyhow::bail!("Unknown location operation"),
+        };
+        Ok(serde_json::json!({"id":id,"activity":self.state.read(|s|s.activity.clone()).await}))
     }
 
-    pub(super) async fn activity_query_range(&self, params: Value) -> Value {
+    async fn activity_query_range(&self, params: Value) -> Value {
         let request = request!(params, RangeRequest, "activity.queryRange");
         activity_wire::range(
             self.activity
@@ -56,11 +88,11 @@ impl ActivityApi {
                 .await,
         )
     }
-    pub(super) async fn activity_refresh(&self) -> Value {
+    async fn activity_refresh(&self) -> Value {
         self.activity.request_refresh().await;
         activity_wire::refreshed(self.state.read(|s| s.activity.clone()).await)
     }
-    pub(super) async fn todo_create(&self, params: Value) -> Value {
+    async fn todo_create(&self, params: Value) -> Value {
         let request = request!(params, CreateTodoRequest, "todos.create");
         activity_wire::todo(
             self.activity
@@ -74,7 +106,7 @@ impl ActivityApi {
             Failure::Create,
         )
     }
-    pub(super) async fn todo_complete(&self, params: Value) -> Value {
+    async fn todo_complete(&self, params: Value) -> Value {
         let request = request!(params, CompleteTodoRequest, "todos.complete");
         activity_wire::todo(
             self.activity
@@ -83,7 +115,7 @@ impl ActivityApi {
             Failure::Complete,
         )
     }
-    pub(super) async fn todo_delete(&self, params: Value) -> Value {
+    async fn todo_delete(&self, params: Value) -> Value {
         let request = request!(params, TodoRequest, "todos.delete");
         let result = self.activity.delete_todo(&request.id).await;
         activity_wire::deleted(request.id, result)
@@ -92,7 +124,7 @@ impl ActivityApi {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ActivityApi, ActivityService, StateStore, Value};
     use serde_json::json;
 
     #[tokio::test]
@@ -111,30 +143,30 @@ mod tests {
             "timezone": "Europe/Amsterdam", "latitude": 52.38, "longitude": 4.64,
         });
         let reply = api
-            .locations("locations.add", json!({"place":place,"revision":1}))
+            .dispatch("locations.add", json!({"place":place,"revision":1}))
             .await;
         assert_eq!(reply["ok"], true);
         let id = reply["data"]["id"].as_str().unwrap();
         assert_eq!(reply["data"]["activity"]["location_catalog"]["revision"], 2);
         for protected in ["weather:home", "current-location"] {
             assert_eq!(
-                api.locations("locations.remove", json!({"id":protected,"revision":2}))
+                api.dispatch("locations.remove", json!({"id":protected,"revision":2}))
                     .await["ok"],
                 false
             );
         }
         assert_eq!(
-            api.locations("locations.remove", json!({"id":id,"revision":1}))
+            api.dispatch("locations.remove", json!({"id":id,"revision":1}))
                 .await["ok"],
             false
         );
         assert_eq!(
-            api.locations("locations.remove", json!({"id":id,"revision":2}))
+            api.dispatch("locations.remove", json!({"id":id,"revision":2}))
                 .await["ok"],
             true
         );
         assert_eq!(
-            api.locations("locations.add", json!({"place":null,"revision":3}))
+            api.dispatch("locations.add", json!({"place":null,"revision":3}))
                 .await["ok"],
             false
         );
@@ -200,24 +232,28 @@ mod tests {
             crate::api::success(json!({"deleted":id}))
         );
         assert_eq!(state.snapshot().await.activity.incomplete_todo_count, 0);
-        for key in ["create", "complete", "delete", "range"] {
+        for (key, method) in [
+            ("create", "todos.create"),
+            ("complete", "todos.complete"),
+            ("delete", "todos.delete"),
+            ("range", "activity.queryRange"),
+        ] {
             let case = &cases[key];
-            let params = case["failed_params"].clone();
-            let reply = match key {
-                "create" => api.todo_create(params).await,
-                "complete" => api.todo_complete(params).await,
-                "delete" => api.todo_delete(params).await,
-                _ => api.activity_query_range(params).await,
-            };
-            assert_eq!(reply, case["failed"]);
-            let reply = match key {
-                "create" => api.todo_create(Value::Null).await,
-                "complete" => api.todo_complete(Value::Null).await,
-                "delete" => api.todo_delete(Value::Null).await,
-                _ => api.activity_query_range(Value::Null).await,
-            };
-            assert_eq!(reply, case["rejected"]);
+            for (params, expected) in [
+                (case["failed_params"].clone(), &case["failed"]),
+                (Value::Null, &case["rejected"]),
+            ] {
+                assert_eq!(api.dispatch(method, params).await, *expected);
+            }
         }
+        assert_eq!(
+            api.dispatch("todos.unknown", json!({})).await,
+            crate::api::unsupported_method("todos.unknown")
+        );
+        assert_eq!(
+            api.dispatch("activity.refresh", json!({})).await["ok"],
+            true
+        );
         let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted, json!([]));
     }

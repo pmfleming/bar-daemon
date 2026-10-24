@@ -165,32 +165,28 @@ mod tests {
         let mut disabled = state(25, false);
         disabled.policy.notify_warning = false;
         assert_eq!(tracker.observe(&disabled, true), None);
-        assert_eq!(tracker.observe(&state(25, false), true), None);
-        for percent in [26, 28, 25] {
-            assert_eq!(tracker.observe(&state(percent, false), true), None);
+        for (percent, plugged, expected) in [
+            (25, false, None),
+            (26, false, None),
+            (28, false, None),
+            (25, false, None),
+            (29, false, None),
+            (25, false, Some(BatteryAlert::Warning)),
+            (12, false, Some(BatteryAlert::Critical)),
+            (15, false, None),
+            (12, false, None),
+            (16, false, None),
+            (12, false, Some(BatteryAlert::Critical)),
+            (10, false, None),
+            (50, true, None),
+            (25, false, Some(BatteryAlert::Warning)),
+        ] {
+            assert_eq!(
+                tracker.observe(&state(percent, plugged), true),
+                expected,
+                "{percent}% plugged={plugged}"
+            );
         }
-        assert_eq!(tracker.observe(&state(29, false), true), None);
-        assert_eq!(
-            tracker.observe(&state(25, false), true),
-            Some(BatteryAlert::Warning)
-        );
-        assert_eq!(
-            tracker.observe(&state(12, false), true),
-            Some(BatteryAlert::Critical)
-        );
-        assert_eq!(tracker.observe(&state(15, false), true), None);
-        assert_eq!(tracker.observe(&state(12, false), true), None);
-        assert_eq!(tracker.observe(&state(16, false), true), None);
-        assert_eq!(
-            tracker.observe(&state(12, false), true),
-            Some(BatteryAlert::Critical)
-        );
-        assert_eq!(tracker.observe(&state(10, false), true), None);
-        assert_eq!(tracker.observe(&state(50, true), true), None);
-        assert_eq!(
-            tracker.observe(&state(25, false), true),
-            Some(BatteryAlert::Warning)
-        );
         let mut critical = state(10, false);
         critical.policy.notify_critical = false;
         assert_eq!(tracker.observe(&critical, true), None);

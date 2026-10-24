@@ -64,51 +64,21 @@ fn metadata_is_forward_compatible_but_invalid_evidence_is_rejected() {
 }
 
 #[test]
-fn public_status_is_bounded_and_revision_detects_same_outcome_updates() {
-    let initial = parse_location_status(br#"{"message":"","accepted_revision":1}"#);
-    let next = parse_location_status(br#"{"message":"","accepted_revision":2}"#);
-    assert_ne!(initial, next);
-    assert_eq!(initial.message, None);
-    assert_eq!(
-        parse_location_status(br#"{"message":"Sources disagree"}"#)
-            .message
-            .as_deref(),
-        Some("Sources disagree")
-    );
-    assert_eq!(
-        parse_location_status(br#"{"message":""}"#),
-        PublicStatus::default()
-    );
-    for bytes in [b"broken".to_vec(), vec![b' '; 4097]] {
-        assert_eq!(
-            parse_location_status(&bytes).message.as_deref(),
-            Some("Location status unavailable")
-        );
-    }
-}
-
-#[test]
 fn cached_zone_recomputes_dst_and_fractional_offset_locally() {
     let before = "2026-03-29T00:59:59Z".parse::<DateTime<Utc>>().unwrap();
     let after = "2026-03-29T01:00:00Z".parse::<DateTime<Utc>>().unwrap();
-    assert_eq!(
-        state_for_timezone("Europe/Brussels", before)
-            .unwrap()
-            .utc_offset_seconds,
-        3600
-    );
-    assert_eq!(
-        state_for_timezone("Europe/Brussels", after)
-            .unwrap()
-            .utc_offset_seconds,
-        7200
-    );
-    assert_eq!(
-        state_for_timezone("Asia/Kathmandu", after)
-            .unwrap()
-            .utc_offset_seconds,
-        20700
-    );
+    for (zone, at, offset) in [
+        ("Europe/Brussels", before, 3600),
+        ("Europe/Brussels", after, 7200),
+        ("Asia/Kathmandu", after, 20700),
+    ] {
+        assert_eq!(
+            state_for_timezone(zone, at).unwrap().utc_offset_seconds,
+            offset,
+            "{zone} at {at}"
+        );
+    }
+    assert!(state_for_timezone("invalid", after).is_err());
 }
 
 #[tokio::test(start_paused = true)]
@@ -152,10 +122,7 @@ fn observation_projection_and_status_keep_availability_and_invalidation_distinct
             parse_accepted_location(&accepted_json("ip", 53.3)).unwrap(),
             None,
         )),
-        status: PublicStatus {
-            message: Some("Checking".into()),
-            revision: Some(1),
-        },
+        status: parse_location_status(br#"{"message":"Checking","accepted_revision":1}"#),
     };
     observed.zone.error = Some("timezone offline".into());
     observed.location.error = Some("location offline".into());
@@ -168,22 +135,28 @@ fn observation_projection_and_status_keep_availability_and_invalidation_distinct
     let state = observed.project(now);
     assert!(state.available);
     assert_eq!(state.error.as_deref(), Some("Checking"));
-    observed.location.pending = false;
-    assert!(observed.update_status(PublicStatus {
-        message: None,
-        revision: Some(1)
-    }));
-    assert!(!observed.location.pending);
-    assert!(observed.update_status(PublicStatus {
-        message: None,
-        revision: Some(2)
-    }));
-    assert!(observed.location.pending);
-    assert!(!observed.update_status(observed.status.clone()));
-    assert!(observed.location.pending); // Presentation must not cancel a pending read.
-    observed.location.pending = false;
-    assert!(observed.update_status(PublicStatus::default()));
-    assert!(observed.location.pending); // Legacy status without a revision still invalidates.
+    for (json, pending) in [
+        (r#"{"message":"","accepted_revision":1}"#, false),
+        (r#"{"message":"","accepted_revision":2}"#, true),
+        (r#"{"message":""}"#, true),
+    ] {
+        observed.location.pending = false;
+        assert!(observed.update_status(parse_location_status(json.as_bytes())));
+        assert_eq!(observed.status.message, None);
+        assert_eq!(observed.location.pending, pending);
+        assert!(!observed.update_status(observed.status.clone()));
+        assert_eq!(
+            observed.location.pending, pending,
+            "unchanged status preserves pending reads"
+        );
+    }
+    assert_eq!(observed.status, PublicStatus::default());
+    for bytes in [b"broken".to_vec(), vec![b' '; 4097]] {
+        assert_eq!(
+            parse_location_status(&bytes).message.as_deref(),
+            Some("Location status unavailable")
+        );
+    }
 }
 
 #[derive(Default)]

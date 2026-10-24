@@ -375,7 +375,11 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
 mod tests {
     use super::{Catalog, Entry, Query, StaleCursor, load, page};
     use chrono::TimeZone;
-    use serde_json::json;
+    use serde_json::{Value, json};
+
+    fn request(catalog: Catalog, params: Value) -> anyhow::Result<Value> {
+        page(catalog, serde_json::from_value(params)?)
+    }
 
     fn catalog() -> Catalog {
         let outcomes = [
@@ -405,51 +409,6 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "manual default-history performance probe; setup excluded"]
-    fn profile_default_history_pages() {
-        use std::{hint::black_box, time::Instant};
-        let catalogs: Vec<_> = (0..8)
-            .map(|_| {
-                let entries = (0..1000)
-                    .map(|index| {
-                        let mut entry = super::super::catalog::test_entry(
-                            &format!("run-{index}"),
-                            1_790_000_000,
-                            "test",
-                            None,
-                        );
-                        entry.record.components = (0..8)
-                            .map(|n| shelllist_update_status::ComponentResult {
-                                name: format!("component-{n}"),
-                                phase: "current".into(),
-                                before: None,
-                                after: None,
-                                changed: false,
-                                error: Some("retained diagnostic context ".repeat(12)),
-                                incident: None,
-                            })
-                            .collect();
-                        entry
-                    })
-                    .collect();
-                Catalog {
-                    available: true,
-                    entries,
-                    ..Default::default()
-                }
-            })
-            .collect();
-        let start = Instant::now();
-        for catalog in catalogs {
-            black_box(page(catalog, Query::default()).unwrap());
-        }
-        println!(
-            "8 default pages / 1000 rows with 8 components: {:.3} ms",
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-
-    #[test]
     fn filters_dates_and_retention_anchors_apply_before_pagination() {
         for (params, total) in [
             (json!({"lane":"system","outcome":"problems"}), 3),
@@ -467,42 +426,35 @@ mod tests {
                 1,
             ),
         ] {
-            let result = page(catalog(), serde_json::from_value(params.clone()).unwrap()).unwrap();
+            let result = request(catalog(), params.clone()).unwrap();
             assert_eq!(result["history"]["total"], total, "{params}");
         }
-        let first = page(
+        let first = request(
             catalog(),
-            serde_json::from_value(json!({"limit":2,"anchor_ids":["run-1","missing"]})).unwrap(),
+            json!({"limit":2,"anchor_ids":["run-1","missing"]}),
         )
         .unwrap();
         assert_eq!(first["history"]["retain_through"], 7);
         let cursor = first["history"]["cursor"].as_str().unwrap();
-        let second = page(
+        let second = request(
             catalog(),
-            serde_json::from_value(
-                json!({"limit":2,"anchor_ids":["run-1","missing"],"cursor":cursor}),
-            )
-            .unwrap(),
+            json!({"limit":2,"anchor_ids":["run-1","missing"],"cursor":cursor}),
         )
         .unwrap();
         assert_eq!(second["history"]["entries"][0]["job"]["id"], "run-5");
         assert_eq!(second["history"]["retain_through"], 7);
-        let error = page(
+        let error = request(
             catalog(),
-            serde_json::from_value(
-                json!({"limit":2,"anchor_ids":["run-1","missing"],"cursor":cursor,"lane":"system"}),
-            )
-            .unwrap(),
+            json!({"limit":2,"anchor_ids":["run-1","missing"],"cursor":cursor,"lane":"system"}),
         )
         .unwrap_err();
         assert!(error.is::<StaleCursor>());
         let mut changed = catalog();
         changed.entries.remove(0);
         assert!(
-            page(
+            request(
                 changed,
-                serde_json::from_value(json!({"cursor":cursor,"anchor_ids":["run-1","missing"]}))
-                    .unwrap()
+                json!({"cursor":cursor,"anchor_ids":["run-1","missing"]})
             )
             .unwrap_err()
             .is::<StaleCursor>()
@@ -514,7 +466,7 @@ mod tests {
             json!({"anchor_ids":["a","b","c"]}),
             json!({"anchor_ids":["../bad"]}),
         ] {
-            assert!(page(catalog(), serde_json::from_value(params).unwrap()).is_err());
+            assert!(request(catalog(), params).is_err());
         }
     }
     #[test]
@@ -537,11 +489,7 @@ mod tests {
             }];
         }
         super::super::catalog::annotate(&mut catalog.entries);
-        let result = page(
-            catalog,
-            serde_json::from_value(json!({"outcome":"problems"})).unwrap(),
-        )
-        .unwrap();
+        let result = request(catalog, json!({"outcome":"problems"})).unwrap();
         assert_eq!(result["history"]["total"], 1);
         assert_eq!(
             result["history"]["entries"][0]["issues"][0]["recovered_run_id"],
@@ -550,14 +498,38 @@ mod tests {
     }
     #[test]
     fn byte_limited_pages_make_progress_even_for_one_oversized_entry() {
-        for title_bytes in [70_000, 140_000] {
-            let mut catalog = catalog();
-            for entry in &mut catalog.entries {
-                entry.title = "x".repeat(title_bytes);
-            }
-            let page = page(catalog, Query::default()).unwrap();
-            assert_eq!(page["history"]["entries"].as_array().unwrap().len(), 1);
-            assert!(page["history"]["cursor"].as_str().unwrap().ends_with(":1"));
+        for (count, title_bytes, expected) in [(8, 70_000, 1), (8, 140_000, 1), (1000, 1024, 50)] {
+            let entries = (0..count)
+                .map(|id| {
+                    let mut entry = super::super::catalog::test_entry(
+                        &format!("run-{id}"),
+                        1_790_000_000,
+                        "test",
+                        None,
+                    );
+                    entry.title = "x".repeat(title_bytes);
+                    entry
+                })
+                .collect();
+            let page = page(
+                Catalog {
+                    entries,
+                    ..Default::default()
+                },
+                Query::default(),
+            )
+            .unwrap();
+            assert_eq!(page["history"]["total"], count);
+            assert_eq!(
+                page["history"]["entries"].as_array().unwrap().len(),
+                expected
+            );
+            assert!(
+                page["history"]["cursor"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!(":{expected}"))
+            );
         }
     }
 
@@ -571,7 +543,7 @@ mod tests {
             json!({"run_id":"../outside"}),
             json!({"cursor":"old:0"}),
         ] {
-            assert!(page(Catalog::default(), serde_json::from_value(params).unwrap()).is_err());
+            assert!(request(Catalog::default(), params).is_err());
         }
         let empty = page(Catalog::default(), Query::default()).unwrap();
         assert_eq!(empty["history"]["available"], false);

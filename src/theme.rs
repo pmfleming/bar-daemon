@@ -32,7 +32,7 @@ impl JsonSchema for ThemeRoles {
     }
 }
 
-pub(crate) fn reply(roles: ThemeRoles) -> serde_json::Value {
+pub(crate) fn reply(roles: &ThemeRoles) -> serde_json::Value {
     crate::protocol::success(serde_json::json!({"theme":roles}))
 }
 

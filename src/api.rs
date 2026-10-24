@@ -24,6 +24,7 @@ mod battery;
 mod effects;
 mod notifications;
 mod sleep;
+mod updates;
 
 use self::{
     activity::ActivityApi, battery::BatteryApi, effects::DesktopEffects,
@@ -97,39 +98,33 @@ impl ApiService {
             .await
     }
 
+    async fn theme(&self, method: &str, params: Value) -> Value {
+        let request = match decode_request::<crate::theme::ThemeRequest>(params, method) {
+            Ok(request) => request,
+            Err(error) => return error,
+        };
+        let roles = match request.resolve() {
+            Ok(roles) => roles,
+            Err(message) => return error("validation-error", message),
+        };
+        let response = crate::theme::reply(&roles);
+        if method == "theme.configure" {
+            self.state.update_theme(roles).await;
+        }
+        response
+    }
+
     pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
         let response = match method {
             "bar.snapshot" => self.snapshot(params).await,
-            "theme.configure" | "theme.resolve" => {
-                let request =
-                    match protocol::decode_request::<crate::theme::ThemeRequest>(params, method) {
-                        Ok(request) => request,
-                        Err(error) => return error,
-                    };
-                match request.resolve() {
-                    Ok(roles) => {
-                        if method == "theme.configure" {
-                            self.state.update_theme(roles.clone()).await;
-                        }
-                        crate::theme::reply(roles)
-                    }
-                    Err(message) => error("validation-error", message),
-                }
+            "theme.configure" | "theme.resolve" => self.theme(method, params).await,
+            method
+                if ["activity.", "locations.", "location.", "todos."]
+                    .iter()
+                    .any(|prefix| method.starts_with(prefix)) =>
+            {
+                self.activity.dispatch(method, params).await
             }
-            "activity.queryRange" => self.activity.activity_query_range(params).await,
-            "activity.refresh" => self.activity.activity_refresh().await,
-            "locations.search" | "locations.add" | "locations.remove" => {
-                self.activity.locations(method, params).await
-            }
-            "location.status" | "location.setManual" | "location.returnToAutomatic" => {
-                match crate::timezone::location_control(method, params).await {
-                    Ok(data) => success(data),
-                    Err(failure) => error("location-error", failure.to_string()),
-                }
-            }
-            "todos.create" => self.activity.todo_create(params).await,
-            "todos.complete" => self.activity.todo_complete(params).await,
-            "todos.delete" => self.activity.todo_delete(params).await,
             "workspace.focus" => self.effects.focus_workspace(params).await,
             "media.operation" => self.effects.media_operation(params).await,
             method if protocol::audio_wire::Method::parse(method).is_some() => {
@@ -160,25 +155,9 @@ impl ApiService {
                 self.notifications.dispatch(method, params).await
             }
             "updates.refresh" => self.effects.updates_refresh().await,
-            "updates.getOverview" => match crate::updates::overview::get(params).await {
-                Ok(data) => success(data),
-                Err(failure) => error("update-overview-error", failure.to_string()),
-            },
-            "updates.readLog" => match crate::updates::history::read_log(params).await {
-                Ok(data) => success(data),
-                Err(failure) => error("update-log-error", failure.to_string()),
-            },
-            "updates.queryHistory" => match crate::updates::history::query(params).await {
-                Ok(data) => success(data),
-                Err(failure) => error(
-                    if failure.is::<crate::updates::history::StaleCursor>() {
-                        "update-history-cursor-stale"
-                    } else {
-                        "update-history-error"
-                    },
-                    failure.to_string(),
-                ),
-            },
+            "updates.getOverview" | "updates.readLog" | "updates.queryHistory" => {
+                updates::dispatch(method, params).await
+            }
             _ => unsupported_method(method),
         };
         self.state.fence_reply(response)

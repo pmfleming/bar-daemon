@@ -58,7 +58,7 @@ pub(super) fn fixture() -> Value {
     for method in ["theme.configure", "theme.resolve"] {
         let params = json!({"seed":"#6750a4", "dark":method == "theme.resolve"});
         let request: crate::theme::ThemeRequest = serde_json::from_value(params.clone()).unwrap();
-        let reply = crate::theme::reply(request.resolve().unwrap());
+        let reply = crate::theme::reply(&request.resolve().unwrap());
         fixture.insert(
             method.into(),
             case(

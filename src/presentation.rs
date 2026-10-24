@@ -18,6 +18,13 @@ pub(crate) fn number(value: f64, suffix: &str) -> String {
         "—".into()
     }
 }
+/// Nonnegative telemetry with one decimal place; missing/invalid is not zero.
+pub(crate) fn measurement(value: f64, suffix: &str) -> Option<String> {
+    (value >= 0.0)
+        .then_some(value)
+        .and_then(|value| fixed_decimal(value, 1))
+        .map(|value| format!("{value}{suffix}"))
+}
 pub(crate) fn utc_offset(seconds: i32) -> String {
     let minutes = (f64::from(seconds) / 60.0 + 0.5).floor() as i64;
     if minutes == 0 {
@@ -35,12 +42,11 @@ pub(crate) fn battery(state: &mut crate::model::BatteryState) {
     use serde_json::json;
     let energy = |value: Option<f64>| {
         value
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|v| format!("{} Wh", fixed_decimal(v, 1).unwrap()))
+            .and_then(|v| measurement(v, " Wh"))
             .unwrap_or_else(|| "Unknown".into())
     };
     state.display = json!({"percentage":if state.available {format!("{}%",state.percentage)} else {"Unavailable".into()},
-        "power":if state.available && state.power_available && state.power_watts.is_finite() && state.power_watts >= 0.0 {format!("{} W",fixed_decimal(state.power_watts,1).unwrap())} else {"— W".into()}});
+        "power":(state.available && state.power_available).then(|| measurement(state.power_watts," W")).flatten().unwrap_or_else(|| "— W".into())});
     for device in &mut state.devices {
         let protection = &device.protection;
         device.display = json!({"energy_now":energy(device.energy_now_wh),"energy_full":energy(device.energy_full_wh),"energy_design":energy(device.energy_full_design_wh),
@@ -50,7 +56,7 @@ pub(crate) fn battery(state: &mut crate::model::BatteryState) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{battery, estimate, measurement, number, utc_offset};
     #[test]
     fn battery_units_keep_unknown_and_valid_zero_distinct() {
         use crate::model::{BatteryDeviceState, BatteryState};
@@ -72,10 +78,27 @@ mod tests {
         assert_eq!(state.devices[0].display["energy_now"], "0.0 Wh");
         assert_eq!(state.devices[0].display["energy_full"], "50.3 Wh");
         assert_eq!(state.devices[0].display["energy_design"], "Unknown");
-        state.available = false;
-        battery(&mut state);
-        assert_eq!(state.display["percentage"], "Unavailable");
-        assert_eq!(state.display["power"], "— W");
+        for (available, power_available, watts) in [
+            (false, true, 0.0),
+            (true, false, 0.0),
+            (true, true, -1.0),
+            (true, true, f64::NAN),
+            (true, true, f64::INFINITY),
+        ] {
+            state.available = available;
+            state.power_available = power_available;
+            state.power_watts = watts;
+            battery(&mut state);
+            assert_eq!(state.display["power"], "— W");
+            assert_eq!(
+                state.display["percentage"],
+                if available { "42%" } else { "Unavailable" }
+            );
+        }
+        assert_eq!(measurement(50.25, " Wh").as_deref(), Some("50.3 Wh"));
+        for value in [-1.0, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
+            assert_eq!(measurement(value, " W"), None);
+        }
     }
     #[test]
     fn labels_preserve_estimate_rounding_and_fractional_offsets() {

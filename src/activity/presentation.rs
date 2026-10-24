@@ -22,11 +22,13 @@ fn fraction(value: f64, low: f64, high: f64) -> f64 {
     }
 }
 fn bounds(values: impl Iterator<Item = f64>) -> (f64, f64) {
-    let values: Vec<_> = values.filter(|v| v.is_finite()).collect();
-    (
-        values.iter().copied().reduce(f64::min).unwrap_or(0.0),
-        values.into_iter().reduce(f64::max).unwrap_or(1.0),
-    )
+    values
+        .filter(|v| v.is_finite())
+        .fold(None, |range, value| {
+            let (low, high) = range.unwrap_or((value, value));
+            Some((value.min(low), value.max(high)))
+        })
+        .unwrap_or((0.0, 1.0))
 }
 fn palette(code: u16, day: bool) -> &'static str {
     if !day {
@@ -41,24 +43,18 @@ fn palette(code: u16, day: bool) -> &'static str {
         "clear"
     }
 }
-pub(super) fn weather(mut weather: WeatherState, now: i64) -> WeatherState {
-    weather = super::astronomy::weather(weather, now);
-    if !weather.available {
-        weather.display = json!({});
-        return weather;
-    }
-    let future: Vec<_> = weather
+fn forecast(weather: &mut WeatherState, now: i64) -> Vec<usize> {
+    let mut indices: Vec<_> = weather
         .hourly
         .iter()
         .enumerate()
         .filter(|(_, h)| h.time_unix_ms >= now.saturating_sub(900_000))
         .map(|(i, _)| i)
+        .take(8)
         .collect();
-    let indices: Vec<_> = if future.is_empty() {
-        (0..weather.hourly.len()).take(8).collect()
-    } else {
-        future.into_iter().take(8).collect()
-    };
+    if indices.is_empty() {
+        indices.extend(0..weather.hourly.len().min(8));
+    }
     let (low, high) = bounds(indices.iter().map(|i| weather.hourly[*i].temperature_c));
     for hour in &mut weather.hourly {
         hour.display = json!({"temperature":number(hour.temperature_c,"°"), "precipitation":number(f64::from(hour.precipitation_probability),"%"), "time":local(hour.time_unix_ms,&weather.timezone,"%H:%M"), "temperature_fraction":fraction(hour.temperature_c,low,high)});
@@ -68,6 +64,25 @@ pub(super) fn weather(mut weather: WeatherState, now: i64) -> WeatherState {
     for day in &mut weather.daily {
         day.display = json!({"low":number(day.low_c,"°"),"high":number(day.high_c,"°"),"precipitation":number(f64::from(day.precipitation_probability),"%"),"day":local(day.date_unix_ms,&weather.timezone,"%a").to_uppercase(),"low_fraction":fraction(day.low_c,low,high),"span_fraction":fraction(day.high_c-day.low_c,0.0,high-low)});
     }
+    indices
+}
+fn weather(weather: &mut WeatherState, now: i64) {
+    weather.solar_noon = weather
+        .available
+        .then(|| {
+            super::astronomy::solar_noon(
+                weather.sunrise_unix_ms,
+                weather.sunset_unix_ms,
+                now,
+                &weather.timezone,
+            )
+        })
+        .flatten();
+    if !weather.available {
+        weather.display = json!({});
+        return;
+    }
+    let indices = forecast(weather, now);
     let sun_valid = weather.sunrise_unix_ms > 0 && weather.sunset_unix_ms > weather.sunrise_unix_ms;
     let daylight = if sun_valid {
         weather
@@ -93,7 +108,6 @@ pub(super) fn weather(mut weather: WeatherState, now: i64) -> WeatherState {
         "sun_progress":if sun_valid {(now.saturating_sub(weather.sunrise_unix_ms) as f64 / daylight as f64).clamp(0.0,1.0)} else {0.0},
         "sun_available":sun_valid,"hour_indices":indices,"palette":palette(weather.condition_code,weather.is_day)
     });
-    weather
 }
 
 pub(super) fn clock_display(now: DateTime<chrono_tz::Tz>, offset: i32) -> serde_json::Value {
@@ -114,14 +128,13 @@ pub(crate) fn update(state: &mut ActivityState, now: DateTime<Utc>) {
     for clock in &mut state.world_clocks {
         refresh_clock(clock, now);
     }
-    state.weather = weather(state.weather.clone(), now.timestamp_millis());
-    for value in &mut state.weather_locations {
-        *value = weather(value.clone(), now.timestamp_millis());
+    for value in std::iter::once(&mut state.weather).chain(&mut state.weather_locations) {
+        weather(value, now.timestamp_millis());
     }
     for location in &mut state.locations {
         location.clock_unavailable = !refresh_clock(&mut location.clock, now);
         if let Some(value) = &mut location.weather {
-            *value = weather(value.clone(), now.timestamp_millis());
+            weather(value, now.timestamp_millis());
         }
         location.subtitle = subtitle(location);
     }
@@ -137,42 +150,38 @@ fn subtitle(location: &super::locations::Location) -> String {
     }
     use crate::model::LocationSource;
     let automatic = location.location_mode.as_deref() == Some("automatic");
-    let mut label = match location.location_source {
-        Some(LocationSource::Manual) => {
-            if automatic {
-                "last manual location"
-            } else {
-                "Manual location"
-            }
-        }
-        Some(LocationSource::Ip) => "IP estimate",
-        Some(LocationSource::NonIp) => "Location estimate (non-IP)",
+    let mut label = match (location.location_source, automatic) {
+        (Some(LocationSource::Manual), true) => "last manual location",
+        (Some(LocationSource::Manual), false) => "Manual location",
+        (Some(LocationSource::Ip), _) => "IP estimate",
+        (Some(LocationSource::NonIp), _) => "Location estimate (non-IP)",
         _ => "Location estimate (source unknown)",
     }
     .to_string();
     if location.location_source != Some(LocationSource::Manual)
-        && let Some(meters) = location
-            .accuracy_meters
-            .filter(|v| v.is_finite() && *v >= 0.0)
+        && let Some(distance) = location.accuracy_meters.and_then(accuracy)
     {
-        let distance = if meters < 1000.0 {
-            number(meters, " m")
-        } else if meters < 10000.0 {
-            format!(
-                "{} km",
-                crate::presentation::fixed_decimal(meters / 1000.0, 1)
-                    .unwrap()
-                    .trim_end_matches(".0")
-            )
-        } else {
-            number(meters / 1000.0, " km")
-        };
         label.push_str(&format!(" · reported accuracy ~{distance}"));
     }
     format!(
         "{}{label} · {zone}",
         if automatic { "Automatic · " } else { "" }
     )
+}
+fn accuracy(meters: f64) -> Option<String> {
+    if !meters.is_finite() || meters < 0.0 {
+        return None;
+    }
+    Some(if meters < 1000.0 {
+        number(meters, " m")
+    } else if meters < 10000.0 {
+        format!(
+            "{} km",
+            crate::presentation::measurement(meters / 1000.0, "")?.trim_end_matches(".0")
+        )
+    } else {
+        number(meters / 1000.0, " km")
+    })
 }
 pub(super) fn next_minute(now: DateTime<Utc>) -> std::time::Duration {
     std::time::Duration::from_millis(
@@ -182,15 +191,26 @@ pub(super) fn next_minute(now: DateTime<Utc>) -> std::time::Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use chrono::TimeZone;
+    use super::{local, next_minute, palette, subtitle, update, weather};
+    use crate::activity::{
+        locations::Location,
+        model::{ActivityState, WeatherDay, WeatherHour, WeatherState, WorldClockState},
+    };
+    use crate::model::LocationSource;
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
     #[test]
     fn hourly_window_and_chart_ranges_share_one_observation_instant() {
-        use super::super::model::{WeatherDay, WeatherHour};
-        let now = 1_766_400_000_000;
-        let input = WeatherState {
+        let instant = Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap();
+        let now = instant.timestamp_millis();
+        let mut projected = WeatherState {
             available: true,
             timezone: "Europe/Amsterdam".into(),
+            temperature_c: -1.5,
+            wind_direction_degrees: 360,
+            wind_speed_kmh: 12.5,
+            sunrise_unix_ms: now,
+            sunset_unix_ms: now + 43_200_000,
             hourly: (0..13)
                 .map(|i| WeatherHour {
                     time_unix_ms: now - 1_800_000 + i * 3_600_000,
@@ -212,7 +232,16 @@ mod tests {
             ],
             ..Default::default()
         };
-        let projected = weather(input.clone(), now);
+        let allocation = projected.hourly.as_ptr();
+        weather(&mut projected, now);
+        assert_eq!(projected.hourly.as_ptr(), allocation);
+        assert_eq!(projected.display["temperature"], "-1°");
+        assert_eq!(projected.display["wind"], "N 13 km/h");
+        assert_eq!(projected.display["daylight"], "12 h 00 min");
+        assert_eq!(projected.display["daylight_fraction"], 0.5);
+        assert_eq!(projected.display["sunrise"], "03:30");
+        assert_eq!(next_minute(instant), std::time::Duration::from_secs(60));
+        assert_eq!(local(now, "invalid", "%H:%M"), "—");
         assert_eq!(
             projected.display["hour_indices"],
             json!([1, 2, 3, 4, 5, 6, 7, 8])
@@ -222,15 +251,32 @@ mod tests {
         assert_eq!(projected.hourly[4].display["temperature"], "0°");
         assert_eq!(projected.daily[0].display["span_fraction"], 0.5);
         assert_eq!(projected.daily[1].display["low_fraction"], 0.25);
+        projected.sunset_unix_ms = 0;
+        projected.hourly[0].temperature_c = f64::NAN;
+        weather(&mut projected, now + 100_000_000);
         assert_eq!(projected.display["daylight"], "—");
+        assert_eq!(projected.hourly[0].display["temperature_fraction"], 0.0);
         assert_eq!(
-            weather(input, now + 100_000_000).display["hour_indices"],
+            projected.display["hour_indices"],
             json!([0, 1, 2, 3, 4, 5, 6, 7])
         );
+        for (code, day, expected) in [
+            (0, false, "night"),
+            (95, true, "storm"),
+            (51, true, "wet"),
+            (80, true, "wet"),
+            (45, true, "overcast"),
+            (0, true, "clear"),
+        ] {
+            assert_eq!(palette(code, day), expected);
+        }
+        projected.available = false;
+        weather(&mut projected, now);
+        assert_eq!(projected.display, json!({}));
+        assert!(projected.solar_noon.is_none());
     }
     #[test]
     fn clock_projection_preserves_named_places_and_handles_dst_and_unknown_zones() {
-        use super::super::locations::Location;
         let before = Utc.with_ymd_and_hms(2026, 3, 29, 0, 59, 59).unwrap();
         let mut state = ActivityState {
             locations: vec![Location {
@@ -260,7 +306,6 @@ mod tests {
     }
     #[test]
     fn accuracy_units_do_not_turn_missing_or_invalid_readings_into_zero() {
-        use super::super::locations::Location;
         let mut city = Location {
             current: true,
             clock: WorldClockState {
@@ -272,36 +317,35 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(subtitle(&city), "Automatic · IP estimate · Etc/UTC");
-        city.accuracy_meters = Some(1250.0);
-        assert_eq!(
-            subtitle(&city),
-            "Automatic · IP estimate · reported accuracy ~1.3 km · Etc/UTC"
-        );
-        city.accuracy_meters = Some(0.0);
-        assert!(subtitle(&city).contains("~0 m"));
-        city.accuracy_meters = Some(f64::NAN);
-        assert!(!subtitle(&city).contains("accuracy"));
-    }
-    #[test]
-    fn native_projection_handles_rounding_daylight_and_selection() {
-        let now = Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap();
-        let value = WeatherState {
-            available: true,
-            timezone: "Europe/Amsterdam".into(),
-            temperature_c: -1.5,
-            wind_direction_degrees: 360,
-            wind_speed_kmh: 12.5,
-            sunrise_unix_ms: now.timestamp_millis(),
-            sunset_unix_ms: now.timestamp_millis() + 43_200_000,
-            ..Default::default()
-        };
-        let projected = weather(value, now.timestamp_millis());
-        assert_eq!(projected.display["temperature"], "-1°");
-        assert_eq!(projected.display["wind"], "N 13 km/h");
-        assert_eq!(projected.display["daylight"], "12 h 00 min");
-        assert_eq!(projected.display["daylight_fraction"], 0.5);
-        assert_eq!(projected.display["sunrise"], "03:30");
-        assert_eq!(next_minute(now), std::time::Duration::from_secs(60));
-        assert_eq!(local(now.timestamp_millis(), "invalid", "%H:%M"), "—");
+        for (meters, label) in [
+            (0.0, "0 m"),
+            (1250.0, "1.3 km"),
+            (1000.0, "1 km"),
+            (10000.0, "10 km"),
+        ] {
+            city.accuracy_meters = Some(meters);
+            assert_eq!(
+                subtitle(&city),
+                format!("Automatic · IP estimate · reported accuracy ~{label} · Etc/UTC")
+            );
+        }
+        for meters in [f64::NAN, -1.0, f64::INFINITY] {
+            city.accuracy_meters = Some(meters);
+            assert_eq!(subtitle(&city), "Automatic · IP estimate · Etc/UTC");
+        }
+        for (source, label) in [
+            (Some(LocationSource::Manual), "last manual location"),
+            (Some(LocationSource::NonIp), "Location estimate (non-IP)"),
+            (None, "Location estimate (source unknown)"),
+        ] {
+            city.location_source = source;
+            assert_eq!(subtitle(&city), format!("Automatic · {label} · Etc/UTC"));
+        }
+        city.location_source = Some(LocationSource::Manual);
+        city.location_mode = None;
+        city.accuracy_meters = Some(5.0);
+        assert_eq!(subtitle(&city), "Manual location · Etc/UTC");
+        city.home = true;
+        assert_eq!(subtitle(&city), "Etc/UTC");
     }
 }

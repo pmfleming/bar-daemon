@@ -1365,12 +1365,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_mutations_keep_persistence_and_snapshot_consistent() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("notifications.sqlite3");
-        let state = StateStore::default();
-        let engine = NotificationEngine::persistent(state.clone(), path.clone())
-            .await
-            .unwrap();
+        let (_directory, path, engine) = NotificationEngine::persistent_fixture().await;
+        let state = &engine.state;
         for round in 0..1_000 {
             let mut tasks = tokio::task::JoinSet::new();
             for worker in 0..4 {
@@ -1636,48 +1632,25 @@ mod tests {
             .unwrap();
         let record = engine.active().await.remove(0);
         assert_eq!(record.context_actions[0].key, "copy-code");
-        assert!(
-            engine
-                .context_action(
-                    id,
-                    record.created_unix_ms + 1,
-                    record.updated_unix_ms,
-                    "copy-code"
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            engine
-                .context_action(
-                    id,
-                    record.created_unix_ms,
-                    record.updated_unix_ms + 1,
-                    "copy-code"
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            engine
-                .context_action(
-                    id,
-                    record.created_unix_ms,
-                    record.updated_unix_ms,
-                    "javascript:bad"
-                )
-                .await
-                .is_err()
-        );
+        let (created, updated) = (record.created_unix_ms, record.updated_unix_ms);
+        for (target, created, updated, key) in [
+            (id, created + 1, updated, "copy-code"),
+            (id, created, updated + 1, "copy-code"),
+            (id, created, updated, "javascript:bad"),
+            (0, created, updated, "copy-code"),
+        ] {
+            assert!(
+                engine
+                    .context_action(target, created, updated, key)
+                    .await
+                    .is_err(),
+                "{target}/{created}/{updated}/{key}"
+            );
+        }
         engine.dismiss(id).await.unwrap();
         assert!(
             engine
-                .context_action(
-                    id,
-                    record.created_unix_ms,
-                    record.updated_unix_ms,
-                    "copy-code"
-                )
+                .context_action(id, created, updated, "copy-code")
                 .await
                 .is_err()
         );
@@ -1716,27 +1689,23 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(
-            signals.recv().await.unwrap(),
+        for signal in [
             NotificationSignal::ActivationToken {
                 id,
-                token: "token".into()
-            }
-        );
-        assert_eq!(
-            signals.recv().await.unwrap(),
+                token: "token".into(),
+            },
             NotificationSignal::ActionInvoked {
                 id,
-                action_key: "default".into()
-            }
-        );
-        assert_eq!(
-            signals.recv().await.unwrap(),
+                action_key: "default".into(),
+            },
             NotificationSignal::Closed {
                 id,
-                reason: close_reason::DISMISSED
-            }
-        );
+                reason: close_reason::DISMISSED,
+            },
+        ] {
+            assert_eq!(signals.recv().await.unwrap(), signal);
+        }
+        assert!(signals.try_recv().is_err(), "no extra protocol signals");
         assert!(!engine.invoke_action(id, "default", None).await.unwrap());
     }
 }
