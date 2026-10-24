@@ -162,6 +162,14 @@ impl ApiService {
             }
             _ => unsupported_method(method),
         };
-        self.state.fence_reply(response)
+        // Cached projections already captured health + publication atomically.
+        // Never overlay a later failure onto an older stamped read.
+        if matches!(method, "bar.snapshot" | "theme.resolve") {
+            response
+        } else {
+            self.state
+                .reconcile_reply(self.state.fence_reply(response))
+                .await
+        }
     }
 }

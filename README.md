@@ -133,9 +133,9 @@ cancellation is not rollback. D-Bus ownership uses the shared connection monitor
 foreign operation/status access remains denied.
 
 This is **not** completed bar/frontend migration: Shelllist's bar path still uses
-the bridge. Native ordering of reads versus replacement/transition streams,
-domain-specific quiet-loss recovery, frontend opt-in and real shared-Quickshell
-acceptance remain prerequisites. Startup activation, maximum payload, sustained
+the bridge. Atomic read/event ordering and cached current-state recovery are now
+implemented; frontend socket opt-in and real shared-Quickshell acceptance remain
+prerequisites. Startup activation, maximum payload, sustained
 load, matched release performance and OS-process-crash acceptance remain open.
 
 Private producer tests exercise actual Unix/D-Bus dispatch and validation parity,
@@ -144,6 +144,30 @@ work-area lifetime cleanup. A real-socket test runs the actual battery coordinat
 with fake authorization work and proves disconnect retains admission until
 reconciliation. No battery helper or hardware mutation is invoked. These are not
 full-desktop or native Quickshell transport acceptance tests.
+
+## Atomic state publications
+
+Each stream projection carries `_publication: {epoch, revision, previous_epoch?}`.
+The same projection is used by `bar.snapshot`, initial subscription and changed
+events, captured with its per-domain clock under the state-store lock. Revisions
+are positive exact JavaScript integers; rollover starts a fresh random epoch and
+retains its predecessor through coalescing. Unchanged state does not advance;
+explicit history invalidations do. Health failures advance the affected domain's
+publication too, without stamping previously captured payloads.
+
+Effect receipts remain unchanged. Successful replies containing a domain also
+include a separately captured `data.snapshot` for that domain. Do not treat the
+original receipt or a nested battery operation outcome as current state.
+`theme.resolve` is a pure preview; only `theme.configure` publishes live roles.
+Consumers remove `_publication` before interpreting domain-only payloads (notably
+the string-valued theme role map). Matching frontend/producer builds are required.
+
+Replacement watches may skip revisions. Bounded battery/sleep/active-notification/
+hardware-OSD streams still lose historical edges when lagged; a fresh cached read
+recovers only current state and must not replay effects. Tests cover atomic
+captured reads, health failure, independent clocks, rollover lineage, coalescing,
+receipt reconciliation and transition overflow. This is not periodic liveness,
+installed-session, native Quickshell socket or release-performance acceptance.
 
 ## Browser media sources
 

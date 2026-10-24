@@ -2280,6 +2280,32 @@
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "additionalProperties": false,
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "error": {
                   "pattern": "^#[0-9a-fA-F]{6}$",
                   "type": "string"
@@ -2431,7 +2457,8 @@
                 "surfaceContainerLowest",
                 "tertiary",
                 "tertiaryContainer",
-                "warning"
+                "warning",
+                "_publication"
               ],
               "title": "ThemeRoles",
               "type": "object"
@@ -2443,6 +2470,32 @@
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "additionalProperties": false,
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "error": {
                   "pattern": "^#[0-9a-fA-F]{6}$",
                   "type": "string"
@@ -2594,7 +2647,8 @@
                 "surfaceContainerLowest",
                 "tertiary",
                 "tertiaryContainer",
-                "warning"
+                "warning",
+                "_publication"
               ],
               "title": "ThemeRoles",
               "type": "object"
@@ -2647,9 +2701,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "activity.changed",
@@ -2665,9 +2829,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "workspaces.changed",
@@ -2683,9 +2957,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "workarea.changed",
@@ -2701,9 +3085,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "compositor.changed",
@@ -2719,9 +3213,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "media.changed",
@@ -2741,6 +3345,32 @@
             "data_schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "available": {
                   "type": "boolean"
                 },
@@ -2788,7 +3418,8 @@
                 "source_name",
                 "source_description",
                 "input_muted",
-                "error"
+                "error",
+                "_publication"
               ],
               "title": "AudioState",
               "type": "object"
@@ -2799,6 +3430,32 @@
             "data_schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "available": {
                   "type": "boolean"
                 },
@@ -2846,7 +3503,8 @@
                 "source_name",
                 "source_description",
                 "input_muted",
-                "error"
+                "error",
+                "_publication"
               ],
               "title": "AudioState",
               "type": "object"
@@ -2903,6 +3561,32 @@
             "data_schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "available": {
                   "type": "boolean"
                 },
@@ -2938,7 +3622,8 @@
                 "brightness",
                 "max_brightness",
                 "percent",
-                "error"
+                "error",
+                "_publication"
               ],
               "title": "BrightnessState",
               "type": "object"
@@ -2949,6 +3634,32 @@
             "data_schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "available": {
                   "type": "boolean"
                 },
@@ -2984,7 +3695,8 @@
                 "brightness",
                 "max_brightness",
                 "percent",
-                "error"
+                "error",
+                "_publication"
               ],
               "title": "BrightnessState",
               "type": "object"
@@ -3037,9 +3749,119 @@
       {
         "delivery": "ordered-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "battery.changed",
@@ -3148,6 +3970,32 @@
               },
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "actions": {
                   "items": {
                     "$ref": "#/$defs/PowerProfileAction"
@@ -3214,7 +4062,8 @@
                 "actions",
                 "active_holds",
                 "battery_automation",
-                "error"
+                "error",
+                "_publication"
               ],
               "title": "PowerProfileState",
               "type": "object"
@@ -3314,6 +4163,32 @@
               },
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
                 "actions": {
                   "items": {
                     "$ref": "#/$defs/PowerProfileAction"
@@ -3380,7 +4255,8 @@
                 "actions",
                 "active_holds",
                 "battery_automation",
-                "error"
+                "error",
+                "_publication"
               ],
               "title": "PowerProfileState",
               "type": "object"
@@ -3433,9 +4309,119 @@
       {
         "delivery": "ordered-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "power-sleep.changed",
@@ -3451,9 +4437,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "sleep-policy.changed",
@@ -3469,9 +4565,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "display-policy.changed",
@@ -3487,9 +4693,119 @@
       {
         "delivery": "ordered-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "osd-hardware.changed",
@@ -3505,9 +4821,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "notifications.changed",
@@ -3523,9 +4949,119 @@
       {
         "delivery": "ordered-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "notifications.active.changed",
@@ -3541,9 +5077,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "updates.changed",
@@ -3559,9 +5205,119 @@
       {
         "delivery": "replaceable-state",
         "events": [
-          "subscribed",
-          "changed",
-          "gap"
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "subscribed"
+          },
+          {
+            "data_schema": {
+              "properties": {
+                "_publication": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "previous_epoch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "revision"
+                  ],
+                  "title": "Publication",
+                  "type": "object"
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available",
+                "_publication"
+              ],
+              "type": "object"
+            },
+            "name": "changed"
+          },
+          {
+            "data_schema": {
+              "$defs": {
+                "GapReason": {
+                  "enum": [
+                    "subscriber-lag",
+                    "source-reset"
+                  ],
+                  "type": "string"
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "additionalProperties": false,
+              "properties": {
+                "dropped_events": {
+                  "description": "Decimal string: loss counters must survive JavaScript without rounding.",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/GapReason"
+                }
+              },
+              "required": [
+                "reason",
+                "dropped_events"
+              ],
+              "title": "Gap",
+              "type": "object"
+            },
+            "name": "gap"
+          }
         ],
         "initial": "snapshot-under-commit-lock",
         "name": "timezone.changed",

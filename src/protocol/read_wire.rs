@@ -9,13 +9,27 @@ use shelllist_daemon_core::{
 use super::{NAME, VERSION, stream};
 use crate::{model::BarSnapshot, state::DomainEvent};
 
-#[derive(Serialize)]
-struct SnapshotReply<'a> {
-    snapshot: &'a BarSnapshot,
+pub(crate) fn snapshot(snapshot: &BarSnapshot) -> Value {
+    let projection: serde_json::Map<String, Value> = STREAM_SPECS
+        .iter()
+        .map(|spec| (spec.snapshot_key.into(), spec.project(snapshot)))
+        .collect();
+    super::success(serde_json::json!({"snapshot": projection}))
 }
 
-pub(crate) fn snapshot(snapshot: &BarSnapshot) -> Value {
-    super::serialized_success(SnapshotReply { snapshot })
+/// Add current cached projections without stamping/replacing effect receipts.
+pub(crate) fn reconcile_reply(mut response: Value, snapshot: &BarSnapshot) -> Value {
+    if response["ok"] == true {
+        let projection: serde_json::Map<String, Value> = STREAM_SPECS
+            .iter()
+            .filter(|spec| response["data"].get(spec.snapshot_key).is_some())
+            .map(|spec| (spec.snapshot_key.into(), spec.project(snapshot)))
+            .collect();
+        if !projection.is_empty() {
+            response["data"]["snapshot"] = Value::Object(projection);
+        }
+    }
+    response
 }
 
 enum Kind {
@@ -93,7 +107,11 @@ pub(crate) struct StreamSpec {
 }
 impl StreamSpec {
     pub fn project(&self, snapshot: &BarSnapshot) -> Value {
-        (self.read)(snapshot).unwrap_or(Value::Null)
+        let mut value = (self.read)(snapshot).expect("serializable domain projection");
+        if let Some(publication) = snapshot.publications.get(self.name) {
+            value["_publication"] = to_value(publication).expect("serializable publication");
+        }
+        value
     }
 }
 const fn spec(

@@ -11,6 +11,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 
 mod events;
+pub(crate) mod publication;
 pub(crate) use events::DomainReceivers;
 use events::Source;
 
@@ -54,7 +55,13 @@ impl Default for StateStore {
             .map(|stream| (*stream, Source::new(stream)))
             .collect();
         Self {
-            snapshot: Arc::new(RwLock::new(BarSnapshot::default())),
+            snapshot: Arc::new(RwLock::new(BarSnapshot {
+                publications: crate::protocol::STREAMS
+                    .iter()
+                    .map(|s| ((*s).into(), publication::Publication::new()))
+                    .collect(),
+                ..Default::default()
+            })),
             events: Arc::new(events),
             failed_monitors: Arc::default(),
             work_area_demand: tokio::sync::watch::channel(0).0,
@@ -140,6 +147,16 @@ impl StateStore {
         }
     }
 
+    /// Preserve effect receipts verbatim, but capture any live-state observation
+    /// separately, under the publication lock. Never stamp the earlier receipt.
+    pub(crate) async fn reconcile_reply(&self, response: Value) -> Value {
+        if response["ok"] != true {
+            return response;
+        }
+        self.read(|snapshot| crate::protocol::read_wire::reconcile_reply(response, snapshot))
+            .await
+    }
+
     pub(crate) fn fence_reply(&self, mut response: Value) -> Value {
         if self.failed_monitors.lock().unwrap().is_empty() {
             return response;
@@ -168,13 +185,16 @@ impl StateStore {
         for spec in crate::protocol::read_wire::STREAM_SPECS {
             self.unhealthy(spec.name, &mut value[spec.snapshot_key]);
         }
-        serde_json::from_value(value).expect("availability overlay preserves snapshot types")
+        let mut healthy: BarSnapshot =
+            serde_json::from_value(value).expect("availability overlay preserves snapshot types");
+        healthy.publications.clone_from(&snapshot.publications);
+        healthy
     }
 
     /// Sticky until daemon restart. Never blindly restart a policy engine after
     /// a panic: effects/inhibitors may have unknown outcomes. Other domains live.
     pub(crate) async fn monitor_failed(&self, name: &str, streams: &[&'static str], reason: &str) {
-        let snapshot = self.snapshot.write().await;
+        let mut snapshot = self.snapshot.write().await;
         {
             let mut failures = self.failed_monitors.lock().unwrap();
             for stream in streams {
@@ -185,10 +205,7 @@ impl StateStore {
             }
         }
         for stream in streams {
-            self.publish(
-                stream,
-                &crate::protocol::read_wire::initial_stream_data(stream, &snapshot),
-            );
+            self.publish(&mut snapshot, stream);
         }
         tracing::error!(
             monitor = name,
@@ -217,8 +234,8 @@ impl StateStore {
 
     /// The Updates catalog changed without changing the worker's current state.
     pub(crate) async fn invalidate_update_history(&self) {
-        let snapshot = self.snapshot.read().await;
-        self.publish(crate::protocol::stream::UPDATES, &snapshot.updates);
+        let mut snapshot = self.snapshot.write().await;
+        self.publish(&mut snapshot, crate::protocol::stream::UPDATES);
     }
 
     /// Lid ownership is independently observed; policy I/O must not overwrite it.
@@ -231,10 +248,7 @@ impl StateStore {
         value.critical_battery = snapshot.sleep_policy.critical_battery.clone();
         if snapshot.sleep_policy != value {
             snapshot.sleep_policy = value;
-            self.publish(
-                crate::protocol::stream::SLEEP_POLICY,
-                &snapshot.sleep_policy,
-            );
+            self.publish(&mut snapshot, crate::protocol::stream::SLEEP_POLICY);
         }
     }
 
@@ -259,10 +273,7 @@ impl StateStore {
         let current = field(&mut snapshot.sleep_policy);
         if *current != value {
             *current = value;
-            self.publish(
-                crate::protocol::stream::SLEEP_POLICY,
-                &snapshot.sleep_policy,
-            );
+            self.publish(&mut snapshot, crate::protocol::stream::SLEEP_POLICY);
         }
     }
 
@@ -293,7 +304,7 @@ impl StateStore {
         }
         value.revision = value.revision.saturating_add(1);
         snapshot.workarea = value;
-        self.publish(crate::protocol::stream::WORKAREA, &snapshot.workarea);
+        self.publish(&mut snapshot, crate::protocol::stream::WORKAREA);
     }
 
     pub(crate) async fn update_compositor(&self, mut value: CompositorState) {
@@ -304,7 +315,7 @@ impl StateStore {
         }
         value.revision = value.revision.saturating_add(1);
         snapshot.compositor = value;
-        self.publish(crate::protocol::stream::COMPOSITOR, &snapshot.compositor);
+        self.publish(&mut snapshot, crate::protocol::stream::COMPOSITOR);
     }
 
     pub(crate) async fn update_power_sleep(&self, value: PowerSleepState) {
@@ -327,7 +338,7 @@ impl StateStore {
             return;
         }
         snapshot.power_sleep.operation = operation;
-        self.publish(crate::protocol::stream::POWER_SLEEP, &snapshot.power_sleep);
+        self.publish(&mut snapshot, crate::protocol::stream::POWER_SLEEP);
     }
 
     pub(crate) async fn record_resume(&self) {
@@ -361,7 +372,7 @@ impl StateStore {
             return true;
         }
         *current = next;
-        self.publish(crate::protocol::stream::POWER_SLEEP, current);
+        self.publish(&mut snapshot, crate::protocol::stream::POWER_SLEEP);
         true
     }
 
@@ -376,12 +387,17 @@ impl StateStore {
             return;
         }
         *current = value;
-        self.publish(stream, current);
+        self.publish(&mut snapshot, stream);
     }
 
     // Called under the snapshot write lock: subscription and commit order agree.
-    fn publish(&self, stream: &str, value: &impl Serialize) {
-        let mut data = to_value(value).unwrap_or(Value::Null);
+    fn publish(&self, snapshot: &mut BarSnapshot, stream: &str) {
+        snapshot
+            .publications
+            .get_mut(stream)
+            .expect("registered publication")
+            .advance();
+        let mut data = crate::protocol::read_wire::initial_stream_data(stream, snapshot);
         self.unhealthy(stream, &mut data);
         self.events[stream].send(DomainEvent {
             stream: stream.into(),
@@ -389,6 +405,9 @@ impl StateStore {
         });
     }
 }
+
+#[cfg(test)]
+mod publication_tests;
 
 #[cfg(test)]
 mod tests {

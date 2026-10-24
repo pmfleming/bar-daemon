@@ -6,6 +6,9 @@ pub(crate) use crate::activity::model::ActivityState;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BarSnapshot {
+    // Carried with cloned snapshots, but added to each wire projection only.
+    #[serde(skip)]
+    pub publications: std::collections::BTreeMap<String, crate::state::publication::Publication>,
     #[serde(default)]
     pub theme: crate::theme::ThemeRoles,
     pub activity: ActivityState,

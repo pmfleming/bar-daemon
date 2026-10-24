@@ -121,8 +121,11 @@ mod tests {
     async fn committed_changes_and_resubscription_project_the_same_snapshot_for_every_stream()
     -> Result<()> {
         let fixture = fixture().await?;
-        let snapshot: BarSnapshot =
-            serde_json::from_value(fixture["snapshot"]["data"]["snapshot"].clone())?;
+        let mut payload = fixture["snapshot"]["data"]["snapshot"].clone();
+        for value in payload.as_object_mut().unwrap().values_mut() {
+            value.as_object_mut().unwrap().remove("_publication");
+        }
+        let mut snapshot: BarSnapshot = serde_json::from_value(payload)?;
         let keys: BTreeSet<_> = read_wire::STREAM_SPECS
             .iter()
             .map(|s| s.snapshot_key)
@@ -135,6 +138,10 @@ mod tests {
         assert!(read_wire::initial_stream_data("unknown.changed", &snapshot).is_null());
         for stream in STREAMS {
             let spec = read_wire::stream_spec(stream).unwrap();
+            snapshot.publications.insert(
+                (*stream).into(),
+                serde_json::from_value(fields[spec.snapshot_key]["_publication"].clone())?,
+            );
             assert_eq!(spec.project(&snapshot), fields[spec.snapshot_key]);
             let changed = &fixture["changed"][stream];
             let resubscribed = Event::subscribed(stream, SUBSCRIPTION, &snapshot).into_value();
@@ -146,8 +153,10 @@ mod tests {
             assert_eq!(changed["stream"], *stream);
             assert_eq!(changed["subscription_id"], SUBSCRIPTION);
             if *stream == super::super::stream::THEME {
+                let mut initial = fixture["subscribed"][stream]["data"].clone();
+                initial.as_object_mut().unwrap().remove("_publication");
                 assert_eq!(
-                    fixture["subscribed"][stream]["data"],
+                    initial,
                     serde_json::to_value(crate::theme::ThemeRoles::default())?
                 );
             } else {

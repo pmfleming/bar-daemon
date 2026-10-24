@@ -71,12 +71,17 @@ async fn dispatch_preserves_projection_publication_validation_and_failure_fences
         "resolve has no state effect"
     );
     assert!(events.try_recv().is_err());
-    assert_eq!(api.dispatch("theme.configure", params).await, resolved);
-    assert_eq!(events.try_recv().unwrap().data, resolved["data"]["theme"]);
+    let configured = api.dispatch("theme.configure", params).await;
+    assert_eq!(configured["data"]["theme"], resolved["data"]["theme"]);
+    assert!(configured["data"]["theme"].get("_publication").is_none());
+    assert_eq!(
+        events.try_recv().unwrap().data,
+        configured["data"]["snapshot"]["theme"]
+    );
     assert_eq!(
         api.dispatch("bar.snapshot", json!({"streams":[stream::THEME]}))
             .await["data"]["snapshot"]["theme"],
-        resolved["data"]["theme"]
+        configured["data"]["snapshot"]["theme"]
     );
     for params in [
         Value::Null,

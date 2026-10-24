@@ -22,7 +22,9 @@ pub(crate) mod sleep_wire;
 
 /// Read-only snapshot and event examples generated through live serialization paths.
 pub async fn read_contract_fixture() -> anyhow::Result<Value> {
-    read_fixtures::fixture().await
+    read_fixtures::fixture()
+        .await
+        .map(crate::state::publication::normalize)
 }
 
 /// Offline audio, brightness and power-profile action request/reply examples.
@@ -32,37 +34,37 @@ pub fn control_contract_fixture() -> Value {
 
 /// Offline sleep replies and events produced by the live outcome tracker and serializers.
 pub async fn sleep_contract_fixture() -> Value {
-    sleep_fixtures::fixture().await
+    crate::state::publication::normalize(sleep_fixtures::fixture().await)
 }
 
 /// Offline display transaction request/reply and state publication examples.
 pub async fn display_contract_fixture() -> Value {
-    display_fixtures::fixture().await
+    crate::state::publication::normalize(display_fixtures::fixture().await)
 }
 
 /// Offline notification mutation request/reply and event examples.
 pub async fn notification_contract_fixture() -> Value {
-    notification_fixtures::fixture().await
+    crate::state::publication::normalize(notification_fixtures::fixture().await)
 }
 
 /// Offline media, workspace and update-refresh examples.
 pub async fn session_control_contract_fixture() -> Value {
-    session_control_fixtures::fixture().await
+    crate::state::publication::normalize(session_control_fixtures::fixture().await)
 }
 
 /// Battery contracts generated without hardware or persistent writes.
 pub async fn battery_contract_fixture() -> Value {
-    battery_fixtures::fixture().await
+    crate::state::publication::normalize(battery_fixtures::fixture().await)
 }
 
 /// Offline activity/todo examples using production serializers and day projection.
 pub async fn activity_contract_fixture() -> Value {
-    activity_fixtures::fixture().await
+    crate::state::publication::normalize(activity_fixtures::fixture().await)
 }
 
 /// Offline notification catalog examples using production pagination and serializers.
 pub async fn query_contract_fixture() -> Value {
-    query_fixtures::fixture().await
+    crate::state::publication::normalize(query_fixtures::fixture().await)
 }
 
 /// Stable protocol family name.
@@ -340,18 +342,25 @@ fn stream_metadata(name: &str) -> Value {
         >()),
         _ => None,
     };
-    let events = schema.map_or_else(
-        || json!(["subscribed", "changed", "gap"]),
-        |schema| {
-            let gap =
-                shelllist_daemon_core::method_schemas::<Value, shelllist_daemon_core::wire::Gap>();
-            json!([
-                {"name":"subscribed", "data_schema":schema["result_schema"]},
-                {"name":"changed", "data_schema":schema["result_schema"]},
-                {"name":"gap", "data_schema":gap["result_schema"]}
-            ])
-        },
+    let mut projection = schema.map_or_else(
+        || json!({"type":"object", "properties":{"available":{"type":"boolean"}}, "required":["available"]}),
+        |schema| schema["result_schema"].clone(),
     );
+    projection["properties"]["_publication"] = shelllist_daemon_core::method_schemas::<
+        Value,
+        crate::state::publication::Publication,
+    >()["result_schema"]
+        .clone();
+    projection["required"]
+        .as_array_mut()
+        .expect("projection required fields")
+        .push(json!("_publication"));
+    let gap = shelllist_daemon_core::method_schemas::<Value, shelllist_daemon_core::wire::Gap>();
+    let events = json!([
+        {"name":"subscribed", "data_schema":projection},
+        {"name":"changed", "data_schema":projection},
+        {"name":"gap", "data_schema":gap["result_schema"]}
+    ]);
     json!({
         "name": name,
         "events": events,

@@ -22,12 +22,34 @@ pub(super) async fn fixture() -> Value {
     let states = contract_examples::states();
     let mut events = Map::new();
     let mut snapshots = Map::new();
-    for (name, state) in &states {
-        let store = StateStore::default();
+    let store = StateStore::default();
+    let mut captured = std::collections::BTreeMap::new();
+    let workflow = [
+        "initial",
+        "preview",
+        "confirmed",
+        "reverted",
+        "focus",
+        "focusReset",
+        "policy",
+    ];
+    let names: Vec<_> = workflow
+        .iter()
+        .copied()
+        .chain(
+            states
+                .keys()
+                .map(String::as_str)
+                .filter(|name| !workflow.contains(name)),
+        )
+        .collect();
+    for name in names {
+        let state = &states[name];
         let mut changes = store.subscribe();
         store.update_display_policy(state.clone()).await;
+        captured.insert(name.to_owned(), store.snapshot().await);
         events.insert(
-            name.clone(),
+            name.to_owned(),
             read_wire::Event::changed(
                 "subscription-example",
                 changes.try_recv().expect("display commit emits an event"),
@@ -43,9 +65,9 @@ pub(super) async fn fixture() -> Value {
             "focusReset",
             "policy",
         ]
-        .contains(&name.as_str())
+        .contains(&name)
         {
-            snapshots.insert(name.clone(), read_wire::snapshot(&store.snapshot().await));
+            snapshots.insert(name.to_owned(), read_wire::snapshot(&captured[name]));
         }
     }
     let mut replies = Map::new();
@@ -123,7 +145,7 @@ pub(super) async fn fixture() -> Value {
         };
         replies.insert(method.into(), json!({
             "params": params,
-            "success": display_wire::reply(Ok(states[state].clone()), failure),
+            "success": read_wire::reconcile_reply(display_wire::reply(Ok(states[state].clone()), failure), &captured[state]),
             "failed": display_wire::reply(Err(anyhow::anyhow!("compositor unavailable").context("Display control failed")), failure),
             "uncertain": failure.reply(&anyhow::anyhow!("deadline has elapsed").context(uncertain)),
             "invalid_params": {"unknown": true}, "rejected": rejected, "recovery": state,
