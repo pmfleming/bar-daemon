@@ -8,6 +8,43 @@ enum Day {
     Since(NaiveDate),
     Before(NaiveDate),
 }
+impl Day {
+    fn parse(word: &str, today: NaiveDate) -> Result<Option<Self>> {
+        let (kind, value) = word.split_once(':').unwrap_or(("", word));
+        let iso = value.len() == 10
+            && value.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+            && value.as_bytes()[4] == b'-'
+            && value.as_bytes()[7] == b'-';
+        let bare_date = kind.is_empty() && (matches!(value, "today" | "yesterday") || iso);
+        if !bare_date && !["on", "since", "before"].contains(&kind) {
+            return Ok(None);
+        }
+        let date = match value {
+            "today" => today,
+            "yesterday" => today
+                .pred_opt()
+                .context("Yesterday is outside the supported calendar")?,
+            _ => {
+                ensure!(iso, "Use YYYY-MM-DD, today or yesterday for date searches");
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .with_context(|| format!("Invalid history date {value:?}; use YYYY-MM-DD"))?
+            }
+        };
+        Ok(Some(match kind {
+            "since" => Self::Since(date),
+            "before" => Self::Before(date),
+            _ => Self::On(date),
+        }))
+    }
+
+    fn matches(&self, date: NaiveDate) -> bool {
+        match self {
+            Self::On(at) => date == *at,
+            Self::Since(at) => date >= *at,
+            Self::Before(at) => date < *at,
+        }
+    }
+}
 #[derive(Hash)]
 pub(super) struct Search {
     words: Vec<String>,
@@ -20,32 +57,8 @@ impl Search {
             days: vec![],
         };
         for word in text.to_lowercase().split_whitespace() {
-            let (kind, value) = word.split_once(':').unwrap_or(("", word));
-            let relative = match value {
-                "today" => Some(now.date_naive()),
-                "yesterday" => now.date_naive().pred_opt(),
-                _ => None,
-            };
-            let iso = value.len() == 10
-                && value.as_bytes()[..4].iter().all(u8::is_ascii_digit)
-                && value.as_bytes()[4] == b'-'
-                && value.as_bytes()[7] == b'-';
-            if ["on", "since", "before"].contains(&kind)
-                || (kind.is_empty() && (relative.is_some() || iso))
-            {
-                let date = if let Some(date) = relative {
-                    date
-                } else {
-                    ensure!(iso, "Use YYYY-MM-DD, today or yesterday for date searches");
-                    NaiveDate::parse_from_str(value, "%Y-%m-%d").with_context(|| {
-                        format!("Invalid history date {value:?}; use YYYY-MM-DD")
-                    })?
-                };
-                search.days.push(match kind {
-                    "since" => Day::Since(date),
-                    "before" => Day::Before(date),
-                    _ => Day::On(date),
-                });
+            if let Some(day) = Day::parse(word, now.date_naive())? {
+                search.days.push(day);
             } else {
                 search.words.push(word.to_owned());
             }
@@ -61,17 +74,14 @@ impl Search {
         // Date filters are cheap and don't need a serialized component payload.
         // In particular, ordinary unfiltered browsing needs no search text at all.
         if !self.days.is_empty() {
-            let date = i64::try_from(started_at)
+            let Some(date) = i64::try_from(started_at)
                 .ok()
                 .and_then(|at| DateTime::from_timestamp(at, 0))
-                .map(|at| at.with_timezone(timezone).date_naive());
-            if !self.days.iter().all(|day| {
-                date.is_some_and(|date| match day {
-                    Day::On(at) => date == *at,
-                    Day::Since(at) => date >= *at,
-                    Day::Before(at) => date < *at,
-                })
-            }) {
+                .map(|at| at.with_timezone(timezone).date_naive())
+            else {
+                return false;
+            };
+            if !self.days.iter().all(|day| day.matches(date)) {
                 return false;
             }
         }
@@ -168,9 +178,32 @@ mod tests {
             "on:2026-13-01",
             "since:garbage",
             "before:2026-2-1",
+            "on:",
+            "on:ééééé",
+            "since:yesterday:extra",
         ] {
             assert!(Search::parse(text, &now).is_err(), "{text}");
         }
+        for word in ["ÉCLAIR", "unknown:today", "word-ab-cd"] {
+            assert!(Search::parse(word, &now).unwrap().matches(
+                &word.to_lowercase(),
+                0,
+                &Amsterdam
+            ));
+        }
+        let minimum = chrono::NaiveDate::MIN
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        for text in [
+            "yesterday",
+            "on:yesterday",
+            "since:yesterday",
+            "before:yesterday",
+        ] {
+            assert!(Search::parse(text, &minimum).is_err(), "{text}");
+        }
+        assert!(!search.matches("failed", u64::MAX, &Amsterdam));
         let fall = Amsterdam.with_ymd_and_hms(2026, 10, 25, 2, 30, 0);
         let search = Search::parse("2026-10-25", &now).unwrap();
         for at in [fall.earliest().unwrap(), fall.latest().unwrap()] {
