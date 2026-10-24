@@ -137,16 +137,42 @@ pub(super) fn load_catalog(root: &Path, manual: Option<&Path>) -> Catalog {
 }
 
 pub(crate) async fn query(params: Value) -> Result<Value> {
-    let query: Query = serde_json::from_value(params)?;
     let directory = super::state_dir();
     let manual = super::manual::directory();
-    let read = super::reader::run(move || page(load_catalog(&directory, manual.as_deref()), query));
-    tokio::time::timeout(std::time::Duration::from_secs(3), read)
-        .await
-        .context("Update history read timed out")?
+    query_with(params, move || load_catalog(&directory, manual.as_deref())).await
+}
+
+async fn query_with(
+    params: Value,
+    load: impl FnOnce() -> Catalog + Send + 'static,
+) -> Result<Value> {
+    let query: Query = serde_json::from_value(params)?;
+    let prepared = query.prepare(chrono::Local::now())?;
+    super::reader::bounded("Update history read timed out", move || {
+        prepared.page(load())
+    })
+    .await
+}
+
+struct PreparedQuery {
+    query: Query,
+    search: search::Search,
+    limit: usize,
+    now: chrono::DateTime<chrono::Local>,
 }
 
 impl Query {
+    fn prepare(self, now: chrono::DateTime<chrono::Local>) -> Result<PreparedQuery> {
+        let limit = self.validate()?;
+        let search = search::Search::parse(&self.query, &now)?;
+        Ok(PreparedQuery {
+            query: self,
+            search,
+            limit,
+            now,
+        })
+    }
+
     fn validate(&self) -> Result<usize> {
         let limit = self.limit.unwrap_or(50);
         ensure!(
@@ -251,41 +277,53 @@ fn page_end(entries: &[Entry], offset: usize, limit: usize) -> Result<usize> {
     Ok(end)
 }
 
+#[cfg(test)]
 pub(crate) fn page(catalog: Catalog, query: Query) -> Result<Value> {
     page_at(catalog, query, chrono::Local::now())
 }
 
+#[cfg(test)]
 fn page_at(catalog: Catalog, query: Query, now: chrono::DateTime<chrono::Local>) -> Result<Value> {
-    let limit = query.validate()?;
-    let search = search::Search::parse(&query.query, &now)?;
-    let mut hasher = super::json::Measure::of(&catalog.entries)?.hash;
-    query.query.hash(&mut hasher);
-    query.run_id.hash(&mut hasher);
-    query.lane.hash(&mut hasher);
-    query.outcome.hash(&mut hasher);
-    query.anchor_ids.hash(&mut hasher);
-    search.hash(&mut hasher); // Relative dates fence cursors across local midnight.
-    let revision = format!("{:016x}", hasher.finish());
-    let offset = query.offset(&revision)?;
-    let matching: Vec<_> = catalog
-        .entries
-        .into_iter()
-        .filter(|entry| query.matches(entry, &search, &now))
-        .collect();
-    let retain_through = matching
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| query.anchor_ids.contains(&entry.record.job.id))
-        .map(|(index, _)| index + 1)
-        .max()
-        .unwrap_or(0);
-    let end = page_end(&matching, offset, limit)?;
-    Ok(json!({"history": {
-        "available": catalog.available, "revision": revision, "total": matching.len(), "retain_through": retain_through,
-        "entries": &matching[offset..end], "cursor": (end < matching.len()).then(|| format!("{revision}:{end}")),
-        "error": (!catalog.errors.is_empty()).then(|| catalog.errors.join("\n")),
-        "coverage": "Manual rebuilds and worker-managed system/AI-tool runs; 90 days / 1,000 completed runs. Manual logs remain private to this user."
-    }}))
+    query.prepare(now)?.page(catalog)
+}
+
+impl PreparedQuery {
+    fn page(self, catalog: Catalog) -> Result<Value> {
+        let Self {
+            query,
+            search,
+            limit,
+            now,
+        } = self;
+        let mut hasher = super::json::Measure::of(&catalog.entries)?.hash;
+        query.query.hash(&mut hasher);
+        query.run_id.hash(&mut hasher);
+        query.lane.hash(&mut hasher);
+        query.outcome.hash(&mut hasher);
+        query.anchor_ids.hash(&mut hasher);
+        search.hash(&mut hasher); // Relative dates fence cursors across local midnight.
+        let revision = format!("{:016x}", hasher.finish());
+        let offset = query.offset(&revision)?;
+        let matching: Vec<_> = catalog
+            .entries
+            .into_iter()
+            .filter(|entry| query.matches(entry, &search, &now))
+            .collect();
+        let retain_through = matching
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| query.anchor_ids.contains(&entry.record.job.id))
+            .map(|(index, _)| index + 1)
+            .max()
+            .unwrap_or(0);
+        let end = page_end(&matching, offset, limit)?;
+        Ok(json!({"history": {
+            "available": catalog.available, "revision": revision, "total": matching.len(), "retain_through": retain_through,
+            "entries": &matching[offset..end], "cursor": (end < matching.len()).then(|| format!("{revision}:{end}")),
+            "error": (!catalog.errors.is_empty()).then(|| catalog.errors.join("\n")),
+            "coverage": "Manual rebuilds and worker-managed system/AI-tool runs; 90 days / 1,000 completed runs. Manual logs remain private to this user."
+        }}))
+    }
 }
 
 pub(crate) async fn read_log(params: Value) -> Result<Value> {
@@ -299,26 +337,21 @@ pub(crate) async fn read_log(params: Value) -> Result<Value> {
     ensure!(valid_run_id(&request.run_id), "Invalid run identity");
     let root = super::state_dir();
     let manual = super::manual::directory();
-    let entry = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        super::reader::run(move || {
-            load_catalog(&root, manual.as_deref())
-                .entries
-                .into_iter()
-                .find(|e| e.record.job.id == request.run_id)
-                .context("Run is no longer retained")
-        }),
-    )
-    .await
-    .context("Update log lookup timed out")??;
+    let entry = super::reader::bounded("Update log lookup timed out", move || {
+        load_catalog(&root, manual.as_deref())
+            .entries
+            .into_iter()
+            .find(|e| e.record.job.id == request.run_id)
+            .context("Run is no longer retained")
+    })
+    .await?;
     let job = entry.record.job;
     if let Some(path) = entry.manual_log {
-        let (text, truncated) = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            super::reader::run(move || super::manual::read_log(&path)),
-        )
-        .await
-        .context("Manual rebuild log read timed out")??;
+        let (text, truncated) =
+            super::reader::bounded("Manual rebuild log read timed out", move || {
+                super::manual::read_log(&path)
+            })
+            .await?;
         return Ok(json!({"log":{"run_id":job.id,"text":text,"truncated":truncated}}));
     }
     ensure!(
@@ -533,19 +566,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_bad_queries_and_stale_cursors_without_effects() {
+    #[tokio::test]
+    async fn rejects_bad_queries_before_io_and_fences_stale_cursors() {
         for params in [
             json!({"query":"x".repeat(513)}),
             json!({"limit":101}),
             json!({"limit":0}),
             json!({"run_id":"run-1", "lane":"invalid"}),
             json!({"run_id":"../outside"}),
-            json!({"cursor":"old:0"}),
+            json!({"query":"before:not-a-date"}),
+            json!({"anchor_ids":["a","b","c"]}),
+            json!({"outcome":"invalid"}),
+            json!({"unknown":true}),
+            Value::Null,
         ] {
-            assert!(request(Catalog::default(), params).is_err());
+            assert!(request(Catalog::default(), params.clone()).is_err());
+            assert!(
+                super::query_with(params, || panic!("invalid query performed I/O"))
+                    .await
+                    .is_err()
+            );
         }
-        let empty = page(Catalog::default(), Query::default()).unwrap();
+        assert!(
+            request(Catalog::default(), json!({"cursor":"old:0"}))
+                .unwrap_err()
+                .is::<StaleCursor>()
+        );
+        let empty = super::query_with(json!({}), Catalog::default)
+            .await
+            .unwrap();
         assert_eq!(empty["history"]["available"], false);
         assert_eq!(empty["history"]["entries"], json!([]));
     }

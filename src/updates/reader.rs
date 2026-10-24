@@ -2,6 +2,17 @@
 use anyhow::{Context, Result};
 use tokio::sync::Semaphore;
 
+/// One deadline covers admission and execution. Running blocking work keeps its
+/// permit even after this future times out; it is never replayed.
+pub(super) async fn bounded<T: Send + 'static>(
+    timeout_message: &'static str,
+    read: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::time::timeout(std::time::Duration::from_secs(3), run(read))
+        .await
+        .context(timeout_message)?
+}
+
 pub(super) async fn run<T: Send + 'static>(
     read: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
@@ -66,6 +77,31 @@ mod tests {
         assert_eq!(next.await.unwrap(), 42);
         assert!(!ran.load(Ordering::SeqCst));
         assert_eq!(SLOTS.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_returns_without_replaying_or_cancelling_running_filesystem_work() {
+        let (started, ready) = oneshot::channel();
+        let (release, wait) = mpsc::channel();
+        let (finished, mut completed) = oneshot::channel();
+        let task = tokio::spawn(super::bounded("fixture deadline", move || {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            finished.send(()).unwrap();
+            Ok(())
+        }));
+        ready.await.unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(3)).await;
+        assert_eq!(
+            task.await.unwrap().unwrap_err().to_string(),
+            "fixture deadline"
+        );
+        assert!(matches!(
+            completed.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        completed.await.unwrap();
     }
 
     #[tokio::test]
