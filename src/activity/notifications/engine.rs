@@ -27,6 +27,8 @@ const CENTER_READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct EngineData {
     active: BTreeMap<u32, ActiveNotification>,
+    // Internal routes have exactly the same lifetime as their active notification.
+    update_targets: BTreeMap<u32, String>,
     dnd: bool,
     dnd_until_unix_ms: Option<u64>,
     history_revision: u64,
@@ -47,6 +49,11 @@ struct ExpiryBatch {
 }
 
 impl EngineData {
+    fn remove(&mut self, id: u32) -> Option<ActiveNotification> {
+        self.update_targets.remove(&id);
+        self.active.remove(&id)
+    }
+
     fn upsert(
         &mut self,
         id: u32,
@@ -56,7 +63,7 @@ impl EngineData {
         maximum_active: usize,
     ) -> (ActiveNotification, Option<u32>) {
         let mut evicted = None;
-        let mut stored = if let Some(mut existing) = self.active.remove(&id) {
+        let mut stored = if let Some(mut existing) = self.remove(id) {
             existing.replace_from(incoming, now);
             existing
         } else {
@@ -67,7 +74,7 @@ impl EngineData {
                     .min_by_key(|item| (item.created_unix_ms, item.id))
                     .map(|item| item.id)
             {
-                self.active.remove(&oldest);
+                self.remove(oldest);
                 evicted = Some(oldest);
             }
             ActiveNotification::from_incoming(id, incoming, now)
@@ -142,8 +149,6 @@ pub(crate) struct NotificationEngine {
     history_epoch: String,
     history_readers: Semaphore,
     context_effects: Mutex<()>,
-    // Internal targets cannot be supplied by freedesktop notification senders.
-    update_targets: Mutex<BTreeMap<u32, String>>,
 }
 
 impl NotificationEngine {
@@ -220,6 +225,7 @@ impl NotificationEngine {
             mutations: Mutex::new(()),
             data: Mutex::new(EngineData {
                 active: BTreeMap::new(),
+                update_targets: BTreeMap::new(),
                 dnd,
                 dnd_until_unix_ms,
                 history_revision: 0,
@@ -241,7 +247,6 @@ impl NotificationEngine {
             history_epoch: history::new_epoch()?,
             history_readers: Semaphore::new(2),
             context_effects: Mutex::new(()),
-            update_targets: Mutex::new(BTreeMap::new()),
         });
         if dnd_expired && let Some(persistence) = &engine.persistence {
             persistence.reserve().await?.set_dnd(false, None);
@@ -297,8 +302,6 @@ impl NotificationEngine {
             );
             (id, stored, evicted)
         };
-        // A third-party replacement must never inherit an internal update route.
-        self.update_targets.lock().await.remove(&id);
         if let Some(persistence) = &mut writes {
             persistence.save(stored);
         }
@@ -372,10 +375,7 @@ impl NotificationEngine {
         }
         data.active.insert(id, stored);
         data.history_revision = data.history_revision.wrapping_add(1);
-        let mut targets = self.update_targets.lock().await;
-        targets.retain(|id, _| data.active.contains_key(id));
-        targets.insert(id, run_id);
-        drop(targets);
+        data.update_targets.insert(id, run_id);
         drop(data);
         self.expiry_wakeup.notify_one();
         self.publish_summary().await;
@@ -569,7 +569,7 @@ impl NotificationEngine {
                     .get(&position.id)
                     .is_some_and(|n| n.created_unix_ms == position.created)
                 {
-                    data.active.remove(&position.id);
+                    data.remove(position.id);
                     engine.emit(NotificationSignal::Closed {
                         id: position.id,
                         reason: close_reason::DISMISSED,
@@ -605,14 +605,13 @@ impl NotificationEngine {
     ) -> bool {
         let removed = {
             let mut data = self.data.lock().await;
-            let removed = data.active.remove(&id).is_some();
+            let removed = data.remove(id).is_some();
             if removed {
                 data.history_revision = data.history_revision.wrapping_add(1);
             }
             removed
         };
         if removed {
-            self.update_targets.lock().await.remove(&id);
             if let Some(persistence) = writes {
                 persistence.close(id, unix_ms(), reason);
             }
@@ -633,12 +632,12 @@ impl NotificationEngine {
             let mut data = self.data.lock().await;
             let ids = data.active.keys().copied().collect::<Vec<_>>();
             data.active.clear();
+            data.update_targets.clear();
             if !ids.is_empty() {
                 data.history_revision = data.history_revision.wrapping_add(1);
             }
             ids
         };
-        self.update_targets.lock().await.clear();
         if let Some(persistence) = &mut writes
             && !ids.is_empty()
         {
@@ -921,7 +920,7 @@ impl NotificationEngine {
     ) -> Result<bool> {
         let _mutation = self.mutations.lock().await;
         let mut writes = self.reserve_persistence().await?;
-        let resident = {
+        let (resident, update_target) = {
             let data = self.data.lock().await;
             let Some(notification) = data.active.get(&id) else {
                 return Ok(false);
@@ -933,10 +932,13 @@ impl NotificationEngine {
             {
                 return Ok(false);
             }
-            notification.hints.resident
+            (
+                notification.hints.resident,
+                data.update_targets.get(&id).cloned(),
+            )
         };
         if action_key == "default"
-            && let Some(run_id) = self.update_targets.lock().await.get(&id).cloned()
+            && let Some(run_id) = update_target
         {
             crate::updates::open(&run_id, token.as_deref()).await?;
         }
@@ -1261,13 +1263,13 @@ mod tests {
         assert_eq!(engine.active().await.len(), 1);
         assert!(engine.state.read(|s| s.notifications.dnd).await);
         let id = engine.active().await[0].id;
-        assert!(engine.update_targets.lock().await.contains_key(&id));
+        assert!(engine.data.lock().await.update_targets.contains_key(&id));
         engine
             .notify(id, notification("External replacement", -1))
             .await
             .unwrap();
         assert!(
-            !engine.update_targets.lock().await.contains_key(&id),
+            !engine.data.lock().await.update_targets.contains_key(&id),
             "external replacement cannot inherit an internal route"
         );
         engine.clear().await.unwrap();
@@ -1298,12 +1300,76 @@ mod tests {
         assert_eq!(engine.history(None, 100).await.unwrap().len(), 2);
     }
 
+    #[tokio::test]
+    async fn internal_routes_retire_with_replacement_eviction_deletion_and_close() {
+        for operation in ["replace", "evict", "delete", "dismiss", "clear"] {
+            let (_directory, _path, mut engine) = NotificationEngine::persistent_fixture().await;
+            Arc::get_mut(&mut engine).unwrap().policy.maximum_active = 1;
+            engine
+                .notify_update_once("once".into(), "run-1".into(), notification("Internal", 0))
+                .await
+                .unwrap();
+            let id = engine.active().await[0].id;
+            assert!(engine.data.lock().await.update_targets.contains_key(&id));
+            let mut signals = engine.subscribe_signals();
+            match operation {
+                "replace" => {
+                    engine
+                        .notify(id, notification("External", 0))
+                        .await
+                        .unwrap();
+                }
+                "evict" => {
+                    engine.notify(0, notification("External", 0)).await.unwrap();
+                }
+                "delete" => {
+                    let ticket = engine.prepare_delete(None, None).await.unwrap();
+                    assert_eq!(engine.delete_confirmed(ticket.token).await.unwrap(), 1);
+                }
+                "dismiss" => {
+                    assert!(engine.dismiss(id).await.unwrap());
+                }
+                _ => {
+                    assert_eq!(engine.clear().await.unwrap(), 1);
+                }
+            }
+            assert!(
+                engine.data.lock().await.update_targets.is_empty(),
+                "{operation}"
+            );
+            if operation == "replace" {
+                assert!(signals.try_recv().is_err());
+            } else {
+                let reason = if operation == "evict" {
+                    close_reason::UNDEFINED
+                } else {
+                    close_reason::DISMISSED
+                };
+                assert_eq!(
+                    signals.try_recv().unwrap(),
+                    super::NotificationSignal::Closed { id, reason }
+                );
+            }
+            assert!(signals.try_recv().is_err(), "no duplicate close signal");
+            let stored = engine.history(None, 100).await.unwrap();
+            if operation == "delete" {
+                assert!(stored.is_empty());
+            } else {
+                assert_eq!(
+                    stored.iter().filter(|n| n.closed_unix_ms.is_none()).count(),
+                    engine.active().await.len()
+                );
+            }
+        }
+    }
+
     #[test]
     fn expiry_keeps_snooze_popup_and_protocol_deadlines_distinct() {
         use super::super::policy::AppPolicy;
         use super::{ActiveNotification, EngineData};
         let mut data = EngineData {
             active: Default::default(),
+            update_targets: Default::default(),
             dnd: true,
             dnd_until_unix_ms: Some(100),
             history_revision: u64::MAX,
