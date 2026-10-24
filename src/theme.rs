@@ -159,17 +159,4 @@ mod tests {
                 .is_err()
         );
     }
-
-    #[tokio::test]
-    async fn subscription_and_snapshot_publish_the_same_complete_roles() {
-        let store = crate::state::StateStore::default();
-        let (_, mut receiver) = store
-            .snapshot_and_subscribe_domains(&[crate::protocol::stream::THEME])
-            .await;
-        let roles = scheme(Argb::from_u32(0xff008577), true);
-        store.update_theme(roles.clone()).await;
-        let event = receiver.recv().await.unwrap();
-        assert_eq!(event.data, serde_json::to_value(&roles).unwrap());
-        assert_eq!(store.snapshot().await.theme, roles);
-    }
 }

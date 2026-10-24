@@ -24,6 +24,8 @@ mod battery;
 mod effects;
 mod notifications;
 mod sleep;
+#[cfg(test)]
+mod tests;
 mod updates;
 
 use self::{
