@@ -114,7 +114,7 @@ D-Bus endpoint:
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
 
-## Direct Unix JSONL ingress (producer stage)
+## Direct Unix JSONL ingress
 
 The shared listener serves `$XDG_RUNTIME_DIR/bar-daemon.sock`. Runtime directory
 and socket must be private `0700`, canonical and owned by this UID; the framework
@@ -132,11 +132,13 @@ reconciliation; admission remains occupied until the work settles. Acknowledging
 cancellation is not rollback. D-Bus ownership uses the shared connection monitor;
 foreign operation/status access remains denied.
 
-This is **not** completed bar/frontend migration: Shelllist's bar path still uses
-the bridge. Atomic read/event ordering and cached current-state recovery are now
-implemented; frontend socket opt-in and real shared-Quickshell acceptance remain
-prerequisites. Startup activation, maximum payload, sustained
-load, matched release performance and OS-process-crash acceptance remain open.
+Shelllist independently selects this listener with `SHELLLIST_BAR_SOCKET=1`.
+The bridge remains the default; a rebuild alone does not select the socket.
+Matching producer/frontend builds and an already-running daemon are required.
+There is no automatic bridge fallback after uncertain dispatch. Atomic read/event
+ordering and cached current-state recovery apply on both transports. Startup
+activation, maximum payload, sustained load, matched release performance,
+installed-session and OS-process-crash acceptance remain open.
 
 Private producer tests exercise actual Unix/D-Bus dispatch and validation parity,
 mixed subscriptions, unrelated audio bursts, foreign cancellation and independent
@@ -144,6 +146,21 @@ work-area lifetime cleanup. A real-socket test runs the actual battery coordinat
 with fake authorization work and proves disconnect retains admission until
 reconciliation. No battery helper or hardware mutation is invoked. These are not
 full-desktop or native Quickshell transport acceptance tests.
+
+A separate `native-quickshell-socket` Cargo feature enables the explicit
+`native_quickshell_bar_socket_acceptance` test. It runs real Quickshell against the
+same in-process exported service/listener with private state, HOME/runtime and a
+private producer bus; the frontend has nonexistent bus addresses. A test-only
+read gate refuses effects before dispatch. Nine cached reads (eight before renewal
+and one surviving-peer read), a real publication/read race, subscription renewal,
+consumer release, one shared owner and work-area cleanup are checked. No host
+monitors or hardware helpers run. This is a debug/private native socket probe,
+not a real daemon OS-process crash, sustained-load or performance experiment.
+
+The feature is off by default, explicitly separating this probe from the package's
+`--include-ignored` suite. It never silently passes without its inputs. Reproduce
+from Shelllist using the command in `../shelllist/tests/README.md`, supplying
+`SHELLLIST_SOURCE` and `SHELLLIST_QUICKSHELL`; do not run the QML fixture standalone.
 
 ## Atomic state publications
 

@@ -15,6 +15,9 @@ use tokio::{
     net::UnixStream,
     time::{Duration, timeout},
 };
+#[cfg(feature = "native-quickshell-socket")]
+mod native;
+
 const DEADLINE: Duration = Duration::from_secs(5);
 async fn request(peer: &mut BufReader<UnixStream>, value: Value, events: &mut Vec<Value>) -> Value {
     peer.get_mut()
@@ -51,16 +54,11 @@ async fn demand(state: &StateStore, expected: usize) {
     .await
     .unwrap();
 }
-#[tokio::test]
-async fn direct_dispatch_mixed_streams_and_connection_lifetimes_share_the_service() {
-    let directory = tempfile::tempdir().unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let state = StateStore::default();
+async fn fixture_daemon(directory: &std::path::Path, state: StateStore) -> BarDaemon {
     let activity = ActivityService::with_paths(
         state.clone(),
-        directory.path().join("config.json"),
-        directory.path().join("todos.json"),
+        directory.join("config.json"),
+        directory.join("todos.json"),
     )
     .await;
     let api = ApiService::new(
@@ -70,7 +68,16 @@ async fn direct_dispatch_mixed_streams_and_connection_lifetimes_share_the_servic
         MediaService::default(),
         crate::brightness::BrightnessService::new(state.clone()),
     );
-    let daemon = BarDaemon::new(api, state.clone());
+    BarDaemon::new(api, state)
+}
+
+#[tokio::test]
+async fn direct_dispatch_mixed_streams_and_connection_lifetimes_share_the_service() {
+    let directory = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = StateStore::default();
+    let daemon = fixture_daemon(directory.path(), state.clone()).await;
     let subscriptions = daemon.subscriptions.clone();
     let bus = crate::battery::helper::authorization_tests::Bus::new();
     let server = bus.connection().await;

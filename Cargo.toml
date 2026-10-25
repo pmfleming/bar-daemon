@@ -7,6 +7,10 @@ license = "MIT"
 description = "Status, policy, and action daemon for a Quickshell desktop bar"
 repository = "https://github.com/pmfleming/bar-daemon"
 
+[features]
+# Explicit private Quickshell probe; not part of the package's --include-ignored suite.
+native-quickshell-socket = []
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
