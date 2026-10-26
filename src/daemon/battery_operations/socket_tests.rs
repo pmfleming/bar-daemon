@@ -1,6 +1,7 @@
 //! Socket ownership against the real admission/cancellation coordinator; fake
 //! authorization work only. No battery helper, hardware or host D-Bus is used.
 use super::*;
+mod process;
 use shelllist_daemon_tokio::{
     BasicCorrelation, JsonlListener, JsonlSocketConfig, LocalJsonlService, SocketSession,
 };
