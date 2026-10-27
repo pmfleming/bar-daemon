@@ -373,7 +373,18 @@ impl Database {
             complete: row.get::<i64>(2)? != 0,
         })
     }
+    fn ensure_committed_reads(&self) -> Result<()> {
+        // A failed rollback may leave this owner inside its own transaction.
+        // Such reads can see uncommitted items/receipts, not durable outcomes.
+        // An ambiguous COMMIT that ended the transaction is still resolvable.
+        ensure!(
+            !self.blocked || self.conn.is_autocommit()?,
+            "agenda reads fenced until transaction recovery"
+        );
+        Ok(())
+    }
     pub(super) async fn snapshot(&self) -> Result<Snapshot> {
+        self.ensure_committed_reads()?;
         ensure!(
             self.integer("SELECT count(*) FROM items").await? <= 10000,
             "agenda item limit exceeded"
@@ -389,6 +400,7 @@ impl Database {
         })
     }
     pub(super) async fn get(&self, id: &str) -> Result<Option<Record>> {
+        self.ensure_committed_reads()?;
         let row = self
             .conn
             .query(
@@ -426,6 +438,7 @@ impl Database {
         Ok(())
     }
     pub(super) async fn receipt(&self, request: &str) -> Result<Option<(String, MutationResult)>> {
+        self.ensure_committed_reads()?;
         identifier(request)?;
         let row = self
             .conn

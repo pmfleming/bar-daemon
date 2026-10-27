@@ -979,6 +979,123 @@ fn record_patch_policy_preserves_completion_history_and_independent_children() {
     assert!(patch_record(record, 1, patch, 20).is_err());
 }
 
+#[tokio::test]
+async fn rollback_failure_never_publishes_uncommitted_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("agenda");
+    let store = Store::open(root.clone(), None).await.unwrap();
+    let original = store
+        .create("create".into(), item())
+        .await
+        .unwrap()
+        .item
+        .unwrap();
+    let before = original.clone();
+    store
+        .call(move |db| {
+            futures::executor::block_on(async {
+                db.conn.execute("BEGIN IMMEDIATE", ()).await?;
+                let mut pending = before;
+                pending.revision += 1;
+                pending.title = "uncommitted change".into();
+                db.conn
+                    .execute(
+                        "UPDATE items SET revision=?,payload=? WHERE id=?",
+                        turso::params![
+                            pending.revision as i64,
+                            serde_json::to_vec(&pending)?,
+                            pending.id.clone()
+                        ],
+                    )
+                    .await?;
+                db.conn
+                    .execute("UPDATE store_meta SET revision=revision+1 WHERE id=1", ())
+                    .await?;
+                let receipt = MutationResult {
+                    item: Some(pending),
+                    catalog_revision: 2,
+                    request_id: "uncertain".into(),
+                    deleted_id: None,
+                };
+                db.conn
+                    .execute(
+                        "INSERT INTO operation_receipts VALUES(?,?,?)",
+                        turso::params!["uncertain", "a".repeat(64), serde_json::to_vec(&receipt)?],
+                    )
+                    .await?;
+                // Real SQL writes plus an actual engine rollback error fed into the same
+                // recovery policy as a failed ROLLBACK. The transaction remains active.
+                let rollback = db
+                    .conn
+                    .execute("ROLLBACK TO absent_savepoint", ())
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into);
+                assert!(rollback.is_err());
+                assert!(!db.conn.is_autocommit()?);
+                db.record_rollback_result(rollback);
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let receipt = store.receipt("uncertain".into()).await;
+    let read_item = store.get(original.id.clone()).await;
+    let snapshot = store.snapshot().await;
+    assert!(store.shutdown().await.is_err());
+    assert!(
+        receipt.is_err(),
+        "uncommitted receipt escaped recovery fence: {receipt:?}"
+    );
+    assert!(
+        read_item.is_err(),
+        "uncommitted item escaped recovery fence"
+    );
+    assert!(
+        snapshot.is_err(),
+        "uncommitted catalog escaped recovery fence"
+    );
+    let recovered = Store::open(root, None).await.unwrap();
+    assert_eq!(
+        recovered.get(original.id).await.unwrap().unwrap().title,
+        original.title
+    );
+    assert_eq!(recovered.snapshot().await.unwrap().catalog_revision, 1);
+    assert!(
+        recovered
+            .receipt("uncertain".into())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let committed = recovered
+        .create("after-recovery".into(), item())
+        .await
+        .unwrap();
+    recovered
+        .call(|db| {
+            futures::executor::block_on(async {
+                // COMMIT error after the transaction ended must not hide durable results.
+                assert!(db.finish(Ok(())).await.is_err());
+                assert!(db.conn.is_autocommit()?);
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.receipt("after-recovery".into()).await.unwrap(),
+        Some(committed.clone())
+    );
+    let committed_item = committed.item.unwrap();
+    assert_eq!(
+        recovered.get(committed_item.id.clone()).await.unwrap(),
+        Some(committed_item)
+    );
+    assert_eq!(recovered.snapshot().await.unwrap().catalog_revision, 2);
+    assert!(recovered.shutdown().await.is_err());
+}
+
 #[test]
 fn model_date_and_payload_validation() {
     assert!(
