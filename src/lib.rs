@@ -6,6 +6,7 @@
 //! process entry points and the versioned protocol registry.
 
 mod activity;
+mod agenda_maintenance;
 mod api;
 mod audio;
 mod battery;
@@ -39,6 +40,13 @@ mod work_area;
 mod frontend_contract;
 #[cfg(test)]
 mod test_support;
+
+pub use agenda_maintenance::AgendaMaintenance;
+
+/// Transfers an explicit private Agenda store offline; never controls services.
+pub async fn run_agenda_maintenance(command: AgendaMaintenance) -> anyhow::Result<()> {
+    command.run().await
+}
 
 /// Runs the session D-Bus daemon until it receives a termination signal.
 pub async fn run_daemon() -> anyhow::Result<()> {

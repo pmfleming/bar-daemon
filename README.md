@@ -114,6 +114,26 @@ D-Bus endpoint:
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
 
+## Offline Agenda export and restore
+
+Manually stop the daemon and prevent automatic restart first; these commands
+never control services. Explicit absolute paths are required, with private owned
+directories (0700); there is no default live store path.
+
+```sh
+bar-daemon agenda export --store-dir /absolute/private/agenda --output /absolute/private/backups/agenda.json
+bar-daemon agenda restore --store-dir /absolute/private/agenda-recovered --input /absolute/private/backups/agenda.json
+```
+
+Export requires an existing valid, unlocked store and a new output file outside
+it. Restore requires a **nonexistent** destination directory and a private backup
+file; neither command overwrites existing files. Logical backups preserve
+records, revisions, source metadata and operation receipts, including committed
+WAL data through the store engine—not a copy of a live DB file. Keep the original
+backup, legacy migration backup and provider configuration; stale JSON alone is
+not lossless rollback. Verify recovery in a separate directory before manually
+selecting it and restarting. See [the recovery runbook and isolated checks](tests/agenda-maintenance.md).
+
 ## Direct Unix JSONL ingress
 
 The shared listener serves `$XDG_RUNTIME_DIR/bar-daemon.sock`. Runtime directory
