@@ -29,61 +29,101 @@ pub enum AgendaMaintenance {
 
 impl AgendaMaintenance {
     pub(crate) async fn run(self) -> Result<()> {
-        match self {
+        self.prepare()?.run().await
+    }
+
+    /// Check filesystem policy before opening a store or creating a destination.
+    fn prepare(self) -> Result<PreparedTransfer> {
+        let (store_dir, transfer) = match self {
             Self::Export { store_dir, output } => {
-                explicit_path(&store_dir)?;
-                explicit_path(&output)?;
-                private_directory(&store_dir)?;
-                let database = fs::symlink_metadata(store_dir.join("agenda.db"))
-                    .context("export requires an existing agenda.db; no database was created")?;
-                ensure!(
-                    database.is_file() && database.len() > 0,
-                    "export requires a nonempty regular agenda.db"
-                );
-                let parent = output.parent().context("output needs a parent directory")?;
-                private_directory(parent)?;
-                let resolved_output = parent
-                    .canonicalize()?
-                    .join(output.file_name().context("output needs a filename")?);
-                ensure!(
-                    !resolved_output.starts_with(store_dir.canonicalize()?),
-                    "export output must be outside the source store directory"
-                );
-                absent(&output).context("export never overwrites an existing output")?;
-                let store = Store::open_existing(store_dir).await?;
-                let result = store.export(output).await;
-                finish(&store, result).await
+                validate_export(&store_dir, &output)?;
+                (store_dir, Transfer::Export(output))
             }
             Self::Restore { store_dir, input } => {
-                explicit_path(&store_dir)?;
-                explicit_path(&input)?;
-                private_directory(input.parent().context("input needs a parent directory")?)?;
-                let source = fs::symlink_metadata(&input).context("read restore input metadata")?;
-                ensure!(
-                    source.is_file()
-                        && source.uid() == rustix::process::geteuid().as_raw()
-                        && source.permissions().mode() & 0o077 == 0,
-                    "restore input must be a private, owned regular file (not a symlink)"
-                );
-                private_directory(
-                    store_dir
-                        .parent()
-                        .context("store needs a parent directory")?,
-                )?;
-                // Exclusive creation is deliberate: even an existing empty initialized DB is refused.
-                // On failure retain this new directory for diagnosis; never remove user files.
+                validate_restore(&store_dir, &input)?;
+                (store_dir, Transfer::Restore(input))
+            }
+        };
+        Ok(PreparedTransfer {
+            store_dir,
+            transfer,
+        })
+    }
+}
+
+enum Transfer {
+    Export(PathBuf),
+    Restore(PathBuf),
+}
+
+struct PreparedTransfer {
+    store_dir: PathBuf,
+    transfer: Transfer,
+}
+
+impl PreparedTransfer {
+    async fn run(self) -> Result<()> {
+        let store = match &self.transfer {
+            Transfer::Export(_) => Store::open_existing(self.store_dir).await?,
+            Transfer::Restore(_) => {
+                // Exclusive creation refuses even an empty initialized DB. Retain a failed
+                // new destination for diagnosis; never remove or reuse user files.
                 fs::DirBuilder::new()
                     .mode(0o700)
-                    .create(&store_dir)
+                    .create(&self.store_dir)
                     .context(
                         "restore requires a nonexistent store directory; nothing is overwritten",
                     )?;
-                let store = Store::open(store_dir, None).await?;
-                let result = store.restore(input).await;
-                finish(&store, result).await
+                Store::open(self.store_dir, None).await?
             }
-        }
+        };
+        let result = match self.transfer {
+            Transfer::Export(output) => store.export(output).await,
+            Transfer::Restore(input) => store.restore(input).await,
+        };
+        // Both modes share this completion boundary, including transfer errors.
+        finish(&store, result).await
     }
+}
+
+fn validate_export(store_dir: &Path, output: &Path) -> Result<()> {
+    explicit_path(store_dir)?;
+    explicit_path(output)?;
+    private_directory(store_dir)?;
+    let database = fs::symlink_metadata(store_dir.join("agenda.db"))
+        .context("export requires an existing agenda.db; no database was created")?;
+    ensure!(
+        database.is_file() && database.len() > 0,
+        "export requires a nonempty regular agenda.db"
+    );
+    let parent = output.parent().context("output needs a parent directory")?;
+    private_directory(parent)?;
+    let resolved_output = parent
+        .canonicalize()?
+        .join(output.file_name().context("output needs a filename")?);
+    ensure!(
+        !resolved_output.starts_with(store_dir.canonicalize()?),
+        "export output must be outside the source store directory"
+    );
+    absent(output).context("export never overwrites an existing output")
+}
+
+fn validate_restore(store_dir: &Path, input: &Path) -> Result<()> {
+    explicit_path(store_dir)?;
+    explicit_path(input)?;
+    private_directory(input.parent().context("input needs a parent directory")?)?;
+    let source = fs::symlink_metadata(input).context("read restore input metadata")?;
+    ensure!(
+        source.is_file()
+            && source.uid() == rustix::process::geteuid().as_raw()
+            && source.permissions().mode() & 0o077 == 0,
+        "restore input must be a private, owned regular file (not a symlink)"
+    );
+    private_directory(
+        store_dir
+            .parent()
+            .context("store needs a parent directory")?,
+    )
 }
 
 fn explicit_path(path: &Path) -> Result<()> {
@@ -149,6 +189,12 @@ mod tests {
         .run()
         .await
     }
+    /// Establish the same offline boundary as an operator before taking a backup.
+    async fn offline_backup(store: Store, root: &Path, output: &Path) -> Vec<u8> {
+        store.shutdown().await.unwrap();
+        export(root, output).await.unwrap();
+        fs::read(output).unwrap()
+    }
     fn private_tempdir() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -205,11 +251,8 @@ mod tests {
             .await
             .unwrap();
         let expected = store.snapshot().await.unwrap();
-        store.shutdown().await.unwrap();
-
         let backup = temp.path().join("backup.json");
-        export(&root, &backup).await.unwrap();
-        let backup_bytes = fs::read(&backup).unwrap();
+        let backup_bytes = offline_backup(store, &root, &backup).await;
         let restored_root = temp.path().join("restored");
         restore(&restored_root, &backup).await.unwrap();
         let restored = Store::open_existing(restored_root.clone()).await.unwrap();
@@ -311,10 +354,8 @@ mod tests {
         let item =
             serde_json::from_value(json!({"kind":"task", "title":"Do not overwrite"})).unwrap();
         store.create("keep".into(), item).await.unwrap();
-        store.shutdown().await.unwrap();
         let backup = temp.path().join("backup.json");
-        export(&root, &backup).await.unwrap();
-        let before = fs::read(&backup).unwrap();
+        let before = offline_backup(store, &root, &backup).await;
         assert!(export(&root, &backup).await.is_err());
         assert_eq!(fs::read(&backup).unwrap(), before);
         let destination = temp.path().join("restored");
@@ -370,6 +411,36 @@ mod tests {
         store.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn completion_preserves_transfer_and_shutdown_errors() {
+        let temp = private_tempdir();
+        let store = Store::open(temp.path().join("success"), None)
+            .await
+            .unwrap();
+        finish(&store, Ok(())).await.unwrap();
+        let shutdown_error = finish(&store, Ok(())).await.unwrap_err();
+        assert!(format!("{shutdown_error:#}").contains("maintenance shutdown/checkpoint failed"));
+
+        let store = Store::open(temp.path().join("failure"), None)
+            .await
+            .unwrap();
+        let operation_error = finish(&store, Err(anyhow::anyhow!("transfer failed")))
+            .await
+            .unwrap_err();
+        assert_eq!(operation_error.to_string(), "transfer failed");
+        let both = finish(&store, Err(anyhow::anyhow!("transfer failed")))
+            .await
+            .unwrap_err();
+        let message = format!("{both:#}");
+        assert!(message.contains("transfer failed"));
+        assert!(message.contains("maintenance shutdown/checkpoint failed"));
+        // The failed transfer still closed the store and released exclusive ownership.
+        let reopened = Store::open_existing(temp.path().join("failure"))
+            .await
+            .unwrap();
+        reopened.shutdown().await.unwrap();
+    }
+
     #[test]
     fn committed_wal_child() {
         let Some(root) = std::env::var_os("AGENDA_MAINTENANCE_TEST_ROOT") else {
@@ -420,10 +491,9 @@ mod tests {
         let store = Store::open(original.clone(), None).await.unwrap();
         let item = serde_json::from_value(json!({"kind":"event", "title":"Valid"})).unwrap();
         store.create("receipt".into(), item).await.unwrap();
-        store.shutdown().await.unwrap();
         let good = temp.path().join("good.json");
-        export(&original, &good).await.unwrap();
-        let base = read_json(&good);
+        let bytes = offline_backup(store, &original, &good).await;
+        let base: Value = serde_json::from_slice(&bytes).unwrap();
         for kind in ["future-schema", "invalid-record"] {
             let mut payload = base.clone();
             if kind == "future-schema" {
