@@ -1,4 +1,104 @@
 //! In-process Power Profiles substitute; never touches the system bus/hardware.
+
+#[test]
+fn manual_cycle_requires_known_current_and_supported_available_choices() {
+    for (available, current, names, expected) in [
+        (false, "balanced", vec!["balanced", "performance"], None),
+        (true, "", vec!["balanced", "performance"], None),
+        (
+            true,
+            "extension",
+            vec!["extension", "balanced", "performance"],
+            None,
+        ),
+        (true, "power-saver", vec!["balanced", "performance"], None),
+        (true, "balanced", vec![], None),
+        (
+            true,
+            "balanced",
+            vec!["balanced", "extension", "balanced"],
+            None,
+        ),
+        (
+            true,
+            "balanced",
+            vec!["performance", "balanced"],
+            Some("performance"),
+        ),
+        (
+            true,
+            "performance",
+            vec!["performance", "balanced"],
+            Some("balanced"),
+        ),
+        (
+            true,
+            "power-saver",
+            vec!["performance", "power-saver", "balanced", "extension"],
+            Some("balanced"),
+        ),
+        (
+            true,
+            "balanced",
+            vec!["power-saver", "balanced", "performance"],
+            Some("performance"),
+        ),
+        (
+            true,
+            "performance",
+            vec!["power-saver", "balanced", "performance"],
+            Some("power-saver"),
+        ),
+    ] {
+        let state = PowerProfileState {
+            available,
+            profile: current.into(),
+            profiles: names
+                .into_iter()
+                .map(|name| PowerProfile {
+                    name: name.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            next_manual_profile(&state).as_deref(),
+            expected,
+            "{state:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn removed_manual_target_does_not_release_holds_or_pause_automation() {
+    let (_server, client, state) = fake_profiles().await;
+    let directory = tempfile::tempdir().unwrap();
+    let mut envelope = PowerEnvelope::for_test(directory.path().join("state.json"));
+    envelope.attach(client.clone()).await.unwrap();
+    envelope.reconcile(&battery(10)).await.unwrap();
+    let before = read_raw_state(&client).await.unwrap();
+    assert_eq!(before.next_manual_profile.as_deref(), Some("balanced"));
+    state
+        .lock()
+        .unwrap()
+        .profiles
+        .retain(|name| name != "balanced");
+    for target in ["balanced", "extension"] {
+        assert!(
+            envelope
+                .select_manual(target, &battery(10), &client)
+                .await
+                .is_err()
+        );
+        assert_eq!(state.lock().unwrap().selections, 0);
+        assert_eq!(state.lock().unwrap().holds.len(), 1);
+        assert_eq!(envelope.status.status, "active");
+    }
+    envelope.reconcile(&battery(9)).await.unwrap();
+    assert_eq!(state.lock().unwrap().acquisitions, 1);
+}
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -18,6 +118,7 @@ struct FakeState {
     acquisitions: usize,
     selections: usize,
     fail_selection: bool,
+    profiles: Vec<String>,
 }
 
 impl FakeState {
@@ -63,7 +164,10 @@ impl FakeProfiles {
 
     #[zbus(property)]
     fn profiles(&self) -> Vec<HashMap<String, OwnedValue>> {
-        ["power-saver", "balanced", "performance"]
+        self.0
+            .lock()
+            .unwrap()
+            .profiles
             .iter()
             .map(|profile| HashMap::from([("Profile".into(), string(profile))]))
             .collect()
@@ -127,6 +231,11 @@ impl FakeProfiles {
 async fn fake_profiles() -> (Connection, Connection, Arc<Mutex<FakeState>>) {
     let state = Arc::new(Mutex::new(FakeState {
         selected: "performance".into(),
+        profiles: vec![
+            "power-saver".into(),
+            "balanced".into(),
+            "performance".into(),
+        ],
         ..Default::default()
     }));
     let (server, client) = crate::test_support::dbus_peer(|builder| {

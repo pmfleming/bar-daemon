@@ -523,6 +523,7 @@ fn generated_contract_fixture() -> Value {
             },
             "power_profile": {
                 "available": true, "profile": "balanced", "driver": "amd_pstate",
+                "next_manual_profile": null,
                 "profiles": [{ "name": "balanced", "driver": "amd_pstate", "platform_driver": "platform_profile" }],
                 "performance_degraded": "", "version": "0.30", "battery_aware": true,
                 "battery_automation": { "level": "normal", "status": "waiting", "profile": "", "error": null },

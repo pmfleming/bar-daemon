@@ -45,8 +45,18 @@ pub(crate) fn battery(state: &mut crate::model::BatteryState) {
             .and_then(|v| measurement(v, " Wh"))
             .unwrap_or_else(|| "Unknown".into())
     };
-    state.display = json!({"percentage":if state.available {format!("{}%",state.percentage)} else {"Unavailable".into()},
-        "power":(state.available && state.power_available).then(|| measurement(state.power_watts," W")).flatten().unwrap_or_else(|| "— W".into())});
+    let seconds = if state.charging {
+        state.time_to_full_seconds
+    } else {
+        state.time_to_empty_seconds
+    };
+    state.display = json!({
+        "percentage": if state.available {format!("{}%", state.percentage)} else {"Unavailable".into()},
+        "power": (state.available && state.power_available).then(|| measurement(state.power_watts, " W")).flatten().unwrap_or_else(|| "— W".into()),
+        "estimate": if !state.available || (state.plugged && !state.charging) {None} else {Some(estimate(seconds as f64))},
+        "health": state.health_percent.filter(|_| state.available).map(|value| format!("{value}%")).unwrap_or_else(|| "—%".into()),
+        "cycles": state.cycles.filter(|_| state.available).map(|value| format!("{value} cycles")).unwrap_or_else(|| "— cycles".into())
+    });
     for device in &mut state.devices {
         let protection = &device.protection;
         device.display = json!({"energy_now":energy(device.energy_now_wh),"energy_full":energy(device.energy_full_wh),"energy_design":energy(device.energy_full_design_wh),
@@ -99,6 +109,50 @@ mod tests {
         for value in [-1.0, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
             assert_eq!(measurement(value, " W"), None);
         }
+    }
+    #[test]
+    fn battery_display_uses_native_estimates_and_preserves_state_and_safety() {
+        let mut state = crate::model::BatteryState {
+            available: true,
+            percentage: 100,
+            health_percent: Some(0),
+            cycles: Some(0),
+            time_to_empty_seconds: 3661,
+            warning: true,
+            critical: true,
+            ..Default::default()
+        };
+        battery(&mut state);
+        assert_eq!(state.display["estimate"], "1h 1m");
+        assert_eq!(state.display["health"], "0%");
+        assert_eq!(state.display["cycles"], "0 cycles");
+        for name in [
+            "charging",
+            "charge-paused",
+            "charging-inhibited",
+            "fully-charged",
+        ] {
+            state.state = name.into();
+            state.plugged = true;
+            state.charging = name == "charging";
+            state.time_to_full_seconds = 120;
+            battery(&mut state);
+            assert_eq!(state.state, name);
+            assert!(state.warning && state.critical);
+            assert_eq!(
+                state.display["estimate"],
+                if state.charging {
+                    serde_json::json!("2m")
+                } else {
+                    serde_json::Value::Null
+                }
+            );
+        }
+        state.available = false;
+        battery(&mut state);
+        assert_eq!(state.display["estimate"], serde_json::Value::Null);
+        assert_eq!(state.display["health"], "—%");
+        assert_eq!(state.display["cycles"], "— cycles");
     }
     #[test]
     fn labels_preserve_estimate_rounding_and_fractional_offsets() {

@@ -193,6 +193,8 @@ pub(crate) struct PowerProfileState {
     pub profile: String,
     pub driver: String,
     pub profiles: Vec<PowerProfile>,
+    /// Explicit manual-cycle target; absent when the current state cannot cycle.
+    pub next_manual_profile: Option<String>,
     pub performance_degraded: String,
     pub version: String,
     pub battery_aware: Option<bool>,

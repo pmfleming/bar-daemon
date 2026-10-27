@@ -1355,6 +1355,13 @@
                 "null"
               ]
             },
+            "next_manual_profile": {
+              "description": "Explicit manual-cycle target; absent when the current state cannot cycle.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "performance_degraded": {
               "type": "string"
             },
@@ -1376,6 +1383,7 @@
             "profile",
             "driver",
             "profiles",
+            "next_manual_profile",
             "performance_degraded",
             "version",
             "battery_aware",
@@ -1537,6 +1545,13 @@
                 "null"
               ]
             },
+            "next_manual_profile": {
+              "description": "Explicit manual-cycle target; absent when the current state cannot cycle.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "performance_degraded": {
               "type": "string"
             },
@@ -1558,6 +1573,7 @@
             "profile",
             "driver",
             "profiles",
+            "next_manual_profile",
             "performance_degraded",
             "version",
             "battery_aware",
@@ -1730,6 +1746,13 @@
                 "null"
               ]
             },
+            "next_manual_profile": {
+              "description": "Explicit manual-cycle target; absent when the current state cannot cycle.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "performance_degraded": {
               "type": "string"
             },
@@ -1751,6 +1774,7 @@
             "profile",
             "driver",
             "profiles",
+            "next_manual_profile",
             "performance_degraded",
             "version",
             "battery_aware",
@@ -1928,6 +1952,13 @@
                 "null"
               ]
             },
+            "next_manual_profile": {
+              "description": "Explicit manual-cycle target; absent when the current state cannot cycle.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "performance_degraded": {
               "type": "string"
             },
@@ -1949,6 +1980,7 @@
             "profile",
             "driver",
             "profiles",
+            "next_manual_profile",
             "performance_degraded",
             "version",
             "battery_aware",
@@ -4035,6 +4067,13 @@
                     "null"
                   ]
                 },
+                "next_manual_profile": {
+                  "description": "Explicit manual-cycle target; absent when the current state cannot cycle.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "performance_degraded": {
                   "type": "string"
                 },
@@ -4056,6 +4095,7 @@
                 "profile",
                 "driver",
                 "profiles",
+                "next_manual_profile",
                 "performance_degraded",
                 "version",
                 "battery_aware",
@@ -4228,6 +4268,13 @@
                     "null"
                   ]
                 },
+                "next_manual_profile": {
+                  "description": "Explicit manual-cycle target; absent when the current state cannot cycle.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "performance_degraded": {
                   "type": "string"
                 },
@@ -4249,6 +4296,7 @@
                 "profile",
                 "driver",
                 "profiles",
+                "next_manual_profile",
                 "performance_degraded",
                 "version",
                 "battery_aware",
@@ -5826,6 +5874,9 @@
         }
       ],
       "display": {
+        "cycles": "101 cycles",
+        "estimate": "4h 0m",
+        "health": "85%",
         "percentage": "80%",
         "power": "8.2 W"
       },
@@ -6163,6 +6214,7 @@
       "battery_aware": true,
       "driver": "amd_pstate",
       "error": null,
+      "next_manual_profile": null,
       "performance_degraded": "",
       "profile": "balanced",
       "profiles": [

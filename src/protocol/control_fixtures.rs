@@ -220,6 +220,7 @@ pub(super) fn fixture() -> Value {
             }
             _ => unreachable!("unregistered power-profile fixture method"),
         };
+        state.next_manual_profile = crate::power::next_manual_profile(&state);
         let mut limited = state.clone();
         limited.performance_degraded = "high-operating-temperature".into();
         limited.battery_aware = None; // Optional telemetry may be unavailable after a successful effect.

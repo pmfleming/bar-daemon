@@ -19,6 +19,8 @@ const PATH: &str = "/org/freedesktop/UPower/PowerProfiles";
 const INTERFACE: &str = "org.freedesktop.UPower.PowerProfiles";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const HOLD_APPLICATION_ID: &str = "org.laufan.BarDaemon";
+// One supported manual-profile contract for projection and both validation boundaries.
+const MANUAL_PROFILES: [&str; 3] = ["power-saver", "balanced", "performance"];
 mod automation;
 #[cfg(test)]
 mod automation_tests;
@@ -168,11 +170,12 @@ async fn read_raw_state(connection: &zbus::Connection) -> Result<PowerProfileSta
         .iter()
         .filter_map(parse_hold)
         .collect();
-    Ok(PowerProfileState {
+    let mut state = PowerProfileState {
         available: true,
         profile,
         driver,
         profiles,
+        next_manual_profile: None,
         performance_degraded: proxy
             .get_property("PerformanceDegraded")
             .await
@@ -183,7 +186,23 @@ async fn read_raw_state(connection: &zbus::Connection) -> Result<PowerProfileSta
         active_holds,
         battery_automation: Default::default(),
         error: None,
-    })
+    };
+    state.next_manual_profile = next_manual_profile(&state);
+    Ok(state)
+}
+
+/// Cycle only supported, advertised profiles from a known current member.
+/// Extensions remain observable but never become an implicit manual command.
+pub(crate) fn next_manual_profile(state: &PowerProfileState) -> Option<String> {
+    let eligible: Vec<_> = MANUAL_PROFILES
+        .into_iter()
+        .filter(|name| state.profiles.iter().any(|item| item.name == *name))
+        .collect();
+    if !state.available || eligible.len() < 2 {
+        return None;
+    }
+    let current = eligible.iter().position(|name| *name == state.profile)?;
+    Some(eligible[(current + 1) % eligible.len()].into())
 }
 
 fn parse_profile(values: &HashMap<String, OwnedValue>) -> Option<PowerProfile> {
@@ -228,14 +247,10 @@ pub(crate) async fn set_profile(
     profile: &str,
     battery: &BatteryState,
 ) -> Result<PowerProfileState> {
-    if !matches!(profile, "power-saver" | "balanced" | "performance") {
+    if !MANUAL_PROFILES.contains(&profile) {
         bail!("unsupported power profile: {profile}");
     }
     let connection = crate::bus::system().await?;
-    let current = read_state(&connection).await?;
-    if !current.profiles.iter().any(|item| item.name == profile) {
-        bail!("power profile is unavailable: {profile}");
-    }
     power_envelope()
         .lock()
         .await

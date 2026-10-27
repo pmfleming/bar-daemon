@@ -289,6 +289,16 @@ impl PowerEnvelope {
             self.loaded && self.connection.is_some(),
             "battery profile automation is reconnecting"
         );
+        // Revalidate inside the envelope owner, before pause persistence or hold release.
+        anyhow::ensure!(
+            super::MANUAL_PROFILES.contains(&profile),
+            "unsupported power profile: {profile}"
+        );
+        let current = read_raw_state(connection).await?;
+        anyhow::ensure!(
+            current.available && current.profiles.iter().any(|item| item.name == profile),
+            "power profile is unavailable: {profile}"
+        );
         self.observe(battery);
         let was_paused = self.runtime.manual_override;
         // Persist the pause first so a daemon restart cannot undo user intent.
