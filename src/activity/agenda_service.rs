@@ -71,20 +71,27 @@ impl ActivityService {
         &self,
         p: &Projection<chrono_tz::Tz>,
         zone: &str,
-    ) -> Result<(std::sync::Arc<agenda::Catalog>, u64, String)> {
+    ) -> Result<(
+        std::sync::Arc<agenda::Catalog>,
+        u64,
+        String,
+        agenda::SourceDiagnostics,
+    )> {
         let mut data = self.data.write().await;
-        ensure!(data.todo_error.is_none(), "Agenda store unavailable");
-        let snapshot = data
-            .agenda_snapshot
-            .as_ref()
-            .context("Agenda store unavailable")?;
+        let diagnostics = data.source_diagnostics();
+        let snapshot = data.readable_agenda()?;
         if let Some(c) = &data.agenda_catalog
             && c.revision == snapshot.catalog_revision
             && c.import_revision == data.import_revision
             && c.today == p.today
             && c.timezone == zone
         {
-            return Ok((c.catalog.clone(), c.revision, c.imports.clone()));
+            return Ok((
+                c.catalog.clone(),
+                c.revision,
+                c.imports.clone(),
+                diagnostics,
+            ));
         }
         let mut imports = data
             .events_by_source
@@ -128,7 +135,7 @@ impl ActivityService {
             imports: digest.clone(),
             catalog: catalog.clone(),
         });
-        Ok((catalog, revision, digest))
+        Ok((catalog, revision, digest, diagnostics))
     }
     pub(super) async fn accept_calendar_imports(
         &self,
@@ -182,16 +189,20 @@ impl ActivityService {
         request: agenda::ListRequest,
     ) -> Result<agenda::ListResult> {
         let (p, zone) = self.agenda_context().await?;
-        let (catalog, revision, imports) = self.cached_catalog(&p, &zone).await?;
-        agenda::list(&catalog, revision, &imports, &p, &zone, request)
+        let (catalog, revision, imports, diagnostics) = self.cached_catalog(&p, &zone).await?;
+        let mut result = agenda::list(&catalog, revision, &imports, &p, &zone, request)?;
+        result.diagnostics = diagnostics;
+        Ok(result)
     }
     pub(crate) async fn agenda_markers(
         &self,
         request: agenda::MarkersRequest,
     ) -> Result<agenda::MarkersResult> {
         let (p, zone) = self.agenda_context().await?;
-        let (catalog, revision, _) = self.cached_catalog(&p, &zone).await?;
-        agenda::markers(&catalog, revision, &p, &zone, request)
+        let (catalog, revision, _, diagnostics) = self.cached_catalog(&p, &zone).await?;
+        let mut result = agenda::markers(&catalog, revision, &p, &zone, request)?;
+        result.diagnostics = diagnostics;
+        Ok(result)
     }
     pub(crate) async fn agenda_get(&self, id: &str) -> Result<Value> {
         ensure!(
@@ -199,7 +210,7 @@ impl ActivityService {
             "invalid agenda id"
         );
         let (p, zone) = self.agenda_context().await?;
-        let (catalog, revision, _) = self.cached_catalog(&p, &zone).await?;
+        let (catalog, revision, _, _) = self.cached_catalog(&p, &zone).await?;
         let item = catalog.get(id).context("agenda item not found")?;
         Ok(json!({"item":item,"catalog_revision":revision}))
     }
@@ -220,13 +231,13 @@ impl ActivityService {
             "invalid request id"
         );
         let _guard = self.todo_guard.lock().await;
-        let store = self
-            .data
-            .read()
-            .await
-            .agenda_store
-            .clone()
-            .context("Agenda store unavailable")?;
+        let store = {
+            let data = self.data.read().await;
+            data.readable_agenda()?;
+            data.agenda_store
+                .clone()
+                .context("Agenda store unavailable")?
+        };
         let receipt = store.receipt(id).await?;
         let cached_revision = self
             .data

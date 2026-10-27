@@ -319,7 +319,7 @@ fn list_summaries_are_lazy_and_byte_bounded_without_dropping_records() {
     let mut ids = Vec::new();
     let mut pages = 0;
     loop {
-        let page = list(
+        let mut page = list(
             &catalog,
             1,
             "imports",
@@ -332,6 +332,10 @@ fn list_summaries_are_lazy_and_byte_bounded_without_dropping_records() {
         )
         .unwrap();
         assert!(page.items.len() < 100);
+        page.diagnostics = SourceDiagnostics {
+            failing_source_count: 10000,
+            source_error: Some("\u{1}".repeat(1024)),
+        };
         let wire = serde_json::to_value(&page).unwrap();
         assert!(serde_json::to_vec(&wire).unwrap().len() < 2 * 1024 * 1024);
         assert_eq!(wire["items"][0]["summary"], true);
@@ -355,6 +359,38 @@ fn list_summaries_are_lazy_and_byte_bounded_without_dropping_records() {
     );
     assert!(!catalog.get("id-050").unwrap().notes.is_empty());
 }
+#[test]
+fn source_diagnostics_are_nonfatal_ordered_unicode_bounded_and_redact_input_values() {
+    let label = format!("旅行\n{}", "日".repeat(2000));
+    let diagnostics = source_diagnostics(
+        [
+            (
+                label.as_str(),
+                "unsupported iCalendar recurrence (RRULE): PRIVATE_ICS_CONTENT",
+            ),
+            ("Second", "parse iCalendar date PRIVATE_ICS_CONTENT"),
+        ]
+        .into_iter(),
+    );
+    assert_eq!(diagnostics.failing_source_count, 2);
+    let message = diagnostics.source_error.unwrap();
+    assert!(message.len() <= 1024);
+    assert!(message.starts_with("unsupported iCalendar recurrence"));
+    assert!(message.contains("旅行 "));
+    assert!(message.contains("unsupported iCalendar recurrence"));
+    assert!(!message.contains("PRIVATE_ICS_CONTENT"));
+    assert!(!message.contains("Second"));
+    assert!(!message.chars().any(char::is_control));
+    for max in 0..30 {
+        assert!(bounded_diagnostic("日月年\n".repeat(20).as_str(), max).len() <= max);
+    }
+    let healthy = serde_json::to_value(source_diagnostics(std::iter::empty())).unwrap();
+    assert_eq!(
+        healthy,
+        json!({"failing_source_count":0,"source_error":null})
+    );
+}
+
 #[test]
 fn timed_nearest_order_retains_instant_precision_and_completion_does_not_matter() {
     let p = Projection {

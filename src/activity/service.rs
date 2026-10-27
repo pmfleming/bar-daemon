@@ -43,6 +43,24 @@ struct ActivityData {
 }
 
 impl ActivityData {
+    fn readable_agenda(&self) -> Result<&super::agenda_store::model::Snapshot> {
+        if let Some(error) = &self.todo_error {
+            bail!(super::agenda::bounded_diagnostic(error, 1024));
+        }
+        self.agenda_snapshot
+            .as_ref()
+            .context("Agenda store unavailable; no accepted snapshot")
+    }
+
+    fn source_diagnostics(&self) -> super::agenda::SourceDiagnostics {
+        super::agenda::source_diagnostics(self.config.calendar_sources.iter().filter_map(
+            |source| {
+                let error = self.source_states.get(&source.id)?.error.as_deref()?;
+                Some((source.display_name(), error))
+            },
+        ))
+    }
+
     fn incomplete_todo_count(&self) -> u32 {
         self.agenda_snapshot
             .as_ref()
@@ -116,11 +134,7 @@ impl ActivityService {
         let opened = Self::open_agenda(&todo_path).await;
         let (agenda_store, agenda_snapshot, todo_error) = match opened {
             Ok((store, snapshot)) => (Some(store), Some(snapshot), None),
-            Err(error) => (
-                None,
-                None,
-                Some(format!("Agenda store unavailable: {error:#}")),
-            ),
+            Err(error) => (None, None, Some(super::agenda::store_unavailable(&error))),
         };
         let catalog_path = todo_path.with_file_name("locations.json");
         let catalog_result = async {
@@ -191,7 +205,7 @@ impl ActivityService {
                 Ok(store)
             }
             Err(error) => {
-                let message = format!("Agenda store unavailable: {error:#}");
+                let message = super::agenda::store_unavailable(&error);
                 self.data.write().await.todo_error = Some(message.clone());
                 bail!(message)
             }
@@ -313,7 +327,7 @@ impl ActivityService {
                     imports.insert(source.id.clone(), events);
                     None
                 }
-                Err(error) => Some(format!("{error:#}")),
+                Err(error) => Some(super::agenda::source_error_cause(&format!("{error:#}")).into()),
             };
             first_error = first_error.or_else(|| error.clone());
             let item_count = imports
@@ -473,11 +487,7 @@ impl ActivityService {
     ) -> Result<ActivityRange> {
         let range = super::day::QueryRange::new(from_unix_ms, to_unix_ms, &timezone)?;
         let data = self.data.read().await;
-        anyhow::ensure!(data.todo_error.is_none(), "Agenda store unavailable");
-        let snapshot = data
-            .agenda_snapshot
-            .as_ref()
-            .context("Agenda store unavailable")?;
+        let snapshot = data.readable_agenda()?;
         let imported: HashMap<_, _> = data
             .events_by_source
             .values()

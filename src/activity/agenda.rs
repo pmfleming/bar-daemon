@@ -78,8 +78,225 @@ impl From<&Record> for Summary {
         }
     }
 }
+/// Nonfatal provider health travels with each successful read, not in the
+/// cached item catalog: a failed refresh can retain exactly the same records.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct SourceDiagnostics {
+    pub failing_source_count: usize,
+    pub source_error: Option<String>,
+}
+
+pub(crate) fn bounded_diagnostic(text: &str, max_bytes: usize) -> String {
+    let mut output = String::new();
+    for character in text.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if output.len() + character.len_utf8() > max_bytes {
+            while output.len() > max_bytes.saturating_sub(3) {
+                output.pop();
+            }
+            if max_bytes >= 3 {
+                output.push('…');
+            }
+            break;
+        }
+        output.push(character);
+    }
+    output
+}
+
+// Never echo raw calendar properties or JSON values from parser error strings.
+// Only controlled categories and explicitly configured source labels reach UI.
+pub(crate) fn source_error_cause(error: &str) -> &'static str {
+    const CAUSES: &[(&str, &str)] = &[
+        (
+            "unsupported iCalendar recurrence",
+            "unsupported iCalendar recurrence; previous import retained",
+        ),
+        (
+            "unsupported iCalendar VTODO",
+            "unsupported iCalendar VTODO import; previous import retained",
+        ),
+        (
+            "nonexistent or ambiguous",
+            "calendar time is nonexistent or ambiguous; use an explicit UTC instant",
+        ),
+        (
+            "read iCalendar file",
+            "calendar file cannot be read; previous import retained",
+        ),
+        (
+            "read calendar directory",
+            "calendar directory cannot be read; previous import retained",
+        ),
+        (
+            "parse iCalendar date",
+            "invalid calendar date; previous import retained",
+        ),
+        (
+            "truncated iCalendar",
+            "truncated iCalendar file; previous import retained",
+        ),
+        (
+            "DTEND precedes DTSTART",
+            "calendar end precedes start; previous import retained",
+        ),
+        (
+            "exceeds 10000",
+            "calendar source exceeds 10000 events; previous import retained",
+        ),
+    ];
+    CAUSES
+        .iter()
+        .find_map(|(needle, summary)| error.contains(needle).then_some(*summary))
+        .unwrap_or("calendar source load or validation failed; previous import retained")
+}
+
+pub(crate) fn source_diagnostics<'a>(
+    failures: impl Iterator<Item = (&'a str, &'a str)>,
+) -> SourceDiagnostics {
+    let mut diagnostics = SourceDiagnostics::default();
+    for (label, error) in failures {
+        diagnostics.failing_source_count += 1;
+        if diagnostics.source_error.is_none() {
+            let label = bounded_diagnostic(label, 256);
+            diagnostics.source_error = Some(bounded_diagnostic(
+                &format!("{}: {label}", source_error_cause(error)),
+                1024,
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn engine_error_detail(error: &turso::Error) -> String {
+    match error {
+        turso::Error::Corrupt(_) => "; database corruption".into(),
+        turso::Error::NotAdb(_) => "; not a database".into(),
+        turso::Error::DatabaseFull(_) => "; database full".into(),
+        turso::Error::Busy(_) | turso::Error::BusySnapshot(_) => "; database busy".into(),
+        turso::Error::Readonly(_) => "; database is read-only".into(),
+        turso::Error::IoError(kind, _) => format!("; database I/O {kind:?}"),
+        _ => "; database engine rejected initialization or validation".into(),
+    }
+}
+
+pub(crate) fn store_unavailable(error: &anyhow::Error) -> String {
+    const CAUSES: &[(&str, &str)] = &[
+        (
+            "parse legacy todo store",
+            "legacy todo migration JSON invalid; original preserved",
+        ),
+        (
+            "read legacy todo store",
+            "legacy todo store cannot be read; writable mode blocked",
+        ),
+        (
+            "invalid legacy todo",
+            "legacy todo validation failed; migration blocked without dropping data",
+        ),
+        (
+            "duplicate legacy todo id",
+            "duplicate legacy todo id; migration blocked",
+        ),
+        (
+            "changed after migration",
+            "legacy todo changed after migration; explicit reconciliation required",
+        ),
+        (
+            "legacy backup mismatch",
+            "legacy backup mismatch; original preserved",
+        ),
+        (
+            "legacy todo file too large",
+            "legacy todo file exceeds migration size limit",
+        ),
+        (
+            "legacy todo capacity exceeded",
+            "legacy todo count exceeds migration limit",
+        ),
+        (
+            "unsupported agenda schema",
+            "unsupported agenda database schema; preserve for recovery",
+        ),
+        (
+            "preexisting empty agenda",
+            "preexisting empty agenda database; preserve for recovery",
+        ),
+        ("ownership lock busy", "agenda database ownership lock busy"),
+        (
+            "unsafe",
+            "unsafe agenda storage ownership, permissions or path",
+        ),
+        (
+            "integrity",
+            "agenda database integrity validation failed; preserve for recovery",
+        ),
+        (
+            "corrupt",
+            "agenda database corruption detected; preserve for recovery",
+        ),
+        (
+            "malformed",
+            "agenda database corruption detected; preserve for recovery",
+        ),
+        (
+            "not a database",
+            "agenda file is not a valid database; preserve for recovery",
+        ),
+    ];
+    let category = error
+        .chain()
+        .filter(|cause| !cause.is::<serde_json::Error>())
+        .find_map(|cause| {
+            let message = cause.to_string().to_ascii_lowercase();
+            CAUSES
+                .iter()
+                .find_map(|(needle, summary)| message.contains(needle).then_some(*summary))
+        })
+        .unwrap_or(
+            "agenda database initialization or validation failed; inspect daemon diagnostics",
+        );
+    let detail = error
+        .chain()
+        .find_map(|cause| {
+            cause.downcast_ref::<serde_json::Error>().map(|json| {
+                format!(
+                    "; JSON {:?} at line {}, column {}",
+                    json.classify(),
+                    json.line(),
+                    json.column()
+                )
+            })
+        })
+        .or_else(|| {
+            error.chain().find_map(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .map(|io| format!("; I/O {:?}", io.kind()))
+            })
+        })
+        .or_else(|| {
+            error.chain().find_map(|cause| {
+                cause
+                    .downcast_ref::<turso::Error>()
+                    .map(engine_error_detail)
+            })
+        })
+        .unwrap_or_default();
+    bounded_diagnostic(
+        &format!("Agenda store unavailable: {category}{detail}"),
+        1024,
+    )
+}
+
 #[derive(Serialize)]
 pub(crate) struct ListResult {
+    #[serde(flatten)]
+    pub diagnostics: SourceDiagnostics,
     pub items: Vec<Summary>,
     pub next_cursor: Option<String>,
     pub catalog_revision: u64,
@@ -100,6 +317,8 @@ pub(crate) struct Marker {
 }
 #[derive(Serialize)]
 pub(crate) struct MarkersResult {
+    #[serde(flatten)]
+    pub diagnostics: SourceDiagnostics,
     pub days: Vec<Marker>,
     pub catalog_revision: u64,
     pub today: String,
@@ -293,6 +512,7 @@ pub(crate) fn list<T: TimeZone>(
         .then(|| serde_json::to_string(&Cursor { fence, offset: end }))
         .transpose()?;
     Ok(ListResult {
+        diagnostics: SourceDiagnostics::default(),
         items: summaries,
         next_cursor,
         catalog_revision: revision,
@@ -338,6 +558,7 @@ pub(crate) fn markers<T: TimeZone>(
         })
         .collect();
     Ok(MarkersResult {
+        diagnostics: SourceDiagnostics::default(),
         days,
         catalog_revision: revision,
         today: p.today.to_string(),

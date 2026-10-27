@@ -145,7 +145,7 @@ async fn read_only_ics_conversion_markers_native_scope_and_recurrence_diagnostic
     std::fs::write(&path,"BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:trip\nSUMMARY:Trip\nDTSTART;VALUE=DATE:20261231\nDTEND;VALUE=DATE:20270102\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
     std::fs::write(
         dir.path().join("config.json"),
-        json!({"calendar_sources":[{"id":"travel","kind":"ics-file","path":path}]}).to_string(),
+        json!({"calendar_sources":[{"id":"travel","name":"旅行".repeat(2000),"kind":"ics-file","path":path}]}).to_string(),
     )
     .unwrap();
     let state = StateStore::default();
@@ -161,6 +161,8 @@ async fn read_only_ics_conversion_markers_native_scope_and_recurrence_diagnostic
         .dispatch("agenda.list", json!({"day":"2027-01-01"}))
         .await;
     assert_eq!(items["ok"], true, "{items}");
+    assert_eq!(items["data"]["failing_source_count"], 0);
+    assert_eq!(items["data"]["source_error"], Value::Null);
     let item = &items["data"]["items"][0];
     assert_eq!(
         item["schedule"]["end_date"], "2027-01-01",
@@ -260,6 +262,56 @@ async fn read_only_ics_conversion_markers_native_scope_and_recurrence_diagnostic
         accepted,
         "retain accepted import after provider failure"
     );
+    let warning = api.dispatch("agenda.list", json!({})).await;
+    assert_eq!(
+        warning["ok"], true,
+        "source failure is not a failed local catalog read"
+    );
+    assert_eq!(warning["data"]["failing_source_count"], 1);
+    let diagnostic = warning["data"]["source_error"].as_str().unwrap();
+    assert!(diagnostic.len() <= 1024);
+    assert!(diagnostic.starts_with("unsupported iCalendar recurrence"));
+    assert!(diagnostic.contains("旅行"));
+    assert!(diagnostic.contains("unsupported iCalendar recurrence"));
+    assert_eq!(
+        warning["data"]["catalog_revision"], changed["data"]["catalog_revision"],
+        "health-only refresh retains the same usable catalog revision"
+    );
+    let local_id = local["data"]["item"]["id"].as_str().unwrap();
+    assert!(
+        warning["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["id"] == local_id && record["capabilities"]["write"] == true)
+    );
+    let marker_warning = api
+        .dispatch(
+            "agenda.markers",
+            json!({"from_date":"2027-01-01","to_date":"2027-01-01"}),
+        )
+        .await;
+    assert_eq!(marker_warning["ok"], true);
+    assert_eq!(
+        marker_warning["data"]["source_error"],
+        warning["data"]["source_error"]
+    );
+    assert_eq!(marker_warning["data"]["failing_source_count"], 1);
+    assert_eq!(
+        marker_warning["data"]["days"][0]["event"], true,
+        "marker-only first open retains accepted membership beside its warning"
+    );
+    let mut task = local["data"]["item"]["task"].clone();
+    task["completed"] = json!(true);
+    assert_eq!(
+        api.dispatch("agenda.patch", json!({"request_id":"complete-with-source-warning","id":local_id,"expected_revision":local["data"]["item"]["revision"],"patch":{"task":task}})).await["ok"],
+        true
+    );
+    assert_eq!(
+        api.dispatch("agenda.get", json!({"id":local_id})).await["data"]["item"]["task"]["completed"],
+        true,
+        "nonfatal provider warnings never fence local mutations"
+    );
     std::fs::write(dir.path().join("config.json"), "{}").unwrap();
     service.refresh().await;
     assert!(
@@ -274,6 +326,59 @@ async fn read_only_ics_conversion_markers_native_scope_and_recurrence_diagnostic
         false
     );
     service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn actual_migration_and_database_failures_reach_agenda_reads_without_private_input_values() {
+    for bad_legacy in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = dir.path().join("todos.json");
+        let preserved_path = if bad_legacy {
+            std::fs::write(&legacy_path,json!([{"id":"old-task","source_id":"local","title":"Keep private","completed":false,"priority":"PRIVATE_LEGACY_CONTENT","due_unix_ms":null,"due_date":null,"created_unix_ms":1,"completed_unix_ms":null}]).to_string()).unwrap();
+            legacy_path.clone()
+        } else {
+            std::fs::create_dir(dir.path().join("agenda")).unwrap();
+            let path = dir.path().join("agenda/agenda.db");
+            std::fs::write(&path, b"not a database: PRIVATE_DATABASE_CONTENT").unwrap();
+            path
+        };
+        let original = std::fs::read(&preserved_path).unwrap();
+        let state = StateStore::default();
+        let service =
+            ActivityService::with_paths(state.clone(), dir.path().join("config.json"), legacy_path)
+                .await;
+        let api = ActivityApi::new(state, service.clone());
+        for (method, params) in [
+            ("agenda.list", json!({})),
+            (
+                "agenda.markers",
+                json!({"from_date":"2027-01-01","to_date":"2027-01-01"}),
+            ),
+            ("agenda.get", json!({"id":"old-task"})),
+            ("agenda.receipt", json!({"request_id":"unknown"})),
+        ] {
+            let reply = api.dispatch(method, params).await;
+            assert_eq!(reply["ok"], false, "{reply}");
+            let message = reply["error"]["message"].as_str().unwrap();
+            assert!(message.len() <= 1024);
+            assert!(
+                !message.contains("PRIVATE_"),
+                "never echo malformed input values: {message}"
+            );
+            if bad_legacy {
+                assert!(message.contains("legacy todo migration"), "{message}");
+                assert!(
+                    message.contains("JSON Data at line"),
+                    "typed parser cause/location survives: {message}"
+                );
+            } else {
+                assert!(message.contains("database"), "{message}");
+                assert_ne!(message, "Agenda store unavailable");
+            }
+        }
+        assert_eq!(std::fs::read(preserved_path).unwrap(), original);
+        service.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]
