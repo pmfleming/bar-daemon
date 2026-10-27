@@ -42,6 +42,7 @@
                 ./src
                 ./tests
                 ./test_support
+                ./tools/agenda-turso-contract
                 ./protocols
                 ./packaging/licenses
                 ./docs/activity.example.json
@@ -70,6 +71,11 @@
             LOCATION_GEOCLUE_AGENT = "${locationGeoclue}/libexec/geoclue-2.0/demos/agent";
             cargoTestFlags = [ "--all-targets" ];
             checkFlags = [ "--include-ignored" ];
+            # Qualify the exact packaged Turso/Syscall build in private temporary
+            # storage, including durable restart and logical backup restoration.
+            postCheck = ''
+              cargo run --offline --locked --release --bin agenda-turso-contract
+            '';
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
