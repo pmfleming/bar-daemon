@@ -1,4 +1,4 @@
-use super::model::*;
+use super::{model::*, mutation, receipt};
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -420,26 +420,8 @@ impl Database {
             .await?;
         while let Some(row) = rows.next().await? {
             let request: String = row.get(0)?;
-            identifier(&request)?;
             let hash: String = row.get(1)?;
-            ensure!(
-                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                "corrupt receipt fingerprint"
-            );
-            let result: MutationResult = serde_json::from_slice(&row.get::<Vec<u8>>(2)?)?;
-            ensure!(
-                result.request_id == request
-                    && result.catalog_revision > 0
-                    && result.catalog_revision <= revision
-                    && (result.item.is_some() != result.deleted_id.is_some()),
-                "corrupt receipt identity/revision/outcome"
-            );
-            if let Some(item) = &result.item {
-                item.validate()?;
-            }
-            if let Some(id) = &result.deleted_id {
-                identifier(id)?;
-            }
+            receipt::decode(&request, &hash, &row.get::<Vec<u8>>(2)?, revision)?;
         }
         Ok(())
     }
@@ -457,27 +439,12 @@ impl Database {
         match row {
             Some(row) => {
                 let hash: String = row.get(0)?;
-                ensure!(
-                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "corrupt receipt fingerprint"
-                );
-                let result: MutationResult = serde_json::from_slice(&row.get::<Vec<u8>>(1)?)?;
-                ensure!(
-                    result.request_id == request
-                        && result.catalog_revision > 0
-                        && result.catalog_revision <= self.revision().await?,
-                    "corrupt receipt identity/revision"
-                );
-                ensure!(
-                    result.item.is_some() != result.deleted_id.is_some(),
-                    "corrupt receipt outcome"
-                );
-                if let Some(item) = &result.item {
-                    item.validate()?;
-                }
-                if let Some(id) = &result.deleted_id {
-                    identifier(id)?;
-                }
+                let result = receipt::decode(
+                    request,
+                    &hash,
+                    &row.get::<Vec<u8>>(1)?,
+                    self.revision().await?,
+                )?;
                 Ok(Some((hash, result)))
             }
             None => Ok(None),
@@ -527,141 +494,88 @@ impl Database {
         let result = self.apply(mutation, &request, &hash).await;
         self.finish(result).await
     }
+    async fn create_item(&self, request: &str, item: NewItem, now: i64) -> Result<Record> {
+        ensure!(
+            self.integer("SELECT count(*) FROM items").await? < 10000,
+            "agenda item capacity reached"
+        );
+        ensure!(
+            self.capabilities("local").await?.write,
+            "local source is read-only"
+        );
+        let id = format!("local:{}", fingerprint(request.as_bytes()));
+        let record = mutation::create_record(id, item, now);
+        self.insert_record(&record).await?;
+        Ok(record)
+    }
+    async fn patch_item(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        patch: ItemPatch,
+        now: i64,
+    ) -> Result<Record> {
+        let record = self
+            .get(id)
+            .await?
+            .ok_or_else(|| anyhow!("item not found"))?;
+        let record = mutation::patch_record(record, expected_revision, patch, now)?;
+        let changes = self
+            .conn
+            .execute(
+                "UPDATE items SET revision=?,payload=? WHERE id=? AND revision=?",
+                params![
+                    record.revision as i64,
+                    serde_json::to_vec(&record)?,
+                    id,
+                    expected_revision as i64
+                ],
+            )
+            .await?;
+        ensure!(changes == 1, "revision conflict");
+        Ok(record)
+    }
+    async fn delete_item(&self, id: &str, expected_revision: u64) -> Result<()> {
+        let record = self
+            .get(id)
+            .await?
+            .ok_or_else(|| anyhow!("item not found"))?;
+        ensure!(record.revision == expected_revision, "revision conflict");
+        ensure!(record.capabilities.delete, "source cannot delete");
+        ensure!(
+            self.conn
+                .execute(
+                    "DELETE FROM items WHERE id=? AND revision=?",
+                    params![id, expected_revision as i64]
+                )
+                .await?
+                == 1,
+            "revision conflict"
+        );
+        Ok(())
+    }
     async fn apply(&self, mutation: Mutation, request: &str, hash: &str) -> Result<MutationResult> {
         let now = chrono::Utc::now().timestamp_millis();
-        let mut deleted_id = None;
-        let item = match mutation {
+        let (item, deleted_id) = match mutation {
             Mutation::Create { item, .. } => {
-                ensure!(
-                    self.integer("SELECT count(*) FROM items").await? < 10000,
-                    "agenda item capacity reached"
-                );
-                ensure!(
-                    self.capabilities("local").await?.write,
-                    "local source is read-only"
-                );
-                let mut record = Record {
-                    id: format!("local:{}", fingerprint(request.as_bytes())),
-                    kind: item.kind,
-                    source_id: "local".into(),
-                    source_uid: None,
-                    revision: 1,
-                    title: item.title,
-                    notes: item.notes,
-                    links: item.links,
-                    schedule: item.schedule,
-                    created_unix_ms: now,
-                    modified_unix_ms: now,
-                    capabilities: Capabilities {
-                        complete: item.kind == ItemKind::Task,
-                        ..Capabilities::local()
-                    },
-                    event: item.event,
-                    task: item.task,
-                };
-                match record.kind {
-                    ItemKind::Event => {
-                        record.event.get_or_insert_with(Default::default);
-                    }
-                    ItemKind::Task => {
-                        record.task.get_or_insert_with(Default::default);
-                    }
-                }
-                if let Some(task) = &mut record.task {
-                    if task.completed && task.completed_unix_ms.is_none() {
-                        task.completed_unix_ms = Some(now);
-                    }
-                }
-                self.insert_record(&record).await?;
-                Some(record)
+                (Some(self.create_item(request, item, now).await?), None)
             }
             Mutation::Patch {
                 id,
                 expected_revision,
                 patch,
                 ..
-            } => {
-                let mut record = self
-                    .get(&id)
-                    .await?
-                    .ok_or_else(|| anyhow!("item not found"))?;
-                ensure!(record.revision == expected_revision, "revision conflict");
-                ensure!(record.capabilities.write, "source is read-only");
-                if let Some(task) = &patch.task {
-                    ensure!(record.kind == ItemKind::Task, "task fields on event");
-                    if task.completed != record.task.as_ref().unwrap().completed {
-                        ensure!(record.capabilities.complete, "source cannot complete");
-                    }
-                }
-                if let Some(value) = patch.title {
-                    record.title = value;
-                }
-                if let Some(value) = patch.notes {
-                    record.notes = value;
-                }
-                if let Some(value) = patch.links {
-                    record.links = value;
-                }
-                if let Some(value) = patch.schedule {
-                    record.schedule = value;
-                }
-                if let Some(value) = patch.event {
-                    record.event = Some(value);
-                }
-                if let Some(mut value) = patch.task {
-                    let old = record.task.as_ref().unwrap();
-                    if value.completed && value.completed_unix_ms.is_none() {
-                        value.completed_unix_ms = if old.completed {
-                            old.completed_unix_ms
-                        } else {
-                            Some(now)
-                        };
-                    }
-                    if !value.completed {
-                        value.completed_unix_ms = None;
-                    }
-                    record.task = Some(value);
-                }
-                record.revision = record
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow!("revision exhausted"))?;
-                record.modified_unix_ms = now;
-                record.validate()?;
-                let bytes = serde_json::to_vec(&record)?;
-                let changes = self
-                    .conn
-                    .execute(
-                        "UPDATE items SET revision=?,payload=? WHERE id=? AND revision=?",
-                        params![record.revision as i64, bytes, id, expected_revision as i64],
-                    )
-                    .await?;
-                ensure!(changes == 1, "revision conflict");
-                Some(record)
-            }
+            } => (
+                Some(self.patch_item(&id, expected_revision, patch, now).await?),
+                None,
+            ),
             Mutation::Delete {
                 id,
                 expected_revision,
                 ..
             } => {
-                let record = self
-                    .get(&id)
-                    .await?
-                    .ok_or_else(|| anyhow!("item not found"))?;
-                ensure!(record.revision == expected_revision, "revision conflict");
-                ensure!(record.capabilities.delete, "source cannot delete");
-                ensure!(
-                    self.conn
-                        .execute(
-                            "DELETE FROM items WHERE id=? AND revision=?",
-                            params![id.clone(), expected_revision as i64]
-                        )
-                        .await?
-                        == 1,
-                    "revision conflict"
-                );
-                deleted_id = Some(id);
-                None
+                self.delete_item(&id, expected_revision).await?;
+                (None, Some(id))
             }
         };
         self.conn
@@ -778,25 +692,7 @@ impl Database {
                 self.insert_record(&item).await?;
             }
             for (id, hash, body) in export.receipts {
-                identifier(&id)?;
-                ensure!(
-                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "invalid receipt fingerprint"
-                );
-                let receipt: MutationResult = serde_json::from_slice(&body)?;
-                if let Some(item) = &receipt.item {
-                    item.validate()?;
-                }
-                if let Some(id) = &receipt.deleted_id {
-                    identifier(id)?;
-                }
-                ensure!(
-                    receipt.request_id == id
-                        && receipt.catalog_revision > 0
-                        && receipt.catalog_revision <= export.snapshot.catalog_revision
-                        && (receipt.item.is_some() != receipt.deleted_id.is_some()),
-                    "invalid receipt"
-                );
+                receipt::decode(&id, &hash, &body, export.snapshot.catalog_revision)?;
                 self.conn
                     .execute(
                         "INSERT INTO operation_receipts VALUES(?,?,?)",

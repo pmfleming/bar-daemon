@@ -2,6 +2,8 @@
 mod database;
 mod migration;
 pub(crate) mod model;
+mod mutation;
+mod receipt;
 #[cfg(test)]
 mod tests;
 

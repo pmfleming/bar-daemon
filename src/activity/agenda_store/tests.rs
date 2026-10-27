@@ -497,7 +497,7 @@ async fn unreadable_legacy_and_unwritable_export_fail_without_empty_success() {
     let dir = tempfile::tempdir().unwrap();
     let legacy = dir.path().join("todos.json");
     fs::write(&legacy, b"[]").unwrap();
-    fs::set_permissions(&legacy, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&legacy, fs::Permissions::from_mode(0o0)).unwrap();
     let result = Store::open(dir.path().join("agenda"), Some(legacy.clone())).await;
     fs::set_permissions(&legacy, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(result.is_err());
@@ -839,6 +839,144 @@ async fn provider_catalog_invalidation_is_durable_without_mutating_items_or_rece
     let reader = Store::open_existing(root).await.unwrap();
     assert!(reader.invalidate_catalog().await.is_err());
     reader.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn corrupt_receipts_are_rejected_by_lookup_startup_and_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    for case in [
+        "request",
+        "zero_revision",
+        "future_revision",
+        "no_outcome",
+        "both_outcomes",
+        "record",
+        "deleted_id",
+        "json",
+        "fingerprint",
+    ] {
+        let root = dir.path().join(format!("source-{case}"));
+        let store = Store::open(root.clone(), None).await.unwrap();
+        let result = store.create("create".into(), item()).await.unwrap();
+        let export_path = dir.path().join(format!("export-{case}.json"));
+        store.export(export_path.clone()).await.unwrap();
+        let mut export: serde_json::Value =
+            serde_json::from_slice(&fs::read(&export_path).unwrap()).unwrap();
+        let mut result = serde_json::to_value(result).unwrap();
+        match case {
+            "request" => result["request_id"] = "different".into(),
+            "zero_revision" => result["catalog_revision"] = 0.into(),
+            "future_revision" => result["catalog_revision"] = 2.into(),
+            "no_outcome" => result["item"] = serde_json::Value::Null,
+            "both_outcomes" => result["deleted_id"] = "deleted".into(),
+            "record" => result["item"]["title"] = "".into(),
+            "deleted_id" => {
+                result["item"] = serde_json::Value::Null;
+                result["deleted_id"] = "".into();
+            }
+            _ => {}
+        }
+        let hash = if case == "fingerprint" {
+            "not-a-hash".to_owned()
+        } else {
+            export["receipts"][0][1].as_str().unwrap().to_owned()
+        };
+        let body = if case == "json" {
+            vec![0]
+        } else {
+            serde_json::to_vec(&result).unwrap()
+        };
+        let db_hash = hash.clone();
+        let db_body = body.clone();
+        store.call(move |db| futures::executor::block_on(async {
+            db.conn.execute("UPDATE operation_receipts SET fingerprint=?,payload=? WHERE request_id='create'", turso::params![db_hash, db_body]).await?;
+            Ok(())
+        })).await.unwrap();
+        assert!(
+            store.receipt("create".into()).await.is_err(),
+            "lookup accepted {case}"
+        );
+        store.shutdown().await.unwrap();
+        assert!(
+            Store::open(root, None).await.is_err(),
+            "startup accepted {case}"
+        );
+        export["receipts"][0][1] = hash.into();
+        export["receipts"][0][2] = serde_json::to_value(body).unwrap();
+        fs::write(&export_path, serde_json::to_vec(&export).unwrap()).unwrap();
+        let restored = Store::open(dir.path().join(format!("restore-{case}")), None)
+            .await
+            .unwrap();
+        assert!(
+            restored.restore(export_path).await.is_err(),
+            "restore accepted {case}"
+        );
+        let snapshot = restored.snapshot().await.unwrap();
+        assert!(
+            snapshot.items.is_empty(),
+            "restore retained partial item for {case}"
+        );
+        assert_eq!(snapshot.catalog_revision, 0);
+        assert!(restored.receipt("create".into()).await.unwrap().is_none());
+        restored
+            .create("after-failed-restore".into(), item())
+            .await
+            .unwrap();
+        restored.shutdown().await.unwrap();
+    }
+}
+
+#[test]
+fn record_patch_policy_preserves_completion_history_and_independent_children() {
+    use super::mutation::{create_record, patch_record};
+    for (old_completed, old_time, completed, submitted_time, expected_time) in [
+        (false, None, true, None, Some(20)),
+        (true, Some(12), true, None, Some(12)),
+        (true, None, true, None, None),
+        (true, Some(12), true, Some(15), Some(15)),
+        (true, Some(12), false, Some(12), None),
+        (false, None, false, Some(12), None),
+    ] {
+        let mut record = create_record("local:test".into(), item(), 10);
+        let old = record.task.as_mut().unwrap();
+        old.completed = old_completed;
+        old.completed_unix_ms = old_time;
+        let mut task = old.clone();
+        task.completed = completed;
+        task.completed_unix_ms = submitted_time;
+        let patched = patch_record(
+            record.clone(),
+            1,
+            ItemPatch {
+                task: Some(task),
+                ..Default::default()
+            },
+            20,
+        )
+        .unwrap();
+        let task = patched.task.as_ref().unwrap();
+        assert_eq!(task.completed, completed);
+        assert_eq!(task.completed_unix_ms, expected_time);
+        assert_eq!(task.checklist, record.task.as_ref().unwrap().checklist);
+        assert_eq!(patched.schedule, record.schedule);
+        assert_eq!(patched.links, record.links);
+        assert_eq!(patched.notes, record.notes);
+        assert_eq!(patched.created_unix_ms, 10);
+        assert_eq!(patched.modified_unix_ms, 20);
+        assert_eq!(patched.revision, 2);
+    }
+    let mut record = create_record("local:test".into(), item(), 10);
+    let mut task = record.task.clone().unwrap();
+    task.completed = true;
+    record.capabilities.complete = false;
+    let patch = ItemPatch {
+        task: Some(task),
+        ..Default::default()
+    };
+    assert!(patch_record(record.clone(), 1, patch.clone(), 20).is_err());
+    assert!(patch_record(record.clone(), 2, ItemPatch::default(), 20).is_err());
+    record.task = None;
+    assert!(patch_record(record, 1, patch, 20).is_err());
 }
 
 #[test]
