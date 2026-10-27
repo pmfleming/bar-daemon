@@ -203,6 +203,17 @@ impl ActivityService {
         let item = catalog.get(id).context("agenda item not found")?;
         Ok(json!({"item":item,"catalog_revision":revision}))
     }
+    // Caller holds todo_guard. Recovery has one accepted-snapshot/publication
+    // boundary shared by receipt reconciliation and missed-delta catchup.
+    async fn reload_agenda_snapshot(
+        &self,
+        store: &crate::activity::agenda_store::Store,
+    ) -> Result<()> {
+        let snapshot = store.snapshot().await?;
+        self.data.write().await.agenda_snapshot = Some(snapshot);
+        self.publish_state(None).await;
+        Ok(())
+    }
     pub(crate) async fn agenda_receipt(&self, id: String) -> Result<Value> {
         ensure!(
             !id.trim().is_empty() && id.len() <= 512,
@@ -230,16 +241,7 @@ impl ActivityService {
         {
             // Explicit recovery after an uncertain commit reconciles accepted
             // reads too. Never replay the write or alter its historical receipt.
-            let snapshot = store.snapshot().await?;
-            let mut data = self.data.write().await;
-            data.todos = snapshot
-                .items
-                .iter()
-                .filter_map(agenda_adapter::todo)
-                .collect();
-            data.agenda_snapshot = Some(snapshot);
-            drop(data);
-            self.publish_state(None).await;
+            self.reload_agenda_snapshot(&store).await?;
         }
         Ok(json!({"receipt":receipt}))
     }
@@ -262,47 +264,11 @@ impl ActivityService {
         };
         if result.catalog_revision > cached_revision.saturating_add(1) {
             // A missing completion must not leave an incremental cache gap.
-            let recovered = store
-                .context("Agenda store unavailable")?
-                .snapshot()
-                .await?;
-            let mut data = self.data.write().await;
-            data.todos = recovered
-                .items
-                .iter()
-                .filter_map(agenda_adapter::todo)
-                .collect();
-            data.agenda_snapshot = Some(recovered);
-            drop(data);
-            self.publish_state(None).await;
+            let store = store.context("Agenda store unavailable")?;
+            self.reload_agenda_snapshot(&store).await?;
             return Ok(result);
         }
-        let changed = {
-            let mut data = self.data.write().await;
-            let snapshot = data
-                .agenda_snapshot
-                .as_mut()
-                .context("Agenda cache unavailable; resolve request by receipt")?;
-            // An explicit duplicate request may return an older receipt. Never
-            // roll the accepted cache back to that old record revision.
-            let changed = result.catalog_revision > snapshot.catalog_revision;
-            if changed {
-                if let Some(item) = &result.item {
-                    snapshot.items.retain(|r| r.id != item.id);
-                    snapshot.items.push(item.clone());
-                }
-                if let Some(id) = &result.deleted_id {
-                    snapshot.items.retain(|r| &r.id != id);
-                }
-                snapshot.catalog_revision = result.catalog_revision;
-            }
-            data.todos = snapshot
-                .items
-                .iter()
-                .filter_map(agenda_adapter::todo)
-                .collect();
-            changed
-        };
+        let changed = self.data.write().await.apply_agenda_result(&result)?;
         if changed {
             self.publish_state(None).await;
         }

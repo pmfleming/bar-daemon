@@ -17,7 +17,7 @@ mod agenda_service;
 use super::{
     config::{self, ActivityConfig},
     model::{
-        ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, TodoItem, WeatherState,
+        ActivityEvent, ActivityRange, ActivitySourceState, ActivityState, WeatherState,
         WorldClockState,
     },
     provider::ProviderRegistry,
@@ -29,8 +29,8 @@ struct ActivityData {
     config: ActivityConfig,
     events_by_source: HashMap<String, Vec<ActivityEvent>>,
     source_states: HashMap<String, ActivitySourceState>,
-    todos: Vec<TodoItem>,
-    // Accepted snapshot only; Turso is the single writable persistence owner.
+    // One accepted record snapshot; legacy task counts are derived, not mirrored.
+    // Turso remains the single writable persistence owner.
     agenda_store: Option<super::agenda_store::Store>,
     agenda_snapshot: Option<super::agenda_store::model::Snapshot>,
     import_revision: u64,
@@ -43,6 +43,44 @@ struct ActivityData {
 }
 
 impl ActivityData {
+    fn incomplete_todo_count(&self) -> u32 {
+        self.agenda_snapshot
+            .as_ref()
+            .map_or(0, |snapshot| {
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| item.task.as_ref().is_some_and(|task| !task.completed))
+                    .count()
+            })
+            .try_into()
+            .unwrap_or(u32::MAX)
+    }
+
+    // Apply a committed contiguous delta. The service reloads a full snapshot
+    // on revision gaps; historical receipts must never roll accepted data back.
+    fn apply_agenda_result(
+        &mut self,
+        result: &super::agenda_store::model::MutationResult,
+    ) -> Result<bool> {
+        let snapshot = self
+            .agenda_snapshot
+            .as_mut()
+            .context("Agenda cache unavailable; resolve request by receipt")?;
+        if result.catalog_revision <= snapshot.catalog_revision {
+            return Ok(false);
+        }
+        if let Some(item) = &result.item {
+            snapshot.items.retain(|record| record.id != item.id);
+            snapshot.items.push(item.clone());
+        }
+        if let Some(id) = &result.deleted_id {
+            snapshot.items.retain(|record| &record.id != id);
+        }
+        snapshot.catalog_revision = result.catalog_revision;
+        Ok(true)
+    }
+
     fn writable_catalog(&self) -> Result<&super::catalog::Catalog> {
         anyhow::ensure!(
             self.catalog_error.is_none(),
@@ -76,19 +114,11 @@ impl ActivityService {
         todo_path: PathBuf,
     ) -> Arc<Self> {
         let opened = Self::open_agenda(&todo_path).await;
-        let (agenda_store, agenda_snapshot, todos, todo_error) = match opened {
-            Ok((store, snapshot)) => {
-                let todos = snapshot
-                    .items
-                    .iter()
-                    .filter_map(super::agenda_adapter::todo)
-                    .collect();
-                (Some(store), Some(snapshot), todos, None)
-            }
+        let (agenda_store, agenda_snapshot, todo_error) = match opened {
+            Ok((store, snapshot)) => (Some(store), Some(snapshot), None),
             Err(error) => (
                 None,
                 None,
-                Vec::new(),
                 Some(format!("Agenda store unavailable: {error:#}")),
             ),
         };
@@ -112,7 +142,6 @@ impl ActivityService {
         };
         let service = Arc::new(Self {
             data: RwLock::new(ActivityData {
-                todos,
                 agenda_store,
                 agenda_snapshot,
                 todo_error,
@@ -156,11 +185,6 @@ impl ActivityService {
         match Self::open_agenda(&self.todo_path).await {
             Ok((store, snapshot)) => {
                 let mut data = self.data.write().await;
-                data.todos = snapshot
-                    .items
-                    .iter()
-                    .filter_map(super::agenda_adapter::todo)
-                    .collect();
                 data.agenda_snapshot = Some(snapshot);
                 data.agenda_store = Some(store.clone());
                 data.todo_error = None;
@@ -608,13 +632,7 @@ impl ActivityService {
             available: true,
             syncing: false,
             event_count: event_count.try_into().unwrap_or(u32::MAX),
-            incomplete_todo_count: data
-                .todos
-                .iter()
-                .filter(|todo| !todo.completed)
-                .count()
-                .try_into()
-                .unwrap_or(u32::MAX),
+            incomplete_todo_count: data.incomplete_todo_count(),
             next_event,
             agenda,
             sources,
@@ -792,13 +810,41 @@ mod tests {
             .create("unpublished".into(), item("Recovered"))
             .await
             .unwrap();
-        assert!(service.data.read().await.todos.is_empty());
+        assert!(
+            service
+                .data
+                .read()
+                .await
+                .agenda_snapshot
+                .as_ref()
+                .unwrap()
+                .items
+                .is_empty()
+        );
         let receipt = service.agenda_receipt("unpublished".into()).await.unwrap();
         assert_eq!(
             receipt["receipt"],
             serde_json::to_value(&committed).unwrap()
         );
-        assert_eq!(service.data.read().await.todos.len(), 1);
+        assert_eq!(
+            service
+                .data
+                .read()
+                .await
+                .agenda_snapshot
+                .as_ref()
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.incomplete_todo_count)
+                .await,
+            1
+        );
         let second = store
             .create("second-unpublished".into(), item("Also recovered"))
             .await
@@ -809,7 +855,15 @@ mod tests {
             .unwrap();
         assert!(third.catalog_revision > second.catalog_revision);
         assert_eq!(
-            service.data.read().await.todos.len(),
+            service
+                .data
+                .read()
+                .await
+                .agenda_snapshot
+                .as_ref()
+                .unwrap()
+                .items
+                .len(),
             3,
             "revision gap reloads complete accepted snapshot"
         );
@@ -819,6 +873,42 @@ mod tests {
                 .read(|s| s.activity.incomplete_todo_count)
                 .await,
             3
+        );
+        let completed_id = committed.item.as_ref().unwrap().id.clone();
+        service.complete_todo(&completed_id, true).await.unwrap();
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.incomplete_todo_count)
+                .await,
+            2
+        );
+        let accepted = service.data.read().await.agenda_snapshot.clone().unwrap();
+        let historical = service.agenda_receipt("unpublished".into()).await.unwrap();
+        assert_eq!(
+            historical["receipt"],
+            serde_json::to_value(&committed).unwrap()
+        );
+        let current = service.data.read().await.agenda_snapshot.clone().unwrap();
+        assert_eq!(
+            current.items, accepted.items,
+            "old receipts cannot roll back completion or other records"
+        );
+        assert_eq!(current.catalog_revision, accepted.catalog_revision);
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.incomplete_todo_count)
+                .await,
+            2
+        );
+        service.delete_todo(&second.item.unwrap().id).await.unwrap();
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.incomplete_todo_count)
+                .await,
+            1
         );
         service.shutdown().await.unwrap();
     }
@@ -998,7 +1088,7 @@ mod tests {
 
             // A failed database owner never publishes an unconfirmed mutation.
             let before = state.snapshot().await.activity;
-            let accepted = service.data.read().await.todos.clone();
+            let accepted = service.data.read().await.agenda_snapshot.clone().unwrap();
             store.shutdown().await.unwrap();
             assert!(
                 service
@@ -1013,7 +1103,9 @@ mod tests {
                     .is_err()
             );
             assert!(service.delete_todo("recoverable-task").await.is_err());
-            assert_eq!(service.data.read().await.todos, accepted);
+            let current = service.data.read().await.agenda_snapshot.clone().unwrap();
+            assert_eq!(current.items, accepted.items);
+            assert_eq!(current.catalog_revision, accepted.catalog_revision);
             assert_eq!(state.snapshot().await.activity, before);
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
@@ -1048,7 +1140,20 @@ mod tests {
         let service = ActivityService::with_paths(StateStore::default(), config, todos).await;
         // Unscheduled records persist but are list-only, never a calendar day.
         assert!(service.query_range(0, 1).await.unwrap().todos.is_empty());
-        assert_eq!(service.data.read().await.todos, vec![todo.clone()]);
+        assert_eq!(
+            service
+                .data
+                .read()
+                .await
+                .agenda_snapshot
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .filter_map(crate::activity::agenda_adapter::todo)
+                .collect::<Vec<_>>(),
+            vec![todo.clone()]
+        );
         assert!(
             service
                 .complete_todo(&todo.id, true)
