@@ -1,3 +1,10 @@
+pub(crate) mod agenda;
+mod agenda_adapter;
+mod agenda_projection;
+pub(crate) mod agenda_schedule;
+pub(crate) mod agenda_store;
+#[cfg(test)]
+mod agenda_tests;
 pub(crate) mod astronomy;
 pub(crate) mod catalog;
 pub(crate) mod config;

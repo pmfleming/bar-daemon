@@ -12,16 +12,45 @@ use crate::{
 
 use self::{subscriptions::BarDaemon, tasks::MonitorTasks};
 
+#[cfg(test)]
+mod agenda_tests;
 pub(crate) mod battery_operations;
 mod owner;
 mod socket;
 mod subscriptions;
 mod tasks;
 
+async fn claim_names(connection: &zbus::Connection, native_notifications: bool) -> Result<()> {
+    use zbus::fdo::{RequestNameFlags, RequestNameReply};
+    for name in std::iter::once(BUS_NAME)
+        .chain(native_notifications.then_some(notifications::server::BUS_NAME))
+    {
+        let reply = connection
+            .request_name_with_flags(name, RequestNameFlags::DoNotQueue.into())
+            .await
+            .with_context(|| {
+                format!("claim exclusive {name} before initializing persistent stores")
+            })?;
+        anyhow::ensure!(
+            reply == RequestNameReply::PrimaryOwner,
+            "another daemon owns {name}; stop it before agenda migration"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) async fn run() -> Result<()> {
     let state = StateStore::default();
     let native_notifications = !env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
         .is_ok_and(|value| value.eq_ignore_ascii_case("swaync"));
+    // Old JSON-writing versions do not know the new DB lock. Claim the same
+    // exclusive bus owner first, so a second daemon cannot race migration.
+    let connection = connection::Builder::session()
+        .context("connect to session D-Bus")?
+        .build()
+        .await
+        .context("start bar-daemon D-Bus connection")?;
+    claim_names(&connection, native_notifications).await?;
     let notification_engine = if native_notifications {
         Some(
             notifications::engine::NotificationEngine::persistent(
@@ -50,31 +79,24 @@ pub(crate) async fn run() -> Result<()> {
     );
     let daemon = BarDaemon::new(api, state.clone());
     let subscriptions = Arc::clone(&daemon.subscriptions);
-    let builder = connection::Builder::session()
-        .context("connect to session D-Bus")?
-        .name(BUS_NAME)
-        .context("claim bar-daemon bus name")?
-        .serve_at(OBJECT_PATH, daemon)
+    connection
+        .object_server()
+        .at(OBJECT_PATH, daemon)
+        .await
         .context("export bar-daemon interface")?;
-    let builder = if let Some(engine) = notification_engine.as_ref() {
-        builder
-            .name(notifications::server::BUS_NAME)
-            .context("claim notification server bus name")?
-            .serve_at(
+    if let Some(engine) = notification_engine.as_ref() {
+        connection
+            .object_server()
+            .at(
                 notifications::server::OBJECT_PATH,
                 notifications::server::NotificationServer::new(Arc::clone(engine)),
             )
-            .context("export notification server interface")?
-    } else {
-        builder
-    };
-    let connection = builder
-        .build()
-        .await
-        .context("start bar-daemon D-Bus service")?;
+            .await
+            .context("export notification server interface")?;
+    }
     let tasks = MonitorTasks::spawn(
         state,
-        activity,
+        Arc::clone(&activity),
         notification_service,
         media,
         brightness,
@@ -105,5 +127,10 @@ pub(crate) async fn run() -> Result<()> {
     }
     subscriptions.shutdown().await;
     tasks.shutdown().await;
-    result
+    result.and(
+        activity
+            .shutdown()
+            .await
+            .context("drain agenda store on shutdown"),
+    )
 }

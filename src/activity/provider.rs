@@ -38,6 +38,16 @@ impl ProviderRegistry {
         let Some(provider) = self.providers.get(source.kind.as_str()) else {
             bail!("unsupported calendar source kind {}", source.kind);
         };
-        provider.load(source).await
+        let events = provider.load(source).await?;
+        anyhow::ensure!(
+            events.len() <= 10000,
+            "calendar source exceeds 10000 events"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for event in &events {
+            super::agenda_adapter::imported(event)?;
+            anyhow::ensure!(ids.insert(&event.id), "duplicate calendar event identity");
+        }
+        Ok(events)
     }
 }

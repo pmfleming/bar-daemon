@@ -9,9 +9,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use shelllist_daemon_core::XdgRoot;
 
-use crate::paths::{data_file, load_json_or_default, save_json_atomic};
-
-use super::model::TodoItem;
+use crate::paths::{data_file, load_json_or_default};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -201,12 +199,4 @@ pub(crate) async fn load(path: &Path) -> Result<ActivityConfig> {
     let config = load_json_or_default(path, "activity configuration").await?;
     validate(&config)?;
     Ok(config)
-}
-
-pub(crate) async fn load_todos(path: &Path) -> Result<Vec<TodoItem>> {
-    load_json_or_default(path, "todo store").await
-}
-
-pub(crate) async fn save_todos(path: &Path, todos: &[TodoItem]) -> Result<()> {
-    save_json_atomic(path, todos).await
 }

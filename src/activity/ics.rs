@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 
 use super::{
@@ -143,6 +143,10 @@ fn parse_calendar(
 
 fn begin_component(components: &mut Vec<String>, value: &str) -> Result<()> {
     let component = value.to_ascii_uppercase();
+    anyhow::ensure!(
+        component != "VTODO",
+        "unsupported iCalendar VTODO import; source was not silently treated as empty"
+    );
     match components.last().map(String::as_str) {
         None => anyhow::ensure!(component == "VCALENDAR", "expected BEGIN:VCALENDAR"),
         Some(parent) => {
@@ -176,6 +180,9 @@ fn parse_event_property(
         "LOCATION" => builder.location = decode_text(value),
         "URL" => builder.url = decode_text(value),
         "STATUS" => builder.cancelled = value.eq_ignore_ascii_case("CANCELLED"),
+        "RRULE" | "RDATE" | "EXDATE" | "RECURRENCE-ID" => bail!(
+            "unsupported iCalendar recurrence ({key}); source was not imported as a single occurrence"
+        ),
         _ => {}
     }
     Ok(())
@@ -190,7 +197,7 @@ fn finish_event(
         return Ok(None);
     }
     let start = builder.start.context("VEVENT is missing DTSTART")?;
-    let default_duration = if start.all_day { 86_400_000 } else { 3_600_000 };
+    let default_duration = if start.all_day { 86_400_000 } else { 0 };
     let end = builder.end.unwrap_or_else(|| ParsedTime {
         unix_ms: start.unix_ms + default_duration,
         date: start.date.as_deref().and_then(|date| {
@@ -212,7 +219,15 @@ fn finish_event(
     } else {
         builder.title
     };
+    anyhow::ensure!(
+        start.all_day == end.all_day,
+        "incompatible DTSTART/DTEND modes"
+    );
     anyhow::ensure!(end.unix_ms >= start.unix_ms, "DTEND precedes DTSTART");
+    anyhow::ensure!(
+        !start.all_day || end.unix_ms > start.unix_ms,
+        "empty all-day event"
+    );
     Ok(Some(ActivityEvent {
         id: format!("{}:{uid}:{}", source.id, start.unix_ms),
         source_id: source.id.clone(),
@@ -267,28 +282,25 @@ fn parse_time(key_and_params: &str, value: &str) -> Result<ParsedTime> {
 
     let naive = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M"))?;
-    let unix_ms = if let Some(name) = timezone.as_deref() {
-        let zone: Tz = name
-            .parse()
-            .with_context(|| format!("parse timezone {name}"))?;
-        zone.from_local_datetime(&naive)
-            .earliest()
-            .context("local calendar time does not exist")?
-            .with_timezone(&Utc)
-            .timestamp_millis()
-    } else {
-        Local
-            .from_local_datetime(&naive)
-            .earliest()
-            .context("local calendar time does not exist")?
-            .with_timezone(&Utc)
-            .timestamp_millis()
-    };
+    let timezone = timezone
+        .or_else(|| std::env::var("TZ").ok())
+        .or_else(|| iana_time_zone::get_timezone().ok())
+        .context("system IANA timezone unavailable for floating calendar time")?;
+    let zone: Tz = timezone
+        .trim_start_matches(':')
+        .parse()
+        .with_context(|| format!("parse timezone {timezone}"))?;
+    let unix_ms = zone
+        .from_local_datetime(&naive)
+        .single()
+        .context("local calendar time is nonexistent or ambiguous; use an explicit UTC instant")?
+        .with_timezone(&Utc)
+        .timestamp_millis();
     Ok(ParsedTime {
         unix_ms,
         date: None,
         all_day: false,
-        timezone,
+        timezone: Some(zone.name().into()),
     })
 }
 
@@ -336,6 +348,10 @@ mod tests {
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:meeting\nSUMMARY:Team\n  meeting\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nACTION:EMAIL\nTRIGGER:-PT15M\nSUMMARY:Reminder\nDESCRIPTION:Meeting soon\nATTENDEE:mailto:person@example.com\nEND:VALARM\nEND:VEVENT\nBEGIN:VEVENT\nSTATUS:CANCELLED\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260116\nEND:VEVENT\nEND:VCALENDAR\n").unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].title, "Team meeting");
+        assert_eq!(
+            events[0].start_unix_ms, events[0].end_unix_ms,
+            "VEVENT without DTEND is an instant, not a fabricated hour"
+        );
         assert!(events[0].id.contains(":meeting:"));
         assert_eq!(events[1].title, "Untitled event");
         assert_eq!(events[1].start_date.as_deref(), Some("2026-01-16"));
@@ -355,6 +371,11 @@ mod tests {
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Missing start\nEND:VEVENT\nEND:VCALENDAR\n",
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:invalid\nEND:VEVENT\nEND:VCALENDAR\n",
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nDTEND:invalid\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nRRULE:FREQ=DAILY\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;TZID=Europe/Berlin:20260329T023000\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;TZID=Europe/Berlin:20261025T023000\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260115\nDTEND:20260116T090000Z\nEND:VEVENT\nEND:VCALENDAR\n",
+            "BEGIN:VCALENDAR\nBEGIN:VTODO\nSUMMARY:Unsupported imported task\nEND:VTODO\nEND:VCALENDAR\n",
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260115T090000Z\nBEGIN:VALARM\nEND:VEVENT\nEND:VCALENDAR\n",
         ] {
             assert!(parse(contents).is_err(), "{contents}");

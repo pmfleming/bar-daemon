@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 
 mod activity_fixtures;
 pub(crate) mod activity_wire;
+pub(crate) mod agenda_wire;
 pub(crate) mod audio_wire;
 mod battery_fixtures;
 pub(crate) mod battery_wire;
@@ -151,6 +152,14 @@ pub const METHODS: &[&str] = &[
     "bar.snapshot",
     "activity.queryRange",
     "activity.refresh",
+    "agenda.list",
+    "agenda.get",
+    "agenda.create",
+    "agenda.patch",
+    "agenda.delete",
+    "agenda.markers",
+    "agenda.receipt",
+    "agenda.schedule",
     "locations.search",
     "locations.add",
     "locations.remove",
@@ -249,6 +258,14 @@ pub fn registry() -> Value {
             { "name": "bar.snapshot", "params": {}, "optional_params": { "streams": "registered stream names; omitted means full snapshot" }, "result": "snapshot" },
             { "name": "activity.queryRange", "params": { "from_unix_ms": 1767225600000_i64, "to_unix_ms": 1769904000000_i64 }, "result": "activity_range" },
             { "name": "activity.refresh", "params": {}, "result": "activity" },
+            { "name": "agenda.list", "params": {"query":"", "day":null, "cursor":null, "limit":100}, "result":"items,next_cursor,catalog_revision,today,timezone" },
+            { "name": "agenda.get", "params": {"id":"local-1"}, "result":"item,catalog_revision" },
+            { "name": "agenda.create", "params": {"request_id":"create-1", "item":{"kind":"event","title":"Plan release"}}, "result":"item,catalog_revision,request_id" },
+            { "name": "agenda.patch", "params": {"request_id":"patch-1", "id":"local-1", "expected_revision":1, "patch":{"title":"Release"}}, "result":"item,catalog_revision,request_id" },
+            { "name": "agenda.delete", "params": {"request_id":"delete-1", "id":"local-1", "expected_revision":1}, "result":"item,deleted_id,catalog_revision,request_id" },
+            { "name": "agenda.markers", "params": {"from_date":"2026-10-01","to_date":"2026-10-31"}, "result":"days,catalog_revision,today,timezone" },
+            { "name": "agenda.receipt", "params": {"request_id":"create-1"}, "result":"receipt" },
+            { "name": "agenda.schedule", "params": {"mode":"timed","start_text":"2026-10-27T10:00:00+01:00","end_text":"","timezone":"Europe/Berlin"}, "result":"schedule" },
             { "name": "locations.search", "params": {"query":"string"}, "result": "places" },
             { "name": "locations.add", "params": {"place":"object", "revision":"integer"}, "result": "activity" },
             { "name": "locations.remove", "params": {"id":"string", "revision":"integer"}, "result": "activity" },

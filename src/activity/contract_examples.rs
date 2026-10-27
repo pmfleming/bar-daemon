@@ -17,7 +17,14 @@ pub(crate) fn empty_range() -> ActivityRange {
             .with_ymd_and_hms(2026, 1, 20, 0, 0, 0)
             .unwrap()
             .timestamp_millis(),
-        days: day::project(&[], &[], first, last, first, &Utc),
+        days: day::project(
+            &[],
+            &[],
+            first,
+            last,
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            &Utc,
+        ),
         local_date: "2026-01-15".into(),
         ..Default::default()
     }

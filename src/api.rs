@@ -121,7 +121,7 @@ impl ApiService {
             "bar.snapshot" => self.snapshot(params).await,
             "theme.configure" | "theme.resolve" => self.theme(method, params).await,
             method
-                if ["activity.", "locations.", "location.", "todos."]
+                if ["agenda.", "activity.", "locations.", "location.", "todos."]
                     .iter()
                     .any(|prefix| method.starts_with(prefix)) =>
             {

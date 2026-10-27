@@ -8,6 +8,17 @@ use crate::{
 use serde_json::Value;
 use std::sync::Arc;
 
+// Once admitted, a mutation owns commit + cache publication independently of
+// the transport waiter. Dropping a socket/D-Bus request must not cancel that
+// publication after the database has committed.
+async fn finish_mutation<T: Send + 'static>(
+    operation: impl std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+) -> anyhow::Result<T> {
+    tokio::spawn(operation).await.map_err(|error| {
+        anyhow::anyhow!("agenda mutation owner failed; resolve outcome by receipt: {error}")
+    })?
+}
+
 pub(super) struct ActivityApi {
     state: StateStore,
     activity: Arc<ActivityService>,
@@ -18,6 +29,13 @@ impl ActivityApi {
     }
     pub(super) async fn dispatch(&self, method: &str, params: Value) -> Value {
         let result = match method {
+            "agenda.list" | "agenda.get" | "agenda.create" | "agenda.patch" | "agenda.delete"
+            | "agenda.markers" | "agenda.receipt" | "agenda.schedule" => {
+                return match self.agenda(method, params).await {
+                    Ok(data) => super::success(data),
+                    Err(error) => super::error("agenda-error", error.to_string()),
+                };
+            }
             "activity.queryRange" => return self.activity_query_range(params).await,
             "activity.refresh" => return self.activity_refresh().await,
             "todos.create" => return self.todo_create(params).await,
@@ -35,6 +53,66 @@ impl ActivityApi {
             Ok(data) => super::success(data),
             Err(error) => super::error("location-error", error.to_string()),
         }
+    }
+
+    async fn agenda(&self, method: &str, params: Value) -> anyhow::Result<Value> {
+        use crate::protocol::agenda_wire::*;
+        let activity = Arc::clone(&self.activity);
+        Ok(match method {
+            "agenda.schedule" => {
+                serde_json::json!({"schedule":crate::activity::agenda_schedule::parse(serde_json::from_value(params)?)?})
+            }
+            "agenda.list" => serde_json::to_value(
+                self.activity
+                    .agenda_list(serde_json::from_value(params)?)
+                    .await?,
+            )?,
+            "agenda.markers" => serde_json::to_value(
+                self.activity
+                    .agenda_markers(serde_json::from_value(params)?)
+                    .await?,
+            )?,
+            "agenda.get" => {
+                let request: Get = serde_json::from_value(params)?;
+                self.activity.agenda_get(&request.id).await?
+            }
+            "agenda.receipt" => {
+                let request: Receipt = serde_json::from_value(params)?;
+                self.activity.agenda_receipt(request.request_id).await?
+            }
+            "agenda.create" => {
+                let r: Create = serde_json::from_value(params)?;
+                serde_json::to_value(
+                    finish_mutation(
+                        async move { activity.agenda_create(r.request_id, r.item).await },
+                    )
+                    .await?,
+                )?
+            }
+            "agenda.patch" => {
+                let r: Patch = serde_json::from_value(params)?;
+                serde_json::to_value(
+                    finish_mutation(async move {
+                        activity
+                            .agenda_patch(r.request_id, r.id, r.expected_revision, r.patch)
+                            .await
+                    })
+                    .await?,
+                )?
+            }
+            "agenda.delete" => {
+                let r: Delete = serde_json::from_value(params)?;
+                serde_json::to_value(
+                    finish_mutation(async move {
+                        activity
+                            .agenda_delete(r.request_id, r.id, r.expected_revision)
+                            .await
+                    })
+                    .await?,
+                )?
+            }
+            _ => anyhow::bail!("unsupported agenda method"),
+        })
     }
 
     async fn locations(&self, method: &str, params: Value) -> anyhow::Result<Value> {
@@ -94,33 +172,45 @@ impl ActivityApi {
     }
     async fn todo_create(&self, params: Value) -> Value {
         let request = request!(params, CreateTodoRequest, "todos.create");
+        let activity = Arc::clone(&self.activity);
         activity_wire::todo(
-            self.activity
-                .create_todo(
-                    request.title,
-                    request.due_unix_ms,
-                    request.due_date,
-                    request.priority,
-                )
-                .await,
+            finish_mutation(async move {
+                activity
+                    .create_todo(
+                        request.title,
+                        request.due_unix_ms,
+                        request.due_date,
+                        request.priority,
+                    )
+                    .await
+            })
+            .await,
             Failure::Create,
         )
     }
     async fn todo_complete(&self, params: Value) -> Value {
         let request = request!(params, CompleteTodoRequest, "todos.complete");
+        let activity = Arc::clone(&self.activity);
         activity_wire::todo(
-            self.activity
-                .complete_todo(&request.id, request.completed)
-                .await,
+            finish_mutation(
+                async move { activity.complete_todo(&request.id, request.completed).await },
+            )
+            .await,
             Failure::Complete,
         )
     }
     async fn todo_delete(&self, params: Value) -> Value {
         let request = request!(params, TodoRequest, "todos.delete");
-        let result = self.activity.delete_todo(&request.id).await;
+        let activity = Arc::clone(&self.activity);
+        let id = request.id.clone();
+        let result = finish_mutation(async move { activity.delete_todo(&id).await }).await;
         activity_wire::deleted(request.id, result)
     }
 }
+
+#[cfg(test)]
+#[path = "agenda_tests.rs"]
+mod agenda_tests;
 
 #[cfg(test)]
 mod tests {
@@ -191,7 +281,7 @@ mod tests {
         // IDs/timestamps are allocated by the live service, not fixture constants.
         let id = created["data"]["todo"]["id"].as_str().unwrap();
         let timestamp = &created["data"]["todo"]["created_unix_ms"];
-        assert!(id.starts_with("local-"));
+        assert!(id.starts_with("local:"));
         assert!(timestamp.as_i64().unwrap() > 0);
         expected["data"]["todo"]["id"] = json!(id);
         expected["data"]["todo"]["created_unix_ms"] = timestamp.clone();
@@ -216,17 +306,16 @@ mod tests {
         let range = api
             .activity_query_range(cases["range"]["params"].clone())
             .await;
-        assert_eq!(
-            range["data"]["activity_range"]["todos"],
-            json!([expected["data"]["todo"].clone()])
-        );
-        assert_eq!(
-            range["data"]["activity_range"]["days"]["2026-01-15"]["todo_ids"],
-            json!([id])
-        );
+        assert_eq!(range["data"]["activity_range"]["todos"], json!([]));
+        let catalog = api.dispatch("agenda.list", json!({})).await;
+        assert_eq!(catalog["data"]["items"][0]["id"], id);
         assert_eq!(state.snapshot().await.activity.incomplete_todo_count, 1);
-        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(persisted.as_array().unwrap().len(), 1);
+        assert!(
+            !path.exists(),
+            "legacy JSON must not be created or dual-written"
+        );
+        let persisted = api.activity.data_snapshot_for_test().await;
+        assert_eq!(persisted.items.len(), 1);
         assert_eq!(
             api.todo_delete(json!({"id":id})).await,
             crate::api::success(json!({"deleted":id}))
@@ -254,7 +343,7 @@ mod tests {
             api.dispatch("activity.refresh", json!({})).await["ok"],
             true
         );
-        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(persisted, json!([]));
+        assert!(!path.exists());
+        assert!(api.activity.data_snapshot_for_test().await.items.is_empty());
     }
 }

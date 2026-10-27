@@ -9,6 +9,8 @@ pub(crate) struct ActivityState {
     pub syncing: bool,
     pub event_count: u32,
     pub incomplete_todo_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agenda: Option<super::agenda::CatalogInfo>,
     pub next_event: Option<ActivityEvent>,
     pub sources: Vec<ActivitySourceState>,
     pub world_clocks: Vec<WorldClockState>,

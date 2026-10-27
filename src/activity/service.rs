@@ -1,10 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicU64},
     time::Duration,
 };
 
@@ -13,6 +10,9 @@ use chrono::{Local, TimeZone};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{state::StateStore, time::unix_ms_i64 as unix_ms};
+
+#[path = "agenda_service.rs"]
+mod agenda_service;
 
 use super::{
     config::{self, ActivityConfig},
@@ -30,7 +30,11 @@ struct ActivityData {
     events_by_source: HashMap<String, Vec<ActivityEvent>>,
     source_states: HashMap<String, ActivitySourceState>,
     todos: Vec<TodoItem>,
-    // A failed load must never turn into an empty, writable store.
+    // Accepted snapshot only; Turso is the single writable persistence owner.
+    agenda_store: Option<super::agenda_store::Store>,
+    agenda_snapshot: Option<super::agenda_store::model::Snapshot>,
+    import_revision: u64,
+    agenda_catalog: Option<super::agenda::CachedCatalog>,
     todo_error: Option<String>,
     weather: WeatherState,
     weather_locations: Vec<WeatherState>,
@@ -71,11 +75,21 @@ impl ActivityService {
         config_path: PathBuf,
         todo_path: PathBuf,
     ) -> Arc<Self> {
-        let (todos, todo_error) = match config::load_todos(&todo_path).await {
-            Ok(todos) => (todos, None),
+        let opened = Self::open_agenda(&todo_path).await;
+        let (agenda_store, agenda_snapshot, todos, todo_error) = match opened {
+            Ok((store, snapshot)) => {
+                let todos = snapshot
+                    .items
+                    .iter()
+                    .filter_map(super::agenda_adapter::todo)
+                    .collect();
+                (Some(store), Some(snapshot), todos, None)
+            }
             Err(error) => (
+                None,
+                None,
                 Vec::new(),
-                Some(format!("Local todo store is unavailable: {error:#}")),
+                Some(format!("Agenda store unavailable: {error:#}")),
             ),
         };
         let catalog_path = todo_path.with_file_name("locations.json");
@@ -99,6 +113,8 @@ impl ActivityService {
         let service = Arc::new(Self {
             data: RwLock::new(ActivityData {
                 todos,
+                agenda_store,
+                agenda_snapshot,
                 todo_error,
                 catalog,
                 catalog_error,
@@ -118,25 +134,41 @@ impl ActivityService {
         service
     }
 
-    // Caller holds todo_guard so recovery cannot replace an in-flight mutation.
-    // Retry only failed loads; successful in-memory state remains authoritative.
-    async fn writable_todos(&self) -> Result<Vec<TodoItem>> {
-        let data = self.data.read().await;
-        if data.todo_error.is_none() {
-            return Ok(data.todos.clone());
+    async fn open_agenda(
+        path: &std::path::Path,
+    ) -> Result<(
+        super::agenda_store::Store,
+        super::agenda_store::model::Snapshot,
+    )> {
+        let store =
+            super::agenda_store::Store::open(path.with_file_name("agenda"), Some(path.to_owned()))
+                .await?;
+        let snapshot = store.snapshot().await?;
+        Ok((store, snapshot))
+    }
+
+    // Caller holds todo_guard. Only failed startup is retried, never an
+    // uncertain mutation, and successful owners are never silently reopened.
+    async fn writable_agenda(&self) -> Result<super::agenda_store::Store> {
+        if let Some(store) = &self.data.read().await.agenda_store {
+            return Ok(store.clone());
         }
-        drop(data);
-        match config::load_todos(&self.todo_path).await {
-            Ok(todos) => {
+        match Self::open_agenda(&self.todo_path).await {
+            Ok((store, snapshot)) => {
                 let mut data = self.data.write().await;
-                data.todos = todos.clone();
+                data.todos = snapshot
+                    .items
+                    .iter()
+                    .filter_map(super::agenda_adapter::todo)
+                    .collect();
+                data.agenda_snapshot = Some(snapshot);
+                data.agenda_store = Some(store.clone());
                 data.todo_error = None;
-                Ok(todos)
+                Ok(store)
             }
             Err(error) => {
-                let message = format!("Local todo store is unavailable: {error:#}");
+                let message = format!("Agenda store unavailable: {error:#}");
                 self.data.write().await.todo_error = Some(message.clone());
-                self.publish_state(None).await;
                 bail!(message)
             }
         }
@@ -150,9 +182,18 @@ impl ActivityService {
     }
 
     async fn monitor_clock(&self) {
+        let mut clock_check = tokio::time::interval(Duration::from_secs(1));
+        clock_check.tick().await;
+        let mut previous = (chrono::Utc::now(), std::time::Instant::now());
         loop {
-            tokio::time::sleep(super::presentation::next_minute(chrono::Utc::now())).await;
-            self.publish_clock(chrono::Utc::now()).await;
+            tokio::select! {
+                _ = tokio::time::sleep(super::presentation::next_minute(chrono::Utc::now())) => self.publish_clock(chrono::Utc::now()).await,
+                _ = clock_check.tick() => {
+                    let now = chrono::Utc::now();
+                    if clock_shifted(previous.0,previous.1.elapsed(),now) { self.publish_clock(now).await; }
+                    previous = (now,std::time::Instant::now());
+                }
+            }
         }
     }
 
@@ -161,13 +202,15 @@ impl ActivityService {
         let _publication = self.publication_guard.lock().await;
         let mut state = self.state.read(|s| s.activity.clone()).await;
         super::presentation::update(&mut state, now);
+        state.agenda = self.agenda_info_at(now).await;
         self.state.update_activity(state).await;
     }
 
     async fn monitor_sources(self: Arc<Self>) {
-        let mut events = self
-            .state
-            .subscribe_domains(&[crate::protocol::stream::TIMEZONE]);
+        let mut events = self.state.subscribe_domains(&[
+            crate::protocol::stream::TIMEZONE,
+            crate::protocol::stream::POWER_SLEEP,
+        ]);
         self.refresh().await;
         let mut refresh = tokio::time::interval(Duration::from_secs(60));
         refresh.tick().await;
@@ -176,6 +219,7 @@ impl ActivityService {
                 _ = refresh.tick() => self.refresh().await,
                 event = events.recv() => match event {
                     Ok(event) if event.stream == crate::protocol::stream::TIMEZONE => self.publish_state(None).await,
+                    Ok(event) if event.stream == crate::protocol::stream::POWER_SLEEP => self.publish_clock(chrono::Utc::now()).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.publish_state(None).await,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     _ => {},
@@ -207,7 +251,7 @@ impl ActivityService {
         {
             let _guard = self.todo_guard.lock().await;
             let needs_recovery = self.data.read().await.todo_error.is_some();
-            if needs_recovery && let Err(error) = self.writable_todos().await {
+            if needs_recovery && let Err(error) = self.writable_agenda().await {
                 tracing::warn!(%error, "local todo store recovery failed");
             }
         }
@@ -225,16 +269,12 @@ impl ActivityService {
             .iter()
             .map(|source| source.id.as_str())
             .collect::<BTreeSet<_>>();
-        {
-            let mut data = self.data.write().await;
-            // Saved cities are imported once. Config refresh must not resurrect removals.
-            data.config = config.clone();
-            data.events_by_source
-                .retain(|source_id, _| configured_ids.contains(source_id.as_str()));
-            data.source_states
-                .retain(|source_id, _| configured_ids.contains(source_id.as_str()));
-        }
-
+        let (mut imports, mut source_states) = {
+            let data = self.data.read().await;
+            (data.events_by_source.clone(), data.source_states.clone())
+        };
+        imports.retain(|id, _| configured_ids.contains(id.as_str()));
+        source_states.retain(|id, _| configured_ids.contains(id.as_str()));
         let mut first_error = None;
         let calendar_results = futures::future::join_all(
             config
@@ -244,22 +284,20 @@ impl ActivityService {
         )
         .await;
         for (source, result) in calendar_results {
-            let mut data = self.data.write().await;
             let error = match result {
                 Ok(events) => {
-                    data.events_by_source.insert(source.id.clone(), events);
+                    imports.insert(source.id.clone(), events);
                     None
                 }
-                Err(error) => Some(error.to_string()),
+                Err(error) => Some(format!("{error:#}")),
             };
             first_error = first_error.or_else(|| error.clone());
-            let item_count = data
-                .events_by_source
+            let item_count = imports
                 .get(&source.id)
                 .map_or(0, Vec::len)
                 .try_into()
                 .unwrap_or(u32::MAX);
-            data.source_states.insert(
+            source_states.insert(
                 source.id.clone(),
                 ActivitySourceState {
                     id: source.id.clone(),
@@ -270,6 +308,28 @@ impl ActivityService {
                     error,
                 },
             );
+        }
+        if let Err(error) = self.accept_calendar_imports(imports).await {
+            let message =
+                format!("Calendar acceptance failed; retained previous import: {error:#}");
+            first_error = Some(message.clone());
+            let accepted = self.data.read().await;
+            for source in source_states.values_mut() {
+                source.available = false;
+                source.item_count = accepted
+                    .events_by_source
+                    .get(&source.id)
+                    .map_or(0, Vec::len)
+                    .try_into()
+                    .unwrap_or(u32::MAX);
+                source.error = Some(message.clone());
+            }
+        }
+        {
+            let mut data = self.data.write().await;
+            // Saved cities remain independently owned; calendar refresh never rewrites config.
+            data.config = config.clone();
+            data.source_states = source_states;
         }
         self.refresh_weather(&config).await;
         self.publish_state(first_error).await;
@@ -389,30 +449,71 @@ impl ActivityService {
     ) -> Result<ActivityRange> {
         let range = super::day::QueryRange::new(from_unix_ms, to_unix_ms, &timezone)?;
         let data = self.data.read().await;
-        let mut events = data
+        anyhow::ensure!(data.todo_error.is_none(), "Agenda store unavailable");
+        let snapshot = data
+            .agenda_snapshot
+            .as_ref()
+            .context("Agenda store unavailable")?;
+        let imported: HashMap<_, _> = data
             .events_by_source
             .values()
             .flatten()
-            .filter(|event| range.includes_event(event))
-            .cloned()
+            .map(|event| (super::agenda_adapter::imported_id(event), event))
+            .collect();
+        let mut items = snapshot.items.clone();
+        items.extend(
+            imported
+                .values()
+                .map(|event| super::agenda_adapter::imported(event))
+                .collect::<Result<Vec<_>>>()?,
+        );
+        let today = chrono::Utc::now().with_timezone(&timezone).date_naive();
+        let projection = super::agenda_projection::Projection {
+            today,
+            zone: timezone,
+        };
+        let catalog = super::agenda::Catalog::new(items, &projection);
+        let items = &catalog.items;
+        let mut days = std::collections::BTreeMap::new();
+        let mut ids = BTreeSet::new();
+        for day in std::iter::successors(Some(range.first), |d| d.succ_opt())
+            .take_while(|d| *d <= range.last)
+        {
+            let mut membership = super::model::ActivityDay::default();
+            for item in catalog.on_day(day, projection.bounds(day)) {
+                ids.insert(item.id.clone());
+                match item.kind {
+                    super::agenda_store::model::ItemKind::Event => membership.event_ids.push(
+                        imported
+                            .get(&item.id)
+                            .map_or_else(|| item.id.clone(), |event| event.id.clone()),
+                    ),
+                    super::agenda_store::model::ItemKind::Task => {
+                        membership.todo_ids.push(item.id.clone())
+                    }
+                }
+            }
+            membership.event_ids.sort();
+            membership.todo_ids.sort();
+            days.insert(day.to_string(), membership);
+        }
+        let mut events = items
+            .iter()
+            .filter(|i| ids.contains(&i.id))
+            .filter_map(|i| {
+                if let Some(event) = imported.get(&i.id) {
+                    Some((*event).clone())
+                } else {
+                    super::agenda_adapter::legacy_event(i, &projection)
+                }
+            })
             .collect::<Vec<_>>();
         events.sort_by(ActivityEvent::chronological_cmp);
-        let mut todos = data
-            .todos
+        let todos = items
             .iter()
-            .filter(|todo| range.includes_todo(todo))
-            .cloned()
+            .filter(|i| ids.contains(&i.id))
+            .filter_map(super::agenda_adapter::todo)
             .collect::<Vec<_>>();
-        todos.sort_by_key(|todo| {
-            (
-                todo.completed,
-                todo.due_unix_ms.unwrap_or(i64::MAX),
-                std::cmp::Reverse(todo.priority),
-                todo.created_unix_ms,
-            )
-        });
-        let today = chrono::Utc::now().with_timezone(&timezone).date_naive();
-        let days = super::day::project(&events, &todos, range.first, range.last, today, &timezone);
         let busy_dates = days
             .iter()
             .filter(|(_, day)| !day.event_ids.is_empty() || !day.todo_ids.is_empty())
@@ -429,93 +530,47 @@ impl ActivityService {
         })
     }
 
-    pub(crate) async fn create_todo(
-        &self,
-        title: String,
-        due_unix_ms: Option<i64>,
-        due_date: Option<String>,
-        priority: u8,
-    ) -> Result<TodoItem> {
-        let title = title.trim();
-        if title.is_empty() {
-            bail!("todo title cannot be empty");
-        }
-        if priority > 9 {
-            bail!("todo priority must be between 0 and 9");
-        }
-        if let Some(date) = due_date.as_deref() {
-            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .with_context(|| format!("parse todo due date {date}"))?;
-        }
-        let now = unix_ms();
-        self.mutate_todos(|todos| {
-            let todo = TodoItem {
-                id: format!(
-                    "local-{now}-{}",
-                    self.todo_sequence.fetch_add(1, Ordering::Relaxed)
-                ),
-                source_id: "local".into(),
-                title: title.into(),
-                completed: false,
-                priority,
-                due_unix_ms,
-                due_date,
-                created_unix_ms: now,
-                completed_unix_ms: None,
-            };
-            todos.push(todo.clone());
-            Ok(todo)
-        })
-        .await
-    }
-
-    pub(crate) async fn complete_todo(&self, id: &str, completed: bool) -> Result<TodoItem> {
-        self.mutate_todos(|todos| {
-            let todo = todos
-                .iter_mut()
-                .find(|todo| todo.id == id)
-                .with_context(|| format!("todo {id} was not found"))?;
-            todo.completed = completed;
-            todo.completed_unix_ms = completed.then(unix_ms);
-            Ok(todo.clone())
-        })
-        .await
-    }
-
-    pub(crate) async fn delete_todo(&self, id: &str) -> Result<()> {
-        self.mutate_todos(|todos| {
-            let previous = todos.len();
-            todos.retain(|todo| todo.id != id);
-            anyhow::ensure!(todos.len() != previous, "todo {id} was not found");
-            Ok(())
-        })
-        .await
-    }
-
-    // Keep the published snapshot intact until the candidate is durably saved.
-    async fn mutate_todos<T>(
-        &self,
-        mutate: impl FnOnce(&mut Vec<TodoItem>) -> Result<T>,
-    ) -> Result<T> {
-        let _guard = self.todo_guard.lock().await;
-        let mut todos = self.writable_todos().await?;
-        let result = mutate(&mut todos)?;
-        config::save_todos(&self.todo_path, &todos).await?;
-        self.data.write().await.todos = todos;
-        self.publish_state(None).await;
-        Ok(result)
-    }
-
     async fn publish_state(&self, error: Option<String>) {
         let _publication = self.publication_guard.lock().await;
+        let agenda = self.agenda_info().await;
         let data = self.data.read().await;
         let now = unix_ms();
         let events = data.events_by_source.values().flatten();
-        let next_event = events
+        let mut next_event = events
             .clone()
             .filter(|event| event.end_unix_ms >= now)
             .min_by_key(|event| event.start_unix_ms)
             .cloned();
+        let local_event_count = data.agenda_snapshot.as_ref().map_or(0, |s| {
+            s.items
+                .iter()
+                .filter(|i| i.kind == super::agenda_store::model::ItemKind::Event)
+                .count()
+        });
+        let event_count = events.count().saturating_add(local_event_count);
+        if let Some(info) = &agenda
+            && let (Ok(today), Ok(zone)) = (
+                super::agenda_projection::date(&info.today),
+                info.timezone.parse::<chrono_tz::Tz>(),
+            )
+            && let Some(snapshot) = &data.agenda_snapshot
+        {
+            let p = super::agenda_projection::Projection { today, zone };
+            let local_next = snapshot
+                .items
+                .iter()
+                .filter(|item| {
+                    item.kind == super::agenda_store::model::ItemKind::Event
+                        && p.membership(&item.schedule).is_some()
+                })
+                .filter_map(|item| super::agenda_adapter::legacy_event(item, &p))
+                .filter(|event| event.end_unix_ms >= now)
+                .min_by(ActivityEvent::chronological_cmp);
+            next_event = next_event
+                .into_iter()
+                .chain(local_next)
+                .min_by(ActivityEvent::chronological_cmp);
+        }
         let sources: Vec<ActivitySourceState> = data
             .config
             .calendar_sources
@@ -552,7 +607,7 @@ impl ActivityService {
         let mut state = ActivityState {
             available: true,
             syncing: false,
-            event_count: events.count().try_into().unwrap_or(u32::MAX),
+            event_count: event_count.try_into().unwrap_or(u32::MAX),
             incomplete_todo_count: data
                 .todos
                 .iter()
@@ -561,6 +616,7 @@ impl ActivityService {
                 .try_into()
                 .unwrap_or(u32::MAX),
             next_event,
+            agenda,
             sources,
             world_clocks,
             locations: Vec::new(),
@@ -588,6 +644,23 @@ impl ActivityService {
         super::presentation::update(&mut state, chrono::Utc::now());
         self.state.update_activity(state).await;
     }
+}
+
+// Compare civil wall time with monotonic elapsed time. A clock step (or resume
+// on systems whose monotonic clock pauses in sleep) must invalidate open views,
+// not merely wait for the next pre-step minute timer. No persisted dates change.
+fn clock_shifted(
+    previous: chrono::DateTime<chrono::Utc>,
+    elapsed: Duration,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let Ok(elapsed) = chrono::Duration::from_std(elapsed) else {
+        return true;
+    };
+    let Some(expected) = previous.checked_add_signed(elapsed) else {
+        return true;
+    };
+    (now - expected).num_milliseconds().unsigned_abs() > 250
 }
 
 #[cfg(test)]
@@ -634,6 +707,187 @@ mod tests {
                 .clock_display["time"],
             "03:00"
         );
+    }
+    #[test]
+    fn clock_step_detection_ignores_elapsed_time_but_catches_forward_and_backward_steps() {
+        let previous = chrono::DateTime::parse_from_rfc3339("2026-10-27T23:59:59Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let elapsed = std::time::Duration::from_secs(2);
+        assert!(!super::clock_shifted(
+            previous,
+            elapsed,
+            previous + chrono::Duration::seconds(2)
+        ));
+        assert!(super::clock_shifted(
+            previous,
+            elapsed,
+            previous + chrono::Duration::days(1)
+        ));
+        assert!(super::clock_shifted(
+            previous,
+            elapsed,
+            previous - chrono::Duration::hours(1)
+        ));
+    }
+    #[tokio::test]
+    async fn actual_resume_stream_republishes_projection_without_provider_or_store_writes() {
+        let directory = tempdir().unwrap();
+        let service = service_in(&directory).await;
+        service
+            .create_todo("Keep endpoint".into(), None, Some("2030-10-30".into()), 0)
+            .await
+            .unwrap();
+        let mut events = service
+            .state
+            .subscribe_domains(&[crate::protocol::stream::ACTIVITY]);
+        let monitor = tokio::spawn(std::sync::Arc::clone(&service).monitor_sources());
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                events.recv().await.unwrap();
+                if !service.state.read(|s| s.activity.syncing).await {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let before = service.data_snapshot_for_test().await;
+        let mut stale = service.state.read(|s| s.activity.clone()).await;
+        stale.agenda.as_mut().unwrap().today = "1900-01-01".into();
+        service.state.update_activity(stale).await;
+        service.state.record_resume().await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                events.recv().await.unwrap();
+                if service
+                    .state
+                    .read(|s| s.activity.agenda.as_ref().unwrap().today != "1900-01-01")
+                    .await
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let after = service.data_snapshot_for_test().await;
+        assert_eq!(before.catalog_revision, after.catalog_revision);
+        assert_eq!(before.items, after.items);
+        monitor.abort();
+        let _ = monitor.await;
+        service.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn explicit_receipt_reconciles_committed_but_unpublished_outcome_and_cache_gaps() {
+        let directory = tempdir().unwrap();
+        let service = service_in(&directory).await;
+        let store = service.data.read().await.agenda_store.clone().unwrap();
+        let item = |title| {
+            serde_json::from_value(serde_json::json!({"kind":"task","title":title})).unwrap()
+        };
+        // Simulate a completion lost after durable worker commit, before service
+        // publication. Receipt recovery is a read, never mutation replay.
+        let committed = store
+            .create("unpublished".into(), item("Recovered"))
+            .await
+            .unwrap();
+        assert!(service.data.read().await.todos.is_empty());
+        let receipt = service.agenda_receipt("unpublished".into()).await.unwrap();
+        assert_eq!(
+            receipt["receipt"],
+            serde_json::to_value(&committed).unwrap()
+        );
+        assert_eq!(service.data.read().await.todos.len(), 1);
+        let second = store
+            .create("second-unpublished".into(), item("Also recovered"))
+            .await
+            .unwrap();
+        let third = service
+            .agenda_create("third".into(), item("Normal mutation"))
+            .await
+            .unwrap();
+        assert!(third.catalog_revision > second.catalog_revision);
+        assert_eq!(
+            service.data.read().await.todos.len(),
+            3,
+            "revision gap reloads complete accepted snapshot"
+        );
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.incomplete_todo_count)
+                .await,
+            3
+        );
+        service.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn midnight_timezone_and_resume_refresh_projection_without_stored_endpoint_writes() {
+        use chrono::TimeZone;
+        let directory = tempdir().unwrap();
+        let service = service_in(&directory).await;
+        service
+            .state
+            .update_timezone(crate::model::TimezoneState {
+                timezone: "UTC".into(),
+                ..Default::default()
+            })
+            .await;
+        service
+            .create_todo("End only".into(), None, Some("2026-10-30".into()), 0)
+            .await
+            .unwrap();
+        let before = service.data_snapshot_for_test().await;
+        assert!(before.items[0].schedule.start_date.is_none());
+        service
+            .publish_clock(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 10, 27, 23, 59, 0)
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.agenda.as_ref().unwrap().today.clone())
+                .await,
+            "2026-10-27"
+        );
+        service
+            .publish_clock(chrono::Utc.with_ymd_and_hms(2026, 10, 28, 0, 0, 0).unwrap())
+            .await;
+        assert_eq!(
+            service
+                .state
+                .read(|s| s.activity.agenda.as_ref().unwrap().today.clone())
+                .await,
+            "2026-10-28"
+        );
+        service
+            .state
+            .update_timezone(crate::model::TimezoneState {
+                timezone: "Asia/Tokyo".into(),
+                ..Default::default()
+            })
+            .await;
+        service
+            .publish_clock(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 10, 28, 23, 30, 0)
+                    .unwrap(),
+            )
+            .await;
+        let info = service
+            .state
+            .read(|s| s.activity.agenda.clone().unwrap())
+            .await;
+        assert_eq!(info.today, "2026-10-29");
+        assert_eq!(info.timezone, "Asia/Tokyo");
+        let after = service.data_snapshot_for_test().await;
+        assert_eq!(after.catalog_revision, before.catalog_revision);
+        assert_eq!(after.items, before.items);
+        service.shutdown().await.unwrap();
     }
     #[tokio::test]
     async fn city_catalog_survives_bad_config_and_corruption_never_moves_home() {
@@ -732,15 +986,20 @@ mod tests {
                 .create_todo("New".into(), None, None, 0)
                 .await
                 .unwrap();
-            let stored = super::config::load_todos(&path).await.unwrap();
-            assert_eq!(stored.len(), 2);
-            assert_eq!(stored[0].id, "recoverable-task");
+            let store = service.data.read().await.agenda_store.clone().unwrap();
+            let stored = store.snapshot().await.unwrap();
+            assert_eq!(stored.items.len(), 2);
+            assert!(stored.items.iter().any(|i| i.id == "recoverable-task"));
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                recovered.to_string()
+            );
             assert!(state.snapshot().await.activity.error.is_none());
 
-            // A recovered load must not allow a later failed save to publish.
+            // A failed database owner never publishes an unconfirmed mutation.
             let before = state.snapshot().await.activity;
-            std::fs::remove_file(&path).unwrap();
-            std::fs::create_dir(&path).unwrap();
+            let accepted = service.data.read().await.todos.clone();
+            store.shutdown().await.unwrap();
             assert!(
                 service
                     .create_todo("Lost".into(), None, None, 0)
@@ -754,14 +1013,12 @@ mod tests {
                     .is_err()
             );
             assert!(service.delete_todo("recoverable-task").await.is_err());
-            assert_eq!(service.data.read().await.todos, stored);
+            assert_eq!(service.data.read().await.todos, accepted);
             assert_eq!(state.snapshot().await.activity, before);
-            std::fs::remove_dir(&path).unwrap();
-            service
-                .complete_todo("recoverable-task", true)
-                .await
-                .unwrap();
-            assert!(super::config::load_todos(&path).await.unwrap()[0].completed);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                recovered.to_string()
+            );
         }
     }
 
@@ -777,11 +1034,21 @@ mod tests {
             .create_todo("Keep me".into(), None, None, 3)
             .await
             .unwrap();
+        service
+            .data
+            .read()
+            .await
+            .agenda_store
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
+        drop(service);
         let service = ActivityService::with_paths(StateStore::default(), config, todos).await;
-        assert_eq!(
-            service.query_range(0, 1).await.unwrap().todos,
-            vec![todo.clone()]
-        );
+        // Unscheduled records persist but are list-only, never a calendar day.
+        assert!(service.query_range(0, 1).await.unwrap().todos.is_empty());
+        assert_eq!(service.data.read().await.todos, vec![todo.clone()]);
         assert!(
             service
                 .complete_todo(&todo.id, true)
@@ -847,8 +1114,17 @@ mod tests {
             ] {
                 ids.push(
                     service
-                        .create_todo(day.clone(), None, Some(day), 0)
+                        .agenda_create(
+                            format!("day-{zone}-{day}"),
+                            serde_json::from_value(serde_json::json!({
+                                "kind":"task", "title":day,
+                                "schedule":{"mode":"date","start_date":day,"end_date":day}
+                            }))
+                            .unwrap(),
+                        )
                         .await
+                        .unwrap()
+                        .item
                         .unwrap()
                         .id,
                 );
