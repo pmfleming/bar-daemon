@@ -71,6 +71,54 @@ fn persisted_preview_matches_rust_projection_and_replacement_is_atomic() {
 }
 
 #[test]
+fn byte_bounded_pages_progress_without_duplicates() {
+    block_on(async {
+        use super::super::history::{self, HistoryQuery};
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = NotificationStore::open(&dir.path().join("history.db"))
+            .await
+            .unwrap();
+        for id in 1..=12 {
+            let mut n = notification(id);
+            n.body = "é".repeat(30_000);
+            db.apply(Mutation::Save(Box::new(n))).await.unwrap();
+        }
+        let now = crate::time::unix_ms();
+        let mut query = HistoryQuery {
+            query: String::new(),
+            cursor: None,
+            anchor: None,
+            limit: 100,
+        };
+        let mut seen = Vec::new();
+        loop {
+            let before = query.position("epoch", 1, now).unwrap();
+            let records = db.query("", before, 100, &[]).await.unwrap();
+            let page = history::page(records, vec![], &query, before, "epoch", 1, now).unwrap();
+            assert!(
+                page.records
+                    .iter()
+                    .map(|r| serde_json::to_vec(r).unwrap().len())
+                    .sum::<usize>()
+                    <= PAGE_BYTES
+            );
+            assert!(!page.records.is_empty());
+            for record in page.records {
+                assert!(!seen.contains(&record.notification.id));
+                seen.push(record.notification.id);
+            }
+            query.cursor = page.next_cursor;
+            if query.cursor.is_none() {
+                break;
+            }
+            assert!(seen.len() < 12);
+        }
+        assert_eq!(seen.len(), 12);
+        db.checkpoint().await.unwrap();
+    });
+}
+
+#[test]
 fn center_does_not_decode_unselected_payloads_and_search_is_literal() {
     block_on(async {
         let dir = tempfile::tempdir().unwrap();

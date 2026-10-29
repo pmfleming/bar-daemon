@@ -129,9 +129,13 @@ impl NotificationStore {
         );
         for suffix in ["-wal", "-shm"] {
             let side = sidecar(path, suffix);
-            if side.try_exists()? {
-                ensure!(!fresh, "orphaned notification sidecar; choose a fresh path");
-                drop(private_file(&side, false, false)?);
+            match fs::symlink_metadata(&side) {
+                Ok(_) => {
+                    ensure!(!fresh, "orphaned notification sidecar; choose a fresh path");
+                    drop(private_file(&side, false, false)?);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
         let database = turso::Builder::new_local(
@@ -201,8 +205,12 @@ impl NotificationStore {
     fn harden_sidecars(&self) -> Result<()> {
         for suffix in ["-wal", "-shm"] {
             let path = sidecar(&self.path, suffix);
-            if path.try_exists()? {
-                drop(private_file(&path, false, false)?);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    drop(private_file(&path, false, false)?);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(())

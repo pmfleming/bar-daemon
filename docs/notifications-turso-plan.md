@@ -8,7 +8,7 @@ Replace notification persistence using `rusqlite` with the already-pinned embedd
 
 All new implementation and tests are Rust. QML remains presentation and command dispatch only; no new JavaScript modules, Python, shell migration scripts, C++, or external database CLI. SQL is limited to storage statements embedded in Rust, not application rules.
 
-This is a plan only; no runtime code has changed.
+**Implemented in five staged commits.** Operational details and qualification results are recorded in [notification storage and cutover](notifications-storage.md). The sections below retain the implementation checklist.
 
 ## Current code to retain
 

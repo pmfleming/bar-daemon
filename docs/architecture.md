@@ -18,16 +18,19 @@ The daemon claims `org.freedesktop.Notifications` by default. Set `BAR_DAEMON_NO
 
 ### Notification persistence backpressure
 
-The native engine reserves a slot in its bounded SQLite worker queue before
+The native engine reserves a slot in its bounded Turso worker queue before
 mutating memory. Saturation waits asynchronously rather than dropping saves,
 dismissals, or DND changes. Each engine operation batches its writes in order;
 a cancelled operation still enqueues already-applied mutations. A stopped
 worker rejects new mutations through the API. History queries wait for queue
 space and serve as a barrier for earlier completed operations.
 
-Enqueueing is not a SQLite durability acknowledgement: abrupt process termination
-can still lose queued work, and database write errors are logged. The queue
-protocol prevents overload-induced loss, not disk-failure or crash recovery.
+Enqueueing is not a durability acknowledgement: abrupt process termination can
+still lose queued work. The Turso 0.8.3 owner uses syscall I/O, FULL synchronization,
+explicit transactions, failure fences and clean-shutdown drain/checkpoint before
+releasing ownership. Rust builds previews and performs bounded search/projection;
+QML never owns database logic. The cutover starts a fresh versioned store with no
+legacy import. See [notification storage](notifications-storage.md).
 
 ## Domain integrations
 
@@ -42,7 +45,7 @@ protocol prevents overload-induced loss, not disk-failure or crash recovery.
 | Battery | Native power-supply sysfs plus udev events; temporary opt-in UPower adapter | Energy-weighted multi-battery telemetry, persistent alert policy, ThinkPad thresholds, crash-safe charge-once recovery |
 | Power profile | Standard Power Profiles system D-Bus (`power-profiles-daemon`, `tuned-ppd`, or `tlp-pd`) | Available-profile validation, optional battery-aware/actions capability discovery, active holds and degradation state |
 | OSD hardware | Linux LED class: hardware-change priority notifications plus a 50 ms cached-file fallback; hotplug rediscovery every 5 s | Normalized state only; no raw input access; Shelllist owns presentation |
-| Notifications | Native `org.freedesktop.Notifications` server with SQLite WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
+| Notifications | Native `org.freedesktop.Notifications` server with embedded Turso 0.8.3 WAL history; optional SwayNC adapter | Bounded ingress, replacement IDs, expiry, DND, actions/replies, compact summary and recoverable active state |
 | Updates | Delayed updater state-directory watcher | Complete-lane readiness validation |
 | Timezone | systemd-timedated system D-Bus | IANA city, abbreviation, and current offset |
 

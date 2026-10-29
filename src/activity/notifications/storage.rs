@@ -45,7 +45,7 @@ impl StoredPreview {
 const PREVIEW_BYTES: usize = 64 * 1024;
 
 fn integer(value: u64) -> Result<i64> {
-    Ok(i64::try_from(value).context("notification integer exceeds storage range")?)
+    i64::try_from(value).context("notification integer exceeds storage range")
 }
 
 impl NotificationStore {

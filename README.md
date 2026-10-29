@@ -45,9 +45,14 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Native Linux power-supply monitoring, ThinkPad charge protection, recoverable charge-once, health/cycle telemetry, and configurable deduplicated alerts
 - power-profiles-daemon state, driver metadata, degradation state, and validated profile changes
 - systemd-logind sleep capabilities, active inhibitors, confirmed lock-before-suspend/hibernate actions, shared/separate idle profiles, and read-only ThinkPad sleep diagnostics
-- Native Freedesktop notification server with expiry, actions, DND, active state, and persistent SQLite history; resilient SwayNC fallback adapter
+- Native Freedesktop notification server with expiry, actions, DND, active state, and embedded Turso 0.8.3 history; resilient SwayNC fallback adapter
 - Event-driven NixOS delayed-update readiness and read-only worker job status
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
+
+Notification storage now starts fresh in `notifications-turso-v1.db`; old SQLite
+history and settings are not imported. If `BAR_DAEMON_NOTIFICATION_DATABASE` is
+set, change it to a nonexistent file in a dedicated state directory before
+cutover. See [notification storage and cutover](docs/notifications-storage.md).
 
 Activity location clocks derive their current offset, abbreviation and map regions
 locally from IANA timezones at one projection instant, independently of weather

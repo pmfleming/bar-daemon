@@ -211,6 +211,32 @@ async fn cancelled_reservations_and_mutations_do_not_lose_accepted_writes() {
 }
 
 #[tokio::test]
+async fn shutdown_waits_for_reserved_writes_and_releases_ownership_before_reply() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("history.db");
+    let (store, _, _, _) = NotificationPersistence::open(&path).await.unwrap();
+    let mut writes = store.reserve().await.unwrap();
+    let closing = store.clone();
+    let shutdown = tokio::spawn(async move { closing.shutdown().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !store.commands.is_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!shutdown.is_finished());
+    writes.save(notification(1, false));
+    drop(writes);
+    shutdown.await.unwrap().unwrap();
+    assert!(store.reserve().await.is_err());
+    let (reopened, id, _, _) = NotificationPersistence::open(&path).await.unwrap();
+    assert_eq!(id, 1);
+    assert_eq!(reopened.list(None, 10).await.unwrap().len(), 1);
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn cancelled_once_waiter_still_commits_and_deduplicates() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("history.db");

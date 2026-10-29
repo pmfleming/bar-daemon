@@ -100,6 +100,34 @@ fn pragmas_constraints_integer_ranges_and_transaction_fences() {
 }
 
 #[test]
+fn refuses_newer_schema_and_symlinked_files_without_touching_targets() {
+    block_on(async {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let db = NotificationStore::open(&path).await.unwrap();
+        db.connection
+            .execute("PRAGMA user_version=99", ())
+            .await
+            .unwrap();
+        db.checkpoint().await.unwrap();
+        drop(db);
+        assert!(NotificationStore::open(&path).await.is_err());
+        let target = dir.path().join("untouched");
+        std::fs::write(&target, b"leave me alone").unwrap();
+        let link = dir.path().join("symlink.db");
+        symlink(&target, &link).unwrap();
+        assert!(NotificationStore::open(&link).await.is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"leave me alone");
+        let missing = dir.path().join("must-not-create");
+        let fresh = dir.path().join("orphan.db");
+        symlink(&missing, dir.path().join("orphan.db-wal")).unwrap();
+        assert!(NotificationStore::open(&fresh).await.is_err());
+        assert!(!missing.exists());
+    });
+}
+
+#[test]
 fn once_key_and_history_rollback_together_and_survive_deletion() {
     block_on(async {
         let dir = tempfile::tempdir().unwrap();
