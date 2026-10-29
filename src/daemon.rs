@@ -127,6 +127,14 @@ pub(crate) async fn run() -> Result<()> {
     }
     subscriptions.shutdown().await;
     tasks.shutdown().await;
+    if let Some(engine) = notification_engine {
+        result = result.and(
+            engine
+                .shutdown()
+                .await
+                .context("drain notification store on shutdown"),
+        );
+    }
     result.and(
         activity
             .shutdown()

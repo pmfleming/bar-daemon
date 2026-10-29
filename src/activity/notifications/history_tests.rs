@@ -81,6 +81,7 @@ async fn catalog_search_pages_and_mutation_restart_fences() {
             .await,
         Err(HistoryError::Stale)
     ));
+    engine.shutdown().await.unwrap();
     let restarted = NotificationEngine::persistent(StateStore::default(), path)
         .await
         .unwrap();
@@ -109,14 +110,13 @@ async fn catalog_search_pages_and_mutation_restart_fences() {
 
 #[tokio::test]
 async fn failed_persistence_never_labels_old_content_with_a_new_revision() {
-    let (_dir, path, engine) = NotificationEngine::persistent_fixture().await;
+    let (_dir, _path, engine) = NotificationEngine::persistent_fixture().await;
     let id = engine
         .notify(0, notification("Persisted", false))
         .await
         .unwrap();
     engine.query_history(query("", None, 10)).await.unwrap();
-    let connection = rusqlite::Connection::open(path).unwrap();
-    connection.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON notifications BEGIN SELECT RAISE(FAIL, 'simulated disk failure'); END;").unwrap();
+    engine.fail_next_save().await;
     engine
         .notify(id, notification("Transient", true))
         .await

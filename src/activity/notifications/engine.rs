@@ -190,10 +190,26 @@ impl NotificationEngine {
 
     pub(crate) async fn persistent(state: StateStore, path: PathBuf) -> Result<Arc<Self>> {
         let (persistence, last_id, dnd, dnd_until_unix_ms) =
-            tokio::task::spawn_blocking(move || NotificationPersistence::open(&path))
-                .await
-                .context("join notification database initialization")??;
+            NotificationPersistence::open(&path).await?;
         Self::build(state, Some(persistence), last_id, dnd, dnd_until_unix_ms).await
+    }
+
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        // Finish any mutation that has reserved a queue slot before closing admission.
+        let _mutation = self.mutations.lock().await;
+        if let Some(persistence) = &self.persistence {
+            persistence.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) async fn fail_next_save(&self) {
+        self.persistence
+            .as_ref()
+            .unwrap()
+            .inject_fault(super::database::Fault::Save)
+            .await;
     }
 
     async fn build(
@@ -1274,6 +1290,7 @@ mod tests {
         );
         engine.clear().await.unwrap();
         assert_eq!(engine.history(None, 100).await.unwrap().len(), 1);
+        engine.shutdown().await.unwrap();
         drop(engine);
         let engine = NotificationEngine::persistent(StateStore::default(), path)
             .await
@@ -1474,6 +1491,7 @@ mod tests {
             .map(|item| item.id)
             .max()
             .unwrap_or(0);
+        engine.shutdown().await.unwrap();
         drop(engine);
         let restarted = NotificationEngine::persistent(StateStore::default(), path)
             .await

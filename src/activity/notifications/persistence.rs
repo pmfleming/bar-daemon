@@ -1,22 +1,20 @@
-use std::{fs, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
-use rusqlite::{Connection, OptionalExtension, params};
+use futures::executor::block_on;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    center::{self, CenterPage, CenterQuery, Preview},
-    history::{CatalogRecord, PAGE_BYTES, Position, SCOPE_LIMIT, search_text},
+    center::{CenterPage, CenterQuery},
+    database::NotificationStore,
+    history::{CatalogRecord, Position},
     model::{ActiveNotification, HistoryNotification},
 };
 
 const QUEUE_CAPACITY: usize = 1024;
-// Keep the searchable window plus any older still-live conversations. Pruning
-// never invalidates an active notification/action; closing it makes it eligible.
-const RETAINED_HISTORY: usize = SCOPE_LIMIT;
 
 #[derive(Debug)]
-enum Mutation {
+pub(super) enum Mutation {
     Save(Box<ActiveNotification>),
     Close {
         id: u32,
@@ -85,6 +83,14 @@ enum PersistenceCommand {
         limit: usize,
         response: oneshot::Sender<Result<Vec<HistoryNotification>>>,
     },
+    Shutdown {
+        response: oneshot::Sender<Result<()>>,
+    },
+    #[cfg(test)]
+    Fault {
+        fault: super::database::Fault,
+        response: oneshot::Sender<Result<()>>,
+    },
 }
 
 #[derive(Clone)]
@@ -100,28 +106,46 @@ impl NotificationPersistence {
         Self { commands }
     }
 
-    pub(crate) fn open(path: &Path) -> Result<(Self, u32, bool, Option<u64>)> {
-        let store = NotificationStore::open(path)?;
-        let last_id = store.last_id()?;
-        store.remember_id(last_id)?;
-        // Persisted content is history, not a surviving D-Bus conversation.
-        // Do not replay old popups/actions after the server session restarts.
-        store.clear(
-            crate::time::unix_ms(),
-            super::model::close_reason::UNDEFINED,
-        )?;
-        store.prune()?;
-        let (dnd, dnd_until_unix_ms) = store.load_dnd()?;
+    pub(crate) async fn open(path: &Path) -> Result<(Self, u32, bool, Option<u64>)> {
+        let path = path.to_owned();
         let (commands, receiver) = mpsc::channel(QUEUE_CAPACITY);
+        let (ready_tx, ready_rx) = oneshot::channel();
         std::thread::Builder::new()
             .name("notification-history".into())
-            .spawn(move || persistence_worker(store, receiver))
+            .spawn(move || {
+                let opened = block_on(async {
+                    let mut store = NotificationStore::open(&path).await?;
+                    let last_id = store.last_id().await?;
+                    // Stored content is history, never a surviving D-Bus conversation.
+                    store
+                        .apply(Mutation::Clear {
+                            closed_unix_ms: crate::time::unix_ms(),
+                            reason: super::model::close_reason::UNDEFINED,
+                        })
+                        .await?;
+                    store.prune().await?;
+                    let (dnd, until) = store.load_dnd().await?;
+                    Ok::<_, anyhow::Error>((store, last_id, dnd, until))
+                });
+                match opened {
+                    Ok((store, last_id, dnd, until)) => {
+                        let _ = ready_tx.send(Ok((last_id, dnd, until)));
+                        persistence_worker(store, receiver);
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                    }
+                }
+            })
             .context("start notification persistence worker")?;
-        Ok((Self { commands }, last_id, dnd, dnd_until_unix_ms))
+        let (last_id, dnd, until) = ready_rx
+            .await
+            .context("notification persistence startup stopped")??;
+        Ok((Self { commands }, last_id, dnd, until))
     }
 
     // Reserve before changing engine state. A full queue applies async
-    // backpressure, and cancellation while waiting has no side effects.
+    // backpressure; cancellation while waiting has no side effects.
     pub(crate) async fn reserve(&self) -> Result<PendingWrites<'_>> {
         Ok(PendingWrites {
             permit: Some(
@@ -133,7 +157,6 @@ impl NotificationPersistence {
             mutations: Vec::new(),
         })
     }
-
     pub(crate) async fn settings(
         &self,
         value: Option<super::settings::Settings>,
@@ -141,12 +164,10 @@ impl NotificationPersistence {
         self.request(|response| PersistenceCommand::Settings { value, response })
             .await
     }
-
     pub(crate) async fn prune(&self) -> Result<usize> {
         self.request(|response| PersistenceCommand::Prune { response })
             .await
     }
-
     pub(crate) async fn save_once(
         &self,
         key: String,
@@ -159,7 +180,6 @@ impl NotificationPersistence {
         })
         .await
     }
-
     pub(crate) async fn targets(
         &self,
         app_key: Option<String>,
@@ -197,7 +217,6 @@ impl NotificationPersistence {
         self.request(|response| PersistenceCommand::Policies { response })
             .await
     }
-
     pub(crate) async fn center(
         &self,
         query: CenterQuery,
@@ -214,7 +233,6 @@ impl NotificationPersistence {
         })
         .await
     }
-
     pub(crate) async fn query(
         &self,
         query: String,
@@ -231,7 +249,6 @@ impl NotificationPersistence {
         })
         .await
     }
-
     pub(crate) async fn list(
         &self,
         before_history_id: Option<i64>,
@@ -244,7 +261,16 @@ impl NotificationPersistence {
         })
         .await
     }
-
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        self.request(|response| PersistenceCommand::Shutdown { response })
+            .await
+    }
+    #[cfg(test)]
+    pub(super) async fn inject_fault(&self, fault: super::database::Fault) {
+        self.request(|response| PersistenceCommand::Fault { fault, response })
+            .await
+            .unwrap();
+    }
     async fn request<T>(
         &self,
         command: impl FnOnce(oneshot::Sender<Result<T>>) -> PersistenceCommand,
@@ -260,19 +286,16 @@ impl NotificationPersistence {
     }
 }
 
-// One reserved slot covers a whole engine mutation (including eviction or
-// expiry). Drop enqueues synchronously, even if publication is cancelled after
-// the in-memory change. The engine mutation lock preserves batch ordering.
+// One slot covers an engine mutation, including eviction/expiry. Drop enqueues
+// synchronously even if publication is cancelled after the in-memory change.
 pub(crate) struct PendingWrites<'a> {
     permit: Option<mpsc::Permit<'a, PersistenceCommand>>,
     mutations: Vec<Mutation>,
 }
-
 impl PendingWrites<'_> {
     pub(crate) fn save(&mut self, notification: ActiveNotification) {
         self.mutations.push(Mutation::Save(Box::new(notification)));
     }
-
     pub(crate) fn close(&mut self, id: u32, closed_unix_ms: u64, reason: u32) {
         self.mutations.push(Mutation::Close {
             id,
@@ -280,14 +303,12 @@ impl PendingWrites<'_> {
             reason,
         });
     }
-
     pub(crate) fn clear(&mut self, closed_unix_ms: u64, reason: u32) {
         self.mutations.push(Mutation::Clear {
             closed_unix_ms,
             reason,
         });
     }
-
     pub(crate) fn set_dnd(&mut self, enabled: bool, until_unix_ms: Option<u64>) {
         self.mutations.push(Mutation::SetDnd {
             enabled,
@@ -295,7 +316,6 @@ impl PendingWrites<'_> {
         });
     }
 }
-
 impl Drop for PendingWrites<'_> {
     fn drop(&mut self) {
         if !self.mutations.is_empty()
@@ -313,46 +333,55 @@ fn persistence_worker(
     mut receiver: mpsc::Receiver<PersistenceCommand>,
 ) {
     let mut history_error = None;
+    let mut shutdowns = Vec::new();
     while let Some(command) = receiver.blocking_recv() {
         match command {
+            // Accepted writes always run, even if their waiter was cancelled.
             PersistenceCommand::Settings { value, response } => {
-                reply(response, history_error.as_deref(), || store.settings(value))
+                let write = value.is_some();
+                reply(response, history_error.as_deref(), !write, || {
+                    block_on(store.settings(value))
+                });
             }
             PersistenceCommand::Prune { response } => {
-                reply(response, history_error.as_deref(), || store.prune())
+                reply(response, history_error.as_deref(), false, || {
+                    block_on(store.prune())
+                })
             }
             PersistenceCommand::Once {
                 key,
                 notification,
                 response,
-            } => reply(response, history_error.as_deref(), || {
-                store.save_once(&key, &notification)
+            } => reply(response, history_error.as_deref(), false, || {
+                block_on(store.save_once(&key, &notification))
             }),
             PersistenceCommand::Targets {
                 app_key,
                 selected,
                 response,
-            } => reply(response, history_error.as_deref(), || {
-                store.targets(app_key.as_deref(), selected)
+            } => reply(response, history_error.as_deref(), true, || {
+                block_on(store.targets(app_key.as_deref(), selected))
             }),
             PersistenceCommand::Delete {
                 positions,
                 response,
-            } => reply(response, history_error.as_deref(), || {
-                store.delete(&positions)
+            } => reply(response, history_error.as_deref(), false, || {
+                block_on(store.delete(&positions))
             }),
             PersistenceCommand::Policy {
                 key,
                 policy,
                 response,
-            } => reply(response, history_error.as_deref(), || {
-                store.set_policy(&key, &policy)
+            } => reply(response, history_error.as_deref(), false, || {
+                block_on(store.set_policy(&key, &policy))
             }),
             PersistenceCommand::Policies { response } => {
-                reply(response, history_error.as_deref(), || store.policies())
+                reply(response, history_error.as_deref(), true, || {
+                    block_on(store.policies())
+                })
             }
             PersistenceCommand::Mutate(mutations) => {
-                apply_mutations(&mut store, mutations, &mut history_error);
+                apply_mutations(&mut store, mutations, &mut history_error)
             }
             PersistenceCommand::Center {
                 query,
@@ -360,29 +389,60 @@ fn persistence_worker(
                 epoch,
                 revision,
                 response,
-            } => reply_center(
-                &store.connection,
-                response,
-                history_error.as_deref(),
-                || store.center(&query, &active, &epoch, revision),
-            ),
+            } => {
+                if !response.is_closed() {
+                    let result = match history_error.as_deref() {
+                        Some(error) => Err(anyhow!("{error}")),
+                        None => recover_center_read(
+                            &store.connection,
+                            || response.is_closed(),
+                            || block_on(store.center(&query, &active, &epoch, revision)),
+                        ),
+                    };
+                    let _ = response.send(result);
+                }
+            }
             PersistenceCommand::Query {
                 query,
                 before,
                 limit,
                 excluded,
                 response,
-            } => reply(response, history_error.as_deref(), || {
-                store.query(&query, before, limit, &excluded)
+            } => reply(response, history_error.as_deref(), true, || {
+                block_on(store.query(&query, before, limit, &excluded))
             }),
-            // The legacy list has no catalog revision: retain its best-effort
-            // history semantics, but skip reads whose caller has gone away.
+            // This unrevisioned legacy API is best-effort, but the store still
+            // refuses every read after an uncertain transaction outcome.
             PersistenceCommand::List {
                 before_history_id,
                 limit,
                 response,
-            } => reply(response, None, || store.list(before_history_id, limit)),
+            } => reply(response, None, true, || {
+                block_on(store.list(before_history_id, limit))
+            }),
+            PersistenceCommand::Shutdown { response } => {
+                receiver.close();
+                shutdowns.push(response);
+            }
+            #[cfg(test)]
+            PersistenceCommand::Fault { fault, response } => {
+                store.fault = Some(fault);
+                let _ = response.send(Ok(()));
+            }
         }
+    }
+    let checkpoint = block_on(store.checkpoint());
+    let error = history_error.or_else(|| checkpoint.err().map(|e| e.to_string()));
+    // Release ownership before acknowledging, including when other handles live.
+    drop(store);
+    for response in shutdowns {
+        let _ = response.send(match &error {
+            Some(error) => Err(anyhow!("{error}")),
+            None => Ok(()),
+        });
+    }
+    if let Some(error) = error {
+        tracing::warn!(%error, "notification persistence shutdown failed");
     }
 }
 
@@ -392,58 +452,37 @@ fn apply_mutations(
     history_error: &mut Option<String>,
 ) {
     for mutation in mutations {
-        if let Err(error) = store.apply(mutation) {
+        if let Err(error) = block_on(store.apply(mutation)) {
             tracing::warn!(%error, "notification history update failed");
-            // Continue accepted writes, but never label stale storage with a
-            // newer engine revision, even when later writes succeed.
-            *history_error = Some(error.to_string());
+            // Once stale, never label storage with a newer engine revision.
+            history_error.get_or_insert_with(|| error.to_string());
         }
     }
-    // Run at the same ordered boundary as writes, before serving any queries.
-    // This bounds long-running daemons too, without changing cursor revisions
-    // independently of the mutation that advanced the retention window.
-    if let Err(error) = store.prune() {
+    if let Err(error) = block_on(store.prune()) {
         tracing::warn!(%error, "notification history retention failed");
-        *history_error = Some(error.to_string());
+        history_error.get_or_insert_with(|| error.to_string());
     }
 }
 
 fn reply<T>(
     response: oneshot::Sender<Result<T>>,
     history_error: Option<&str>,
-    read: impl FnOnce() -> Result<T>,
+    read_only: bool,
+    operation: impl FnOnce() -> Result<T>,
 ) {
-    if response.is_closed() {
+    if read_only && response.is_closed() {
         return;
     }
     let result = match history_error {
         Some(error) => Err(anyhow!("{error}")),
-        None => read(),
+        None => operation(),
     };
     let _ = response.send(result);
 }
 
-// Only catalog reads retry. Keep SQLite's normal five-second write busy timeout
-// outside this scope; short attempts plus backoff bound read-side contention.
-// A failed write poisons the revision boundary and must never be bypassed here.
-fn reply_center<T>(
-    connection: &Connection,
-    response: oneshot::Sender<Result<T>>,
-    history_error: Option<&str>,
-    read: impl FnMut() -> Result<T>,
-) {
-    if response.is_closed() {
-        return;
-    }
-    let result = match history_error {
-        Some(error) => Err(anyhow!("{error}")),
-        None => recover_center_read(connection, || response.is_closed(), read),
-    };
-    let _ = response.send(result);
-}
-
+// Retry only safe reads, never uncertain writes. All waiting is on the owner thread.
 fn recover_center_read<T>(
-    connection: &Connection,
+    connection: &turso::Connection,
     cancelled: impl Fn() -> bool,
     mut read: impl FnMut() -> Result<T>,
 ) -> Result<T> {
@@ -470,754 +509,15 @@ fn recover_center_read<T>(
     restored?;
     Ok(value)
 }
-
 fn transient_read_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(
-            cause.downcast_ref::<rusqlite::Error>(),
-            Some(rusqlite::Error::SqliteFailure(code, _))
-                if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            cause.downcast_ref::<turso::Error>(),
+            Some(turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
         )
     })
 }
 
-struct NotificationStore {
-    connection: Connection,
-}
-
-impl NotificationStore {
-    fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("create notification state directory {}", parent.display())
-            })?;
-        }
-        let mut connection = Connection::open(path)
-            .with_context(|| format!("open notification database {}", path.display()))?;
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=NORMAL;
-                 PRAGMA secure_delete=ON;
-                 CREATE TABLE IF NOT EXISTS notifications (
-                   history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   session_id INTEGER NOT NULL,
-                   payload_json TEXT NOT NULL,
-                   search_text TEXT NOT NULL DEFAULT '',
-                   created_unix_ms INTEGER NOT NULL,
-                   updated_unix_ms INTEGER NOT NULL,
-                   closed_unix_ms INTEGER,
-                   close_reason INTEGER
-                 );
-                 CREATE INDEX IF NOT EXISTS notifications_active_session
-                   ON notifications(session_id) WHERE closed_unix_ms IS NULL;
-                 CREATE INDEX IF NOT EXISTS notifications_history_order
-                   ON notifications(history_id DESC);
-                 CREATE TABLE IF NOT EXISTS notification_once (
-                   event_key TEXT PRIMARY KEY,
-                   created_unix_ms INTEGER NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS notification_meta (
-                   key TEXT PRIMARY KEY,
-                   value TEXT NOT NULL
-                 );",
-            )
-            .context("initialize notification database")?;
-        let has_search = connection
-            .prepare("PRAGMA table_info(notifications)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .iter()
-            .any(|name| name == "search_text");
-        {
-            // Legacy writers omit the search column. An invalidation trigger
-            // and dirty-row index make rollback/re-upgrade safe without scanning
-            // or rewriting all retained payloads on every native startup.
-            let transaction = connection.transaction()?;
-            if !has_search {
-                transaction.execute(
-                    "ALTER TABLE notifications ADD COLUMN search_text TEXT NOT NULL DEFAULT ''",
-                    [],
-                )?;
-            }
-            transaction.execute_batch(
-                "CREATE TRIGGER IF NOT EXISTS notifications_search_invalidate
-                   AFTER UPDATE OF payload_json ON notifications BEGIN
-                     UPDATE notifications SET search_text = '' WHERE history_id = NEW.history_id;
-                   END;
-                 CREATE INDEX IF NOT EXISTS notifications_search_dirty ON notifications(history_id) WHERE search_text = '';"
-            )?;
-            let mut after = 0;
-            loop {
-                let rows = transaction.prepare(
-                    "SELECT history_id, payload_json FROM notifications WHERE search_text = '' AND history_id > ?1 ORDER BY history_id LIMIT 128")?
-                    .query_map([after], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                if rows.is_empty() {
-                    break;
-                }
-                for (id, payload) in rows {
-                    let notification: ActiveNotification = serde_json::from_str(&payload)?;
-                    transaction.execute(
-                        "UPDATE notifications SET search_text = ?2 WHERE history_id = ?1",
-                        params![id, search_text(&notification)],
-                    )?;
-                    after = id;
-                }
-            }
-            transaction.commit()?;
-        }
-        Ok(Self { connection })
-    }
-
-    fn apply(&mut self, mutation: Mutation) -> Result<()> {
-        match mutation {
-            Mutation::Save(notification) => self.save(&notification),
-            Mutation::Close {
-                id,
-                closed_unix_ms,
-                reason,
-            } => self.close(id, closed_unix_ms, reason),
-            Mutation::Clear {
-                closed_unix_ms,
-                reason,
-            } => self.clear(closed_unix_ms, reason),
-            Mutation::SetDnd {
-                enabled,
-                until_unix_ms,
-            } => self.set_dnd(enabled, until_unix_ms),
-        }
-    }
-
-    fn last_id(&self) -> Result<u32> {
-        // Include closed legacy rows on migration and transient IDs (metadata).
-        Ok(self.connection.query_row(
-            "SELECT MAX(id) FROM (SELECT COALESCE(MAX(session_id), 0) AS id FROM notifications
-             UNION ALL SELECT CAST(value AS INTEGER) FROM notification_meta WHERE key = 'last_notification_id')",
-            [],
-            |row| row.get(0),
-        )?)
-    }
-
-    fn load_dnd(&self) -> Result<(bool, Option<u64>)> {
-        let connection = &self.connection;
-        let value = |key: &str| -> Result<Option<String>> {
-            Ok(connection
-                .query_row(
-                    "SELECT value FROM notification_meta WHERE key = ?1",
-                    [key],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?)
-        };
-        let enabled = value("dnd")?.as_deref() == Some("true");
-        let until = value("dnd_until_unix_ms")?.and_then(|stored| stored.parse::<u64>().ok());
-        Ok((enabled, enabled.then_some(until).flatten()))
-    }
-
-    fn remember_id(&self, id: u32) -> Result<()> {
-        self.connection.execute(
-            "INSERT INTO notification_meta (key, value) VALUES ('last_notification_id', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))",
-            [id],
-        )?;
-        Ok(())
-    }
-
-    fn settings(
-        &self,
-        value: Option<super::settings::Settings>,
-    ) -> Result<super::settings::Settings> {
-        if let Some(value) = value {
-            value.validate()?;
-            let transaction = self.connection.unchecked_transaction()?;
-            transaction.execute("INSERT INTO notification_meta(key, value) VALUES ('settings', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&value)?])?;
-            self.prune()?;
-            transaction.commit()?;
-            return Ok(value);
-        }
-        let encoded: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT value FROM notification_meta WHERE key='settings'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let settings: super::settings::Settings = encoded
-            .map(|v| serde_json::from_str(&v))
-            .transpose()?
-            .unwrap_or_default();
-        settings.validate()?;
-        Ok(settings)
-    }
-
-    fn prune(&self) -> Result<usize> {
-        let cutoff = crate::time::unix_ms()
-            .saturating_sub(u64::from(self.settings(None)?.history_days) * 86_400_000);
-        let removed = self.connection.execute(
-            "DELETE FROM notifications WHERE created_unix_ms < ?2 OR (closed_unix_ms IS NOT NULL
-             AND history_id < COALESCE((SELECT history_id FROM notifications
-                 ORDER BY history_id DESC LIMIT 1 OFFSET ?1), 0))",
-            params![RETAINED_HISTORY - 1, cutoff],
-        ).context("prune notification history")?;
-        // Live conversations remain in memory; retention never emits Closed or
-        // replays actions. SQLite reuses pages; this is not a secure-erasure claim
-        // for WAL snapshots, filesystem snapshots or backups.
-        Ok(removed)
-    }
-
-    fn save_once(&mut self, key: &str, notification: &ActiveNotification) -> Result<bool> {
-        // The event key and notification commit together, even if the caller is
-        // cancelled after admission. Deleting history never deletes this key.
-        let transaction = self.connection.unchecked_transaction()?;
-        let inserted = transaction.execute(
-            "INSERT OR IGNORE INTO notification_once VALUES (?1, ?2)",
-            params![key, notification.created_unix_ms],
-        )? > 0;
-        if inserted {
-            self.save(notification)?;
-        }
-        transaction.execute(
-            "DELETE FROM notification_once WHERE created_unix_ms < ?1",
-            [notification
-                .created_unix_ms
-                .saturating_sub(180 * 86400 * 1000)],
-        )?;
-        self.prune()?;
-        transaction.commit()?;
-        Ok(inserted)
-    }
-
-    fn save(&self, notification: &ActiveNotification) -> Result<()> {
-        self.remember_id(notification.id)?;
-        if notification.hints.transient {
-            self.connection.execute(
-                "DELETE FROM notifications WHERE session_id = ?1 AND closed_unix_ms IS NULL",
-                [notification.id],
-            )?;
-            return Ok(());
-        }
-        let payload = serde_json::to_string(notification)?;
-        let changed = self.connection.execute(
-            "UPDATE notifications
-             SET payload_json = ?2, updated_unix_ms = ?3
-             WHERE session_id = ?1 AND closed_unix_ms IS NULL",
-            params![notification.id, payload, notification.updated_unix_ms],
-        )?;
-        if changed == 0 {
-            self.connection.execute(
-                "INSERT INTO notifications
-                 (session_id, payload_json, created_unix_ms, updated_unix_ms, search_text)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    notification.id,
-                    payload,
-                    notification.created_unix_ms,
-                    notification.updated_unix_ms,
-                    search_text(notification)
-                ],
-            )?;
-        } else {
-            self.connection.execute(
-                "UPDATE notifications SET search_text = ?2 WHERE session_id = ?1 AND closed_unix_ms IS NULL",
-                params![notification.id, search_text(notification)],
-            )?;
-        }
-        Ok(())
-    }
-
-    fn close(&self, id: u32, closed_unix_ms: u64, reason: u32) -> Result<()> {
-        self.connection.execute(
-            "UPDATE notifications SET closed_unix_ms = ?2, close_reason = ?3
-             WHERE session_id = ?1 AND closed_unix_ms IS NULL",
-            params![id, closed_unix_ms, reason],
-        )?;
-        Ok(())
-    }
-
-    fn clear(&self, closed_unix_ms: u64, reason: u32) -> Result<()> {
-        self.connection.execute(
-            "UPDATE notifications SET closed_unix_ms = ?1, close_reason = ?2
-             WHERE closed_unix_ms IS NULL",
-            params![closed_unix_ms, reason],
-        )?;
-        Ok(())
-    }
-
-    fn set_dnd(&mut self, enabled: bool, until_unix_ms: Option<u64>) -> Result<()> {
-        let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO notification_meta(key, value) VALUES ('dnd', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [if enabled { "true" } else { "false" }],
-        )?;
-        if let Some(until) = enabled.then_some(until_unix_ms).flatten() {
-            transaction.execute(
-                "INSERT INTO notification_meta(key, value) VALUES ('dnd_until_unix_ms', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [until.to_string()],
-            )?;
-        } else {
-            transaction.execute(
-                "DELETE FROM notification_meta WHERE key = 'dnd_until_unix_ms'",
-                [],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn targets(&self, app_key: Option<&str>, selected: Option<Position>) -> Result<Vec<Position>> {
-        // Deletion includes older retained records, not only the recent search
-        // window. Otherwise deleting the window would resurrect older entries.
-        let mut statement = self.connection.prepare("SELECT session_id, created_unix_ms, json_extract(payload_json, '$.hints.desktop_entry'), json_extract(payload_json, '$.app_name') FROM notifications")?;
-        let mut cursor = statement.query([])?;
-        let mut targets = Vec::new();
-        while let Some(row) = cursor.next()? {
-            let position = Position {
-                id: row.get(0)?,
-                created: row.get(1)?,
-            };
-            let desktop = row.get::<_, Option<String>>(2)?.unwrap_or_default();
-            let name = row.get::<_, String>(3)?;
-            if app_key.is_none_or(|key| {
-                key == super::identity::app_key(&desktop, &name, position.id, position.created)
-            }) && selected.is_none_or(|p| p.id == position.id && p.created == position.created)
-            {
-                anyhow::ensure!(
-                    targets.len() < 100_000,
-                    "Deletion exceeds 100,000-record safety limit"
-                );
-                targets.push(position);
-            }
-        }
-        Ok(targets)
-    }
-    fn delete(&mut self, positions: &[Position]) -> Result<()> {
-        let transaction = self.connection.transaction()?;
-        for position in positions {
-            transaction.execute(
-                "DELETE FROM notifications WHERE session_id = ?1 AND created_unix_ms = ?2",
-                params![position.id, position.created],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-    fn set_policy(&self, key: &str, policy: &super::policy::AppPolicy) -> Result<()> {
-        self.connection.execute("INSERT INTO notification_meta(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![format!("app_policy:{key}"), serde_json::to_string(policy)?])?;
-        Ok(())
-    }
-    fn policies(&self) -> Result<std::collections::BTreeMap<String, super::policy::AppPolicy>> {
-        let mut result = std::collections::BTreeMap::new();
-        let mut statement = self
-            .connection
-            .prepare("SELECT key, value FROM notification_meta WHERE key LIKE 'app_policy:%'")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (key, value) = row?;
-            result.insert(key[11..].to_owned(), serde_json::from_str(&value)?);
-        }
-        Ok(result)
-    }
-    fn center(
-        &self,
-        query: &CenterQuery,
-        active: &[ActiveNotification],
-        epoch: &str,
-        revision: u64,
-    ) -> Result<CenterPage> {
-        // SQLite projects bounded metadata from the recent candidate IDs. Body
-        // and action payloads are decoded only for the explicitly selected row.
-        let mut statement = self.connection.prepare(
-            "SELECT history_id, session_id, created_unix_ms, closed_unix_ms,
-             substr(json_extract(payload_json, '$.hints.desktop_entry'), 1, 1025),
-             substr(json_extract(payload_json, '$.app_name'), 1, 1025), substr(json_extract(payload_json, '$.app_icon'), 1, 1025),
-             substr(json_extract(payload_json, '$.summary'), 1, 160),
-             substr(json_extract(payload_json, '$.body'), 1, 240),
-             json_extract(payload_json, '$.snoozed_until_unix_ms'),
-             substr(json_extract(payload_json, '$.group_key'), 1, 4097), instr(search_text, ?2) > 0,
-             substr(json_extract(payload_json, '$.hints.image_path'), 1, 512),
-             json_array_length(payload_json, '$.actions'), substr(json_extract(payload_json, '$.hints.category'), 1, 257), json_extract(payload_json, '$.hints.urgency'), substr(json_extract(payload_json, '$.identity_icon'), 1, 1024)
-             FROM notifications WHERE history_id IN
-             (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)",
-        )?;
-        let mut cursor = statement.query(params![SCOPE_LIMIT, query.query])?;
-        let mut rows = Vec::new();
-        while let Some(row) = cursor.next()? {
-            let id: u32 = row.get(1)?;
-            let created: u64 = row.get(2)?;
-            if active
-                .iter()
-                .any(|n| n.id == id && n.created_unix_ms == created)
-            {
-                continue;
-            }
-            rows.push(preview(row)?);
-        }
-        rows.extend(active.iter().map(|n| Preview::from_active(n, &query.query)));
-        center::project(rows, query, epoch, revision, |preview| {
-            if let Some(n) = active.iter().find(|n| n.id == preview.id && n.created_unix_ms == preview.created_unix_ms) {
-                return Ok(n.clone().into());
-            }
-            let mut statement = self.connection.prepare("SELECT history_id, payload_json, closed_unix_ms, close_reason FROM notifications WHERE history_id = ?1")?;
-            let mut rows = statement.query([preview.history_id])?;
-            let row = rows.next()?.context("notification no longer retained")?;
-            catalog_record(row)
-        }).map_err(anyhow::Error::new)
-    }
-
-    fn query(
-        &self,
-        query: &str,
-        before: Option<Position>,
-        limit: usize,
-        excluded: &[(u64, u32)],
-    ) -> Result<Vec<CatalogRecord>> {
-        let position = before.unwrap_or(Position {
-            created: i64::MAX as u64,
-            id: u32::MAX,
-        });
-        let mut statement = self.connection.prepare(
-            "WITH matched AS MATERIALIZED (
-               SELECT history_id, created_unix_ms, session_id FROM notifications
-               WHERE history_id IN (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)
-                 AND (created_unix_ms < ?2 OR (created_unix_ms = ?2 AND session_id < ?3))
-                 AND instr(search_text, ?4) > 0
-               ORDER BY created_unix_ms DESC, session_id DESC LIMIT ?5)
-             SELECT n.history_id, n.payload_json, n.closed_unix_ms, n.close_reason
-             FROM matched JOIN notifications n USING(history_id)
-             ORDER BY matched.created_unix_ms DESC, matched.session_id DESC")?;
-        let mut rows = statement.query(params![
-            SCOPE_LIMIT,
-            position.created,
-            position.id,
-            query,
-            limit + 1 + excluded.len()
-        ])?;
-        let mut records = Vec::new();
-        while let Some(row) = rows.next()? {
-            let record = catalog_record(row)?;
-            if excluded.contains(&(record.notification.created_unix_ms, record.notification.id)) {
-                continue;
-            }
-            records.push(record);
-            if records.len() > limit {
-                break;
-            }
-        }
-        Ok(records)
-    }
-
-    fn list(
-        &self,
-        before_history_id: Option<i64>,
-        limit: usize,
-    ) -> Result<Vec<HistoryNotification>> {
-        let before = before_history_id.unwrap_or(i64::MAX);
-        let mut statement = self.connection.prepare(
-            "SELECT history_id, payload_json, closed_unix_ms, close_reason
-             FROM notifications WHERE history_id < ?1
-             ORDER BY history_id DESC LIMIT ?2",
-        )?;
-        statement
-            .query_and_then(params![before, limit], history_record)?
-            .collect::<Result<_>>()
-            .context("decode persisted notification history")
-    }
-}
-
-fn preview(row: &rusqlite::Row<'_>) -> Result<Preview> {
-    let text = |index| -> rusqlite::Result<&str> {
-        Ok(row.get_ref(index)?.as_str_or_null()?.unwrap_or_default())
-    };
-    let (id, created) = (row.get(1)?, row.get(2)?);
-    let (desktop, name, summary, body, captured) =
-        (text(4)?, text(5)?, text(7)?, text(8)?, text(16)?);
-    Ok(Preview {
-        history_id: Some(row.get(0)?),
-        id,
-        created_unix_ms: created,
-        closed_unix_ms: row.get(3)?,
-        app_key: super::identity::app_key(desktop, name, id, created),
-        app_name: center::clip(name, 128),
-        app_icon: center::clip(text(6)?, 512),
-        identity_icon: if captured.is_empty() {
-            super::identity::icon(desktop, name)
-        } else {
-            captured.into()
-        },
-        hints: center::PreviewHints {
-            desktop_entry: center::clip(desktop, 1024),
-            image_path: text(12)?.into(),
-        },
-        summary: summary.into(),
-        body: body.into(),
-        snoozed_until_unix_ms: row.get(9)?,
-        group_key: text(10)?.into(),
-        matches: row.get(11)?,
-        // SQL clips at the exclusion boundary (160/240/257), so truncated
-        // fields cannot pass repeat_key's strict summary/body limits.
-        repeat_key: center::repeat_key(
-            summary,
-            body,
-            text(14)?,
-            row.get::<_, Option<u8>>(15)?.unwrap_or(0),
-            row.get::<_, usize>(13)? == 0,
-        ),
-    })
-}
-
-fn catalog_record(row: &rusqlite::Row<'_>) -> Result<CatalogRecord> {
-    anyhow::ensure!(
-        row.get_ref(1)?.as_str()?.len() <= PAGE_BYTES,
-        "Notification exceeds history page byte limit"
-    );
-    let record = history_record(row)?;
-    Ok(CatalogRecord {
-        history_id: Some(record.history_id),
-        notification: record.notification,
-        closed_unix_ms: record.closed_unix_ms,
-        close_reason: record.close_reason,
-    })
-}
-
-// Deserialize directly from SQLite's row buffer; both history APIs share the
-// same schema without allocating an intermediate payload String.
-fn history_record(row: &rusqlite::Row<'_>) -> Result<HistoryNotification> {
-    Ok(HistoryNotification {
-        history_id: row.get(0)?,
-        notification: serde_json::from_str(row.get_ref(1)?.as_str()?)?,
-        closed_unix_ms: row.get(2)?,
-        close_reason: row.get(3)?,
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::{NotificationPersistence, NotificationStore, persistence_worker};
-    use crate::activity::notifications::model::ActiveNotification;
-    use tokio::sync::{mpsc, oneshot};
-
-    #[test]
-    fn center_read_recovers_real_sqlite_contention_and_restores_write_timeout() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("history.db");
-        let store = NotificationStore::open(&path).unwrap();
-        store.save(&notification(7, false)).unwrap();
-        // DELETE journal mode permits a reproducible exclusive read blocker.
-        store
-            .connection
-            .execute_batch("PRAGMA journal_mode=DELETE")
-            .unwrap();
-        let blocker = rusqlite::Connection::open(&path).unwrap();
-        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        let query = serde_json::from_value(serde_json::json!({"view":"apps"})).unwrap();
-        let mut attempts = 0;
-        let (response, mut receiver) = oneshot::channel();
-        super::reply_center(&store.connection, response, None, || {
-            attempts += 1;
-            let result = store.center(&query, &[], "epoch", 1);
-            if attempts == 1 {
-                assert!(super::transient_read_error(result.as_ref().unwrap_err()));
-                blocker.execute_batch("ROLLBACK").unwrap();
-            }
-            result
-        });
-        let super::CenterPage::Apps { apps, .. } = receiver.try_recv().unwrap().unwrap() else {
-            panic!("expected apps");
-        };
-        assert_eq!(attempts, 2);
-        assert_eq!(apps.len(), 1);
-        assert_eq!(apps[0].count, 1);
-        let timeout: u64 = store
-            .connection
-            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(timeout, 5_000);
-    }
-
-    #[tokio::test]
-    async fn age_retention_and_settings_commit_together_and_survive_restart() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("history.db");
-        let store = NotificationStore::open(&path).unwrap();
-        let mut old = notification(1, false);
-        old.created_unix_ms = crate::time::unix_ms() - 2 * 86_400_000;
-        store.save(&old).unwrap();
-        store.save(&notification(2, false)).unwrap();
-        let settings = super::super::settings::Settings {
-            history_days: 1,
-            countdown: false,
-            code_expiry_seconds: 45,
-        };
-        store.settings(Some(settings.clone())).unwrap();
-        assert_eq!(
-            store.list(None, 10).unwrap().len(),
-            1,
-            "age pruning includes disk copies of live conversations"
-        );
-        assert_eq!(store.last_id().unwrap(), 2);
-        drop(store);
-        let (persistence, _, _, _) = NotificationPersistence::open(&path).unwrap();
-        assert_eq!(persistence.settings(None).await.unwrap(), settings);
-        assert_eq!(
-            persistence.list(None, 10).await.unwrap()[0].notification.id,
-            2
-        );
-        assert_eq!(persistence.prune().await.unwrap(), 0);
-    }
-
-    #[test]
-    fn failed_age_pruning_rolls_back_settings() {
-        let directory = tempdir().unwrap();
-        let store = NotificationStore::open(&directory.path().join("history.db")).unwrap();
-        let mut old = notification(1, false);
-        old.created_unix_ms = crate::time::unix_ms() - 2 * 86_400_000;
-        store.save(&old).unwrap();
-        store.connection.execute_batch("CREATE TRIGGER fail_prune BEFORE DELETE ON notifications BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
-        assert!(
-            store
-                .settings(Some(super::super::settings::Settings {
-                    history_days: 1,
-                    ..Default::default()
-                }))
-                .is_err()
-        );
-        assert_eq!(store.settings(None).unwrap().history_days, 30);
-        assert_eq!(store.list(None, 10).unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn retention_runs_on_writes_and_restart_without_losing_live_rows_or_ids() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("history.db");
-        let mut store = NotificationStore::open(&path).unwrap();
-        for id in 1..=(super::RETAINED_HISTORY as u32 + 5) {
-            store.save(&notification(id, false)).unwrap();
-            if id != 1 {
-                store.close(id, 200, 2).unwrap();
-            }
-        }
-        // The worker's actual batch boundary prunes, even without a restart.
-        let mut error = None;
-        super::apply_mutations(&mut store, vec![], &mut error);
-        assert!(error.is_none());
-        let rows = store.list(None, usize::MAX / 2).unwrap();
-        assert_eq!(rows.len(), super::RETAINED_HISTORY + 1);
-        assert!(
-            rows.iter()
-                .any(|r| r.notification.id == 1 && r.closed_unix_ms.is_none())
-        );
-        store.remember_id(100_000).unwrap(); // transient high-water ID
-        drop(store);
-        let (persistence, last_id, _, _) = NotificationPersistence::open(&path).unwrap();
-        assert_eq!(last_id, 100_000);
-        let rows = persistence
-            .list(None, super::RETAINED_HISTORY + 10)
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), super::RETAINED_HISTORY);
-        assert!(rows.iter().all(|r| r.closed_unix_ms.is_some()));
-        assert!(rows.iter().all(|r| r.notification.id != 1));
-    }
-
-    #[tokio::test]
-    async fn failed_write_fences_queries_but_does_not_discard_later_mutations() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("notifications.sqlite3");
-        let store = NotificationStore::open(&path).unwrap();
-        store.save(&notification(1, false)).unwrap();
-        store.connection.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON notifications BEGIN SELECT RAISE(FAIL, 'simulated disk failure'); END;").unwrap();
-        let (commands, receiver) = mpsc::channel(1);
-        let persistence = NotificationPersistence { commands };
-        let worker = std::thread::spawn(move || persistence_worker(store, receiver));
-        {
-            let mut writes = persistence.reserve().await.unwrap();
-            writes.save(notification(1, true)); // Fails to remove the persisted copy.
-            writes.save(notification(2, false));
-            writes.set_dnd(true, None);
-        }
-        assert_eq!(persistence.list(None, 10).await.unwrap().len(), 2);
-        let first = persistence
-            .query(String::new(), None, 10, Vec::new())
-            .await
-            .unwrap_err();
-        assert!(first.to_string().contains("simulated disk failure"));
-        persistence.reserve().await.unwrap().close(2, 200, 2);
-        let second = persistence
-            .query(String::new(), None, 10, Vec::new())
-            .await
-            .unwrap_err();
-        assert_eq!(second.to_string(), first.to_string());
-        assert_eq!(
-            persistence.list(None, 10).await.unwrap()[0].close_reason,
-            Some(2)
-        );
-        drop(persistence);
-        worker.join().unwrap();
-        assert_eq!(
-            NotificationStore::open(&path).unwrap().load_dnd().unwrap(),
-            (true, None)
-        );
-    }
-
-    fn notification(id: u32, transient: bool) -> ActiveNotification {
-        let mut n = super::super::model::incoming("test", &format!("notification {id}"), "");
-        n.hints.transient = transient;
-        ActiveNotification::from_incoming(id, n, crate::time::unix_ms())
-    }
-
-    #[tokio::test]
-    async fn cancelled_reservations_and_mutations_do_not_lose_accepted_writes() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("notifications.sqlite3");
-        let store = NotificationStore::open(&path).unwrap();
-        let (commands, receiver) = mpsc::channel(1);
-        let persistence = NotificationPersistence { commands };
-        persistence
-            .reserve()
-            .await
-            .unwrap()
-            .save(notification(1, false));
-        {
-            let reserve = persistence.reserve();
-            tokio::pin!(reserve);
-            assert!(futures::poll!(&mut reserve).is_pending());
-            // Dropping a waiter must leave the accepted save untouched.
-        }
-        let worker = std::thread::spawn(move || persistence_worker(store, receiver));
-        let (changed, received) = tokio::sync::oneshot::channel();
-        let pending = persistence.clone();
-        let mutation = tokio::spawn(async move {
-            let mut writes = pending.reserve().await.unwrap();
-            writes.close(1, 200, 2);
-            writes.set_dnd(true, None);
-            changed.send(()).unwrap();
-            std::future::pending::<()>().await;
-        });
-        received.await.unwrap();
-        mutation.abort();
-        assert!(mutation.await.unwrap_err().is_cancelled());
-        assert_eq!(
-            persistence.list(None, 10).await.unwrap()[0].close_reason,
-            Some(2)
-        );
-        drop(persistence);
-        worker.join().unwrap();
-        let restarted = NotificationStore::open(&path).unwrap();
-        assert!(
-            restarted
-                .list(None, 10)
-                .unwrap()
-                .iter()
-                .all(|item| item.closed_unix_ms.is_some())
-        );
-        assert_eq!(restarted.load_dnd().unwrap(), (true, None));
-    }
-}
+#[path = "persistence_tests.rs"]
+mod tests;

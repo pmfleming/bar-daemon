@@ -21,5 +21,6 @@ pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod settings;
 mod sharing;
+mod storage;
 mod swaync;
 mod timeline;

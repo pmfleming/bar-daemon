@@ -34,6 +34,15 @@ pub(super) struct NotificationStore {
     _ownership: Ownership,
     path: PathBuf,
     pub(super) blocked: bool,
+    #[cfg(test)]
+    pub(super) fault: Option<Fault>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Fault {
+    Save,
+    Prune,
 }
 
 struct Ownership(File);
@@ -141,6 +150,8 @@ impl NotificationStore {
             _ownership: ownership,
             path: path.to_owned(),
             blocked: false,
+            #[cfg(test)]
+            fault: None,
         };
         if fresh {
             store.connection.execute("BEGIN IMMEDIATE", ()).await?;
@@ -188,6 +199,15 @@ impl NotificationStore {
             if path.try_exists()? {
                 drop(private_file(&path, false, false)?);
             }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail(&mut self, fault: Fault) -> Result<()> {
+        if self.fault == Some(fault) {
+            self.fault = None;
+            anyhow::bail!("injected notification {fault:?} failure");
         }
         Ok(())
     }

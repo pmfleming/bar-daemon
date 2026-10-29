@@ -123,6 +123,7 @@ async fn confirmed_delete_removes_saved_and_active_records_but_not_arrivals_or_a
             .iter()
             .any(|r| r.notification.id == archived || r.notification.id == active)
     );
+    engine.shutdown().await.unwrap();
     let restarted = NotificationEngine::persistent(StateStore::default(), path)
         .await
         .unwrap();
