@@ -82,15 +82,13 @@ impl CenterQuery {
 }
 
 // Only artwork metadata is needed by compact views, not sound/action hints.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PreviewHints {
     pub desktop_entry: String,
     pub image_path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Preview {
     pub id: u32,
     pub created_unix_ms: u64,
@@ -120,7 +118,14 @@ impl Preview {
             app_key: n.app_key(),
             app_name: clip(&n.app_name, 128),
             app_icon: clip(&n.app_icon, 512),
-            identity_icon: clip(&n.identity_icon, 1024),
+            identity_icon: clip(
+                &if n.identity_icon.is_empty() {
+                    super::identity::icon(&n.hints.desktop_entry, &n.app_name)
+                } else {
+                    n.identity_icon.clone()
+                },
+                1024,
+            ),
             hints: PreviewHints {
                 desktop_entry: clip(&n.hints.desktop_entry, 1024),
                 image_path: clip(&n.hints.image_path, 512),
