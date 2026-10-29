@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     store.shutdown().await?;
     restored.shutdown().await?;
     println!(
-        "PASS: Turso bindings 0.8.0 / Syscall I/O / FULL CRUD, large bounded payload, readonly restart, durable catalog/receipts, private logical export and restore"
+        "PASS: Turso bindings 0.8.3 / Syscall I/O / FULL CRUD, large bounded payload, readonly restart, durable catalog/receipts, private logical export and restore"
     );
     Ok(())
 }

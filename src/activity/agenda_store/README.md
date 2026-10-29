@@ -1,6 +1,6 @@
 # Agenda store
 
-Pinned embedded `turso =0.8.0`, no default features; current lock resolves core/sdk 0.8.3, matching Scratchpad. Syscall I/O and `synchronous=FULL`; no Scratchpad database is opened. Rust >=1.90 is required by the locked engine dependencies.
+Pinned embedded `turso =0.8.3`, no default features; current lock resolves core/sdk 0.8.3, matching Scratchpad. Syscall I/O and `synchronous=FULL`; no Scratchpad database is opened. Rust >=1.90 is required by the locked engine dependencies.
 
 ## Ownership and durability
 
