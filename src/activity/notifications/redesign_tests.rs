@@ -31,6 +31,9 @@ async fn timeline_counts_complete_dates_and_bounds_exact_repeat_stacks() {
         label: "Open".into(),
     });
     engine.notify(0, actionable).await.unwrap();
+    // Fixture construction is not part of the center-read latency contract.
+    // Drain its synthetic burst before exercising projection under parallel tests.
+    engine.history(None, 100).await.unwrap();
     let mut request = query(serde_json::json!({"view":"timeline", "app_key":"desktop:chat"}));
     let CenterPage::Timeline(page) = engine.query_center(request.clone()).await.unwrap() else {
         panic!()

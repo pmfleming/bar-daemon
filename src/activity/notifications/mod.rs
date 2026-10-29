@@ -16,6 +16,8 @@ pub(crate) mod model;
 pub(crate) mod persistence;
 pub(crate) mod policy;
 #[cfg(test)]
+mod qualification_tests;
+#[cfg(test)]
 mod redesign_tests;
 pub(crate) mod server;
 pub(crate) mod service;

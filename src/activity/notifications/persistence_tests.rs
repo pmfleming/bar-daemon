@@ -10,6 +10,59 @@ fn notification(id: u32, transient: bool) -> ActiveNotification {
     ActiveNotification::from_incoming(id, n, crate::time::unix_ms())
 }
 
+#[test]
+fn turso_read_recovery_classifies_real_contention_and_restores_timeout() {
+    let dir = tempdir().unwrap();
+    let db = block_on(NotificationStore::open(&dir.path().join("history.db"))).unwrap();
+    let blocker = db.competing_connection();
+    block_on(blocker.execute("BEGIN IMMEDIATE", ())).unwrap();
+    let mut attempts = 0;
+    // WAL normally permits readers during a writer. Use a write-reserved read
+    // transaction to exercise the retry policy with a real engine Busy error.
+    let value = recover_center_read(
+        &db.connection,
+        || false,
+        || {
+            attempts += 1;
+            let result = block_on(async {
+                db.connection.execute("BEGIN IMMEDIATE", ()).await?;
+                let value = db.integer("SELECT count(*) FROM notifications").await;
+                db.connection.execute("ROLLBACK", ()).await?;
+                value
+            });
+            if attempts == 1 {
+                assert!(transient_read_error(result.as_ref().unwrap_err()));
+                block_on(blocker.execute("ROLLBACK", ())).unwrap();
+            }
+            result
+        },
+    )
+    .unwrap();
+    assert_eq!(value, 0);
+    assert_eq!(attempts, 2);
+    assert_eq!(block_on(db.integer("PRAGMA busy_timeout")).unwrap(), 5000);
+    let mut attempts = 0;
+    let error = recover_center_read(
+        &db.connection,
+        || false,
+        || -> Result<()> {
+            attempts += 1;
+            Err(turso::Error::BusySnapshot("snapshot".into()).into())
+        },
+    )
+    .unwrap_err();
+    assert!(transient_read_error(&error));
+    assert_eq!(attempts, 3);
+    let result = recover_center_read(
+        &db.connection,
+        || true,
+        || -> Result<()> { panic!("cancelled read ran") },
+    );
+    assert!(result.is_err());
+    assert_eq!(block_on(db.integer("PRAGMA busy_timeout")).unwrap(), 5000);
+    block_on(db.checkpoint()).unwrap();
+}
+
 #[tokio::test]
 async fn age_retention_settings_dnd_and_ids_survive_restart() {
     let directory = tempdir().unwrap();

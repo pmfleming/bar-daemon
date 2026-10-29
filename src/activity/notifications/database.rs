@@ -47,6 +47,8 @@ pub(super) struct NotificationStore {
 pub(super) enum Fault {
     Save,
     Prune,
+    Commit,
+    Rollback,
 }
 
 struct Ownership(File);
@@ -147,6 +149,9 @@ impl NotificationStore {
         );
         let connection = database.connect()?;
         connection.busy_timeout(Duration::from_secs(5))?;
+        connection
+            .execute_batch("PRAGMA synchronous=FULL; PRAGMA cache_size=-8192;")
+            .await?;
         let mut store = Self {
             connection,
             _database: database,
@@ -178,10 +183,6 @@ impl NotificationStore {
                 "unsupported notification database identity/schema"
             );
         }
-        store
-            .connection
-            .execute_batch("PRAGMA synchronous=FULL; PRAGMA cache_size=-8192;")
-            .await?;
         store.harden_sidecars()?;
         Ok(store)
     }
@@ -208,6 +209,11 @@ impl NotificationStore {
     }
 
     #[cfg(test)]
+    pub(super) fn competing_connection(&self) -> turso::Connection {
+        self._database.connect().unwrap()
+    }
+
+    #[cfg(test)]
     pub(super) fn fail(&mut self, fault: Fault) -> Result<()> {
         if self.fault == Some(fault) {
             self.fault = None;
@@ -230,20 +236,35 @@ impl NotificationStore {
         Ok(())
     }
 
+    async fn commit(&mut self) -> Result<()> {
+        self.connection.execute("COMMIT", ()).await?;
+        // Simulate an error after COMMIT became durable: never replay it.
+        #[cfg(test)]
+        self.fail(Fault::Commit)?;
+        Ok(())
+    }
+
+    async fn rollback(&mut self) -> Result<()> {
+        #[cfg(test)]
+        self.fail(Fault::Rollback)?;
+        self.connection.execute("ROLLBACK", ()).await?;
+        Ok(())
+    }
+
     pub(super) async fn finish<T>(&mut self, result: Result<T>) -> Result<T> {
         let result = match result {
-            Ok(value) => match self.connection.execute("COMMIT", ()).await {
+            Ok(value) => match self.commit().await {
                 Ok(_) => Ok(value),
                 Err(error) => {
                     self.blocked = true;
-                    Err(error.into())
+                    Err(error)
                 }
             },
             Err(error) => Err(error),
         };
         if result.is_err()
             && !self.connection.is_autocommit().unwrap_or(false)
-            && self.connection.execute("ROLLBACK", ()).await.is_err()
+            && self.rollback().await.is_err()
         {
             self.blocked = true;
         }

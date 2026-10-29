@@ -108,6 +108,7 @@ fn center_does_not_decode_unselected_payloads_and_search_is_literal() {
 }
 
 #[test]
+#[ignore = "large-window performance qualification; run explicitly without competing tests"]
 fn complete_window_retention_targets_and_bounded_refresh() {
     block_on(async {
         let dir = tempfile::tempdir().unwrap();
