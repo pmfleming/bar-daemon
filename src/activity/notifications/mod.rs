@@ -5,6 +5,7 @@
 
 pub(crate) mod center;
 mod context_actions;
+mod database;
 mod decks;
 pub(crate) mod engine;
 pub(crate) mod history;

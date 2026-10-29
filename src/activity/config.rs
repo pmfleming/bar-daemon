@@ -98,7 +98,7 @@ pub(crate) fn todo_path() -> PathBuf {
 pub(crate) fn notification_database_path() -> PathBuf {
     env::var_os("BAR_DAEMON_NOTIFICATION_DATABASE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| data_file(XdgRoot::State, "notifications.sqlite3"))
+        .unwrap_or_else(|| data_file(XdgRoot::State, "notifications-turso-v1.db"))
 }
 
 impl ActivityConfig {
