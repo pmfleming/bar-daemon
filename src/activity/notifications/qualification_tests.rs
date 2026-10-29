@@ -157,14 +157,49 @@ fn subprocess_entry() {
         return;
     };
     let root = PathBuf::from(std::env::var_os(ROOT).unwrap());
+    if mode == "cutover" || mode == "reboot" {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let path = crate::activity::config::notification_database_path();
+                assert_eq!(path, root.join("bar-daemon/notifications-turso-v1.db"));
+                let (store, last_id, dnd, until) =
+                    super::persistence::NotificationPersistence::open(&path)
+                        .await
+                        .unwrap();
+                if mode == "cutover" {
+                    assert_eq!((last_id, dnd, until), (0, false, None));
+                    assert!(store.list(None, 10).await.unwrap().is_empty());
+                    let mut writes = store.reserve().await.unwrap();
+                    writes.save(notification(1));
+                    writes.set_dnd(true, None);
+                    drop(writes);
+                    store
+                        .settings(Some(super::settings::Settings {
+                            history_days: 7,
+                            ..Default::default()
+                        }))
+                        .await
+                        .unwrap();
+                } else {
+                    assert_eq!((last_id, dnd, until), (1, true, None));
+                    assert_eq!(store.settings(None).await.unwrap().history_days, 7);
+                    let rows = store.list(None, 10).await.unwrap();
+                    assert_eq!(rows.len(), 1, "reboot must reopen, not reset the new store");
+                    assert_eq!(rows[0].notification.id, 1);
+                    assert!(
+                        rows[0].closed_unix_ms.is_some(),
+                        "old sessions become closed history"
+                    );
+                }
+                store.shutdown().await.unwrap();
+            });
+        return;
+    }
     block_on(async {
-        let path = if mode == "cutover" {
-            let path = crate::activity::config::notification_database_path();
-            assert_eq!(path, root.join("bar-daemon/notifications-turso-v1.db"));
-            path
-        } else {
-            root.join("history.db")
-        };
+        let path = root.join("history.db");
         let mut db = NotificationStore::open(&path).await.unwrap();
         db.apply(Mutation::Save(Box::new(notification(1))))
             .await
@@ -222,7 +257,7 @@ fn abrupt_exit_recovers_committed_wal_and_discards_uncommitted_changes() {
 }
 
 #[test]
-fn default_cutover_ignores_legacy_database_and_sidecars() {
+fn default_cutover_and_reboot_ignore_legacy_and_reopen_turso_state() {
     let dir = tempfile::tempdir().unwrap();
     let old = dir.path().join("bar-daemon");
     std::fs::create_dir(&old).unwrap();
@@ -233,12 +268,16 @@ fn default_cutover_ignores_legacy_database_and_sidecars() {
         )
         .unwrap();
     }
-    let output = child(dir.path(), "cutover");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    // Separate processes exercise the actual worker's startup/drain path, as
+    // rebuild activation followed by a reboot would. Both see legacy files.
+    for mode in ["cutover", "reboot"] {
+        let output = child(dir.path(), mode);
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     for suffix in ["", "-wal", "-shm"] {
         assert_eq!(
             std::fs::read(old.join(format!("notifications.sqlite3{suffix}"))).unwrap(),

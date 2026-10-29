@@ -188,6 +188,14 @@ impl NotificationStore {
             );
         }
         store.harden_sidecars()?;
+        tracing::info!(
+            path = %path.display(),
+            engine = "turso",
+            engine_version = "0.8.3",
+            schema_version = 1,
+            created = fresh,
+            "notification store opened"
+        );
         Ok(store)
     }
 

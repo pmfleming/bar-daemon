@@ -14,6 +14,16 @@ Native notifications now use embedded **Turso 0.8.3**, pinned with default featu
 
 Existing new-format stores are retained across restarts. A wrong application ID/schema, corrupt store or preexisting empty file is an error, not permission to silently replace it. A reset is an explicit operator decision: stop the daemon and select another fresh path. Never remove/copy only the main file of a live database; committed data can be in its WAL. This cutover does not promise secure erasure of old files, WAL, snapshots or backups.
 
+## Rebuild followed by reboot
+
+With the native service enabled and no `BAR_DAEMON_NOTIFICATION_DATABASE` override, **deploying the rebuilt system and rebooting completes the cutover automatically**. No one-time command, manual database creation or QML change is required. If rebuild activation already restarts the service, that performs the first cutover; the subsequent reboot reopens the same Turso store without resetting it.
+
+Use the normal local-workspace rebuild workflow so the deployed generation includes the current committed `bar-daemon` source. A build without deployment, or booting an older generation, does not switch the running daemon. The packaged user service starts at graphical-session startup with `BAR_DAEMON_NOTIFICATION_BACKEND=native`.
+
+After logging in, `journalctl --user -b -u bar-daemon.service` reports `notification store opened` with `engine="turso"`, `engine_version="0.8.3"`, the resolved path and `created=true` on first creation (`false` on later startups). The later `bar-daemon started` message confirms daemon startup completed. Old SQLite files may remain on disk; their presence does not mean the old backend is running. They are neither read nor copied into the new store.
+
+The reboot qualification runs the actual persistence worker in two separate processes: fresh startup ignores legacy files, then a second startup preserves the new history, DND and settings while closing the previous session's conversations.
+
 ## Ownership and Rust/QML boundary
 
 - One named `notification-history` thread owns the database, connection and file lock. Turso uses syscall I/O and `synchronous=FULL`.
