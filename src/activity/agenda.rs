@@ -537,16 +537,13 @@ pub(crate) fn markers<T: TimeZone>(
                 event: false,
                 task: false,
             };
-            let bounds = p.bounds(day);
-            for (item, membership) in catalog.items.iter().zip(&catalog.membership) {
-                if membership.is_some_and(|m| m.includes(day, bounds)) {
-                    match item.kind {
-                        ItemKind::Event => marker.event = true,
-                        ItemKind::Task => marker.task = true,
-                    }
-                    if marker.event && marker.task {
-                        break;
-                    }
+            for item in catalog.on_day(day, p.bounds(day)) {
+                match item.kind {
+                    ItemKind::Event => marker.event = true,
+                    ItemKind::Task => marker.task = true,
+                }
+                if marker.event && marker.task {
+                    break;
                 }
             }
             marker

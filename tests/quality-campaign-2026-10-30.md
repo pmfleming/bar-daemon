@@ -118,3 +118,11 @@ all-target integration caught the original cross-module import; corrected owners
 also passes `cargo check --workspace --all-targets --locked` and
 `cargo run --locked --bin agenda-turso-contract` (actual isolated CRUD/restore).
 
+## Follow-up 4: reuse date decoding and membership
+
+Membership uses the existing stored-endpoint decoder; markers use the same
+`Catalog::on_day` iterator as range projection. No new forwarding helper is added.
+Keep civil inclusive ends, timed exclusive ends, imported instants, inferred
+bounds and skipped-day/DST behavior. The existing endpoint matrix exercises 240
+record/day combinations without another fixture or duplicate test implementation.
+Pass: the same **40 agenda cases**, formatting and whitespace checks.

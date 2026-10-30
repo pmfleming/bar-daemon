@@ -52,11 +52,10 @@ impl<T: TimeZone> Projection<T> {
             .is_some_and(|m| m.includes(day, self.bounds(day)))
     }
     pub(crate) fn membership(&self, schedule: &Schedule) -> Option<Membership> {
+        let (start_date, end_date) = self.stored_dates(schedule);
         match schedule.mode {
             ScheduleMode::Date => {
-                let start = schedule.start_date.as_deref().and_then(|d| date(d).ok());
-                let end = schedule.end_date.as_deref().and_then(|d| date(d).ok());
-                let range = match (start, end) {
+                let range = match (start_date, end_date) {
                     (Some(s), Some(e)) if s <= e => Some((s, e)),
                     (None, Some(e)) if e >= self.today => Some((self.today, e)),
                     (Some(s), None) if s <= self.today => Some((s, self.today)),
@@ -65,18 +64,12 @@ impl<T: TimeZone> Projection<T> {
                 range.map(|(s, e)| Membership::Civil(s, e))
             }
             ScheduleMode::Timed => {
-                let local_date = |ms| {
-                    self.zone
-                        .timestamp_millis_opt(ms)
-                        .single()
-                        .map(|t| t.date_naive())
-                };
                 let range = match (schedule.start_unix_ms, schedule.end_unix_ms) {
                     (Some(s), Some(e)) if s <= e => Some((s, e)),
-                    (None, Some(e)) if local_date(e).is_some_and(|d| d >= self.today) => {
+                    (None, Some(e)) if end_date.is_some_and(|d| d >= self.today) => {
                         self.midnight(self.today).map(|s| (s, e))
                     }
-                    (Some(s), None) if local_date(s).is_some_and(|d| d <= self.today) => self
+                    (Some(s), None) if start_date.is_some_and(|d| d <= self.today) => self
                         .today
                         .checked_add_days(Days::new(1))
                         .and_then(|d| self.midnight(d))
