@@ -112,20 +112,17 @@ pub(crate) struct Preview {
 }
 impl Preview {
     pub fn from_active(n: &ActiveNotification, query: &str) -> Self {
+        let fallback_icon = n
+            .identity_icon
+            .is_empty()
+            .then(|| super::identity::icon(&n.hints.desktop_entry, &n.app_name));
         Self {
             id: n.id,
             created_unix_ms: n.created_unix_ms,
             app_key: n.app_key(),
             app_name: clip(&n.app_name, 128),
             app_icon: clip(&n.app_icon, 512),
-            identity_icon: clip(
-                &if n.identity_icon.is_empty() {
-                    super::identity::icon(&n.hints.desktop_entry, &n.app_name)
-                } else {
-                    n.identity_icon.clone()
-                },
-                1024,
-            ),
+            identity_icon: clip(fallback_icon.as_deref().unwrap_or(&n.identity_icon), 1024),
             hints: PreviewHints {
                 desktop_entry: clip(&n.hints.desktop_entry, 1024),
                 image_path: clip(&n.hints.image_path, 512),
@@ -167,6 +164,14 @@ pub(super) fn repeat_key(
         && body.chars().count() < 240
         && category.chars().count() <= 256)
         .then(|| (summary.into(), body.into(), category.into(), urgency))
+}
+
+// Aggregation retains one representative per app, not every preview body.
+#[derive(Default)]
+struct AppGroup {
+    count: usize,
+    total_count: usize,
+    latest: Option<Preview>,
 }
 
 #[derive(Debug, Serialize)]
@@ -299,21 +304,23 @@ fn project_apps(
     epoch: &str,
     revision: u64,
 ) -> Result<CenterPage, HistoryError> {
-    let mut groups = BTreeMap::<String, Vec<Preview>>::new();
+    let mut groups = BTreeMap::<String, AppGroup>::new();
     for row in rows {
-        groups.entry(row.app_key.clone()).or_default().push(row);
+        let group = groups.entry(row.app_key.clone()).or_default();
+        group.total_count += 1;
+        if row.matches {
+            group.count += 1;
+            group.latest.get_or_insert(row);
+        }
     }
     let mut apps: Vec<_> = groups
         .into_iter()
-        .filter_map(|(key, rows)| {
-            let total_count = rows.len();
-            let mut matching = rows.into_iter().filter(|p| p.matches);
-            let latest = matching.next()?;
+        .filter_map(|(key, group)| {
             Some(AppSummary {
                 key,
-                count: 1 + matching.count(),
-                total_count,
-                latest,
+                count: group.count,
+                total_count: group.total_count,
+                latest: group.latest?,
             })
         })
         .collect();

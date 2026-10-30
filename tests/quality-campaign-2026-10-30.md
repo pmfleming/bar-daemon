@@ -126,3 +126,107 @@ Keep civil inclusive ends, timed exclusive ends, imported instants, inferred
 bounds and skipped-day/DST behavior. The existing endpoint matrix exercises 240
 record/day combinations without another fixture or duplicate test implementation.
 Pass: the same **40 agenda cases**, formatting and whitespace checks.
+
+## Follow-up 5: bounded preview ownership
+
+App aggregation keeps counters and one matching preview instead of a vector of
+all previews per app, releasing other preview strings as they are consumed.
+Captured identity icons are borrowed until their single bounded copy; fallback
+lookup stays lazy. The wire shape, ordering, anchors and page byte guard are unchanged.
+Extend the existing storage owner with newer nonmatches, two matching apps,
+filtered/total counts, representative ordering and a wholly unmatched app; corrupt
+unselected payloads still do not decode. No extra libtest case is added.
+Pass: four storage cases including the ignored 5,005-row qualification, three
+redesign cases, and the final icon-projection regression after cleanup, plus format.
+Commands: `cargo test --lib --locked activity::notifications::storage::tests --
+--include-ignored --test-threads=2`; `cargo test --lib --locked
+activity::notifications::redesign_tests -- --test-threads=2`; `cargo test --lib
+--locked persisted_preview_matches_rust_projection_and_replacement_is_atomic --
+--test-threads=2`. Actual retention is structural evidence, not a measured RSS claim.
+
+Final tracked Rust: **54,815 physical / 52,703 nonblank**
+(−3 / −5). Production-bearing files: 42,872 / 41,038 (−37 / −39); test-only files:
+11,943 / 11,665 (+34 / +34). The same file-role method is used on both sides.
+The small net line reduction includes stronger parameterized coverage; no large
+code-size gain or reduction in independently exercised behavior is claimed.
+
+## Final measurements and tradeoffs
+
+Same evaluator/settings/package scope as the post-initial production-identical reference.
+Values are authored-function cognitive / cyclomatic / Halstead effort (rounded);
+macro-generated bodies remain partial, so these are heuristic source facts.
+
+| Function | Reference | Final |
+| --- | ---: | ---: |
+| patch_record | 17 / 15 / 48,213 | 10 / 15 / 53,303 |
+| order | 4 / 8 / 36,972 | 4 / 8 / 30,601 |
+| Catalog::new | 0 / 1 / 10,677 | 0 / 1 / 11,886 |
+| migrate_legacy | 17 / 34 / 182,259 | 13 / 32 / 161,089 |
+| day::project | 3 / 2 / 45,160 | 0 / 1 / 32,786 |
+| legacy_due (new) | — | 3 / 3 / 3,580 |
+| membership | 16 / 22 / 103,210 | 16 / 22 / 91,963 |
+| markers | 14 / 9 / 42,161 | 9 / 8 / 36,095 |
+| project_apps | 1 / 3 / 40,094 | 3 / 4 / 44,109 |
+| Preview::from_active | 2 / 2 / 18,476 | 0 / 1 / 22,149 |
+
+The completion match lowers cognitive load but raises token-based effort; the
+preview changes trade explicit counters/optional fallback handling for bounded
+ownership and one fewer captured-icon clone. Include the new shared constructor
+when reviewing migration effort: no extracted complexity is treated as free.
+
+Duplication stays **175 groups / 4.66%**; heuristic duplicated lines are
+**2,406 → 2,407** (no aggregate duplication gain claimed). The explicit duplicate
+DTO and due-field rules are removed. Store-model observed reach rises **16 → 19**
+with leverage already capped at 100. Its locality is **97 → 94.75**; activity-model
+locality is **94 → 88** and outgoing dependencies **6 → 8**. This is the documented
+cost of a single model owner, preserved import paths and a closed standalone store.
+Other changed capability modules retain locality 100 and their leverage scores.
+
+Full-fixture Cobertura is **23,266 / 31,979 (72.7540%) → 23,247 / 31,950
+(72.7606%)**. Coverage is essentially flat; the additional state-table and
+aggregation scenarios above are the behavioral evidence, not a large percentage gain.
+
+## Final gates and remaining limitations
+
+Canonical full run: `E/final-validated/`, collected on `31fa031` with the final
+Rust/config/protocol inputs. Its source-manifest SHA-256 is
+`586290c84287fc8afc5135b3044b00355b691841c31a5cb1610bfaf4045209bf`.
+The final amendment changes evidence only; `E/validated-inputs.sha256` verifies
+byte identity. Post-commit scoped metrics are retained in `E/final-metrics/`.
+
+Actual runner: `RQLENS_BIN=$PWD/target/quality-campaign-2026-10-30/rqlens
+QUALITY_EVIDENCE_DIR=target/quality-campaign-2026-10-30/final-validated bash
+tools/quality-evidence.sh`, inside the recorded Nix shell with Cargo jobs two.
+Status: fixtures **0**, verifier collection **0**, all measurements **0**, strict
+policy **1**, report **0**; outer runner **1**, no certification marker.
+
+Pass: **333 executed Cargo cases, zero failed/ignored**, full-fixture coverage,
+rustfmt, all-target compilation, warning-denying Clippy, doctests, warning-free
+rustdoc and cargo-shear. The exact commands are in `analysis/rust_practices.json`:
+`cargo test --workspace --all-targets --locked -- --include-ignored`,
+`cargo test --workspace --locked --doc`, `cargo doc --workspace --locked --no-deps`,
+and the configured format/check/Clippy commands. Four Python runner tests and the
+isolated `cargo run --locked --bin agenda-turso-contract` smoke contract also pass.
+
+**Strict certification fails; it is not waived.** Practices: 18 passed, two failed,
+eight explicitly skipped optional checks, zero unavailable. `cargo audit` exits 1
+with nine advisories in the unchanged lock: quinn-proto 0.11.17 (2026-0338/0340/0343),
+rustls 0.23.45 (2026-0346/0347/0348/0349), rustls-webpki 0.103.15 (2026-0382),
+and webpki-roots 1.0.9 (2026-0381), all RUSTSEC IDs. `cargo deny check` exits 7:
+advisories including Tokio unsoundness (RUSTSEC-2026-0386), three unmaintained
+zbus-family warnings elevated by policy, ksni Unlicense rejection, and two existing
+unversioned path dependencies. Full diagnostic JSON is `E/final-audit.json` and
+`E/final-deny.jsonl`. Requested dependency versions and policies are unchanged.
+
+The three architecture rules have zero observed violations/unresolved references,
+but macro/cfg/generated-body inventories remain partial. Correctness execution
+passes with zero failed tests, while catalog attribution retains two unknowns:
+the disabled native-Quickshell feature probe and shared-source `invalid_places_rejected`
+(the latter has two explicit successful Cargo executions). Unknown catalog entries
+are not claimed as passing. Architecture, partial, practice-failure and test-failure
+policies therefore remain red. Mutation, semver/feature matrix, repeated flakiness,
+Miri, fuzzing, sanitizers and dependency unsafe inventory stay explicitly unqualified.
+
+The earlier `E/final/` run retains the standalone-import compilation failure; it
+is superseded by the corrected canonical run. No pins, protocol fixtures, policy
+thresholds/exclusions, services or live settings changed. No push or deployment.

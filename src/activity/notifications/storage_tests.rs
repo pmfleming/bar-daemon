@@ -44,6 +44,7 @@ fn persisted_preview_matches_rust_projection_and_replacement_is_atomic() {
                 serde_json::to_value(&rows[0]).unwrap(),
                 serde_json::to_value(&expected).unwrap()
             );
+            assert_eq!(rows[0].identity_icon, "captured-icon");
             assert_eq!(rows[0].repeat_key, expected.repeat_key);
             assert_eq!(rows[0].group_key, expected.group_key);
             assert!(rows[0].matches);
@@ -132,18 +133,41 @@ fn center_does_not_decode_unselected_payloads_and_search_is_literal() {
             1
         );
         assert!(db.query("missing", None, 10, &[]).await.unwrap().is_empty());
+        for (id, app, summary) in [
+            (2, "Chat", "unmatched newer message"),
+            (3, "Other", "ÉCLAIR 100%_"),
+            (4, "Other", "ÉCLAIR 100%_"),
+            (5, "Hidden", "unmatched app"),
+        ] {
+            let mut other = n.clone();
+            other.id = id;
+            other.app_name = app.into();
+            other.summary = summary.into();
+            other.created_unix_ms += u64::from(id);
+            db.apply(Mutation::Save(Box::new(other))).await.unwrap();
+        }
         db.connection
             .execute("UPDATE notifications SET payload_json='invalid-json'", ())
             .await
             .unwrap();
         let page = db
-            .center(&query(serde_json::json!({"view":"apps"})), &[], "epoch", 1)
+            .center(
+                &query(serde_json::json!({"view":"apps", "query":"éclair 100%_"})),
+                &[],
+                "epoch",
+                1,
+            )
             .await
             .unwrap();
         let CenterPage::Apps { apps, .. } = page else {
             panic!()
         };
-        assert_eq!(apps[0].count, 1);
+        assert_eq!(
+            apps.iter()
+                .map(|a| (a.latest.id, a.count, a.total_count))
+                .collect::<Vec<_>>(),
+            [(4, 2, 2), (1, 1, 2)]
+        );
         let selected = query(
             serde_json::json!({"view":"app", "selected":{"id":1,"created":n.created_unix_ms}}),
         );
