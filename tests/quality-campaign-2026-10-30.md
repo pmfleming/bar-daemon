@@ -60,3 +60,36 @@ E/initial-fault-coverage.xml -- real_file_write_exhaustion_no_success_or_partial
 This is a focused regression result, not full-suite coverage. Formatting passes.
 The initial unsupported positional filter invocation is retained separately in
 `E/initial-filter-error.log`; it is not counted as passing.
+
+## Production-identical reference and ranked next five
+
+At initial commit `9d1271c`, `QUALITY_OUTPUT_DIR=E/post-initial-fixtures bash
+tools/quality-fixtures.sh coverage` passes all 333 cases, zero ignored, and both
+required native fixtures. Cobertura: **23,266 / 31,979 lines, 72.7540%**. This is
+an explicitly post-harness-fix reference; original-baseline coverage remains failed.
+No production code changed between these reference points.
+
+`E/rqlens measure {hotspots,clones,leverage,locality} --config
+E/post-initial/rqlens.toml` now publishes fresh reports. Duplication: 2,406 lines,
+4.66%, 175 groups, 51,648 analyzed nonblank lines. Authored-syntax/macro and semantic
+inventory limitations remain; report availability does not certify architecture.
+
+Selected after the initial commit, in implementation order:
+
+| Rank | Improvement | Evidence and reason |
+| --- | --- | --- |
+| 1 | Completion timestamp state match | `patch_record` cognitive/cyclomatic 17/15; nested policy has a small independently testable state table. |
+| 2 | Cached agenda ordering | Comparator repeatedly parses dates and projects zone boundaries; cache numeric keys once and retain stable ID ties without cloning ID keys. |
+| 3 | Shared legacy todo schema and due conversion | Migration is 17/34; a duplicate wire DTO and duplicated due-field rules can reuse actual owners, keeping original raw provenance. |
+| 4 | Shared agenda membership | Membership is 16/22 and markers 14/9; reuse existing endpoint decoding and `Catalog::on_day`, preserving DST/instant rules. |
+| 5 | Streaming notification app aggregation | Existing grouping retains every preview in per-app vectors. Counts and one matching representative suffice; extra explicit branching is justified by earlier release of other previews. |
+
+## Follow-up 1: completion timestamp policy
+
+Replace nested timestamp branches with four explicit completion states; keep
+revision, source-write, completion-capability and record validation guards.
+Extend the existing table from six to eight cases. One full-record equality
+check strengthens the former subset of field assertions and preserves their
+behavior coverage, including independent children, metadata and revision.
+Pass: `cargo test --lib --locked activity::agenda_store -- --test-threads=2`
+(**25 cases**, zero failed/ignored); formatting and whitespace checks pass.

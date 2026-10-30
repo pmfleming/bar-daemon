@@ -55,16 +55,12 @@ pub(super) fn patch_record(
         if task.completed != old.completed {
             ensure!(record.capabilities.complete, "source cannot complete");
         }
-        if task.completed && task.completed_unix_ms.is_none() {
-            task.completed_unix_ms = if old.completed {
-                old.completed_unix_ms
-            } else {
-                Some(now)
-            };
-        }
-        if !task.completed {
-            task.completed_unix_ms = None;
-        }
+        task.completed_unix_ms = match (task.completed, task.completed_unix_ms, old.completed) {
+            (false, _, _) => None,
+            (true, Some(at), _) => Some(at),
+            (true, None, true) => old.completed_unix_ms,
+            (true, None, false) => Some(now),
+        };
         record.task = Some(task);
     }
     if let Some(value) = patch.title {

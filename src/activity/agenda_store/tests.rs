@@ -936,6 +936,8 @@ fn record_patch_policy_preserves_completion_history_and_independent_children() {
     use super::mutation::{create_record, patch_record};
     for (old_completed, old_time, completed, submitted_time, expected_time) in [
         (false, None, true, None, Some(20)),
+        (false, None, true, Some(15), Some(15)),
+        (true, Some(12), false, None, None),
         (true, Some(12), true, None, Some(12)),
         (true, None, true, None, None),
         (true, Some(12), true, Some(15), Some(15)),
@@ -959,16 +961,13 @@ fn record_patch_policy_preserves_completion_history_and_independent_children() {
             20,
         )
         .unwrap();
-        let task = patched.task.as_ref().unwrap();
-        assert_eq!(task.completed, completed);
-        assert_eq!(task.completed_unix_ms, expected_time);
-        assert_eq!(task.checklist, record.task.as_ref().unwrap().checklist);
-        assert_eq!(patched.schedule, record.schedule);
-        assert_eq!(patched.links, record.links);
-        assert_eq!(patched.notes, record.notes);
-        assert_eq!(patched.created_unix_ms, 10);
-        assert_eq!(patched.modified_unix_ms, 20);
-        assert_eq!(patched.revision, 2);
+        let mut expected = record;
+        let task = expected.task.as_mut().unwrap();
+        task.completed = completed;
+        task.completed_unix_ms = expected_time;
+        expected.modified_unix_ms = 20;
+        expected.revision = 2;
+        assert_eq!(patched, expected);
     }
     let mut record = create_record("local:test".into(), item(), 10);
     let mut task = record.task.clone().unwrap();
