@@ -413,17 +413,22 @@ fn abrupt_child() {
             store.create("durable".into(), item()).await.unwrap();
         } else if mode == "limited" {
             // The parent ignores SIGXFSZ before exec; EFBIG reaches the real Syscall VFS.
+            let limit = rustix::process::getrlimit(rustix::process::Resource::Fsize);
             rustix::process::setrlimit(
                 rustix::process::Resource::Fsize,
                 rustix::process::Rlimit {
                     current: Some(65536),
-                    maximum: Some(65536),
+                    ..limit
                 },
             )
             .unwrap();
             let mut large = item();
             large.notes = "x".repeat(260000);
-            assert!(store.create("limited".into(), large).await.is_err());
+            let result = store.create("limited".into(), large).await;
+            // Keep the actual EFBIG failure, then allow LLVM's exit-time profile
+            // write. No database destructor, shutdown or checkpoint runs here.
+            rustix::process::setrlimit(rustix::process::Resource::Fsize, limit).unwrap();
+            assert!(result.is_err());
         } else {
             store
                 .call(|db| {
