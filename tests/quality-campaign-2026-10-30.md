@@ -93,3 +93,12 @@ check strengthens the former subset of field assertions and preserves their
 behavior coverage, including independent children, metadata and revision.
 Pass: `cargo test --lib --locked activity::agenda_store -- --test-threads=2`
 (**25 cases**, zero failed/ignored); formatting and whitespace checks pass.
+
+## Follow-up 2: cache agenda ordering projections
+
+Stable ID ordering followed by cached numeric keys preserves the complete
+`(group, instant, ID)` order, including reversed inputs and exact timed precision.
+Each schedule key is computed at most once. This adds a cheap ID sort and bounded
+numeric key storage; no measured wall-time or RSS improvement is claimed.
+Pass: `cargo test --lib --locked activity::agenda -- --test-threads=2`
+(**40 cases**, including API, projection, ownership and store checks), plus formatting.

@@ -167,6 +167,10 @@ fn ordering_search_windows_and_every_cursor_fence() {
     ];
     records[0].notes = "unique needle".into();
     let catalog = Catalog::new(records.clone(), &p);
+    assert_eq!(
+        Catalog::new(records.iter().rev().cloned().collect(), &p).items,
+        catalog.items
+    );
     let all = list(&catalog, 1, "imports", &p, "UTC", request(None)).unwrap();
     assert_eq!(
         all.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),

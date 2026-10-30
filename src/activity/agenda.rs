@@ -340,7 +340,7 @@ struct Cursor {
     offset: usize,
 }
 
-fn order<'a, T: TimeZone>(item: &'a Record, p: &Projection<T>) -> (u8, i64, &'a str) {
+fn order<T: TimeZone>(item: &Record, p: &Projection<T>) -> (u8, i64) {
     use super::agenda_store::model::ScheduleMode;
     let (start, end) = p.stored_dates(&item.schedule);
     let (start_key, end_key) = match item.schedule.mode {
@@ -353,20 +353,12 @@ fn order<'a, T: TimeZone>(item: &'a Record, p: &Projection<T>) -> (u8, i64, &'a 
         ScheduleMode::Timed => (item.schedule.start_unix_ms, item.schedule.end_unix_ms),
     };
     if p.includes(&item.schedule, p.today) {
-        return (
-            0,
-            start_key.or_else(|| p.midnight(p.today)).unwrap_or(0),
-            &item.id,
-        );
+        return (0, start_key.or_else(|| p.midnight(p.today)).unwrap_or(0));
     }
     match start.or(end) {
-        Some(d) if d > p.today => (1, start_key.or(end_key).unwrap_or(0), &item.id),
-        Some(_) => (
-            2,
-            end_key.or(start_key).unwrap_or(0).saturating_neg(),
-            &item.id,
-        ),
-        None => (3, 0, &item.id),
+        Some(d) if d > p.today => (1, start_key.or(end_key).unwrap_or(0)),
+        Some(_) => (2, end_key.or(start_key).unwrap_or(0).saturating_neg()),
+        None => (3, 0),
     }
 }
 fn search_text(item: &Record) -> String {
@@ -398,7 +390,10 @@ pub(crate) struct Catalog {
 }
 impl Catalog {
     pub fn new<T: TimeZone>(mut items: Vec<Record>, p: &Projection<T>) -> Self {
-        items.sort_by(|a, b| order(a, p).cmp(&order(b, p)));
+        // Stable cached sorting preserves the ID tie-breaker while projecting
+        // each schedule once, instead of on every comparator invocation.
+        items.sort_by(|a, b| a.id.cmp(&b.id));
+        items.sort_by_cached_key(|item| order(item, p));
         let search = items.iter().map(search_text).collect();
         let by_id = items
             .iter()
