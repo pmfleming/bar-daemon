@@ -3,6 +3,19 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TodoItem {
+    pub id: String,
+    pub source_id: String,
+    pub title: String,
+    pub completed: bool,
+    pub priority: u8,
+    pub due_unix_ms: Option<i64>,
+    pub due_date: Option<String>,
+    pub created_unix_ms: i64,
+    pub completed_unix_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ItemKind {
@@ -272,6 +285,23 @@ impl ItemPatch {
     }
 }
 impl Schedule {
+    /// Historical dual due fields prefer the civil date. Original bytes remain
+    /// in migration provenance; an absent due value stays an undated schedule.
+    pub(crate) fn legacy_due(end_date: Option<String>, end_unix_ms: Option<i64>) -> Self {
+        if end_date.is_none() && end_unix_ms.is_some() {
+            Self {
+                mode: ScheduleMode::Timed,
+                end_unix_ms,
+                timezone: Some("UTC".into()),
+                ..Self::default()
+            }
+        } else {
+            Self {
+                end_date,
+                ..Self::default()
+            }
+        }
+    }
     pub(crate) fn validate(&self, allow_instant: bool) -> Result<()> {
         match self.mode {
             ScheduleMode::Date => {

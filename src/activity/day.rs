@@ -2,7 +2,7 @@
 use super::{
     agenda_adapter,
     agenda_projection::Projection,
-    agenda_store::model::{Schedule, ScheduleMode},
+    agenda_store::model::Schedule,
     model::{ActivityDay, ActivityEvent, TodoItem},
 };
 use anyhow::{Context, Result, ensure};
@@ -61,21 +61,7 @@ pub(super) fn project<T: TimeZone>(
         .collect();
     let todo_schedules: Vec<_> = todos
         .iter()
-        .map(|t| {
-            if let Some(date) = &t.due_date {
-                Schedule {
-                    end_date: Some(date.clone()),
-                    ..Schedule::default()
-                }
-            } else {
-                Schedule {
-                    mode: ScheduleMode::Timed,
-                    end_unix_ms: t.due_unix_ms,
-                    timezone: Some("UTC".into()),
-                    ..Schedule::default()
-                }
-            }
-        })
+        .map(|t| Schedule::legacy_due(t.due_date.clone(), t.due_unix_ms))
         .collect();
     std::iter::successors(Some(first), |d| d.succ_opt())
         .take_while(|d| *d <= last)

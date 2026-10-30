@@ -4,7 +4,6 @@ use super::{
     model::*,
 };
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs::{self, File},
@@ -13,19 +12,6 @@ use std::{
 };
 use turso::params;
 
-// Match actual activity::model::TodoItem serialization, not a guessed wrapper.
-#[derive(Debug, Deserialize, Serialize)]
-struct LegacyTodo {
-    id: String,
-    source_id: String,
-    title: String,
-    completed: bool,
-    priority: u8,
-    due_unix_ms: Option<i64>,
-    due_date: Option<String>,
-    created_unix_ms: i64,
-    completed_unix_ms: Option<i64>,
-}
 impl Database {
     pub(super) async fn migrate_legacy(&mut self, root: &Path, path: &Path) -> Result<()> {
         let bytes = match fs::read(path) {
@@ -61,7 +47,7 @@ impl Database {
             bytes.as_ref().is_none_or(|b| b.len() <= 32 * 1024 * 1024),
             "legacy todo file too large"
         );
-        let todos: Vec<LegacyTodo> = match &bytes {
+        let todos: Vec<TodoItem> = match &bytes {
             Some(bytes) => serde_json::from_slice(bytes)
                 .context("parse legacy todo store; original preserved")?,
             None => Vec::new(),
@@ -71,22 +57,6 @@ impl Database {
         let mut records = Vec::new();
         for todo in todos {
             ensure!(ids.insert(todo.id.clone()), "duplicate legacy todo id");
-            let schedule = if todo.due_date.is_some() {
-                // Preserve both raw fields in the receipt when historical clients sent both.
-                Schedule {
-                    end_date: todo.due_date,
-                    ..Default::default()
-                }
-            } else if todo.due_unix_ms.is_some() {
-                Schedule {
-                    mode: ScheduleMode::Timed,
-                    end_unix_ms: todo.due_unix_ms,
-                    timezone: Some("UTC".into()),
-                    ..Default::default()
-                }
-            } else {
-                Schedule::default()
-            };
             let record = Record {
                 id: todo.id,
                 kind: ItemKind::Task,
@@ -96,7 +66,7 @@ impl Database {
                 title: todo.title,
                 notes: String::new(),
                 links: Vec::new(),
-                schedule,
+                schedule: Schedule::legacy_due(todo.due_date, todo.due_unix_ms),
                 created_unix_ms: todo.created_unix_ms,
                 modified_unix_ms: todo.completed_unix_ms.unwrap_or(todo.created_unix_ms),
                 capabilities: Capabilities::local(),

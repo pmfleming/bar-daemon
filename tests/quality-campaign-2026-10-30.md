@@ -102,3 +102,19 @@ Each schedule key is computed at most once. This adds a cheap ID sort and bounde
 numeric key storage; no measured wall-time or RSS improvement is claimed.
 Pass: `cargo test --lib --locked activity::agenda -- --test-threads=2`
 (**40 cases**, including API, projection, ownership and store checks), plus formatting.
+
+## Follow-up 3: one legacy schema and due-field policy
+
+The self-contained store model owns `TodoItem`; the activity model re-exports it
+under its existing name. Deserialize this shared type, removing the duplicate DTO/serializer.
+Migration and compatibility framing share `Schedule::legacy_due`: civil dates
+win historical dual fields, timed-only dues retain UTC, and absent dues stay undated.
+The added dual-field record proves active schedule priority and original backup
+bytes alongside the retained civil-only/timed-only cases and restart checks.
+Keep the standalone Turso contract executable closed over the store modules.
+Transaction ordering, validation/error categories and provenance remain intact.
+Pass: the same **40 agenda cases**, formatting and whitespace checks. Final
+all-target integration caught the original cross-module import; corrected ownership
+also passes `cargo check --workspace --all-targets --locked` and
+`cargo run --locked --bin agenda-turso-contract` (actual isolated CRUD/restore).
+

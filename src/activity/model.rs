@@ -61,18 +61,7 @@ impl ActivityEvent {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TodoItem {
-    pub id: String,
-    pub source_id: String,
-    pub title: String,
-    pub completed: bool,
-    pub priority: u8,
-    pub due_unix_ms: Option<i64>,
-    pub due_date: Option<String>,
-    pub created_unix_ms: i64,
-    pub completed_unix_ms: Option<i64>,
-}
+pub(crate) use super::agenda_store::model::TodoItem;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorldClockState {

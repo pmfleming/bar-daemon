@@ -164,7 +164,7 @@ async fn migration_actual_serialization_fidelity_idempotence_changed_and_corrupt
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("agenda");
     let legacy = dir.path().join("todos.json");
-    let bytes = br#"[{"id":"old-id","source_id":"old-local","title":" old title ","completed":true,"priority":255,"due_unix_ms":null,"due_date":"2026-10-30","created_unix_ms":1234,"completed_unix_ms":5678},{"id":"timed","source_id":"local","title":"timed","completed":false,"priority":4,"due_unix_ms":1793100000000,"due_date":null,"created_unix_ms":42,"completed_unix_ms":null}]"#;
+    let bytes = br#"[{"id":"old-id","source_id":"old-local","title":" old title ","completed":true,"priority":255,"due_unix_ms":null,"due_date":"2026-10-30","created_unix_ms":1234,"completed_unix_ms":5678},{"id":"timed","source_id":"local","title":"timed","completed":false,"priority":4,"due_unix_ms":1793100000000,"due_date":null,"created_unix_ms":42,"completed_unix_ms":null},{"id":"dual","source_id":"local","title":"dual","completed":false,"priority":0,"due_unix_ms":1793100000000,"due_date":"2026-10-30","created_unix_ms":1,"completed_unix_ms":null}]"#;
     fs::write(&legacy, bytes).unwrap();
     let store = Store::open(root.clone(), Some(legacy.clone()))
         .await
@@ -176,6 +176,8 @@ async fn migration_actual_serialization_fidelity_idempotence_changed_and_corrupt
     assert_eq!(record.task.unwrap().priority, 255);
     assert_eq!(record.schedule.start_date, None);
     assert_eq!(record.schedule.end_date.as_deref(), Some("2026-10-30"));
+    let dual = store.get("dual".into()).await.unwrap().unwrap();
+    assert_eq!(dual.schedule, record.schedule);
     let timed = store.get("timed".into()).await.unwrap().unwrap();
     assert_eq!(timed.schedule.start_unix_ms, None);
     assert_eq!(timed.schedule.end_unix_ms, Some(1793100000000));
@@ -210,7 +212,7 @@ async fn migration_actual_serialization_fidelity_idempotence_changed_and_corrupt
     let store = Store::open(root.clone(), Some(legacy.clone()))
         .await
         .unwrap();
-    assert_eq!(store.snapshot().await.unwrap().items.len(), 2);
+    assert_eq!(store.snapshot().await.unwrap().items.len(), 3);
     assert_eq!(
         store.get("old-id".into()).await.unwrap().unwrap().title,
         "post migration edit"
