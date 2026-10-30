@@ -25,11 +25,52 @@ pub(super) struct Database {
     pub(super) conn: Connection,
     _database: turso::Database,
     _database_file: File,
-    _ownership: File,
+    _ownership: OwnershipLock,
     root: PathBuf,
     read_only: bool,
     pub(super) blocked: bool,
 }
+// Keep this guard after the connection/database fields so they close first.
+// Closing our fd alone does not release flock while a concurrent subprocess
+// still holds an inherited copy of the open file description before exec.
+struct OwnershipLock(File);
+impl OwnershipLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        let file = private_file(path, false)?;
+        file.try_lock().context("agenda ownership lock busy")?;
+        Ok(Self(file))
+    }
+}
+impl Drop for OwnershipLock {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.unlock() {
+            tracing::error!(%error, "agenda ownership unlock failed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn release_does_not_wait_for_inherited_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agenda.db.lock");
+        let owner = OwnershipLock::acquire(&path).unwrap();
+        // dup shares the same open file description as an fd inherited by fork.
+        let inherited = owner.0.try_clone().unwrap();
+        assert!(OwnershipLock::acquire(&path).is_err());
+        assert!(OwnershipLock::acquire(&path).is_err());
+        drop(owner);
+        let next = OwnershipLock::acquire(&path).unwrap();
+        drop(inherited);
+        assert!(OwnershipLock::acquire(&path).is_err());
+        drop(next);
+        assert!(OwnershipLock::acquire(&path).is_ok());
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "operation")]
 pub(super) enum Mutation {
@@ -111,8 +152,7 @@ impl Database {
             "unsafe agenda directory"
         );
         fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
-        let ownership = private_file(&root.join("agenda.db.lock"), false)?;
-        ownership.try_lock().context("agenda ownership lock busy")?;
+        let ownership = OwnershipLock::acquire(&root.join("agenda.db.lock"))?;
         let path = root.join("agenda.db");
         let (database_file, newly_created) = match fs::symlink_metadata(&path) {
             Ok(_) => (existing_private_file(&path)?, false),

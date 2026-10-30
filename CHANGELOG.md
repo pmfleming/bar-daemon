@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Explicitly release agenda database ownership on shutdown and failed startup,
+  so descriptors temporarily inherited by subprocesses cannot block reopening.
+
 - Use GeoClue first for automatic timezone updates. Accept positively identified
   IP-only/fallback results without another IP request; confirm all other sources
   by canonical coordinate-derived timezone equality, without distance, country
