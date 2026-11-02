@@ -73,7 +73,7 @@ fn pragmas_constraints_integer_ranges_and_transaction_fences() {
         );
         db.begin().await.unwrap();
         db.connection
-            .execute("UPDATE notifications SET payload_json='uncommitted'", ())
+            .execute("UPDATE notifications SET summary='uncommitted'", ())
             .await
             .unwrap();
         db.fault = Some(Fault::Rollback);
@@ -164,7 +164,7 @@ fn subprocess_entry() {
             .unwrap()
             .block_on(async {
                 let path = crate::activity::config::notification_database_path();
-                assert_eq!(path, root.join("bar-daemon/notifications-turso-v1.db"));
+                assert_eq!(path, root.join("bar-daemon/notifications-turso-v2.db"));
                 let (store, last_id, dnd, until) =
                     super::persistence::NotificationPersistence::open(&path)
                         .await
@@ -207,7 +207,7 @@ fn subprocess_entry() {
         if mode == "crash" {
             db.begin().await.unwrap();
             db.connection
-                .execute("UPDATE notifications SET payload_json='uncommitted'", ())
+                .execute("UPDATE notifications SET summary='uncommitted'", ())
                 .await
                 .unwrap();
             // No destructors/checkpoint/normal shutdown. OS releases ownership.
@@ -284,7 +284,7 @@ fn default_cutover_and_reboot_ignore_legacy_and_reopen_turso_state() {
             b"legacy bytes need not even be valid SQLite"
         );
     }
-    assert!(old.join("notifications-turso-v1.db").exists());
+    assert!(old.join("notifications-turso-v2.db").exists());
 }
 
 #[tokio::test]

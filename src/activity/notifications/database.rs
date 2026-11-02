@@ -6,29 +6,11 @@ use std::{
     time::Duration,
 };
 
+use super::schema::{SCHEMA, VERSION};
 use anyhow::{Context, Result, ensure};
 use turso::Connection;
 
 const APPLICATION_ID: i64 = 0x4e4f5446;
-const SCHEMA: &str = "
-CREATE TABLE notifications (
- history_id INTEGER PRIMARY KEY AUTOINCREMENT,
- session_id INTEGER NOT NULL,
- payload_json TEXT NOT NULL,
- preview_json TEXT NOT NULL,
- app_key TEXT NOT NULL,
- search_text TEXT NOT NULL,
- created_unix_ms INTEGER NOT NULL,
- updated_unix_ms INTEGER NOT NULL,
- closed_unix_ms INTEGER,
- close_reason INTEGER
-) STRICT;
-CREATE INDEX notifications_active_session ON notifications(session_id) WHERE closed_unix_ms IS NULL;
-CREATE INDEX notifications_app ON notifications(app_key);
-CREATE INDEX notifications_identity ON notifications(session_id,created_unix_ms);
-CREATE TABLE notification_once(event_key TEXT PRIMARY KEY, created_unix_ms INTEGER NOT NULL) STRICT;
-CREATE TABLE notification_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-";
 
 pub(super) struct NotificationStore {
     pub(super) connection: Connection,
@@ -173,7 +155,7 @@ impl NotificationStore {
                 store
                     .connection
                     .execute_batch(format!(
-                        "PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version=1;"
+                        "PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={VERSION};"
                     ))
                     .await?;
                 Ok(())
@@ -183,7 +165,7 @@ impl NotificationStore {
         } else {
             ensure!(
                 store.integer("PRAGMA application_id").await? == APPLICATION_ID
-                    && store.integer("PRAGMA user_version").await? == 1,
+                    && store.integer("PRAGMA user_version").await? == VERSION,
                 "unsupported notification database identity/schema"
             );
         }
@@ -192,7 +174,7 @@ impl NotificationStore {
             path = %path.display(),
             engine = "turso",
             engine_version = "0.8.3",
-            schema_version = 1,
+            schema_version = VERSION,
             created = fresh,
             "notification store opened"
         );
@@ -325,7 +307,7 @@ mod tests {
             store.checkpoint().await.unwrap();
             drop(store);
             let store = NotificationStore::open(&path).await.unwrap();
-            assert_eq!(store.integer("PRAGMA user_version").await.unwrap(), 1);
+            assert_eq!(store.integer("PRAGMA user_version").await.unwrap(), VERSION);
             assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         });
     }

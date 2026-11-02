@@ -120,7 +120,7 @@ fn byte_bounded_pages_progress_without_duplicates() {
 }
 
 #[test]
-fn center_does_not_decode_unselected_payloads_and_search_is_literal() {
+fn center_does_not_hydrate_unselected_content_and_search_is_literal() {
     block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let mut db = NotificationStore::open(&dir.path().join("history.db"))
@@ -147,7 +147,10 @@ fn center_does_not_decode_unselected_payloads_and_search_is_literal() {
             db.apply(Mutation::Save(Box::new(other))).await.unwrap();
         }
         db.connection
-            .execute("UPDATE notifications SET payload_json='invalid-json'", ())
+            .execute(
+                "UPDATE notifications SET body=?1",
+                ["x".repeat(PAGE_BYTES + 1)],
+            )
             .await
             .unwrap();
         let page = db
@@ -188,27 +191,14 @@ fn complete_window_retention_targets_and_bounded_refresh() {
         let mut db = NotificationStore::open(&path).await.unwrap();
         let start = std::time::Instant::now();
         db.begin().await.unwrap();
-        // Prepared fixture seeding avoids benchmarking parser overhead on 5,005 writes.
-        let mut insert = db.connection.prepare("INSERT INTO notifications(session_id,payload_json,preview_json,app_key,search_text,created_unix_ms,updated_unix_ms) VALUES (?1,?2,?3,?4,?5,?6,?6)").await.unwrap();
+        // One fixture transaction excludes fsync latency from refresh timing.
         let now = crate::time::unix_ms();
         for id in 1..=SCOPE_LIMIT + 5 {
             let mut n = notification(u32::try_from(id).unwrap());
             n.created_unix_ms = now;
             n.body = "x".repeat(16 * 1024);
-            let preview = StoredPreview::from_active(&n);
-            insert
-                .execute(params![
-                    i64::try_from(id).unwrap(),
-                    serde_json::to_string(&n).unwrap(),
-                    serde_json::to_string(&preview).unwrap(),
-                    n.app_key(),
-                    search_text(&n),
-                    integer(now).unwrap()
-                ])
-                .await
-                .unwrap();
+            db.save_inner(&n).await.unwrap();
         }
-        drop(insert);
         db.remember_id(100_000).await.unwrap();
         db.finish(Ok(())).await.unwrap();
         let seeded = start.elapsed();

@@ -1479,7 +1479,18 @@ mod tests {
                 .collect::<Vec<_>>();
             stored.sort_by_key(|item| item.id);
             let active = engine.active().await;
-            assert_eq!(stored, active, "persistence diverged at round {round}");
+            let historical = active
+                .iter()
+                .cloned()
+                .map(|mut item| {
+                    // v2 stores history content, never live popup/frozen-card state.
+                    item.toast_visible = false;
+                    item.toast_expires_unix_ms = None;
+                    item.interaction_blocked = false;
+                    item
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(stored, historical, "persistence diverged at round {round}");
             let snapshot = state.snapshot().await;
             assert_eq!(snapshot.notifications.count as usize, active.len());
             assert_eq!(snapshot.notification_active.notifications, active);

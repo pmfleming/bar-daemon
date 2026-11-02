@@ -1,5 +1,8 @@
 # Notifications: fast cutover to Turso 0.8.3
 
+Historical v1 implementation plan. The [v2 relational cutover](notifications-v2-plan.md)
+supersedes its JSON storage design and default path; see [current deployment](notifications-storage.md).
+
 ## Scope and decisions
 
 Replace notification persistence using `rusqlite` with the already-pinned embedded `turso = "=0.8.3"`, `default-features = false`.

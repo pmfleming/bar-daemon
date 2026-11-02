@@ -1,4 +1,8 @@
 //! Notification operations; futures are driven only by the dedicated owner thread.
+#[path = "storage_rows.rs"]
+mod rows;
+#[path = "storage_state.rs"]
+mod state;
 #[cfg(test)]
 #[path = "storage_tests.rs"]
 mod tests;
@@ -17,103 +21,11 @@ use super::{
     settings::Settings,
 };
 
-// Query-dependent matches and row lifecycle are never persisted in the projection.
-// Preview's hidden grouping fields are stored explicitly without changing its wire format.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct StoredPreview {
-    preview: Preview,
-    group_key: String,
-    repeat_key: Option<center::RepeatKey>,
-}
-impl StoredPreview {
-    fn from_active(notification: &ActiveNotification) -> Self {
-        let mut preview = Preview::from_active(notification, "");
-        Self {
-            group_key: std::mem::take(&mut preview.group_key),
-            repeat_key: preview.repeat_key.take(),
-            preview,
-        }
-    }
-    fn into_preview(self) -> Preview {
-        Preview {
-            group_key: self.group_key,
-            repeat_key: self.repeat_key,
-            ..self.preview
-        }
-    }
-}
-const PREVIEW_BYTES: usize = 64 * 1024;
-
 fn integer(value: u64) -> Result<i64> {
     i64::try_from(value).context("notification integer exceeds storage range")
 }
 
 impl NotificationStore {
-    async fn meta(&self, key: &str) -> Result<Option<String>> {
-        Ok(self
-            .connection
-            .query("SELECT value FROM notification_meta WHERE key=?1", [key])
-            .await?
-            .next()
-            .await?
-            .map(|r| r.get(0))
-            .transpose()?)
-    }
-    async fn set_meta(&self, key: &str, value: String) -> Result<()> {
-        self.connection.execute("INSERT INTO notification_meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value]).await?;
-        Ok(())
-    }
-    pub(super) async fn last_id(&self) -> Result<u32> {
-        self.healthy()?;
-        Ok(self
-            .meta("last_notification_id")
-            .await?
-            .map(|v| v.parse())
-            .transpose()?
-            .unwrap_or(0))
-    }
-    async fn remember_id(&self, id: u32) -> Result<()> {
-        self.set_meta(
-            "last_notification_id",
-            self.last_id().await?.max(id).to_string(),
-        )
-        .await
-    }
-    pub(super) async fn load_dnd(&self) -> Result<(bool, Option<u64>)> {
-        self.healthy()?;
-        Ok(self
-            .meta("dnd")
-            .await?
-            .map(|v| serde_json::from_str(&v))
-            .transpose()?
-            .unwrap_or((false, None)))
-    }
-    async fn load_settings(&self) -> Result<Settings> {
-        let settings: Settings = self
-            .meta("settings")
-            .await?
-            .map(|v| serde_json::from_str(&v))
-            .transpose()?
-            .unwrap_or_default();
-        settings.validate()?;
-        Ok(settings)
-    }
-    pub(super) async fn settings(&mut self, value: Option<Settings>) -> Result<Settings> {
-        self.healthy()?;
-        let Some(value) = value else {
-            return self.load_settings().await;
-        };
-        value.validate()?;
-        self.begin().await?;
-        let result = async {
-            self.set_meta("settings", serde_json::to_string(&value)?)
-                .await?;
-            self.prune_inner().await?;
-            Ok(value)
-        }
-        .await;
-        self.finish(result).await
-    }
     pub(super) async fn prune(&mut self) -> Result<usize> {
         self.begin().await?;
         let result = self.prune_inner().await;
@@ -124,11 +36,10 @@ impl NotificationStore {
         self.fail(super::database::Fault::Prune)?;
         let cutoff = crate::time::unix_ms()
             .saturating_sub(u64::from(self.load_settings().await?.history_days) * 86_400_000);
-        let removed = self.connection.execute(
-            "DELETE FROM notifications WHERE created_unix_ms < ?2 OR (closed_unix_ms IS NOT NULL
+        self.delete_where(
+            "created_unix_ms < ?2 OR (closed_unix_ms IS NOT NULL
              AND history_id < COALESCE((SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT 1 OFFSET ?1), 0))",
-            params![i64::try_from(SCOPE_LIMIT - 1)?, integer(cutoff)?]).await.context("prune notification history")?;
-        Ok(usize::try_from(removed)?)
+            vec![i64::try_from(SCOPE_LIMIT - 1)?.into(), integer(cutoff)?.into()]).await.context("prune notification history")
     }
     pub(super) async fn apply(&mut self, mutation: Mutation) -> Result<()> {
         self.begin().await?;
@@ -146,14 +57,7 @@ impl NotificationStore {
             Mutation::SetDnd {
                 enabled,
                 until_unix_ms,
-            } => {
-                self.set_meta(
-                    "dnd",
-                    serde_json::to_string(&(enabled, enabled.then_some(until_unix_ms).flatten()))
-                        .expect("serialize DND pair"),
-                )
-                .await
-            }
+            } => self.set_dnd(enabled, until_unix_ms).await,
         };
         self.finish(result).await
     }
@@ -196,35 +100,19 @@ impl NotificationStore {
         #[cfg(test)]
         self.fail(super::database::Fault::Save)?;
         if notification.hints.transient {
-            self.connection
-                .execute(
-                    "DELETE FROM notifications WHERE session_id=?1 AND closed_unix_ms IS NULL",
-                    [i64::from(notification.id)],
-                )
-                .await?;
+            self.delete_where(
+                "session_id=?1 AND closed_unix_ms IS NULL",
+                vec![i64::from(notification.id).into()],
+            )
+            .await?;
             return Ok(());
         }
-        let payload = serde_json::to_string(notification)?;
         ensure!(
-            payload.len() <= PAGE_BYTES,
+            serde_json::to_vec(notification)?.len() <= PAGE_BYTES,
             "Notification exceeds history page byte limit"
         );
-        let search = search_text(notification);
-        let stored = StoredPreview::from_active(notification);
-        let preview = serde_json::to_string(&stored)?;
-        ensure!(
-            preview.len() <= PREVIEW_BYTES,
-            "notification preview exceeds storage bound"
-        );
-        let key = stored.preview.app_key;
-        let changed = self.connection.execute(
-            "UPDATE notifications SET payload_json=?2, updated_unix_ms=?3, search_text=?4, preview_json=?5, app_key=?6 WHERE session_id=?1 AND closed_unix_ms IS NULL",
-            params![i64::from(notification.id), payload.clone(), integer(notification.updated_unix_ms)?, search.clone(), preview.clone(), key.clone()]).await?;
-        if changed == 0 {
-            self.connection.execute("INSERT INTO notifications(session_id,payload_json,created_unix_ms,updated_unix_ms,search_text,preview_json,app_key) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![i64::from(notification.id), payload, integer(notification.created_unix_ms)?, integer(notification.updated_unix_ms)?, search, preview, key]).await?;
-        }
-        Ok(())
+        let id = self.save_content(notification).await?;
+        self.save_children(id, notification).await
     }
     async fn close_inner(&self, id: Option<u32>, closed: u64, reason: u32) -> Result<()> {
         self.connection.execute("UPDATE notifications SET closed_unix_ms=?1, close_reason=?2 WHERE closed_unix_ms IS NULL AND (?3 IS NULL OR session_id=?3)",
@@ -234,43 +122,22 @@ impl NotificationStore {
     pub(super) async fn delete(&mut self, positions: &[Position]) -> Result<()> {
         self.begin().await?;
         let result = async {
-            let mut statement = self
-                .connection
-                .prepare("DELETE FROM notifications WHERE session_id=?1 AND created_unix_ms=?2")
-                .await?;
-            for position in positions {
-                statement
-                    .execute(params![i64::from(position.id), integer(position.created)?])
-                    .await?;
+            for chunk in positions.chunks(MAX_PAGE) {
+                let predicate =
+                    std::iter::repeat_n("(session_id=? AND created_unix_ms=?)", chunk.len())
+                        .collect::<Vec<_>>()
+                        .join(" OR ");
+                let mut values = Vec::with_capacity(chunk.len() * 2);
+                for position in chunk {
+                    values.push(i64::from(position.id).into());
+                    values.push(integer(position.created)?.into());
+                }
+                self.delete_where(&predicate, values).await?;
             }
             Ok(())
         }
         .await;
         self.finish(result).await
-    }
-    pub(super) async fn set_policy(&mut self, key: &str, policy: &AppPolicy) -> Result<()> {
-        self.begin().await?;
-        let result = self
-            .set_meta(&format!("app_policy:{key}"), serde_json::to_string(policy)?)
-            .await;
-        self.finish(result).await
-    }
-    pub(super) async fn policies(&self) -> Result<BTreeMap<String, AppPolicy>> {
-        self.healthy()?;
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT key,value FROM notification_meta WHERE key LIKE 'app_policy:%'",
-                (),
-            )
-            .await?;
-        let mut policies = BTreeMap::new();
-        while let Some(row) = rows.next().await? {
-            let key: String = row.get(0)?;
-            let value: String = row.get(1)?;
-            policies.insert(key[11..].to_owned(), serde_json::from_str(&value)?);
-        }
-        Ok(policies)
     }
     pub(super) async fn targets(
         &self,
@@ -296,35 +163,10 @@ impl NotificationStore {
         Ok(targets)
     }
     async fn candidates(&self, query: &str) -> Result<Vec<Preview>> {
-        self.healthy()?;
-        // Empty searches do not even load the potentially large normalized body.
-        let sql = if query.is_empty() {
-            "SELECT history_id,preview_json,closed_unix_ms,'' FROM notifications ORDER BY history_id DESC LIMIT ?1"
-        } else {
-            "SELECT history_id,preview_json,closed_unix_ms,search_text FROM notifications ORDER BY history_id DESC LIMIT ?1"
-        };
-        let mut rows = self
-            .connection
-            .query(sql, [i64::try_from(SCOPE_LIMIT)?])
-            .await?;
-        let mut previews = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let encoded: String = row.get(1)?;
-            ensure!(
-                encoded.len() <= PREVIEW_BYTES,
-                "notification preview exceeds storage bound"
-            );
-            let mut preview = serde_json::from_str::<StoredPreview>(&encoded)?.into_preview();
-            preview.history_id = Some(row.get(0)?);
-            preview.closed_unix_ms = row.get::<Option<i64>>(2)?.map(u64::try_from).transpose()?;
-            preview.matches = query.is_empty() || row.get::<String>(3)?.contains(query);
-            previews.push(preview);
-        }
-        Ok(previews)
+        self.read_candidates(query).await
     }
     async fn record(&self, history_id: i64) -> Result<CatalogRecord> {
-        let row = self.connection.query("SELECT history_id,payload_json,closed_unix_ms,close_reason FROM notifications WHERE history_id=?1", [history_id]).await?.next().await?.context("notification no longer retained")?;
-        catalog_record(&row)
+        Ok(catalog_record(self.records(&[history_id]).await?.remove(0)))
     }
     pub(super) async fn center(
         &self,
@@ -399,10 +241,13 @@ impl NotificationStore {
         previews.sort_by_key(|p| std::cmp::Reverse((p.created_unix_ms, p.id)));
         let mut records = Vec::new();
         let mut bytes = 0;
-        for preview in previews.into_iter().take(limit + 1) {
-            let record = self
-                .record(preview.history_id.context("missing history identity")?)
-                .await?;
+        let ids = previews
+            .into_iter()
+            .take(limit + 1)
+            .map(|p| p.history_id.context("missing history identity"))
+            .collect::<Result<Vec<_>>>()?;
+        for record in self.records(&ids).await? {
+            let record = catalog_record(record);
             bytes += serde_json::to_vec(&record)?.len();
             records.push(record);
             // Include one overflow row so history::page can produce its cursor.
@@ -418,35 +263,21 @@ impl NotificationStore {
         limit: usize,
     ) -> Result<Vec<HistoryNotification>> {
         self.healthy()?;
-        let mut rows = self.connection.query("SELECT history_id,payload_json,closed_unix_ms,close_reason FROM notifications WHERE history_id < ?1 ORDER BY history_id DESC LIMIT ?2",
+        let mut rows = self.connection.query("SELECT history_id FROM notifications WHERE history_id < ?1 ORDER BY history_id DESC LIMIT ?2",
             params![before.unwrap_or(i64::MAX), i64::try_from(limit)?]).await?;
-        let mut records = Vec::new();
+        let mut ids = Vec::new();
         while let Some(row) = rows.next().await? {
-            records.push(history_record(&row)?);
+            ids.push(row.get(0)?);
         }
-        Ok(records)
+        self.records(&ids).await
     }
 }
 
-fn history_record(row: &turso::Row) -> Result<HistoryNotification> {
-    let payload: String = row.get(1)?;
-    ensure!(
-        payload.len() <= PAGE_BYTES,
-        "Notification exceeds history page byte limit"
-    );
-    Ok(HistoryNotification {
-        history_id: row.get(0)?,
-        notification: serde_json::from_str(&payload)?,
-        closed_unix_ms: row.get::<Option<i64>>(2)?.map(u64::try_from).transpose()?,
-        close_reason: row.get::<Option<i64>>(3)?.map(u32::try_from).transpose()?,
-    })
-}
-fn catalog_record(row: &turso::Row) -> Result<CatalogRecord> {
-    let record = history_record(row)?;
-    Ok(CatalogRecord {
+fn catalog_record(record: HistoryNotification) -> CatalogRecord {
+    CatalogRecord {
         history_id: Some(record.history_id),
         notification: record.notification,
         closed_unix_ms: record.closed_unix_ms,
         close_reason: record.close_reason,
-    })
+    }
 }

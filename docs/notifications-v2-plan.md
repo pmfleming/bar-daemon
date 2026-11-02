@@ -12,7 +12,7 @@ remain Rust and QML; the existing daemon API remains the Shelllist boundary.
 3. Qualify round-trips, replacement/dependent-row cleanup, rollback, bounded
    reads, restart/crash behavior and the intentional v1 cutover.
 4. Clear obsolete Shelllist session state on reconnect; test empty-store
-   reconnection and late replies in Qt. Update its locked daemon input.
+   reconnection and late replies in Qt. Qualify the matched local source graph.
 5. Run final Rust and QML qualification and record release evidence.
 
 Each stage is committed. The schema, writers and readers land together so no
@@ -46,6 +46,7 @@ fresh; old events may be delivered again. Reopening v2 retains its data.
 
 Shelllist must discard stale live/catalog state, action ownership and deletion
 tokens on daemon disconnect, then accept lower revisions and empty pages after
-reconnect. No database reader, migration or fallback is added to QML. Update the
-Shelllist daemon lock to the qualified Rust implementation for matched builds.
+reconnect. No database reader, migration or fallback is added to QML. Shelllist's
+co-development build resolves current sibling sources through the shared
+framework's local-build tooling; no local revision pin or new lock is introduced.
 No live user store is read, deleted or migrated during development.

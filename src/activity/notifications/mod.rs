@@ -19,6 +19,7 @@ pub(crate) mod policy;
 mod qualification_tests;
 #[cfg(test)]
 mod redesign_tests;
+mod schema;
 pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod settings;
