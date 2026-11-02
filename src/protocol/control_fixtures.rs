@@ -237,5 +237,46 @@ pub(super) fn fixture() -> Value {
             ),
         );
     }
+    fixture.extend(crate::workspace::control_fixtures());
     Value::Object(fixture)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_generated_control_contract_has_complete_examples() {
+        let fixtures = super::fixture();
+        for method in crate::protocol::registry()["methods"].as_array().unwrap() {
+            if method.get("params_schema").is_none() {
+                continue;
+            }
+            let name = method["name"].as_str().unwrap();
+            let example = fixtures
+                .get(name)
+                .unwrap_or_else(|| panic!("missing control fixture: {name}"));
+            for key in [
+                "params",
+                "success",
+                "limited",
+                "failed",
+                "invalid_params",
+                "rejected",
+            ] {
+                assert!(example.get(key).is_some(), "{name}: missing {key}");
+            }
+            let required = method["result_schema"]["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{name}: missing required reply fields"));
+            assert!(!required.is_empty(), "{name}: unconstrained reply");
+            for outcome in ["success", "limited"] {
+                let payload = &example[outcome]["data"][method["response_key"].as_str().unwrap()];
+                for key in required {
+                    assert!(
+                        payload.get(key.as_str().unwrap()).is_some(),
+                        "{name}: {outcome} omits {key}"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -1,6 +1,8 @@
 //! Serialized workspace lifecycle. QML consumes the projection, never this policy.
+mod fixtures;
 mod journal;
 mod presentation;
+mod replies;
 #[cfg(test)]
 mod tests;
 
@@ -14,13 +16,15 @@ use shelllist_hyprland::{Client, workspace as compositor};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
+pub(crate) use fixtures::control_fixtures;
 pub(crate) use presentation::View;
+use replies::{CommandReply, ContextReply, FocusReply, LeaseReply, RecordedReply};
 
 fn enabled() -> bool {
     std::env::var("SHELLLIST_TEMPORARY_WORKSPACES").as_deref() != Ok("0")
 }
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Command {
     command: CommandKind,
@@ -87,7 +91,24 @@ pub(crate) fn policy(method: &str) -> shelllist_daemon_core::MethodPolicy {
 }
 
 pub(crate) fn contract<P: schemars::JsonSchema>(method: &str) -> Value {
-    let mut contract = shelllist_daemon_core::method_schemas::<P, Value>();
+    let mut contract = match method {
+        "workspace.context" => shelllist_daemon_core::method_schemas::<P, ContextReply>(),
+        "workspace.create" => shelllist_daemon_core::method_schemas::<P, Reservation>(),
+        "workspace.close" => shelllist_daemon_core::method_schemas::<P, CloseRecord>(),
+        "workspace.placement.apply" | "workspace.lease.release" => {
+            shelllist_daemon_core::method_schemas::<P, LeaseReply>()
+        }
+        "workspace.command" => shelllist_daemon_core::method_schemas::<P, replies::CommandReply>(),
+        "workspace.operation.get" => {
+            shelllist_daemon_core::method_schemas::<P, replies::RecordedReply>()
+        }
+        _ => unreachable!("unregistered workspace contract"),
+    };
+    if matches!(method, "workspace.command" | "workspace.operation.get") {
+        // Every variant requires status. Keep this common invariant at the
+        // union root as well as inside each generated variant schema.
+        contract["result_schema"]["required"] = json!(["status"]);
+    }
     contract["name"] = method.into();
     contract["response_key"] = "workspace_operation".into();
     contract["policy"] = serde_json::to_value(policy(method)).unwrap();
@@ -303,7 +324,10 @@ impl Service {
                             )?,
                         )
                         .await?;
-                        Ok(json!({"status":"focused", "workspace_id":ids[index]}))
+                        Ok(serde_json::to_value(CommandReply::Focus(FocusReply {
+                            status: "focused".into(),
+                            workspace_id: ids[index],
+                        }))?)
                     }
                 }
             }
@@ -318,9 +342,15 @@ impl Service {
                     monitor.active_workspace.id > 0,
                     "ordinary workspace required"
                 );
-                Ok(
-                    json!({"version": wire::VERSION, "context": Context { session: snapshot.session, monitor: monitor.name.clone(), workspace_id: monitor.active_workspace.id }, "request_id": crate::state::publication::Publication::new().epoch}),
-                )
+                Ok(serde_json::to_value(ContextReply {
+                    version: wire::VERSION,
+                    context: Context {
+                        session: snapshot.session,
+                        monitor: monitor.name.clone(),
+                        workspace_id: monitor.active_workspace.id,
+                    },
+                    request_id: crate::state::publication::Publication::new().epoch,
+                })?)
             }
             "workspace.create" => {
                 self.create(loaded, &snapshot, serde_json::from_value(params)?)
@@ -344,16 +374,19 @@ impl Service {
                 }
                 loaded.save().await?;
                 self.cleanup(loaded, &snapshot).await?;
-                Ok(json!({"status":"released", "lease":lease}))
+                Ok(serde_json::to_value(LeaseReply {
+                    status: "released".into(),
+                    lease,
+                })?)
             }
             "workspace.operation.get" => {
                 let query: wire::Lookup = serde_json::from_value(params)?;
                 ensure!(query.session == snapshot.session, "stale session");
                 if let Some(record) = loaded.journal.reservations.get(&query.request_id) {
-                    return Ok(serde_json::to_value(record)?);
+                    return Ok(serde_json::to_value(RecordedReply::Reservation(record))?);
                 }
                 if let Some(record) = loaded.journal.closes.get(&query.request_id) {
-                    return Ok(serde_json::to_value(record)?);
+                    return Ok(serde_json::to_value(RecordedReply::Close(record))?);
                 }
                 bail!("workspace operation not found")
             }
@@ -520,7 +553,10 @@ impl Service {
                 record.placement.as_ref() == Some(&request),
                 "placement parameters changed"
             );
-            return Ok(json!({"status":"placed", "lease":request.lease}));
+            return Ok(serde_json::to_value(LeaseReply {
+                status: "placed".into(),
+                lease: request.lease,
+            })?);
         }
         ensure!(
             record.status == "reserved",
@@ -620,7 +656,10 @@ impl Service {
             )
             .await?;
         }
-        Ok(json!({"status":"placed", "lease":request.lease}))
+        Ok(serde_json::to_value(LeaseReply {
+            status: "placed".into(),
+            lease: request.lease,
+        })?)
     }
 
     async fn close(

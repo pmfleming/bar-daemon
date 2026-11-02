@@ -760,8 +760,50 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "properties": {
+            "context": {
+              "$ref": "#/$defs/Context"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "version",
+            "context",
+            "request_id"
+          ],
+          "title": "ContextReply",
+          "type": "object"
         }
       },
       {
@@ -817,8 +859,286 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Close": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/Context"
+                },
+                "request_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "request_id",
+                "context"
+              ],
+              "type": "object"
+            },
+            "CloseRecord": {
+              "properties": {
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "$ref": "#/$defs/Close"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "targets": {
+                  "items": {
+                    "$ref": "#/$defs/Target"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "request",
+                "targets",
+                "status",
+                "error"
+              ],
+              "type": "object"
+            },
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            "Create": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/Context"
+                },
+                "icon": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "$ref": "#/$defs/Purpose"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "description": "None allocates a fresh ID; Some leases an existing destination.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "request_id",
+                "context",
+                "purpose",
+                "workspace_id",
+                "origin",
+                "icon"
+              ],
+              "type": "object"
+            },
+            "FocusReply": {
+              "properties": {
+                "status": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "status",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            "Lease": {
+              "additionalProperties": false,
+              "properties": {
+                "generation": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "request_id",
+                "workspace_id",
+                "generation"
+              ],
+              "type": "object"
+            },
+            "Placement": {
+              "additionalProperties": false,
+              "properties": {
+                "follow": {
+                  "type": "boolean"
+                },
+                "lease": {
+                  "$ref": "#/$defs/Lease"
+                },
+                "window": {
+                  "$ref": "#/$defs/WindowIdentity"
+                }
+              },
+              "required": [
+                "lease",
+                "window",
+                "follow"
+              ],
+              "type": "object"
+            },
+            "Purpose": {
+              "enum": [
+                "landing-pad",
+                "launch"
+              ],
+              "type": "string"
+            },
+            "RecordedReply": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Reservation"
+                },
+                {
+                  "$ref": "#/$defs/CloseRecord"
+                }
+              ]
+            },
+            "Reservation": {
+              "properties": {
+                "lease": {
+                  "$ref": "#/$defs/Lease"
+                },
+                "placed": {
+                  "type": "boolean"
+                },
+                "placement": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Placement"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "released": {
+                  "type": "boolean"
+                },
+                "request": {
+                  "$ref": "#/$defs/Create"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "writer": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "request",
+                "lease",
+                "writer",
+                "released",
+                "placed",
+                "placement",
+                "status"
+              ],
+              "type": "object"
+            },
+            "Target": {
+              "properties": {
+                "attempted": {
+                  "type": "boolean"
+                },
+                "token": {
+                  "type": "string"
+                },
+                "window": {
+                  "$ref": "#/$defs/WindowIdentity"
+                }
+              },
+              "required": [
+                "window",
+                "token",
+                "attempted"
+              ],
+              "type": "object"
+            },
+            "WindowIdentity": {
+              "additionalProperties": false,
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "pid": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "address",
+                "pid",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordedReply"
+            },
+            {
+              "$ref": "#/$defs/FocusReply"
+            }
+          ],
+          "required": [
+            "status"
+          ],
+          "title": "CommandReply"
         }
       },
       {
@@ -903,8 +1223,183 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            "Create": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/Context"
+                },
+                "icon": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "$ref": "#/$defs/Purpose"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "description": "None allocates a fresh ID; Some leases an existing destination.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "request_id",
+                "context",
+                "purpose",
+                "workspace_id",
+                "origin",
+                "icon"
+              ],
+              "type": "object"
+            },
+            "Lease": {
+              "additionalProperties": false,
+              "properties": {
+                "generation": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "request_id",
+                "workspace_id",
+                "generation"
+              ],
+              "type": "object"
+            },
+            "Placement": {
+              "additionalProperties": false,
+              "properties": {
+                "follow": {
+                  "type": "boolean"
+                },
+                "lease": {
+                  "$ref": "#/$defs/Lease"
+                },
+                "window": {
+                  "$ref": "#/$defs/WindowIdentity"
+                }
+              },
+              "required": [
+                "lease",
+                "window",
+                "follow"
+              ],
+              "type": "object"
+            },
+            "Purpose": {
+              "enum": [
+                "landing-pad",
+                "launch"
+              ],
+              "type": "string"
+            },
+            "WindowIdentity": {
+              "additionalProperties": false,
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "pid": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "address",
+                "pid",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "properties": {
+            "lease": {
+              "$ref": "#/$defs/Lease"
+            },
+            "placed": {
+              "type": "boolean"
+            },
+            "placement": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Placement"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "released": {
+              "type": "boolean"
+            },
+            "request": {
+              "$ref": "#/$defs/Create"
+            },
+            "status": {
+              "type": "string"
+            },
+            "writer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request",
+            "lease",
+            "writer",
+            "released",
+            "placed",
+            "placement",
+            "status"
+          ],
+          "title": "Reservation",
+          "type": "object"
         }
       },
       {
@@ -962,8 +1457,116 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Close": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/Context"
+                },
+                "request_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "request_id",
+                "context"
+              ],
+              "type": "object"
+            },
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            "Target": {
+              "properties": {
+                "attempted": {
+                  "type": "boolean"
+                },
+                "token": {
+                  "type": "string"
+                },
+                "window": {
+                  "$ref": "#/$defs/WindowIdentity"
+                }
+              },
+              "required": [
+                "window",
+                "token",
+                "attempted"
+              ],
+              "type": "object"
+            },
+            "WindowIdentity": {
+              "additionalProperties": false,
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "pid": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "address",
+                "pid",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request": {
+              "$ref": "#/$defs/Close"
+            },
+            "status": {
+              "type": "string"
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/Target"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "request",
+            "targets",
+            "status",
+            "error"
+          ],
+          "title": "CloseRecord",
+          "type": "object"
         }
       },
       {
@@ -1052,8 +1655,48 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Lease": {
+              "additionalProperties": false,
+              "properties": {
+                "generation": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "request_id",
+                "workspace_id",
+                "generation"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "properties": {
+            "lease": {
+              "$ref": "#/$defs/Lease"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "lease"
+          ],
+          "title": "LeaseReply",
+          "type": "object"
         }
       },
       {
@@ -1097,8 +1740,48 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Lease": {
+              "additionalProperties": false,
+              "properties": {
+                "generation": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "request_id",
+                "workspace_id",
+                "generation"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "properties": {
+            "lease": {
+              "$ref": "#/$defs/Lease"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "lease"
+          ],
+          "title": "LeaseReply",
+          "type": "object"
         }
       },
       {
@@ -1133,8 +1816,260 @@
         },
         "response_key": "workspace_operation",
         "result_schema": {
+          "$defs": {
+            "Close": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/Context"
+                },
+                "request_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "request_id",
+                "context"
+              ],
+              "type": "object"
+            },
+            "CloseRecord": {
+              "properties": {
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "request": {
+                  "$ref": "#/$defs/Close"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "targets": {
+                  "items": {
+                    "$ref": "#/$defs/Target"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "request",
+                "targets",
+                "status",
+                "error"
+              ],
+              "type": "object"
+            },
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            "Create": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/Context"
+                },
+                "icon": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "$ref": "#/$defs/Purpose"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "description": "None allocates a fresh ID; Some leases an existing destination.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "request_id",
+                "context",
+                "purpose",
+                "workspace_id",
+                "origin",
+                "icon"
+              ],
+              "type": "object"
+            },
+            "Lease": {
+              "additionalProperties": false,
+              "properties": {
+                "generation": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "request_id",
+                "workspace_id",
+                "generation"
+              ],
+              "type": "object"
+            },
+            "Placement": {
+              "additionalProperties": false,
+              "properties": {
+                "follow": {
+                  "type": "boolean"
+                },
+                "lease": {
+                  "$ref": "#/$defs/Lease"
+                },
+                "window": {
+                  "$ref": "#/$defs/WindowIdentity"
+                }
+              },
+              "required": [
+                "lease",
+                "window",
+                "follow"
+              ],
+              "type": "object"
+            },
+            "Purpose": {
+              "enum": [
+                "landing-pad",
+                "launch"
+              ],
+              "type": "string"
+            },
+            "Reservation": {
+              "properties": {
+                "lease": {
+                  "$ref": "#/$defs/Lease"
+                },
+                "placed": {
+                  "type": "boolean"
+                },
+                "placement": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Placement"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "released": {
+                  "type": "boolean"
+                },
+                "request": {
+                  "$ref": "#/$defs/Create"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "writer": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "request",
+                "lease",
+                "writer",
+                "released",
+                "placed",
+                "placement",
+                "status"
+              ],
+              "type": "object"
+            },
+            "Target": {
+              "properties": {
+                "attempted": {
+                  "type": "boolean"
+                },
+                "token": {
+                  "type": "string"
+                },
+                "window": {
+                  "$ref": "#/$defs/WindowIdentity"
+                }
+              },
+              "required": [
+                "window",
+                "token",
+                "attempted"
+              ],
+              "type": "object"
+            },
+            "WindowIdentity": {
+              "additionalProperties": false,
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "pid": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "address",
+                "pid",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reservation"
+            },
+            {
+              "$ref": "#/$defs/CloseRecord"
+            }
+          ],
+          "required": [
+            "status"
+          ],
+          "title": "RecordedReply"
         }
       },
       {

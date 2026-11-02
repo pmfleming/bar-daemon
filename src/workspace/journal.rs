@@ -20,7 +20,7 @@ pub(super) struct Entry {
     pub cue_assigned: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(super) struct Reservation {
     pub request: Create,
     pub lease: Lease,
@@ -31,14 +31,14 @@ pub(super) struct Reservation {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(super) struct Target {
     pub window: WindowIdentity,
     pub token: String,
     pub attempted: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(super) struct CloseRecord {
     pub request: wire::Close,
     pub targets: Vec<Target>,
