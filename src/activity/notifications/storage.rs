@@ -6,6 +6,9 @@ mod state;
 #[cfg(test)]
 #[path = "storage_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "storage_v2_tests.rs"]
+mod v2_tests;
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
@@ -122,7 +125,9 @@ impl NotificationStore {
     pub(super) async fn delete(&mut self, positions: &[Position]) -> Result<()> {
         self.begin().await?;
         let result = async {
-            for chunk in positions.chunks(MAX_PAGE) {
+            // Bound SQL expression depth as well as parameter count; the
+            // pinned engine's debug planner recursively visits OR terms.
+            for chunk in positions.chunks(16) {
                 let predicate =
                     std::iter::repeat_n("(session_id=? AND created_unix_ms=?)", chunk.len())
                         .collect::<Vec<_>>()
@@ -231,28 +236,20 @@ impl NotificationStore {
             (1..=MAX_PAGE).contains(&limit),
             "invalid notification page limit"
         );
-        let mut previews = self.candidates(query).await?;
-        previews.retain(|p| {
-            p.matches
-                && before
-                    .is_none_or(|before| (p.created_unix_ms, p.id) < (before.created, before.id))
-                && !excluded.contains(&(p.created_unix_ms, p.id))
-        });
-        previews.sort_by_key(|p| std::cmp::Reverse((p.created_unix_ms, p.id)));
         let mut records = Vec::new();
         let mut bytes = 0;
-        let ids = previews
-            .into_iter()
-            .take(limit + 1)
-            .map(|p| p.history_id.context("missing history identity"))
-            .collect::<Result<Vec<_>>>()?;
-        for record in self.records(&ids).await? {
-            let record = catalog_record(record);
-            bytes += serde_json::to_vec(&record)?.len();
-            records.push(record);
-            // Include one overflow row so history::page can produce its cursor.
-            if bytes > PAGE_BYTES {
-                break;
+        let ids = self.history_ids(query, before, limit, excluded).await?;
+        // Bound full-content hydration as well as the final serialized page.
+        // Large bodies can exhaust the byte budget well before 100 records.
+        'pages: for chunk in ids.chunks(8) {
+            for record in self.records(chunk).await? {
+                let record = catalog_record(record);
+                bytes += serde_json::to_vec(&record)?.len();
+                records.push(record);
+                // Include one overflow row so history::page can produce its cursor.
+                if bytes > PAGE_BYTES {
+                    break 'pages;
+                }
             }
         }
         Ok(records)

@@ -80,7 +80,7 @@ impl NotificationStore {
         Ok(id)
     }
 
-    pub(super) async fn save_children(&self, id: i64, n: &ActiveNotification) -> Result<()> {
+    pub(super) async fn save_children(&mut self, id: i64, n: &ActiveNotification) -> Result<()> {
         for table in [
             "notification_actions",
             "notification_context_actions",
@@ -90,6 +90,8 @@ impl NotificationStore {
                 .execute(format!("DELETE FROM {table} WHERE history_id=?1"), [id])
                 .await?;
         }
+        #[cfg(test)]
+        self.fail(super::super::database::Fault::Children)?;
         if !n.actions.is_empty() {
             let mut statement = self
                 .connection
@@ -149,7 +151,7 @@ impl NotificationStore {
     // transaction, so prune, explicit delete and transient replacement cannot
     // leave orphan actions/previews even when a later statement fails.
     pub(super) async fn delete_where(
-        &self,
+        &mut self,
         predicate: &str,
         values: Vec<turso::Value>,
     ) -> Result<usize> {
@@ -160,6 +162,8 @@ impl NotificationStore {
         ] {
             self.connection.execute(format!("DELETE FROM {table} WHERE history_id IN (SELECT history_id FROM notifications WHERE {predicate})"), values.clone()).await?;
         }
+        #[cfg(test)]
+        self.fail(super::super::database::Fault::DeleteChildren)?;
         Ok(usize::try_from(
             self.connection
                 .execute(
@@ -175,16 +179,20 @@ impl NotificationStore {
         // Select the scope BEFORE joining/filtering. Search does not reach older
         // rows, and empty search never transfers normalized full bodies.
         let search_column = if query.is_empty() {
-            "''"
+            "1"
         } else {
-            "n.search_text"
+            "instr(n.search_text,?2)>0"
         };
+        let mut values = vec![turso::Value::Integer(i64::try_from(SCOPE_LIMIT)?)];
+        if !query.is_empty() {
+            values.push(turso::Value::Text(query.to_owned()));
+        }
         let mut rows = self.connection.query(format!(
             "SELECT n.history_id,n.session_id,n.created_unix_ms,n.app_key,p.app_name,p.app_icon,p.identity_icon,p.desktop_entry,p.image_path,p.summary,p.body,n.closed_unix_ms,n.snoozed_until_unix_ms,p.group_key,p.repeat_category,p.repeat_urgency,{search_column},p.history_id
              FROM (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1) scope
              JOIN notifications n ON n.history_id=scope.history_id
              LEFT JOIN notification_previews p ON p.history_id=n.history_id
-             ORDER BY n.history_id DESC"), [i64::try_from(SCOPE_LIMIT)?]).await?;
+             ORDER BY n.history_id DESC"), values).await?;
         let mut previews = Vec::new();
         while let Some(row) = rows.next().await? {
             ensure!(
@@ -228,10 +236,61 @@ impl NotificationStore {
                 snoozed_until_unix_ms: optional_unsigned(&row, 12)?,
                 group_key: row.get(13)?,
                 repeat_key,
-                matches: query.is_empty() || row.get::<String>(16)?.contains(query),
+                matches: boolean(&row, 16)?,
             });
         }
         Ok(previews)
+    }
+
+    pub(super) async fn history_ids(
+        &self,
+        query: &str,
+        before: Option<Position>,
+        limit: usize,
+        excluded: &[(u64, u32)],
+    ) -> Result<Vec<i64>> {
+        self.healthy()?;
+        let values = params![
+            i64::try_from(SCOPE_LIMIT)?,
+            before.map(|p| integer(p.created)).transpose()?,
+            before.map(|p| i64::from(p.id)),
+            query,
+            i64::try_from(
+                limit
+                    .checked_add(1)
+                    .and_then(|n| n.checked_add(excluded.len()))
+                    .context("notification query limit overflow")?
+            )?
+        ]
+        .into_iter()
+        .collect::<turso::Result<Vec<_>>>()?;
+        // Window membership uses insertion identity; page ordering uses the
+        // existing (created,id) cursor. Filter only after selecting that window.
+        // Fetch at most one extra identity per live row, then exclude in Rust.
+        // A long OR expression over the active set exhausts Turso's debug
+        // planner stack. No full bodies/actions are fetched for excluded rows.
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT history_id,created_unix_ms,session_id FROM notifications WHERE history_id IN
+             (SELECT history_id FROM notifications ORDER BY history_id DESC LIMIT ?1)
+             AND (?2 IS NULL OR created_unix_ms < ?2 OR (created_unix_ms=?2 AND session_id < ?3))
+             AND (?4='' OR instr(search_text,?4)>0)
+             ORDER BY created_unix_ms DESC,session_id DESC LIMIT ?5",
+                values,
+            )
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let identity = (unsigned(&row, 1)?, u32::try_from(row.get::<i64>(2)?)?);
+            if !excluded.contains(&identity) {
+                ids.push(row.get(0)?);
+                if ids.len() == limit + 1 {
+                    break;
+                }
+            }
+        }
+        Ok(ids)
     }
 
     // Three queries per bounded chunk, independent of action count. Reorder
@@ -239,9 +298,11 @@ impl NotificationStore {
     pub(super) async fn records(&self, ids: &[i64]) -> Result<Vec<HistoryNotification>> {
         self.healthy()?;
         let mut result = Vec::new();
+        // Search text duplicates the normalized body; details never need it.
+        let columns = CONTENT_COLUMNS.trim_end_matches(",search_text");
         for ids in ids.chunks(MAX_PAGE + 1) {
             let slots = placeholders(ids.len());
-            let mut rows = self.connection.query(format!("SELECT history_id,{CONTENT_COLUMNS},closed_unix_ms,close_reason FROM notifications WHERE history_id IN ({slots})"), ids.to_vec()).await?;
+            let mut rows = self.connection.query(format!("SELECT history_id,{columns},closed_unix_ms,close_reason FROM notifications WHERE history_id IN ({slots})"), ids.to_vec()).await?;
             let mut records = BTreeMap::new();
             while let Some(row) = rows.next().await? {
                 let record = decode_record(&row)?;
@@ -318,7 +379,7 @@ fn decode_record(row: &turso::Row) -> Result<HistoryNotification> {
             toast_visible: false,
             toast_expires_unix_ms: None,
         },
-        closed_unix_ms: optional_unsigned(row, 25)?,
-        close_reason: row.get::<Option<i64>>(26)?.map(u32::try_from).transpose()?,
+        closed_unix_ms: optional_unsigned(row, 24)?,
+        close_reason: row.get::<Option<i64>>(25)?.map(u32::try_from).transpose()?,
     })
 }

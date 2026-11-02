@@ -134,7 +134,7 @@ fn once_key_and_history_rollback_together_and_survive_deletion() {
         let mut db = NotificationStore::open(&dir.path().join("history.db"))
             .await
             .unwrap();
-        db.fault = Some(Fault::Save);
+        db.fault = Some(Fault::Children);
         assert!(db.save_once("event", &notification(1)).await.is_err());
         assert!(db.save_once("event", &notification(1)).await.unwrap());
         assert!(!db.save_once("event", &notification(2)).await.unwrap());
@@ -267,6 +267,11 @@ fn default_cutover_and_reboot_ignore_legacy_and_reopen_turso_state() {
             b"legacy bytes need not even be valid SQLite",
         )
         .unwrap();
+        std::fs::write(
+            old.join(format!("notifications-turso-v1.db{suffix}")),
+            b"old Turso storage must not be opened",
+        )
+        .unwrap();
     }
     // Separate processes exercise the actual worker's startup/drain path, as
     // rebuild activation followed by a reboot would. Both see legacy files.
@@ -282,6 +287,10 @@ fn default_cutover_and_reboot_ignore_legacy_and_reopen_turso_state() {
         assert_eq!(
             std::fs::read(old.join(format!("notifications.sqlite3{suffix}"))).unwrap(),
             b"legacy bytes need not even be valid SQLite"
+        );
+        assert_eq!(
+            std::fs::read(old.join(format!("notifications-turso-v1.db{suffix}"))).unwrap(),
+            b"old Turso storage must not be opened"
         );
     }
     assert!(old.join("notifications-turso-v2.db").exists());

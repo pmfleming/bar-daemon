@@ -197,11 +197,32 @@ fn complete_window_retention_targets_and_bounded_refresh() {
             let mut n = notification(u32::try_from(id).unwrap());
             n.created_unix_ms = now;
             n.body = "x".repeat(16 * 1024);
+            if id == 1 {
+                n.summary = "outside-window-only".into();
+            }
             db.save_inner(&n).await.unwrap();
         }
         db.remember_id(100_000).await.unwrap();
         db.finish(Ok(())).await.unwrap();
         let seeded = start.elapsed();
+        assert!(
+            db.query("outside-window-only", None, 10, &[])
+                .await
+                .unwrap()
+                .is_empty(),
+            "SQL filtering must not widen the insertion-order window"
+        );
+        let start = std::time::Instant::now();
+        let page = db.query("éclair", None, 100, &[]).await.unwrap();
+        assert!(!page.is_empty() && page.len() < 100);
+        assert!(
+            page[..page.len() - 1]
+                .iter()
+                .map(|record| serde_json::to_vec(record).unwrap().len())
+                .sum::<usize>()
+                <= PAGE_BYTES
+        );
+        eprintln!("notification SQL history page: {:?}", start.elapsed());
         let start = std::time::Instant::now();
         let CenterPage::Apps { apps, .. } = db
             .center(&query(serde_json::json!({"view":"apps"})), &[], "epoch", 1)

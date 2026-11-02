@@ -28,6 +28,8 @@ pub(super) struct NotificationStore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Fault {
     Save,
+    Children,
+    DeleteChildren,
     Prune,
     Commit,
     Rollback,
