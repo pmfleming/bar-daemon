@@ -54,7 +54,14 @@ pub(super) fn view(journal: &Journal, state: &crate::model::WorkspaceState) -> V
             journal
                 .entries
                 .values()
-                .filter(|e| e.monitor == monitor.name)
+                .filter(|e| {
+                    state
+                        .workspaces
+                        .iter()
+                        .find(|w| w.id == e.id)
+                        .map_or(e.monitor.as_str(), |w| w.monitor.as_str())
+                        == monitor.name
+                })
                 .map(|e| e.id),
         );
         ids.sort_unstable();
@@ -116,7 +123,7 @@ mod tests {
     use super::*;
     #[test]
     fn fallback_never_pulls_foreign_standard_or_reuses_retiring_workspace() {
-        let journal = Journal::empty("s".into());
+        let mut journal = Journal::empty("s".into());
         let mut snapshot = Snapshot {
             session: "s".into(),
             monitors: vec![],
@@ -141,5 +148,14 @@ mod tests {
         assert_eq!(fallback(&journal, &snapshot, "local", 7), None);
         snapshot.workspaces.remove(0);
         assert_eq!(fallback(&journal, &snapshot, "local", 7), Some(1));
+        snapshot
+            .workspaces
+            .push(shelllist_hyprland::workspace::Workspace {
+                id: 8,
+                monitor: "local".into(),
+                windows: 1,
+            });
+        journal.history.insert("local".into(), vec![6, 2, 8, 7]);
+        assert_eq!(fallback(&journal, &snapshot, "local", 6), Some(8));
     }
 }

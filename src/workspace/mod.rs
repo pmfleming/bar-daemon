@@ -776,17 +776,20 @@ impl Service {
         }
         let ids: Vec<_> = loaded.journal.entries.keys().copied().collect();
         for id in ids {
+            // Empty landing pads migrate too (for example after output removal).
+            // Keep their identity while following observed compositor ownership.
+            if let Some(live) = snapshot.workspaces.iter().find(|w| w.id == id) {
+                let entry = loaded.journal.entries.get_mut(&id).unwrap();
+                if live.monitor != entry.monitor {
+                    entry.monitor = live.monitor.clone();
+                    changed = true;
+                }
+            }
             let entry = loaded.journal.entries[&id].clone();
             if snapshot.windows.iter().any(|w| w.workspace.id == id) {
                 let e = loaded.journal.entries.get_mut(&id).unwrap();
                 if !e.occupied {
                     e.occupied = true;
-                    changed = true;
-                }
-                if let Some(live) = snapshot.workspaces.iter().find(|w| w.id == id)
-                    && live.monitor != e.monitor
-                {
-                    e.monitor = live.monitor.clone();
                     changed = true;
                 }
                 continue;

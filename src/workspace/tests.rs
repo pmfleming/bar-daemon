@@ -386,6 +386,60 @@ async fn user_adoption_and_unknown_observations_protect_empty_reservations() {
 }
 
 #[tokio::test]
+async fn empty_adopted_workspace_follows_output_migration_without_new_identity() {
+    let fixture = Fixture::new().await;
+    let reserved = fixture.create("migrate").await;
+    {
+        let mut state = fixture.state.lock().await;
+        state["monitors"][0]["activeWorkspace"]["id"] = 6.into();
+        state["workspaces"] = json!([{"id":6,"monitor":"DP-1","windows":0}]);
+    }
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    fixture
+        .service
+        .call("workspace.lease.release", reserved["lease"].clone())
+        .await
+        .unwrap();
+    let original = fixture
+        .service
+        .loaded
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .journal
+        .entries[&6]
+        .clone();
+    {
+        let mut state = fixture.state.lock().await;
+        state["monitors"][0]["name"] = "DP-2".into();
+        state["workspaces"][0]["monitor"] = "DP-2".into();
+    }
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    let loaded = fixture.service.loaded.lock().await;
+    let migrated = &loaded.as_ref().unwrap().journal.entries[&6];
+    assert_eq!(migrated.monitor, "DP-2");
+    assert_eq!(migrated.generation, original.generation);
+    assert_eq!(migrated.origin, original.origin);
+    assert!(migrated.landing_pad);
+    drop(loaded);
+    assert!(
+        fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .all(|request| request.starts_with("[[BATCH]]"))
+    );
+}
+
+#[tokio::test]
 async fn an_unobserved_fallback_never_retires_the_active_workspace() {
     let fixture = Fixture::new().await;
     let reserved = fixture.create("populated").await;
