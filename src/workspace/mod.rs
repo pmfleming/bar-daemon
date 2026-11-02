@@ -16,6 +16,10 @@ use tokio::sync::Mutex;
 
 pub(crate) use presentation::View;
 
+fn enabled() -> bool {
+    std::env::var("SHELLLIST_TEMPORARY_WORKSPACES").as_deref() != Ok("0")
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Command {
@@ -26,13 +30,39 @@ pub(crate) struct Command {
     request_id: Option<String>,
 }
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "kebab-case")]
-enum CommandKind {
+pub enum CommandKind {
     Create,
     Close,
     Next,
     Previous,
+}
+
+pub async fn run_command(command: CommandKind, monitor: Option<String>) -> Result<()> {
+    let connection = crate::bus::session().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        crate::api::BUS_NAME,
+        crate::api::OBJECT_PATH,
+        crate::api::INTERFACE,
+    )
+    .await?;
+    let request = json!({"command":command, "monitor":monitor, "request_id":crate::state::publication::Publication::new().epoch});
+    // A timeout is an unknown outcome; this CLI never retries an effect.
+    let reply: String = proxy
+        .call("Call", &("workspace.command", request.to_string()))
+        .await?;
+    let reply: Value = serde_json::from_str(&reply)?;
+    ensure!(
+        reply["ok"] == true,
+        "workspace command failed: {}",
+        reply["error"]
+    );
+    println!("{}", reply["data"]["workspace_operation"]);
+    Ok(())
 }
 
 pub(crate) fn policy(method: &str) -> shelllist_daemon_core::MethodPolicy {
@@ -157,6 +187,31 @@ impl Service {
         match method {
             "workspace.command" => {
                 let command: Command = serde_json::from_value(params)?;
+                if let Some(key) = &command.request_id {
+                    if let Some(record) = loaded.journal.reservations.get(key) {
+                        ensure!(
+                            matches!(command.command, CommandKind::Create)
+                                && record.request.purpose == Purpose::LandingPad
+                                && command
+                                    .monitor
+                                    .as_ref()
+                                    .is_none_or(|m| m == &record.request.context.monitor),
+                            "request key reused with different command"
+                        );
+                        return Ok(serde_json::to_value(record)?);
+                    }
+                    if let Some(record) = loaded.journal.closes.get(key) {
+                        ensure!(
+                            matches!(command.command, CommandKind::Close)
+                                && command
+                                    .monitor
+                                    .as_ref()
+                                    .is_none_or(|m| m == &record.request.context.monitor),
+                            "request key reused with different command"
+                        );
+                        return Ok(serde_json::to_value(record)?);
+                    }
+                }
                 let monitor = snapshot
                     .monitors
                     .iter()
@@ -316,6 +371,10 @@ impl Service {
         snapshot: &compositor::Snapshot,
         request: Create,
     ) -> Result<Value> {
+        ensure!(
+            enabled() || (request.purpose == Purpose::Launch && request.workspace_id.is_some()),
+            "temporary workspace creation disabled"
+        );
         if let Some(existing) = loaded.journal.reservations.get(&request.request_id) {
             ensure!(
                 existing.request == request,
@@ -483,6 +542,7 @@ impl Service {
         );
         let context = record.request.context.clone();
         let id = request.lease.workspace_id;
+        ensure!(!loaded.journal.closing(id), "workspace is closing");
         loaded
             .journal
             .reservations
@@ -584,6 +644,14 @@ impl Service {
             return Ok(serde_json::to_value(record)?);
         }
         loaded.journal.admit(&request.request_id)?;
+        let prefix = crate::state::publication::Publication::new().epoch;
+        let snapshot = compositor::pinned_snapshot(
+            &self.client,
+            &request.context.monitor,
+            request.context.workspace_id,
+            &prefix,
+        )
+        .await?;
         let targets: Vec<_> = snapshot
             .windows
             .iter()
@@ -594,7 +662,7 @@ impl Service {
                     pid: w.pid,
                     workspace_id: w.workspace.id,
                 },
-                token: crate::state::publication::Publication::new().epoch,
+                token: format!("{prefix}-{}", w.address),
                 attempted: false,
             })
             .collect();
@@ -609,18 +677,21 @@ impl Service {
                 error: None,
             },
         );
+        // Admission fences every pending writer for this destination before the
+        // first close. A late window may map, but cannot revive placement here.
+        let closing_id = loaded.journal.closes[&key].request.context.workspace_id;
+        for reservation in loaded
+            .journal
+            .reservations
+            .values_mut()
+            .filter(|r| r.lease.workspace_id == closing_id && !r.released)
+        {
+            reservation.released = true;
+            reservation.status = "released".into();
+        }
         loaded.save().await?;
         for (index, target) in targets.iter().enumerate() {
             let w = &target.window;
-            if let Err(error) = compositor::execute(
-                &self.client,
-                &compositor::pin_window(&target.token, &w.address, w.pid, w.workspace_id)?,
-            )
-            .await
-            {
-                loaded.journal.closes.get_mut(&key).unwrap().error = Some(error.to_string());
-                continue;
-            }
             loaded.journal.closes.get_mut(&key).unwrap().targets[index].attempted = true;
             loaded.save().await?;
             if let Err(error) = compositor::execute(
@@ -794,7 +865,9 @@ impl Service {
             let snapshot = compositor::snapshot(&self.client).await?;
             let loaded = self.initialize(&mut guard, &snapshot).await?;
             self.cleanup(loaded, &snapshot).await?;
-            Ok::<_, anyhow::Error>(presentation::view(&loaded.journal, state))
+            let mut view = presentation::view(&loaded.journal, state);
+            view.available &= enabled();
+            Ok::<_, anyhow::Error>(view)
         }
         .await;
         state.lifecycle = match result {

@@ -37,8 +37,15 @@ impl Fixture {
                 let reply = if command.starts_with("[[BATCH]]") {
                     let state = shared.lock().await;
                     format!(
-                        "{}\n\n{}\n\n{}",
-                        state["monitors"], state["workspaces"], state["windows"]
+                        "{}{}\n\n{}\n\n{}",
+                        if command.starts_with("[[BATCH]]eval ") {
+                            "ok\n\n"
+                        } else {
+                            ""
+                        },
+                        state["monitors"],
+                        state["workspaces"],
+                        state["windows"]
                     )
                 } else {
                     "ok".into()
@@ -180,6 +187,29 @@ async fn restart_fences_old_placement_and_lookup_retains_indeterminate_receipt()
             .await
             .iter()
             .all(|r| r.starts_with("[[BATCH]]"))
+    );
+}
+
+#[tokio::test]
+async fn close_admission_fences_existing_launch_lease() {
+    let fixture = Fixture::new().await;
+    let mut request = Fixture::request("pending-launch");
+    request.workspace_id = Some(1);
+    let reserved = fixture
+        .service
+        .call("workspace.create", serde_json::to_value(request).unwrap())
+        .await
+        .unwrap();
+    fixture.service.call("workspace.close", json!({"request_id":"close-pending", "context":{"session":"test","monitor":"DP-1","workspace_id":1}})).await.unwrap();
+    let result = fixture.service.call("workspace.placement.apply", json!({"lease":reserved["lease"], "window":{"address":"0x123", "pid":42,"workspace_id":1}, "follow":true})).await;
+    assert!(result.unwrap_err().to_string().contains("fenced"));
+    assert!(
+        !fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .any(|r| r.contains("window.move"))
     );
 }
 

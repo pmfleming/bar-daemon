@@ -18,6 +18,13 @@ enum Command {
     Daemon,
     /// Bridge JSON Lines on stdin/stdout to the session service.
     Client,
+    /// Capture the invoking monitor and run a serialized workspace command.
+    Workspace {
+        #[arg(value_enum)]
+        command: bar_daemon::WorkspaceCommand,
+        #[arg(long)]
+        monitor: Option<String>,
+    },
     /// Run hypridle with the selected persistent sleep profile.
     Idle {
         #[arg(long)]
@@ -84,6 +91,9 @@ async fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Daemon => run_daemon().await,
         Command::Client => run_client().await,
+        Command::Workspace { command, monitor } => {
+            bar_daemon::run_workspace_command(command, monitor).await
+        }
         Command::Agenda { command } => bar_daemon::run_agenda_maintenance(command).await,
         Command::Idle { config, hypridle } => bar_daemon::run_idle(&config, &hypridle).await,
         Command::IdleSleep {
@@ -124,6 +134,18 @@ async fn dispatch(command: Command) -> Result<()> {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt};
+
+    #[test]
+    fn workspace_shortcuts_are_typed_and_never_offer_force() {
+        for command in ["create", "close", "next", "previous"] {
+            assert!(Cli::try_parse_from(["bar-daemon", "workspace", command]).is_ok());
+            assert!(
+                Cli::try_parse_from(["bar-daemon", "workspace", command, "--monitor", "DP-1"])
+                    .is_ok()
+            );
+            assert!(Cli::try_parse_from(["bar-daemon", "workspace", command, "--force"]).is_err());
+        }
+    }
 
     #[test]
     fn agenda_routes_require_explicit_paths_and_reject_wrong_flags() {

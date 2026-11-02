@@ -43,6 +43,7 @@ mod frontend_contract;
 mod test_support;
 
 pub use agenda_maintenance::AgendaMaintenance;
+pub use workspace::{CommandKind as WorkspaceCommand, run_command as run_workspace_command};
 
 /// Transfers an explicit private Agenda store offline; never controls services.
 pub async fn run_agenda_maintenance(command: AgendaMaintenance) -> anyhow::Result<()> {
