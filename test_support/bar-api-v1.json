@@ -765,6 +765,63 @@
         }
       },
       {
+        "name": "workspace.command",
+        "params_schema": {
+          "$defs": {
+            "CommandKind": {
+              "enum": [
+                "create",
+                "close",
+                "next",
+                "previous"
+              ],
+              "type": "string"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/CommandKind"
+            },
+            "monitor": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "Command",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "effect",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
         "name": "workspace.create",
         "params_schema": {
           "$defs": {

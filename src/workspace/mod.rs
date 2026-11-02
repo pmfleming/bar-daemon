@@ -16,6 +16,25 @@ use tokio::sync::Mutex;
 
 pub(crate) use presentation::View;
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Command {
+    command: CommandKind,
+    #[serde(default)]
+    monitor: Option<String>,
+    #[serde(default)]
+    request_id: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+enum CommandKind {
+    Create,
+    Close,
+    Next,
+    Previous,
+}
+
 pub(crate) fn policy(method: &str) -> shelllist_daemon_core::MethodPolicy {
     use shelllist_daemon_core::{ExecutionMode, MethodPolicy, Sensitivity};
     let read = matches!(method, "workspace.context" | "workspace.operation.get");
@@ -136,6 +155,103 @@ impl Service {
         let snapshot = compositor::snapshot(&self.client).await?;
         let loaded = self.initialize(&mut guard, &snapshot).await?;
         match method {
+            "workspace.command" => {
+                let command: Command = serde_json::from_value(params)?;
+                let monitor = snapshot
+                    .monitors
+                    .iter()
+                    .find(|m| {
+                        command
+                            .monitor
+                            .as_ref()
+                            .map_or(m.focused, |name| &m.name == name)
+                    })
+                    .context("invoking monitor unavailable")?;
+                let context = Context {
+                    session: snapshot.session.clone(),
+                    monitor: monitor.name.clone(),
+                    workspace_id: monitor.active_workspace.id,
+                };
+                let key = command
+                    .request_id
+                    .unwrap_or_else(|| crate::state::publication::Publication::new().epoch);
+                match command.command {
+                    CommandKind::Create => {
+                        self.create(
+                            loaded,
+                            &snapshot,
+                            Create {
+                                request_id: key,
+                                context,
+                                purpose: Purpose::LandingPad,
+                                workspace_id: None,
+                                origin: "Workspace".into(),
+                                icon: "workspace".into(),
+                            },
+                        )
+                        .await
+                    }
+                    CommandKind::Close => {
+                        self.close(
+                            loaded,
+                            &snapshot,
+                            wire::Close {
+                                request_id: key,
+                                context,
+                            },
+                        )
+                        .await
+                    }
+                    CommandKind::Next | CommandKind::Previous => {
+                        let mut ids = vec![1, 2, 3, 4, 5];
+                        ids.extend(
+                            snapshot
+                                .workspaces
+                                .iter()
+                                .filter(|w| w.id > 5 && w.monitor == context.monitor)
+                                .map(|w| w.id),
+                        );
+                        ids.extend(
+                            loaded
+                                .journal
+                                .entries
+                                .values()
+                                .filter(|e| e.monitor == context.monitor)
+                                .map(|e| e.id),
+                        );
+                        ids.sort_unstable();
+                        ids.dedup();
+                        // Navigation never migrates a workspace from another monitor.
+                        ids.retain(|id| {
+                            !snapshot
+                                .workspaces
+                                .iter()
+                                .any(|w| w.id == *id && w.monitor != context.monitor)
+                        });
+                        ensure!(!ids.is_empty(), "no local workspace");
+                        let position = ids
+                            .iter()
+                            .position(|id| *id == context.workspace_id)
+                            .unwrap_or(0);
+                        let index = if matches!(command.command, CommandKind::Next) {
+                            (position + 1) % ids.len()
+                        } else {
+                            (position + ids.len() - 1) % ids.len()
+                        };
+                        compositor::execute(
+                            &self.client,
+                            &compositor::focus_local(
+                                &context.monitor,
+                                context.workspace_id,
+                                ids[index],
+                                true,
+                            )?,
+                        )
+                        .await?;
+                        Ok(json!({"status":"focused", "workspace_id":ids[index]}))
+                    }
+                }
+            }
             "workspace.context" => {
                 let monitor = params.get("monitor").and_then(Value::as_str);
                 let monitor = snapshot
@@ -207,7 +323,11 @@ impl Service {
             );
             return Ok(serde_json::to_value(existing)?);
         }
-        validate_context(snapshot, &request.context, request.purpose == Purpose::LandingPad)?;
+        validate_context(
+            snapshot,
+            &request.context,
+            request.purpose == Purpose::LandingPad,
+        )?;
         ensure!(
             request.origin.len() <= 256 && request.icon.len() <= 256,
             "origin exceeds limit"
@@ -679,10 +799,12 @@ impl Service {
         .await;
         state.lifecycle = match result {
             Ok(view) => view,
-            Err(error) => View {
-                error: Some(error.to_string()),
-                ..Default::default()
-            },
+            Err(error) => {
+                let mut view = presentation::view(&Journal::empty(String::new()), state);
+                view.available = false;
+                view.error = Some(error.to_string());
+                view
+            }
         };
     }
 }

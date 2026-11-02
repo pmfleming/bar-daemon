@@ -171,6 +171,7 @@ pub const METHODS: &[&str] = &[
     "todos.delete",
     "workspace.focus",
     "workspace.context",
+    "workspace.command",
     "workspace.create",
     "workspace.close",
     "workspace.placement.apply",
@@ -245,6 +246,7 @@ pub(crate) fn method_policy(name: &str) -> Option<shelllist_daemon_core::MethodP
     }
     match name {
         "workspace.context"
+        | "workspace.command"
         | "workspace.create"
         | "workspace.close"
         | "workspace.placement.apply"
@@ -289,6 +291,7 @@ pub fn registry() -> Value {
             { "name": "todos.delete", "params": { "id": "local-1" }, "result": "deleted" },
             { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
             crate::workspace::contract::<Value>("workspace.context"),
+            crate::workspace::contract::<crate::workspace::Command>("workspace.command"),
             crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Create>("workspace.create"),
             crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Close>("workspace.close"),
             crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Placement>("workspace.placement.apply"),
