@@ -41,6 +41,10 @@ The reboot qualification runs the actual persistence worker in two separate proc
 
 ## Qualification
 
+Current v2 results and the paired Shelllist qualification are recorded in
+[release evidence](../tests/notifications-v2-qualification.md). Historical v1
+results below remain only as context.
+
 All qualification uses temporary stores, never live user data:
 
 ```text

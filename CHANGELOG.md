@@ -93,12 +93,13 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
-- Replace native notification rusqlite storage with embedded Turso 0.8.3 and a
-  fresh `notifications-turso-v1.db`. No legacy history/settings migration; custom
-  database overrides must point to a fresh path. Rust owns bounded previews,
-  search, grouping and transaction recovery; QML/API contracts remain unchanged.
-  Drain accepted writes on shutdown and retain once-only writes after caller
-  cancellation. See `docs/notifications-storage.md` for cutover and qualification.
+- Replace notification/preview JSON blobs and JSON preferences with typed Turso
+  v2 rows and ordered action tables. Start fresh in `notifications-turso-v2.db`;
+  SQLite/v1 history, DND, settings, policies, ID counters and once-only keys are
+  not imported. Legacy files remain untouched; exact-path overrides must select
+  a fresh file. Retain transactional cleanup, crash recovery and bounded history
+  semantics. Pair with Shelllist's reconnect reset so old pages/actions/deletion
+  tokens cannot survive into the new session. See `docs/notifications-storage.md`.
 
 - Keep name-only notification senders in one app group when their notification
   icons change; preserve separate groups for distinct desktop-entry identities.

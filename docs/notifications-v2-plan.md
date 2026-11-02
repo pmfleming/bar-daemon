@@ -3,9 +3,13 @@
 This supersedes the completed v1 Turso adoption plan. Implementation and tests
 remain Rust and QML; the existing daemon API remains the Shelllist boundary.
 
+Completed and qualified with the paired Shelllist cutover. See
+[release evidence](../tests/notifications-v2-qualification.md) and
+[deployment instructions](notifications-storage.md).
+
 ## Stages
 
-1. Record the storage and paired-client cutover contract (this commit).
+1. Record the storage and paired-client cutover contract.
 2. Replace JSON payloads, previews and metadata with typed rows and ordered
    action tables. Keep one owner thread and explicit transaction/failure fences.
    Switch the default to `notifications-turso-v2.db`, schema version 2.

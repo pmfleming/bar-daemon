@@ -49,8 +49,10 @@ Quickshell owns layout, rendering, animation, input, and system-tray menu hostin
 - Event-driven NixOS delayed-update readiness and read-only worker job status
 - systemd-timedated timezone, city, abbreviation, and current UTC offset
 
-Notification storage now starts fresh in `notifications-turso-v1.db`; old SQLite
-history and settings are not imported. If `BAR_DAEMON_NOTIFICATION_DATABASE` is
+Notification storage now uses typed relational rows in `notifications-turso-v2.db`;
+old SQLite and Turso v1 history, settings, policies and delivery keys are not
+imported. Deploy matching Shelllist sources for session-state retirement on
+reconnect. If `BAR_DAEMON_NOTIFICATION_DATABASE` is
 set, change it to a nonexistent file in a dedicated state directory before
 cutover. See [notification storage and cutover](docs/notifications-storage.md).
 
