@@ -207,7 +207,7 @@ impl Service {
             );
             return Ok(serde_json::to_value(existing)?);
         }
-        validate_context(snapshot, &request.context, true)?;
+        validate_context(snapshot, &request.context, request.purpose == Purpose::LandingPad)?;
         ensure!(
             request.origin.len() <= 256 && request.icon.len() <= 256,
             "origin exceeds limit"

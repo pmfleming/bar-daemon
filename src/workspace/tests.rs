@@ -237,6 +237,7 @@ async fn journal_failure_poisoning_prevents_effects_and_stale_context_is_rejecte
         .await
         .unwrap();
     let mut request = Fixture::request("stale");
+    request.purpose = Purpose::LandingPad;
     request.context.workspace_id = 8;
     assert!(
         fixture
