@@ -556,6 +556,8 @@ pub(crate) struct MediaPlayer {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceState {
+    #[serde(default)]
+    pub lifecycle: crate::workspace::View,
     pub available: bool,
     pub focused_monitor: Option<String>,
     pub active_window: Option<ActiveWindow>,

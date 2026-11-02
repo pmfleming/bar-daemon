@@ -157,6 +157,7 @@ fn parse_snapshot(
         })
     };
     Ok(WorkspaceState {
+        lifecycle: Default::default(),
         available: true,
         focused_monitor,
         active_window,
@@ -187,12 +188,17 @@ fn parse_snapshot(
 
 pub(crate) async fn monitor(store: StateStore) {
     let client = HyprlandClient::default();
+    let lifecycle = store.workspace_lifecycle.clone();
     let (sender, events) = mpsc::channel(64);
     // Both futures are owned by this monitor; shutdown drops the event receiver
     // and cancels pending reads without leaving an orphan watcher task.
     tokio::join!(
         shelllist_hyprland::watch_events_detailed(sender),
-        monitor_with(store, events, || client.snapshot()),
+        monitor_with(store, events, || async {
+            let mut state = client.snapshot().await?;
+            lifecycle.project(&mut state).await;
+            Ok(state)
+        }),
     );
 }
 
@@ -265,6 +271,7 @@ async fn refresh_workspaces<F, Fut>(
         let retry = !connected || !state.available;
         store.update_workspaces(state).await;
         tokio::select! {
+            _ = store.workspace_lifecycle.changed.notified() => {},
             changed = updates.changed() => {
                 if changed.is_err() { return; }
                 // A fixed window (not reset by new events) bounds burst latency.

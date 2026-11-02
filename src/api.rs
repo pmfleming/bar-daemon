@@ -128,6 +128,12 @@ impl ApiService {
                 self.activity.dispatch(method, params).await
             }
             "workspace.focus" => self.effects.focus_workspace(params).await,
+            method if method.starts_with("workspace.") => {
+                self.state
+                    .workspace_lifecycle
+                    .dispatch(method, params)
+                    .await
+            }
             "media.operation" => self.effects.media_operation(params).await,
             method if protocol::audio_wire::Method::parse(method).is_some() => {
                 audio::dispatch(self, method, params).await

@@ -35,6 +35,7 @@ mod timezone;
 mod timezone_regions;
 mod updates;
 mod work_area;
+mod workspace;
 
 #[cfg(test)]
 mod frontend_contract;

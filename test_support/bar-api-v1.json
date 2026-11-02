@@ -743,6 +743,344 @@
         "result": "operation"
       },
       {
+        "name": "workspace.context",
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "read",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "sensitive-read"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
+        "name": "workspace.create",
+        "params_schema": {
+          "$defs": {
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            "Purpose": {
+              "enum": [
+                "landing-pad",
+                "launch"
+              ],
+              "type": "string"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "$ref": "#/$defs/Context"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "purpose": {
+              "$ref": "#/$defs/Purpose"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "description": "None allocates a fresh ID; Some leases an existing destination.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "request_id",
+            "context",
+            "purpose",
+            "origin",
+            "icon"
+          ],
+          "title": "Create",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "effect",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
+        "name": "workspace.close",
+        "params_schema": {
+          "$defs": {
+            "Context": {
+              "additionalProperties": false,
+              "properties": {
+                "monitor": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "monitor",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "$ref": "#/$defs/Context"
+            },
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id",
+            "context"
+          ],
+          "title": "Close",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "effect",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
+        "name": "workspace.placement.apply",
+        "params_schema": {
+          "$defs": {
+            "Lease": {
+              "additionalProperties": false,
+              "properties": {
+                "generation": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session",
+                "request_id",
+                "workspace_id",
+                "generation"
+              ],
+              "type": "object"
+            },
+            "WindowIdentity": {
+              "additionalProperties": false,
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "pid": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "workspace_id": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "address",
+                "pid",
+                "workspace_id"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "follow": {
+              "type": "boolean"
+            },
+            "lease": {
+              "$ref": "#/$defs/Lease"
+            },
+            "window": {
+              "$ref": "#/$defs/WindowIdentity"
+            }
+          },
+          "required": [
+            "lease",
+            "window",
+            "follow"
+          ],
+          "title": "Placement",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "effect",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
+        "name": "workspace.lease.release",
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "generation": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "session",
+            "request_id",
+            "workspace_id",
+            "generation"
+          ],
+          "title": "Lease",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "effect",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "effect"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
+        "name": "workspace.operation.get",
+        "params_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "request_id"
+          ],
+          "title": "Lookup",
+          "type": "object"
+        },
+        "policy": {
+          "ack_budget_ms": 30000,
+          "conflict_domain": "workspaces",
+          "execution": "read",
+          "max_in_flight": 4,
+          "max_owner_in_flight": 8,
+          "request_bytes": 16384,
+          "result_bytes": 16777216,
+          "sensitivity": "sensitive-read"
+        },
+        "response_key": "workspace_operation",
+        "result_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        }
+      },
+      {
         "name": "media.operation",
         "params": {
           "mode": null,

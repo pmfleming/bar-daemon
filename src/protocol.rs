@@ -170,6 +170,12 @@ pub const METHODS: &[&str] = &[
     "todos.complete",
     "todos.delete",
     "workspace.focus",
+    "workspace.context",
+    "workspace.create",
+    "workspace.close",
+    "workspace.placement.apply",
+    "workspace.lease.release",
+    "workspace.operation.get",
     "media.operation",
     audio_wire::Method::Adjust.name(),
     audio_wire::Method::SetMuted.name(),
@@ -238,6 +244,12 @@ pub(crate) fn method_policy(name: &str) -> Option<shelllist_daemon_core::MethodP
         return Some(method.policy());
     }
     match name {
+        "workspace.context"
+        | "workspace.create"
+        | "workspace.close"
+        | "workspace.placement.apply"
+        | "workspace.lease.release"
+        | "workspace.operation.get" => Some(crate::workspace::policy(name)),
         "brightness.adjust" | "brightness.set" => Some(control_wire::policy("brightness")),
         "powerProfile.set"
         | "powerProfile.resumeAutomatic"
@@ -276,6 +288,12 @@ pub fn registry() -> Value {
             { "name": "todos.complete", "params": { "id": "local-1", "completed": true }, "result": "todo" },
             { "name": "todos.delete", "params": { "id": "local-1" }, "result": "deleted" },
             { "name": "workspace.focus", "params": { "workspace_id": 1, "on_current_monitor": false }, "result": "operation" },
+            crate::workspace::contract::<Value>("workspace.context"),
+            crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Create>("workspace.create"),
+            crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Close>("workspace.close"),
+            crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Placement>("workspace.placement.apply"),
+            crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Lease>("workspace.lease.release"),
+            crate::workspace::contract::<shelllist_daemon_core::workspace_wire::Lookup>("workspace.operation.get"),
             { "name": "media.operation", "params": { "operation": "play-pause", "player_id": null, "offset_seconds": null, "mode": null }, "result": "operation" },
             audio_wire::Method::Adjust.registry_entry(),
             audio_wire::Method::SetMuted.registry_entry(),

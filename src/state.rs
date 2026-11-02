@@ -39,6 +39,7 @@ impl Drop for WorkAreaInterest {
 
 #[derive(Clone)]
 pub(crate) struct StateStore {
+    pub(crate) workspace_lifecycle: Arc<crate::workspace::Service>,
     snapshot: Arc<RwLock<BarSnapshot>>,
     events: Arc<BTreeMap<&'static str, Source>>,
     failed_monitors: Arc<Mutex<BTreeMap<&'static str, String>>>,
@@ -55,6 +56,7 @@ impl Default for StateStore {
             .map(|stream| (*stream, Source::new(stream)))
             .collect();
         Self {
+            workspace_lifecycle: Arc::new(crate::workspace::Service::default()),
             snapshot: Arc::new(RwLock::new(BarSnapshot {
                 publications: crate::protocol::STREAMS
                     .iter()
