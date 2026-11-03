@@ -15,6 +15,8 @@ pub(super) struct Entry {
     pub monitor: String,
     pub occupied: bool,
     pub landing_pad: bool,
+    #[serde(default)]
+    pub keep_until_closed: bool,
     pub origin: String,
     pub icon: String,
     pub cue_assigned: bool,
@@ -108,6 +110,23 @@ impl Journal {
                     && (1..=wire::MAX_WORKSPACE_ID).contains(&r.lease.workspace_id)),
             "invalid reservation identity"
         );
+        // Older journals already identify manual creates by their reservation.
+        // Preserve those still-owned entries, but never undo an admitted close.
+        for entry in journal.entries.values_mut() {
+            if !journal
+                .closes
+                .values()
+                .any(|close| close.request.context.workspace_id == entry.id)
+                && journal.reservations.values().any(|reservation| {
+                    reservation.request.purpose == wire::Purpose::LandingPad
+                        && reservation.request.workspace_id.is_none()
+                        && reservation.lease.workspace_id == entry.id
+                        && reservation.lease.generation == entry.generation
+                })
+            {
+                entry.keep_until_closed = true;
+            }
+        }
         // A restarted owner fences every old placement writer. No old effect is
         // resumed, even when its last durable receipt precedes compositor dispatch.
         for reservation in journal.reservations.values_mut() {

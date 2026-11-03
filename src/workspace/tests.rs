@@ -7,6 +7,7 @@ struct Fixture {
     service: Arc<Service>,
     state: Arc<Mutex<Value>>,
     requests: Arc<Mutex<Vec<String>>>,
+    apply_focus: Arc<std::sync::atomic::AtomicBool>,
     server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
@@ -26,6 +27,8 @@ impl Fixture {
             "workspaces":[{"id":1,"monitor":"DP-1","windows":0}], "windows":[]
         })));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let apply_focus = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let focus_effects = apply_focus.clone();
         let shared = state.clone();
         let calls = requests.clone();
         let server = tokio::spawn(async move {
@@ -34,6 +37,24 @@ impl Fixture {
                 let mut command = String::new();
                 stream.read_to_string(&mut command).await.unwrap();
                 calls.lock().await.push(command.clone());
+                if focus_effects.load(std::sync::atomic::Ordering::Relaxed)
+                    && command.starts_with("eval ")
+                    && let Some((_, destination)) = command.split_once("hl.dsp.focus({workspace=")
+                {
+                    let id: i64 = destination.split('}').next().unwrap().parse().unwrap();
+                    let mut state = shared.lock().await;
+                    state["monitors"][0]["activeWorkspace"]["id"] = id.into();
+                    if !state["workspaces"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|w| w["id"] == id)
+                    {
+                        state["workspaces"].as_array_mut().unwrap().push(json!({
+                            "id":id,"monitor":"DP-1","windows":0
+                        }));
+                    }
+                }
                 let reply = if command.starts_with("[[BATCH]]") {
                     let state = shared.lock().await;
                     format!(
@@ -59,6 +80,7 @@ impl Fixture {
             service,
             state,
             requests,
+            apply_focus,
             server,
         }
     }
@@ -92,6 +114,234 @@ impl Fixture {
             .await
             .unwrap()
     }
+    async fn manual(&self, key: &str) -> Value {
+        self.apply_focus
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.service
+            .call(
+                "workspace.command",
+                json!({"command":"create","request_id":key}),
+            )
+            .await
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn manual_workspace_survives_switching_away_becoming_empty_and_restart_until_explicit_close()
+{
+    let fixture = Fixture::new().await;
+    let created = fixture.manual("manual").await;
+    assert_eq!(created["status"], "focused");
+    assert_eq!(created["lease"]["workspace_id"], 6);
+    let generation = created["lease"]["generation"].clone();
+    let mut projection = crate::model::WorkspaceState {
+        available: true,
+        monitors: vec![crate::model::MonitorState {
+            id: 1,
+            name: "DP-1".into(),
+            focused: true,
+            active_workspace_id: 1,
+        }],
+        ..Default::default()
+    };
+    {
+        let mut state = fixture.state.lock().await;
+        state["monitors"][0]["activeWorkspace"]["id"] = 1.into();
+        // Hyprland reclaims the empty inactive workspace; the logical ID stays.
+        state["workspaces"] = json!([{"id":1,"monitor":"DP-1","windows":0}]);
+    }
+    fixture.service.project(&mut projection).await;
+    let restored = Fixture::service(fixture.root.path());
+    restored.project(&mut projection).await;
+    assert!(
+        projection.lifecycle.monitors["DP-1"]
+            .iter()
+            .any(|item| item.id == 6)
+    );
+    {
+        let guard = restored.loaded.lock().await;
+        let entry = &guard.as_ref().unwrap().journal.entries[&6];
+        assert!(entry.keep_until_closed);
+        assert_eq!(serde_json::to_value(&entry.generation).unwrap(), generation);
+    }
+    // Retained destinations can still receive a new launch reservation.
+    let mut request = Fixture::request("into-manual");
+    request.workspace_id = Some(6);
+    let reserved = restored
+        .call("workspace.create", serde_json::to_value(request).unwrap())
+        .await
+        .unwrap();
+    {
+        let mut state = fixture.state.lock().await;
+        state["workspaces"] = json!([{"id":6,"monitor":"DP-1","windows":1}]);
+        state["windows"] = json!([{"address":"0x123","pid":42,"workspace":{"id":6},"mapped":true}]);
+        state["monitors"][0]["activeWorkspace"]["id"] = 6.into();
+    }
+    restored.project(&mut projection).await;
+    restored
+        .call("workspace.lease.release", reserved["lease"].clone())
+        .await
+        .unwrap();
+    fixture.state.lock().await["windows"] = json!([]);
+    restored.project(&mut projection).await;
+    assert!(
+        restored
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries[&6]
+            .occupied
+    );
+    assert_eq!(
+        fixture.state.lock().await["monitors"][0]["activeWorkspace"]["id"],
+        6
+    );
+    restored
+        .call(
+            "workspace.command",
+            json!({"command":"close","request_id":"close-manual"}),
+        )
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        if restored
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .closes["close-manual"]
+            .status
+            == "closed"
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    restored.project(&mut projection).await;
+    assert!(
+        !restored
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries
+            .contains_key(&6)
+    );
+    assert_ne!(
+        fixture.state.lock().await["monitors"][0]["activeWorkspace"]["id"],
+        6
+    );
+    // Durable close admission must not be migrated back into a kept workspace.
+    let restarted = Fixture::service(fixture.root.path());
+    restarted.project(&mut projection).await;
+    assert!(
+        !restarted
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries
+            .contains_key(&6)
+    );
+}
+
+#[tokio::test]
+async fn pending_empty_close_cannot_readopt_a_manual_workspace() {
+    let fixture = Fixture::new().await;
+    fixture.manual("manual-close-race").await;
+    {
+        let mut guard = fixture.service.loaded.lock().await;
+        let loaded = guard.as_mut().unwrap();
+        let entry = loaded.journal.entries.get_mut(&6).unwrap();
+        entry.keep_until_closed = false;
+        entry.landing_pad = false;
+        loaded.journal.closes.insert(
+            "pending-close".into(),
+            CloseRecord {
+                request: wire::Close {
+                    request_id: "pending-close".into(),
+                    context: Context {
+                        session: "test".into(),
+                        monitor: "DP-1".into(),
+                        workspace_id: 6,
+                    },
+                },
+                targets: vec![],
+                status: "waiting".into(),
+                error: None,
+            },
+        );
+        loaded.save().await.unwrap();
+    }
+    let mut projection = crate::model::WorkspaceState::default();
+    fixture.service.project(&mut projection).await;
+    assert!(
+        !fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries[&6]
+            .landing_pad
+    );
+    // Restart fences the observer but must still complete empty retirement.
+    let restarted = Fixture::service(fixture.root.path());
+    restarted.project(&mut projection).await;
+    assert!(
+        !restarted
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries
+            .contains_key(&6)
+    );
+}
+
+#[tokio::test]
+async fn older_manual_journals_migrate_but_close_admission_stays_revoked() {
+    let fixture = Fixture::new().await;
+    fixture.manual("legacy-manual").await;
+    let path = fixture
+        .service
+        .loaded
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
+    let mut old: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    old["entries"]["6"]
+        .as_object_mut()
+        .unwrap()
+        .remove("keep_until_closed");
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    let restored = Journal::load(&path, "test").unwrap();
+    assert!(restored.entries[&6].keep_until_closed);
+    old["closes"]["legacy-close"] = json!({
+        "request":{"request_id":"legacy-close","context":{"session":"test","monitor":"DP-1","workspace_id":6}},
+        "targets":[],"status":"dispatching","error":null
+    });
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    let restored = Journal::load(&path, "test").unwrap();
+    assert!(!restored.entries[&6].keep_until_closed);
+    assert_eq!(restored.closes["legacy-close"].status, "unknown");
 }
 
 #[tokio::test]

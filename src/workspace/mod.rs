@@ -432,7 +432,11 @@ impl Service {
                     "invalid workspace ID"
                 );
                 ensure!(
-                    id <= 5 || snapshot.workspaces.iter().any(|w| w.id == id),
+                    id <= 5
+                        || snapshot.workspaces.iter().any(|w| w.id == id)
+                        || loaded.journal.entries.get(&id).is_some_and(|entry| {
+                            entry.keep_until_closed && entry.monitor == request.context.monitor
+                        }),
                     "destination disappeared"
                 );
                 id
@@ -463,6 +467,7 @@ impl Service {
                     monitor: request.context.monitor.clone(),
                     occupied: false,
                     landing_pad: request.purpose == Purpose::LandingPad,
+                    keep_until_closed: request.purpose == Purpose::LandingPad,
                     origin: request.origin.clone(),
                     icon: request.icon.clone(),
                     cue_assigned: request.purpose == Purpose::Launch,
@@ -728,6 +733,11 @@ impl Service {
             reservation.released = true;
             reservation.status = "released".into();
         }
+        // Persist explicit retirement with admission, before any window close.
+        if let Some(entry) = loaded.journal.entries.get_mut(&closing_id) {
+            entry.landing_pad = false;
+            entry.keep_until_closed = false;
+        }
         loaded.save().await?;
         for (index, target) in targets.iter().enumerate() {
             let w = &target.window;
@@ -745,11 +755,6 @@ impl Service {
                 .await;
         }
         loaded.journal.closes.get_mut(&key).unwrap().status = "waiting".into();
-        // Explicit close retires even a never-used landing pad.
-        let id = loaded.journal.closes[&key].request.context.workspace_id;
-        if let Some(entry) = loaded.journal.entries.get_mut(&id) {
-            entry.landing_pad = false;
-        }
         loaded.save().await?;
         let service = Arc::clone(self);
         let observe_key = key.clone();
@@ -834,7 +839,8 @@ impl Service {
                 continue;
             }
             if loaded.journal.leased(id) || loaded.journal.closing(id) {
-                if !entry.occupied
+                if !loaded.journal.closing(id)
+                    && !entry.occupied
                     && !entry.landing_pad
                     && snapshot
                         .monitors
@@ -850,6 +856,11 @@ impl Service {
                 .monitors
                 .iter()
                 .find(|m| m.active_workspace.id == id);
+            // Hyprland may discard an empty, inactive compositor workspace.
+            // Keep its logical destination so focus/move can materialize it again.
+            if entry.keep_until_closed {
+                continue;
+            }
             if entry.landing_pad && !entry.occupied && active.is_some() {
                 continue;
             }
@@ -869,6 +880,7 @@ impl Service {
                                 monitor: monitor.name.clone(),
                                 occupied: false,
                                 landing_pad: true,
+                                keep_until_closed: false,
                                 origin: "Workspace".into(),
                                 icon: "workspace".into(),
                                 cue_assigned: false,

@@ -6,6 +6,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Keep manually created workspaces until an explicit workspace close, including
+  after switching away, emptying them, or restarting the daemon. Preserve their
+  destination when Hyprland reclaims an empty inactive compositor workspace.
+
 - Explicitly release agenda database ownership on shutdown and failed startup,
   so descriptors temporarily inherited by subprocesses cannot block reopening.
 
