@@ -6,6 +6,11 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Keep newly empty launch-created workspaces for a two-second grace period.
+  Preserve their destination across verified same-process login/main-window
+  replacements without following focus. Explicit close, manual moves, process
+  identity changes and owner restart cancel replacement tracking.
+
 - Keep manually created workspaces until an explicit workspace close, including
   after switching away, emptying them, or restarting the daemon. Preserve their
   destination when Hyprland reclaims an empty inactive compositor workspace.

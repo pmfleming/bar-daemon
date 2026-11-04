@@ -55,7 +55,35 @@ impl Fixture {
                         }));
                     }
                 }
-                let reply = if command.starts_with("[[BATCH]]") {
+                if focus_effects.load(std::sync::atomic::Ordering::Relaxed)
+                    && let Some((_, movement)) =
+                        command.split_once("hl.dsp.window.move({window=w,workspace=")
+                {
+                    let id: i64 = movement.split(',').next().unwrap().parse().unwrap();
+                    let address = command
+                        .rsplit_once("hl.get_window('address:")
+                        .unwrap()
+                        .1
+                        .split('\'')
+                        .next()
+                        .unwrap();
+                    let mut state = shared.lock().await;
+                    for window in state["windows"].as_array_mut().unwrap() {
+                        if window["address"] == address {
+                            window["workspace"]["id"] = id.into();
+                        }
+                    }
+                    state["pinned_status"] = "present".into();
+                }
+                let reply = if command.contains("shelllist-handoff-gone") {
+                    match shared.lock().await["pinned_status"]
+                        .as_str()
+                        .unwrap_or("present")
+                    {
+                        "present" => "ok".into(),
+                        status => format!("error: shelllist-handoff-{status}"),
+                    }
+                } else if command.starts_with("[[BATCH]]") {
                     let state = shared.lock().await;
                     format!(
                         "{}{}\n\n{}\n\n{}",
@@ -708,6 +736,8 @@ async fn an_unobserved_fallback_never_retires_the_active_workspace() {
     // This fixture deliberately acknowledges focus without applying it.
     let mut projection = crate::model::WorkspaceState::default();
     fixture.service.project(&mut projection).await;
+    tokio::time::sleep(handoff::GRACE).await;
+    fixture.service.project(&mut projection).await;
     assert!(projection.lifecycle.error.unwrap().contains("not observed"));
     assert!(
         fixture
@@ -720,5 +750,218 @@ async fn an_unobserved_fallback_never_retires_the_active_workspace() {
             .journal
             .entries
             .contains_key(&6)
+    );
+}
+
+impl Fixture {
+    async fn tracked_launch(&self) -> Value {
+        let reserved = self.create("tracked").await;
+        self.apply_focus
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut state = self.state.lock().await;
+            state["windows"] = json!([{"address":"0x123","pid":std::process::id(),"workspace":{"id":1},"mapped":true}]);
+            state["workspaces"] = json!([{"id":1,"monitor":"DP-1","windows":0},{"id":6,"monitor":"DP-1","windows":1}]);
+        }
+        self.service.call("workspace.placement.apply", json!({"lease":reserved["lease"],"window":{"address":"0x123","pid":std::process::id(),"workspace_id":1},"follow":false})).await.unwrap();
+        self.service
+            .call("workspace.lease.release", reserved["lease"].clone())
+            .await
+            .unwrap();
+        reserved
+    }
+    async fn replacement(&self, pid: u32) {
+        let mut state = self.state.lock().await;
+        state["pinned_status"] = "gone".into();
+        // Recycled address, different compositor object.
+        state["windows"] =
+            json!([{"address":"0x123","pid":pid,"workspace":{"id":1},"mapped":true}]);
+    }
+}
+
+#[tokio::test]
+async fn replacement_reuses_address_but_preserves_destination_without_following() {
+    let fixture = Fixture::new().await;
+    fixture.tracked_launch().await;
+    fixture.replacement(std::process::id()).await;
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    let state = fixture.state.lock().await;
+    assert_eq!(state["windows"][0]["workspace"]["id"], 6);
+    assert_eq!(state["monitors"][0]["activeWorkspace"]["id"], 1);
+    let loaded = fixture.service.loaded.lock().await;
+    assert_eq!(
+        loaded.as_ref().unwrap().journal.handoffs["tracked"].replacements,
+        1
+    );
+}
+
+#[tokio::test]
+async fn empty_gap_is_retained_then_expires_without_further_window_events() {
+    let fixture = Fixture::new().await;
+    fixture.tracked_launch().await;
+    {
+        let mut state = fixture.state.lock().await;
+        state["windows"] = json!([]);
+        state["pinned_status"] = "gone".into();
+    }
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    assert!(
+        fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries
+            .contains_key(&6)
+    );
+    tokio::time::timeout(
+        handoff::GRACE + Duration::from_secs(1),
+        fixture.service.changed.notified(),
+    )
+    .await
+    .unwrap();
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    let loaded = fixture.service.loaded.lock().await;
+    assert!(!loaded.as_ref().unwrap().journal.entries.contains_key(&6));
+    assert!(loaded.as_ref().unwrap().journal.handoffs.is_empty());
+}
+
+#[tokio::test]
+async fn manual_move_even_followed_by_close_or_return_cancels_replacement() {
+    let fixture = Fixture::new().await;
+    fixture.tracked_launch().await;
+    fixture.service.handoff_event("movewindowv2>>123,3,3");
+    fixture.service.handoff_event("movewindowv2>>123,6,6");
+    fixture.replacement(std::process::id()).await;
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    assert_eq!(
+        fixture.state.lock().await["windows"][0]["workspace"]["id"],
+        1
+    );
+    assert!(
+        fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .handoffs
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn restart_explicit_close_and_lost_identity_never_replay_replacement() {
+    for reason in ["restart", "close", "lost", "disconnect"] {
+        let fixture = Fixture::new().await;
+        fixture.tracked_launch().await;
+        if reason == "close" {
+            fixture.state.lock().await["monitors"][0]["activeWorkspace"]["id"] = 6.into();
+            fixture
+                .service
+                .call(
+                    "workspace.command",
+                    json!({"command":"close","request_id":"close-tracked"}),
+                )
+                .await
+                .unwrap();
+        }
+        fixture.replacement(std::process::id()).await;
+        if reason == "lost" {
+            fixture.state.lock().await["pinned_status"] = "lost".into();
+        }
+        if reason == "disconnect" {
+            fixture.service.handoff_event("disconnected");
+        }
+        let service = if reason == "restart" {
+            Fixture::service(fixture.root.path())
+        } else {
+            fixture.service.clone()
+        };
+        service
+            .project(&mut crate::model::WorkspaceState::default())
+            .await;
+        assert_eq!(
+            fixture.state.lock().await["windows"][0]["workspace"]["id"],
+            1,
+            "{reason}"
+        );
+        assert!(
+            service
+                .loaded
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .journal
+                .handoffs
+                .is_empty(),
+            "{reason}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unrelated_process_and_reused_pid_are_not_replacement_authority() {
+    let fixture = Fixture::new().await;
+    fixture.tracked_launch().await;
+    fixture.replacement(std::process::id() + 1).await;
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    assert_eq!(
+        fixture.state.lock().await["windows"][0]["workspace"]["id"],
+        1
+    );
+    fixture.replacement(std::process::id()).await;
+    fixture
+        .service
+        .loaded
+        .lock()
+        .await
+        .as_mut()
+        .unwrap()
+        .journal
+        .handoffs
+        .get_mut("tracked")
+        .unwrap()
+        .process_start += 1;
+    fixture
+        .service
+        .project(&mut crate::model::WorkspaceState::default())
+        .await;
+    assert_eq!(
+        fixture.state.lock().await["windows"][0]["workspace"]["id"],
+        1
+    );
+    assert!(
+        fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .handoffs
+            .is_empty()
     );
 }

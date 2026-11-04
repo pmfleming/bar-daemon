@@ -57,6 +57,8 @@ pub(super) struct Journal {
     pub reservations: BTreeMap<String, Reservation>,
     pub closes: BTreeMap<String, CloseRecord>,
     pub history: BTreeMap<String, Vec<i64>>,
+    #[serde(default)]
+    pub handoffs: BTreeMap<String, super::handoff::Handoff>,
 }
 
 impl Journal {
@@ -69,6 +71,7 @@ impl Journal {
             reservations: BTreeMap::new(),
             closes: BTreeMap::new(),
             history: BTreeMap::new(),
+            handoffs: BTreeMap::new(),
         }
     }
 
@@ -139,6 +142,21 @@ impl Journal {
             if matches!(close.status.as_str(), "dispatching" | "waiting") {
                 close.status = "unknown".into();
             }
+        }
+        ensure!(journal.handoffs.len() <= 128, "too many launch handoffs");
+        for (key, handoff) in &mut journal.handoffs {
+            ensure!(
+                journal.reservations.contains_key(key),
+                "orphan launch handoff"
+            );
+            ensure!(
+                handoff.window.workspace_id == journal.reservations[key].lease.workspace_id
+                    && handoff.excluded.len() <= 512
+                    && wire::valid_request_id(&handoff.token),
+                "invalid launch handoff"
+            );
+            // A replacement is never replayed or re-adopted after restart.
+            handoff.watching = false;
         }
         Ok(journal)
     }

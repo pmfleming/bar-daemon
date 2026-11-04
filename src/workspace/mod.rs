@@ -1,5 +1,6 @@
 //! Serialized workspace lifecycle. QML consumes the projection, never this policy.
 mod fixtures;
+mod handoff;
 mod journal;
 mod presentation;
 mod replies;
@@ -119,24 +120,27 @@ struct Loaded {
     journal: Journal,
     path: PathBuf,
     poisoned: bool,
+    empty_since: handoff::EmptySince,
 }
 
 pub(crate) struct Service {
-    pub(crate) changed: tokio::sync::Notify,
+    pub(crate) changed: Arc<tokio::sync::Notify>,
     client: Client,
     loaded: Mutex<Option<Loaded>>,
     writer: String,
     journal_root: Option<PathBuf>,
+    handoff_events: std::sync::Mutex<handoff::Events>,
 }
 
 impl Default for Service {
     fn default() -> Self {
         Self {
-            changed: tokio::sync::Notify::new(),
+            changed: Arc::new(tokio::sync::Notify::new()),
             client: Client::default(),
             loaded: Mutex::new(None),
             writer: crate::state::publication::Publication::new().epoch,
             journal_root: None,
+            handoff_events: Default::default(),
         }
     }
 }
@@ -176,6 +180,7 @@ impl Service {
                 journal,
                 path,
                 poisoned: false,
+                empty_since: Default::default(),
             });
             slot.as_mut().unwrap().save().await?;
         }
@@ -584,6 +589,25 @@ impl Service {
         let context = record.request.context.clone();
         let id = request.lease.workspace_id;
         ensure!(!loaded.journal.closing(id), "workspace is closing");
+        // A new explicit launch from an existing process supersedes any older
+        // replacement intent for that process; observers must never compete.
+        let superseded: Vec<_> = loaded
+            .journal
+            .handoffs
+            .iter()
+            .filter(|(_, h)| h.window.pid == request.window.pid)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in superseded {
+            self.cancel_handoff(loaded, &key).await?;
+        }
+        let handoff = handoff::Handoff::prepare(loaded, &request, snapshot);
+        if let Some(handoff) = &handoff {
+            loaded
+                .journal
+                .handoffs
+                .insert(request.lease.request_id.clone(), handoff.clone());
+        }
         loaded
             .journal
             .reservations
@@ -602,17 +626,23 @@ impl Service {
             .iter()
             .find(|w| w.id == id)
             .map_or(context.monitor.as_str(), |w| w.monitor.as_str());
-        let result = compositor::execute(
-            &self.client,
-            &compositor::move_local(
+        let mut expression = compositor::move_local(
+            &request.window.address,
+            request.window.pid,
+            request.window.workspace_id,
+            id,
+            destination_monitor,
+        )?;
+        if let Some(handoff) = &handoff {
+            expression.push_str("; ");
+            expression.push_str(&compositor::pin_window(
+                &handoff.token,
                 &request.window.address,
                 request.window.pid,
-                request.window.workspace_id,
                 id,
-                destination_monitor,
-            )?,
-        )
-        .await;
+            )?);
+        }
+        let result = compositor::execute(&self.client, &expression).await;
         let current = compositor::snapshot(&self.client).await?;
         let verified = result.is_ok()
             && current.windows.iter().any(|w| {
@@ -628,6 +658,11 @@ impl Service {
             .unwrap();
         record.placed = verified;
         record.status = if verified { "placed" } else { "unknown" }.into();
+        if verified
+            && let Some(handoff) = loaded.journal.handoffs.get_mut(&request.lease.request_id)
+        {
+            handoff.watching = true;
+        }
         if verified && let Some(entry) = loaded.journal.entries.get_mut(&id) {
             entry.occupied = true;
             if !entry.cue_assigned {
@@ -638,6 +673,10 @@ impl Service {
             }
         }
         loaded.save().await?;
+        if !verified {
+            self.cancel_handoff(loaded, &request.lease.request_id)
+                .await?;
+        }
         ensure!(
             verified,
             "placement not observed; launch must not be replayed"
@@ -724,6 +763,14 @@ impl Service {
         // Admission fences every pending writer for this destination before the
         // first close. A late window may map, but cannot revive placement here.
         let closing_id = loaded.journal.closes[&key].request.context.workspace_id;
+        for handoff in loaded
+            .journal
+            .handoffs
+            .values_mut()
+            .filter(|h| h.window.workspace_id == closing_id)
+        {
+            handoff.watching = false;
+        }
         for reservation in loaded
             .journal
             .reservations
@@ -804,6 +851,15 @@ impl Service {
     }
 
     async fn cleanup(&self, loaded: &mut Loaded, snapshot: &compositor::Snapshot) -> Result<()> {
+        // A replacement changes occupancy; never retire against the old snapshot.
+        let refreshed;
+        let snapshot = if self.reconcile_handoffs(loaded, snapshot).await? {
+            refreshed = compositor::snapshot(&self.client).await?;
+            self.changed.notify_one();
+            &refreshed
+        } else {
+            snapshot
+        };
         let mut changed = false;
         for monitor in &snapshot.monitors {
             let history = loaded
@@ -831,6 +887,7 @@ impl Service {
             }
             let entry = loaded.journal.entries[&id].clone();
             if snapshot.windows.iter().any(|w| w.workspace.id == id) {
+                loaded.empty_since.remove(&id);
                 let e = loaded.journal.entries.get_mut(&id).unwrap();
                 if !e.occupied {
                     e.occupied = true;
@@ -863,6 +920,26 @@ impl Service {
             }
             if entry.landing_pad && !entry.occupied && active.is_some() {
                 continue;
+            }
+            let explicitly_closed = loaded
+                .journal
+                .closes
+                .values()
+                .any(|close| close.request.context.workspace_id == id);
+            if entry.occupied && !explicitly_closed {
+                let since = loaded.empty_since.entry(id).or_insert_with(|| {
+                    self.wake_after_grace();
+                    tokio::time::Instant::now()
+                });
+                if since.elapsed() < handoff::GRACE
+                    || loaded
+                        .journal
+                        .handoffs
+                        .values()
+                        .any(|h| h.watching && h.window.workspace_id == id)
+                {
+                    continue;
+                }
             }
             if let Some(monitor) = active {
                 let fallback = presentation::fallback(&loaded.journal, snapshot, &monitor.name, id);
@@ -905,6 +982,7 @@ impl Service {
                 );
             }
             loaded.journal.entries.remove(&id);
+            loaded.empty_since.remove(&id);
             changed = true;
         }
         if changed {

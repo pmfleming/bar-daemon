@@ -220,6 +220,7 @@ where
                     true
                 }
                 Event::Disconnected(cause) => {
+                    store.workspace_lifecycle.handoff_event("disconnected");
                     connected = false;
                     store.set_hyprland_connected(connected);
                     if let Some(cause) = cause {
@@ -234,6 +235,7 @@ where
                     true
                 }
                 Event::Message(event) => {
+                    store.workspace_lifecycle.handoff_event(&event);
                     if shelllist_hyprland::preferences::preference_event(&event) {
                         store.compositor_changed.notify_one();
                     }
