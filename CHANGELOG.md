@@ -6,6 +6,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Give an empty temporary workspace the icon of the app moved into it. Replace
+  the icon when a different app fills it later, retain it while occupied, and
+  preserve standard workspace category icons. Reuse the desktop icon cache.
+
 - Route numeric workspace focus/move commands through the lifecycle owner. Reject
   missing extra destinations without creating them, while preserving standard
   destinations and retained manual workspaces; moves still follow the window.

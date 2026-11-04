@@ -20,6 +20,9 @@ pub(super) struct Entry {
     pub origin: String,
     pub icon: String,
     pub cue_assigned: bool,
+    /// Last observed occupancy for icon replacement, separate from ever-occupied lifetime.
+    #[serde(default)]
+    pub cue_empty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

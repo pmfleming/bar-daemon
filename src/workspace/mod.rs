@@ -301,6 +301,18 @@ impl Service {
                             )?,
                         )
                         .await?;
+                        if matches!(command.command, CommandKind::Move)
+                            && !snapshot
+                                .windows
+                                .iter()
+                                .any(|w| w.mapped && w.workspace.id == id)
+                            && let Some(entry) = loaded.journal.entries.get_mut(&id)
+                        {
+                            // Preserve the observed empty transition even if event
+                            // coalescing sees only the newly occupied destination.
+                            entry.cue_empty = true;
+                            loaded.save().await?;
+                        }
                         Ok(serde_json::to_value(CommandReply::Focus(FocusReply {
                             status: if matches!(command.command, CommandKind::Move) {
                                 "moved"
@@ -530,6 +542,7 @@ impl Service {
                     origin: request.origin.clone(),
                     icon: request.icon.clone(),
                     cue_assigned: request.purpose == Purpose::Launch,
+                    cue_empty: true,
                 },
             );
         }
@@ -719,12 +732,13 @@ impl Service {
         }
         if verified && let Some(entry) = loaded.journal.entries.get_mut(&id) {
             entry.occupied = true;
-            if !entry.cue_assigned {
+            if !entry.cue_assigned || entry.cue_empty {
                 let origin = &loaded.journal.reservations[&request.lease.request_id].request;
                 entry.origin = origin.origin.clone();
                 entry.icon = origin.icon.clone();
                 entry.cue_assigned = true;
             }
+            entry.cue_empty = false;
         }
         loaded.save().await?;
         if !verified {
@@ -940,14 +954,45 @@ impl Service {
                 }
             }
             let entry = loaded.journal.entries[&id].clone();
-            if snapshot.windows.iter().any(|w| w.workspace.id == id) {
+            if let Some(window) = snapshot
+                .windows
+                .iter()
+                .filter(|w| w.mapped && w.workspace.id == id)
+                .min_by_key(|w| &w.address)
+            {
                 loaded.empty_since.remove(&id);
                 let e = loaded.journal.entries.get_mut(&id).unwrap();
                 if !e.occupied {
                     e.occupied = true;
                     changed = true;
                 }
+                if e.cue_empty || !e.cue_assigned {
+                    let icon =
+                        crate::desktop_identity::window_icon(&window.class, &window.initial_class);
+                    let origin = if window.class.is_empty() {
+                        &window.initial_class
+                    } else {
+                        &window.class
+                    };
+                    let origin = if origin.is_empty()
+                        || origin.len() > 256
+                        || origin.chars().any(char::is_control)
+                    {
+                        "Workspace"
+                    } else {
+                        origin
+                    };
+                    e.icon = icon.unwrap_or_else(|| "workspace".into());
+                    e.origin = origin.into();
+                    e.cue_assigned = true;
+                    e.cue_empty = false;
+                    changed = true;
+                }
                 continue;
+            }
+            if !entry.cue_empty {
+                loaded.journal.entries.get_mut(&id).unwrap().cue_empty = true;
+                changed = true;
             }
             if loaded.journal.leased(id) || loaded.journal.closing(id) {
                 if !loaded.journal.closing(id)
@@ -1015,6 +1060,7 @@ impl Service {
                                 origin: "Workspace".into(),
                                 icon: "workspace".into(),
                                 cue_assigned: false,
+                                cue_empty: true,
                             },
                         );
                         loaded.save().await?;
@@ -1046,6 +1092,8 @@ impl Service {
     }
 
     pub async fn project(&self, state: &mut crate::model::WorkspaceState) {
+        // Cache refresh runs outside lifecycle serialization; icon lookup is decorative.
+        let _ = crate::desktop_identity::refresh().await;
         let result = async {
             let mut guard = self.loaded.lock().await;
             let snapshot = compositor::snapshot(&self.client).await?;

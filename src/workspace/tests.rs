@@ -276,6 +276,36 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn empty_icon_state_survives_restart_and_unknown_apps_clear_the_previous_icon() {
+    let fixture = Fixture::new().await;
+    fixture.manual("icon-manual").await;
+    {
+        let mut slot = fixture.service.loaded.lock().await;
+        let loaded = slot.as_mut().unwrap();
+        let entry = loaded.journal.entries.get_mut(&6).unwrap();
+        entry.icon = "previous-app".into();
+        entry.origin = "Previous".into();
+        entry.cue_assigned = true;
+        entry.cue_empty = false;
+        entry.occupied = true;
+        loaded.save().await.unwrap();
+    }
+    fixture.service.project(&mut Default::default()).await;
+    let path = fixture.root.path().join("bar-daemon/workspaces-test.json");
+    assert!(Journal::load(&path, "test").unwrap().entries[&6].cue_empty);
+    let restarted = Fixture::service(fixture.root.path());
+    fixture.state.lock().await["windows"] = json!([{"address":"0x123","pid":42,"mapped":true,"workspace":{"id":6},"class":"unmatched-workspace-test-app"}]);
+    restarted.project(&mut Default::default()).await;
+    let journal = Journal::load(&path, "test").unwrap();
+    assert_eq!(journal.entries[&6].icon, "workspace");
+    assert!(!journal.entries[&6].cue_empty);
+    assert!(
+        journal.entries[&6].occupied,
+        "icon state must not reset lifetime occupancy"
+    );
+}
+
+#[tokio::test]
 async fn manual_workspace_survives_switching_away_becoming_empty_and_restart_until_explicit_close()
 {
     let fixture = Fixture::new().await;

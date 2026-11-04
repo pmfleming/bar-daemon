@@ -15,6 +15,7 @@ mod bus;
 mod client;
 mod compositor;
 mod daemon;
+mod desktop_identity;
 mod display_policy;
 mod hyprland;
 mod location_place;

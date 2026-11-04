@@ -99,6 +99,64 @@ async fn window(client: &Client, pid: u32, workspace: Option<i64>) -> Result<wor
     anyhow::bail!("Qt window did not appear on {workspace:?}")
 }
 
+async fn workspace_icon(bus: &zbus::Connection, id: i64, expected: &str) -> Result<()> {
+    for _ in 0..80 {
+        let state = call(
+            bus,
+            "bar.snapshot",
+            json!({"streams":["workspaces.changed"]}),
+        )
+        .await?;
+        if state["snapshot"]["workspaces"]["lifecycle"]["monitors"]
+            .as_object()
+            .is_some_and(|monitors| {
+                monitors.values().any(|items| {
+                    items.as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item["id"] == id && item["icon"] == expected)
+                    })
+                })
+            })
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    anyhow::bail!("workspace {id} did not adopt icon {expected}")
+}
+
+fn qt_runner(root: &Path, qml: &Path) -> Result<PathBuf> {
+    let declarative = qml.parent().unwrap().parent().unwrap();
+    let plugins = PathBuf::from(std::env::var("WORKSPACE_TEST_QT_PLUGINS")?);
+    let base = plugins
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let binary = root.join("workspace-qt-runner");
+    let mut compiler =
+        Command::new(std::env::var("WORKSPACE_TEST_CXX").unwrap_or_else(|_| "c++".into()));
+    compiler.args(["-std=c++17", "-fPIC"]);
+    for prefix in [base, declarative] {
+        compiler.arg(format!("-I{}", prefix.join("include").display()));
+        compiler.arg(format!("-L{}", prefix.join("lib").display()));
+        compiler.arg(format!("-Wl,-rpath,{}", prefix.join("lib").display()));
+    }
+    let status = compiler
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace-runner.cpp"))
+        .args(["-lQt6Qml", "-lQt6Gui", "-lQt6Core", "-o"])
+        .arg(&binary)
+        .status()?;
+    ensure!(
+        status.success(),
+        "compile private Qt runner (requires C++ and Qt development headers)"
+    );
+    Ok(binary)
+}
+
 #[tokio::test]
 #[ignore = "requires WORKSPACE_TEST_HYPRLAND, PARENT_DISPLAY, DBUS, QML, QT_PLUGINS"]
 async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> Result<()> {
@@ -168,6 +226,62 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     let bus = zbus::connection::Builder::address(address.as_str())?
         .build()
         .await?;
+    let qml = PathBuf::from(std::env::var("WORKSPACE_TEST_QML")?);
+    let imports = qml.parent().unwrap().parent().unwrap().join("lib/qt-6/qml");
+    let qml = qt_runner(&root, &qml)?;
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace-handoff.qml");
+
+    // Numeric selection must not implicitly allocate extra destinations.
+    let control = root.join("numeric-command");
+    fs::write(&control, "")?;
+    let qt = spawn(
+        &qml,
+        &[
+            "-I",
+            imports.to_str().unwrap(),
+            fixture.to_str().unwrap(),
+            "--",
+            "icon-app-first",
+            control.to_str().unwrap(),
+        ],
+        &root,
+        &display,
+        &signature,
+        "qt-numeric.log",
+    )?;
+    let first = window(&client, qt.0.id(), None).await?;
+    let second_control = root.join("second-command");
+    fs::write(&second_control, "")?;
+    let second_qt = spawn(
+        &qml,
+        &[
+            "-I",
+            imports.to_str().unwrap(),
+            fixture.to_str().unwrap(),
+            "--",
+            "icon-app-second",
+            second_control.to_str().unwrap(),
+        ],
+        &root,
+        &display,
+        &signature,
+        "qt-second.log",
+    )?;
+    let second = window(&client, second_qt.0.id(), None).await?;
+    ensure!(
+        first.class != second.class && !first.class.is_empty(),
+        "Qt application identities are not distinct: {first:?} {second:?}"
+    );
+    fs::create_dir_all(root.join("data/applications"))?;
+    for (name, class) in [("first", &first.class), ("second", &second.class)] {
+        fs::write(
+            root.join(format!("data/applications/{name}.desktop")),
+            format!(
+                "[Desktop Entry]\nType=Application\nName={name}\nStartupWMClass={class}\nIcon=fixture-{name}\nExec=true\n"
+            ),
+        )?;
+    }
     let _bar = spawn(
         Path::new(env!("CARGO_BIN_EXE_bar-daemon")),
         &["daemon"],
@@ -182,29 +296,11 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let qml = PathBuf::from(std::env::var("WORKSPACE_TEST_QML")?);
-    let imports = qml.parent().unwrap().parent().unwrap().join("lib/qt-6/qml");
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace-handoff.qml");
-
-    // Numeric selection must not implicitly allocate extra destinations.
-    let control = root.join("numeric-command");
-    fs::write(&control, "")?;
-    let qt = spawn(
-        &qml,
-        &[
-            "-I",
-            imports.to_str().unwrap(),
-            fixture.to_str().unwrap(),
-            "--",
-            control.to_str().unwrap(),
-        ],
-        &root,
-        &display,
-        &signature,
-        "qt-numeric.log",
-    )?;
-    let first = window(&client, qt.0.id(), None).await?;
+    workspace::execute(
+        &client,
+        &workspace::focus_window(&first.address, first.pid, first.workspace.id)?,
+    )
+    .await?;
     for command in ["focus", "move"] {
         ensure!(
             call(
@@ -258,6 +354,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     )
     .await?;
     window(&client, qt.0.id(), Some(destination)).await?;
+    workspace_icon(&bus, destination, "fixture-first").await?;
     call(
         &bus,
         "workspace.command",
@@ -305,6 +402,52 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         !snapshot.workspaces.iter().any(|w| w.id > 6),
         "move created a spare workspace"
     );
+    workspace::execute(
+        &client,
+        &workspace::focus_window(&second.address, second.pid, 1)?,
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":destination}),
+    )
+    .await?;
+    window(&client, second.pid, Some(destination)).await?;
+    workspace_icon(&bus, destination, "fixture-first").await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":1}),
+    )
+    .await?;
+    workspace::execute(
+        &client,
+        &workspace::focus_window(&first.address, first.pid, destination)?,
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":1}),
+    )
+    .await?;
+    workspace::execute(
+        &client,
+        &workspace::focus_window(&second.address, second.pid, 1)?,
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":destination}),
+    )
+    .await?;
+    workspace_icon(&bus, destination, "fixture-second").await?;
+    workspace_icon(&bus, 1, "terminal").await?;
+    eprintln!(
+        "Workspace icon scenarios passed: first occupant, stable while occupied, new icon after empty, fixed standard icon"
+    );
     call(
         &bus,
         "workspace.command",
@@ -312,6 +455,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     )
     .await?;
     drop(qt);
+    drop(second_qt);
     eprintln!(
         "Numeric shortcut scenarios passed: absent, standard, retained, move-and-follow, no spare workspace"
     );
