@@ -177,6 +177,7 @@ impl Database {
                 .ok_or_else(|| anyhow!("non-UTF8 database path"))?,
         )
         .with_io(turso::IoBackend::Syscall)
+        .experimental_multiprocess_wal(true)
         .read_only(existing_only)
         .build()
         .await?;

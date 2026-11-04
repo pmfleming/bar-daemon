@@ -127,6 +127,7 @@ impl NotificationStore {
                 .context("non-UTF8 notification database path")?,
         )
         .with_io(turso::IoBackend::Syscall)
+        .experimental_multiprocess_wal(true)
         .build()
         .await?;
         let held = file.metadata()?;
