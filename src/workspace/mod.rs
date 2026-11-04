@@ -30,6 +30,8 @@ fn enabled() -> bool {
 pub(crate) struct Command {
     command: CommandKind,
     #[serde(default)]
+    workspace_id: Option<i64>,
+    #[serde(default)]
     monitor: Option<String>,
     #[serde(default)]
     request_id: Option<String>,
@@ -44,9 +46,15 @@ pub enum CommandKind {
     Close,
     Next,
     Previous,
+    Focus,
+    Move,
 }
 
-pub async fn run_command(command: CommandKind, monitor: Option<String>) -> Result<()> {
+pub async fn run_command(
+    command: CommandKind,
+    monitor: Option<String>,
+    workspace_id: Option<i64>,
+) -> Result<()> {
     let connection = crate::bus::session().await?;
     let proxy = zbus::Proxy::new(
         &connection,
@@ -55,7 +63,7 @@ pub async fn run_command(command: CommandKind, monitor: Option<String>) -> Resul
         crate::api::INTERFACE,
     )
     .await?;
-    let request = json!({"command":command, "monitor":monitor, "request_id":crate::state::publication::Publication::new().epoch});
+    let request = json!({"command":command, "monitor":monitor, "workspace_id":workspace_id, "request_id":crate::state::publication::Publication::new().epoch});
     // A timeout is an unknown outcome; this CLI never retries an effect.
     let reply: String = proxy
         .call("Call", &("workspace.command", request.to_string()))
@@ -213,6 +221,11 @@ impl Service {
         match method {
             "workspace.command" => {
                 let command: Command = serde_json::from_value(params)?;
+                ensure!(
+                    matches!(command.command, CommandKind::Focus | CommandKind::Move)
+                        == command.workspace_id.is_some(),
+                    "only focus and move require a workspace ID"
+                );
                 if let Some(key) = &command.request_id {
                     if let Some(record) = loaded.journal.reservations.get(key) {
                         ensure!(
@@ -257,6 +270,47 @@ impl Service {
                     .request_id
                     .unwrap_or_else(|| crate::state::publication::Publication::new().epoch);
                 match command.command {
+                    CommandKind::Focus | CommandKind::Move => {
+                        let id = command.workspace_id.unwrap();
+                        ensure!(
+                            (1..=wire::MAX_WORKSPACE_ID).contains(&id),
+                            "invalid workspace ID"
+                        );
+                        ensure!(!loaded.journal.closing(id), "workspace is closing");
+                        let retained =
+                            loaded.journal.entries.get(&id).is_some_and(|e| {
+                                e.keep_until_closed && e.monitor == context.monitor
+                            });
+                        let materialize = id <= 5 || retained;
+                        ensure!(
+                            materialize
+                                || snapshot
+                                    .workspaces
+                                    .iter()
+                                    .any(|w| w.id == id && w.monitor == context.monitor),
+                            "workspace does not exist on this monitor"
+                        );
+                        compositor::execute(
+                            &self.client,
+                            &compositor::select_local(
+                                &context.monitor,
+                                context.workspace_id,
+                                id,
+                                matches!(command.command, CommandKind::Move),
+                                materialize,
+                            )?,
+                        )
+                        .await?;
+                        Ok(serde_json::to_value(CommandReply::Focus(FocusReply {
+                            status: if matches!(command.command, CommandKind::Move) {
+                                "moved"
+                            } else {
+                                "focused"
+                            }
+                            .into(),
+                            workspace_id: id,
+                        }))?)
+                    }
                     CommandKind::Create => {
                         self.create(
                             loaded,

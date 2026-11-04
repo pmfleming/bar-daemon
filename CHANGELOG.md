@@ -6,6 +6,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Route numeric workspace focus/move commands through the lifecycle owner. Reject
+  missing extra destinations without creating them, while preserving standard
+  destinations and retained manual workspaces; moves still follow the window.
+
 - Keep newly empty launch-created workspaces for a two-second grace period.
   Preserve their destination across verified same-process login/main-window
   replacements without following focus. Explicit close, manual moves, process

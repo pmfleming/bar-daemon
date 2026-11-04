@@ -2,6 +2,130 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[tokio::test]
+async fn numeric_commands_reject_absent_foreign_and_invalid_destinations_without_effects() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":7,"monitor":"other","windows":1}));
+    for command in ["focus", "move"] {
+        for id in [0, -1, 6, 7, i64::MAX] {
+            fixture.requests.lock().await.clear();
+            assert!(
+                fixture
+                    .service
+                    .call(
+                        "workspace.command",
+                        json!({"command":command,"workspace_id":id})
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                !fixture
+                    .requests
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|s| s.starts_with("eval "))
+            );
+        }
+        assert!(
+            fixture
+                .service
+                .call("workspace.command", json!({"command":command}))
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        fixture
+            .service
+            .call(
+                "workspace.command",
+                json!({"command":"create","workspace_id":6})
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .entries
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn numeric_commands_allow_standard_existing_and_retained_destinations() {
+    let fixture = Fixture::new().await;
+    fixture
+        .apply_focus
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    fixture
+        .service
+        .call(
+            "workspace.command",
+            json!({"command":"focus","workspace_id":5}),
+        )
+        .await
+        .unwrap();
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":8,"monitor":"DP-1","windows":1}));
+    fixture
+        .service
+        .call(
+            "workspace.command",
+            json!({"command":"focus","workspace_id":8}),
+        )
+        .await
+        .unwrap();
+    let created = fixture
+        .service
+        .call(
+            "workspace.command",
+            json!({"command":"create","request_id":"manual-numeric"}),
+        )
+        .await
+        .unwrap();
+    let id = created["lease"]["workspace_id"].as_i64().unwrap();
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|w| w["id"] != id);
+    fixture.state.lock().await["monitors"][0]["activeWorkspace"]["id"] = 1.into();
+    for command in ["focus", "move"] {
+        fixture
+            .service
+            .call(
+                "workspace.command",
+                json!({"command":command,"workspace_id":id}),
+            )
+            .await
+            .unwrap();
+    }
+    let calls = fixture.requests.lock().await;
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains("assert(target,'destination disappeared')"))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains("follow=true") && c.contains("focused window changed"))
+    );
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     service: Arc<Service>,
@@ -62,14 +186,10 @@ impl Fixture {
                     let id: i64 = movement.split(',').next().unwrap().parse().unwrap();
                     let address = command
                         .rsplit_once("hl.get_window('address:")
-                        .unwrap()
-                        .1
-                        .split('\'')
-                        .next()
-                        .unwrap();
+                        .map(|(_, tail)| tail.split('\'').next().unwrap());
                     let mut state = shared.lock().await;
                     for window in state["windows"].as_array_mut().unwrap() {
-                        if window["address"] == address {
+                        if address.is_some_and(|address| window["address"] == address) {
                             window["workspace"]["id"] = id.into();
                         }
                     }

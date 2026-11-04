@@ -815,7 +815,9 @@
                 "create",
                 "close",
                 "next",
-                "previous"
+                "previous",
+                "focus",
+                "move"
               ],
               "type": "string"
             }
@@ -837,6 +839,14 @@
               "default": null,
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "default": null,
+              "format": "int64",
+              "type": [
+                "integer",
                 "null"
               ]
             }

@@ -22,6 +22,9 @@ enum Command {
     Workspace {
         #[arg(value_enum)]
         command: bar_daemon::WorkspaceCommand,
+        /// Existing destination for focus/move; standard IDs 1-5 are always available.
+        #[arg(required_if_eq_any = [("command", "focus"), ("command", "move")])]
+        workspace_id: Option<i64>,
         #[arg(long)]
         monitor: Option<String>,
     },
@@ -91,9 +94,11 @@ async fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Daemon => run_daemon().await,
         Command::Client => run_client().await,
-        Command::Workspace { command, monitor } => {
-            bar_daemon::run_workspace_command(command, monitor).await
-        }
+        Command::Workspace {
+            command,
+            monitor,
+            workspace_id,
+        } => bar_daemon::run_workspace_command(command, monitor, workspace_id).await,
         Command::Agenda { command } => bar_daemon::run_agenda_maintenance(command).await,
         Command::Idle { config, hypridle } => bar_daemon::run_idle(&config, &hypridle).await,
         Command::IdleSleep {
@@ -137,6 +142,11 @@ mod tests {
 
     #[test]
     fn workspace_shortcuts_are_typed_and_never_offer_force() {
+        for command in ["focus", "move"] {
+            assert!(Cli::try_parse_from(["bar-daemon", "workspace", command, "6"]).is_ok());
+            assert!(Cli::try_parse_from(["bar-daemon", "workspace", command]).is_err());
+            assert!(Cli::try_parse_from(["bar-daemon", "workspace", command, "six"]).is_err());
+        }
         for command in ["create", "close", "next", "previous"] {
             assert!(Cli::try_parse_from(["bar-daemon", "workspace", command]).is_ok());
             assert!(

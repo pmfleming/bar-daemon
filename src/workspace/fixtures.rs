@@ -119,6 +119,7 @@ pub(crate) fn control_fixtures() -> Map<String, Value> {
                 "workspace.command",
                 Command {
                     command: CommandKind::Create,
+                    workspace_id: None,
                     monitor: Some(context.monitor.clone()),
                     request_id: Some("fixture-create".into()),
                 },

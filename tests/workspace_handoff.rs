@@ -187,6 +187,135 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace-handoff.qml");
 
+    // Numeric selection must not implicitly allocate extra destinations.
+    let control = root.join("numeric-command");
+    fs::write(&control, "")?;
+    let qt = spawn(
+        &qml,
+        &[
+            "-I",
+            imports.to_str().unwrap(),
+            fixture.to_str().unwrap(),
+            "--",
+            control.to_str().unwrap(),
+        ],
+        &root,
+        &display,
+        &signature,
+        "qt-numeric.log",
+    )?;
+    let first = window(&client, qt.0.id(), None).await?;
+    for command in ["focus", "move"] {
+        ensure!(
+            call(
+                &bus,
+                "workspace.command",
+                json!({"command":command,"workspace_id":6})
+            )
+            .await
+            .is_err(),
+            "absent destination accepted"
+        );
+        ensure!(
+            !workspace::snapshot(&client)
+                .await?
+                .workspaces
+                .iter()
+                .any(|w| w.id == 6),
+            "numeric command created workspace 6"
+        );
+        window(&client, qt.0.id(), Some(first.workspace.id)).await?;
+    }
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"focus","workspace_id":5}),
+    )
+    .await?;
+    let manual = call(
+        &bus,
+        "workspace.command",
+        json!({"command":"create","request_id":"numeric-manual"}),
+    )
+    .await?;
+    let destination = manual["workspace_operation"]["lease"]["workspace_id"]
+        .as_i64()
+        .unwrap();
+    ensure!(
+        destination == 6,
+        "rejected shortcuts consumed an allocation"
+    );
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"focus","workspace_id":first.workspace.id}),
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":destination}),
+    )
+    .await?;
+    window(&client, qt.0.id(), Some(destination)).await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":1}),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    ensure!(
+        !workspace::snapshot(&client)
+            .await?
+            .workspaces
+            .iter()
+            .any(|w| w.id == destination),
+        "fixture did not release empty compositor workspace"
+    );
+    // Both commands can rematerialize a retained logical destination.
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"focus","workspace_id":destination}),
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"focus","workspace_id":1}),
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"move","workspace_id":destination}),
+    )
+    .await?;
+    window(&client, qt.0.id(), Some(destination)).await?;
+    let snapshot = workspace::snapshot(&client).await?;
+    ensure!(
+        snapshot
+            .monitors
+            .iter()
+            .any(|m| m.focused && m.active_workspace.id == destination),
+        "move did not follow"
+    );
+    ensure!(
+        !snapshot.workspaces.iter().any(|w| w.id > 6),
+        "move created a spare workspace"
+    );
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"close","request_id":"numeric-close"}),
+    )
+    .await?;
+    drop(qt);
+    eprintln!(
+        "Numeric shortcut scenarios passed: absent, standard, retained, move-and-follow, no spare workspace"
+    );
+
     for (index, mode, gap) in [
         (0, "stay", 200),
         (1, "background", 1200),
