@@ -1,0 +1,150 @@
+RQLens refactor review — 2026-11-05
+Repository: /home/laufan/Projects/bar-daemon
+Clean starting HEAD: 8a252d43cdd059a6474658b8d3a8766d75e71e1b
+
+Scope and provenance
+Reviewed repository-wide Rust hotspot/duplication/reliability evidence, README,
+CONTRIBUTING.md, rqlens.toml, quality policy, prior test/build evidence and the
+workspace lifecycle implementation/tests. No additional AGENTS.md was found in
+this repository or its ancestors. Changes are confined to workspace lifecycle
+code/tests and this report. Protocol, CLI, QML, framework, dependency declarations,
+Cargo.lock and flake.lock are unchanged. No commits, service actions or deployments performed.
+
+E = target/rqlens-refactor-2026-11-05. Raw baseline: E/before; final: E/after.
+E/before/source.tar, source.sha256 and immutable-manifest.json preserve the original
+source and 38 baseline artifacts; hashes were revalidated and the baseline made
+read-only after the work.
+Failed/initial attempts remain in before-auto-attempt, after-intermediate and logs.
+One pinned copy of the parent-built current RQLens binary was used throughout:
+SHA256 8f9a8852860c8e63c1f23e479e90f1ced9e711224e3c57299fca6a523f0afb9f.
+Rust/Cargo 1.95.0; LLVM 21.1.8; cargo-llvm-cov 0.8.5; CARGO_BUILD_JOBS=2.
+Original rqlens.toml SHA256:
+9b6878ef47dcde5bef58ca4b3ae8edb8f5a5194719aca71390b0669b048b9f2a.
+Derived before/after configs differ from it only in absolute project/output paths
+and rust.identity_resolution="disabled". Auto semantic collection rejected changed
+sibling inputs after a 180-second scan. Syntax-only measurements on both sides
+retain partial semantic/macro/cfg evidence; disabling identity is not certification.
+Measured package/targets and configured exclusions remain identical. Build output,
+generated sources and dependencies are not added to the authored source scope.
+
+Ranked findings and implemented changes
+1. Service::cleanup: cognitive/cyclomatic 59/44 and effort 431,911. Observation,
+   retention and effects were interleaved with full Entry copies. Entry::observe
+   now owns monitor/cue/occupancy updates; cleanup borrows the entry. Empty-only
+   lease/close scans stay short-circuited; the single-use leased wrapper is removed
+   with its exact predicate retained. Adoption eligibility is computed once.
+2. Service::call: 37/61 and effort 888,813. Cycling duplicated the bar/positional
+   destination ordering. It now reuses presentation::workspace_ids, retaining the
+   foreign-monitor exclusion and all destination validation.
+3. Service::close cloned the admitted target vector. Targets now move into the
+   journal and are borrowed during dispatch. Attempted flags are still saved
+   before each close; release still follows dispatch, including error outcomes.
+4. Overlapping adoption/migration tests and repeated read-only assertions. One
+   persisted-entry scenario preserves unknown-read, migration, identity, adoption
+   and retirement checks; full-record equality strengthens the old field checks.
+   A shared assertion retains the same read-only property at three call sites.
+   Tables add blank/initial/bounded/control-character cues, first mapped address,
+   occupied cue stability, repeated observations and next/previous foreign skips.
+5. Remaining: handoff reconciliation (36/46, effort 409,166), command dispatch
+   (now 36/61), persistence dispatch (14/22) and agenda database open (11/38)
+   remain substantial. Their identity, transaction and validation guards were not
+   removed. Large protocol fixture builders and SQL parameter ownership are not
+   assumed to be dead code or needless allocations from duplication scores alone.
+
+Comparable source measurements (cognitive / cyclomatic / Halstead effort rounded)
+                                      Before                 After
+Service::cleanup                      59 / 44 / 431911       34 / 36 / 274635
+Service::call                         37 / 61 / 888813       36 / 61 / 851161
+Service::close                        11 / 23 / 207451       11 / 23 / 226882
+Entry::observe                        absent                 15 / 10 / 36415
+All production functions in mod.rs + journal.rs (25 functions on each side):
+  cognitive                           175                    163
+  cyclomatic                          264                    264
+  summed effort                       2417204.898            2276803.417
+The sum includes the new observer and removed leased method. Aggregate cyclomatic
+complexity is flat; close effort rises 9.37% with explicit journal borrowing and
+release preparation. No claim that every function or metric improves.
+Locality: workspace 79, journal 100, presentation 100, unchanged. Leverage: 40/20/10,
+unchanged; module reach is unchanged. Journal outbound references rise 1 -> 2 for
+icon ownership. Ordering reuse rises from two call sites to three; module-level
+leverage does not count that improvement. No aggregate architecture score gain.
+Duplication: 203 -> 201 groups; 2999 -> 2953 duplicated lines; 5.26% -> 5.19%.
+These are normalized-code repeats, not allocation counts. Literal clone() sites
+in production workspace/mod.rs: 31 -> 28. Two deep aggregate copies are removed;
+monitor clone becomes clone_from (capacity reuse, not guaranteed zero allocation).
+Private Entry/Journal Clone derives are removed; all-target compilation proves
+remaining consumers do not require them. No unreachable function deletion claimed.
+Reliability: production unwrap 108 -> 104; expect 23 and panic 2 unchanged.
+Test unwrap 1831 -> 1823. Escape evidence: 71 -> 71 occurrences in 61 modules
+(67 glob imports, four existing Clippy suppressions); no new suppression/unsafe.
+Test-quality heuristic: 373 -> 372 declarations; 12 assertionless declarations,
+nine ignored declarations and 21 findings unchanged. This is not executed coverage.
+
+Actual Rust volume and executed coverage
+E/loc.py counts tracked physical Rust lines, with a documented test-file/cfg(test)
+item partition; comments/blanks included. It excludes target/vendor/generated
+outputs, not inconvenient authored modules. This is not macro-expanded compiler LOC.
+Production: 39129 -> 39122 (-7); tests/support: 21270 -> 21227 (-43).
+Total: 60399 -> 60349 (-50). Nonblank: production 37341 -> 37334;
+tests 20821 -> 20779; total 58162 -> 58113 (-49).
+Cargo top-level test executions: 372 -> 371, all passing, zero failed/ignored.
+Library 336 -> 335; CLI 3, location 30 and three integration cases unchanged.
+Subprocess child summaries are not double-counted. Both required private PipeWire
+and native-idle fixtures pass. One fewer test is consolidation, not lost behavior.
+
+Identical full-fixture cargo-llvm-cov commands generated both Cobertura files.
+Owned-repository line coverage: 26741/33989 (78.6755%) ->
+26765/33977 (78.7739%). This consistently excludes one external framework macro
+source file (21/33 on both sides). Raw totals: 26762/34022 -> 26786/34010.
+Workspace scope: 1434/1624 (88.3005%) -> 1465/1612 (90.8809%).
+Changed production files: 915/1082 (84.5656%) -> 946/1070 (88.4112%).
+E/comparison.json records per-file counts and Cargo target summaries. Branch
+coverage is unavailable in this export; heuristic complexity is not branch coverage.
+
+Exact commands and results
+Initial environment probe: local-build develop . --command bash -c
+'cargo --version; rustc --version; cargo llvm-cov --version'. Subsequent commands
+source .direnv/flake-profile-*.rc (same recorded repository Nix tools/fixtures).
+With CARGO_BUILD_JOBS=2:
+  bash target/rqlens-refactor-2026-11-05/measure.sh before
+  bash target/rqlens-refactor-2026-11-05/measure.sh after
+This runs E/rqlens measure P --config E/S/rqlens.toml for P = hotspots, clones,
+locality, leverage, reliability, escape-hatches, test-quality. status.tsv preserves
+rejected attempts and successful retries; the final seven after producers pass.
+Coverage, on both sides:
+  QUALITY_OUTPUT_DIR=E/S/fixtures bash tools/quality-fixtures.sh coverage
+Runner expands exactly to:
+  cargo llvm-cov --workspace --all-targets --locked --cobertura
+    --output-path E/S/fixtures/cobertura.xml -- --include-ignored
+Final-source checks all pass (after/*-complete.log and verification-status.tsv):
+  cargo check --workspace --all-targets --locked
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+  cargo fmt --all -- --check
+  RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --locked --no-deps
+  cargo test --workspace --locked --doc                 (zero doctests declared)
+  python3 -B -m unittest discover -s tools -p 'test_quality_*.py' (four pass)
+  E/rqlens measure architecture-rules --config E/after/rqlens.toml
+    (three rules, zero observed violations; partial syntax evidence)
+Also: python3 E/loc.py E/S/loc.json; git diff --check; reviewed complete diff.
+
+Limits and dependency drift
+No required tool was missing. Native Qt workspace/Quickshell feature probes,
+mutation, audit/deny and strict RQLens certification were not run. Macro/cfg and
+semantic inventory remain partial; zero observed architecture violations is not
+complete architecture qualification. No runtime/RSS benchmark gain is claimed.
+Sibling changes during collection caused explicit fingerprint rejections. All
+published artifacts bind their own accepted source/helper fingerprints. Baseline
+locality has a different foreign-input fingerprint from the other baseline
+producers; owned Rust SHA manifests remain the same original source. After source
+producers share source digest 777e0c7da9649561; helper ef0da1f9173833d6 is stable.
+Framework HEAD is 8d4a773f7bbdd94375b8bfefb0ab9404e415544e. Its near-build-before
+and final tracked Rust/Cargo input manifests match SHA256
+9841a9ece606ecdcaf99070eaa1605903cc20f1ceda32e78624a1405d9317882.
+It changed from the initially clean sibling during baseline collection; snapshots
+and diffs retain that fact. Update dependency HEAD stays
+7c4b39338befd9c5d5355d42ea88e267ba398cc0; its input snapshot changes from
+076eea3631d961c88dff7f88057d6c94c2658011c173441492a7f54c4b382eb5 to final
+7dbddc4229dd4de76537a1298bd622da379a974c3a31eb5d692c7e724d9c0ed6.
+Intermediate snapshots/diffs are retained. Whole-repository coverage changes are
+observations, not attributed solely to this refactor across mutable dependencies.
+All edits made by this worker remain within bar-daemon; lock hashes are unchanged.

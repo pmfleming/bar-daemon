@@ -404,26 +404,14 @@ impl Service {
                         .await
                     }
                     CommandKind::Next | CommandKind::Previous => {
-                        let mut ids = vec![1, 2, 3, 4, 5];
-                        ids.extend(
+                        let mut ids = presentation::workspace_ids(
+                            &loaded.journal,
+                            &context.monitor,
                             snapshot
                                 .workspaces
                                 .iter()
-                                .filter(|w| {
-                                    w.id.is_some_and(|id| id > 5) && w.monitor == context.monitor
-                                })
-                                .filter_map(|w| w.id),
+                                .filter_map(|w| Some((w.id?, w.monitor.as_str()))),
                         );
-                        ids.extend(
-                            loaded
-                                .journal
-                                .entries
-                                .values()
-                                .filter(|e| e.monitor == context.monitor)
-                                .map(|e| e.id),
-                        );
-                        ids.sort_unstable();
-                        ids.dedup();
                         // Navigation never migrates a workspace from another monitor.
                         ids.retain(|id| {
                             !snapshot
@@ -890,7 +878,7 @@ impl Service {
             key.clone(),
             CloseRecord {
                 request,
-                targets: targets.clone(),
+                targets,
                 status: "dispatching".into(),
                 error: None,
             },
@@ -921,10 +909,12 @@ impl Service {
             entry.keep_until_closed = false;
         }
         loaded.save().await?;
-        for (index, target) in targets.iter().enumerate() {
-            let w = &target.window;
+        for index in 0..loaded.journal.closes[&key].targets.len() {
             loaded.journal.closes.get_mut(&key).unwrap().targets[index].attempted = true;
             loaded.save().await?;
+            let target = &loaded.journal.closes[&key].targets[index];
+            let w = &target.window;
+            let release = compositor::release_window(&target.token)?;
             if let Err(error) = compositor::execute(
                 &self.client,
                 &compositor::close_pinned(&target.token, &w.address, w.pid, w.workspace_id)?,
@@ -933,8 +923,7 @@ impl Service {
             {
                 loaded.journal.closes.get_mut(&key).unwrap().error = Some(error.to_string());
             }
-            let _ = compositor::execute(&self.client, &compositor::release_window(&target.token)?)
-                .await;
+            let _ = compositor::execute(&self.client, &release).await;
         }
         loaded.journal.closes.get_mut(&key).unwrap().status = "waiting".into();
         loaded.save().await?;
@@ -1014,80 +1003,47 @@ impl Service {
         }
         let ids: Vec<_> = loaded.journal.entries.keys().copied().collect();
         for id in ids {
-            // Empty landing pads migrate too (for example after output removal).
-            // Keep their identity while following observed compositor ownership.
-            if let Some(live) = snapshot.workspaces.iter().find(|w| w.id == Some(id)) {
-                let entry = loaded.journal.entries.get_mut(&id).unwrap();
-                if live.monitor != entry.monitor {
-                    entry.monitor = live.monitor.clone();
-                    changed = true;
-                }
-            }
-            let entry = loaded.journal.entries[&id].clone();
-            if let Some(window) = snapshot
+            let window = snapshot
                 .windows
                 .iter()
                 .filter(|w| w.mapped && w.workspace.id == Some(id))
-                .min_by_key(|w| &w.address)
-            {
+                .min_by_key(|w| &w.address);
+            let closing = window.is_none() && loaded.journal.closing(id);
+            let entry = loaded
+                .journal
+                .entries
+                .get_mut(&id)
+                .context("workspace entry disappeared")?;
+            changed |= entry.observe(
+                snapshot.workspaces.iter().find(|w| w.id == Some(id)),
+                window,
+            );
+            if window.is_some() {
                 loaded.empty_since.remove(&id);
-                let e = loaded.journal.entries.get_mut(&id).unwrap();
-                if !e.occupied {
-                    e.occupied = true;
-                    changed = true;
-                }
-                if e.cue_empty || !e.cue_assigned {
-                    let icon =
-                        crate::desktop_identity::window_icon(&window.class, &window.initial_class);
-                    let origin = if window.class.is_empty() {
-                        &window.initial_class
-                    } else {
-                        &window.class
-                    };
-                    let origin = if origin.is_empty()
-                        || origin.len() > 256
-                        || origin.chars().any(char::is_control)
-                    {
-                        "Workspace"
-                    } else {
-                        origin
-                    };
-                    e.icon = icon.unwrap_or_else(|| "workspace".into());
-                    e.origin = origin.into();
-                    e.cue_assigned = true;
-                    e.cue_empty = false;
-                    changed = true;
-                }
-                continue;
-            }
-            if !entry.cue_empty {
-                loaded.journal.entries.get_mut(&id).unwrap().cue_empty = true;
-                changed = true;
-            }
-            if loaded.journal.leased(id) || loaded.journal.closing(id) {
-                if !loaded.journal.closing(id)
-                    && !entry.occupied
-                    && !entry.landing_pad
-                    && snapshot
-                        .monitors
-                        .iter()
-                        .any(|m| m.active_workspace.id == Some(id))
-                {
-                    loaded.journal.entries.get_mut(&id).unwrap().landing_pad = true;
-                    changed = true;
-                }
                 continue;
             }
             let active = snapshot
                 .monitors
                 .iter()
                 .find(|m| m.active_workspace.id == Some(id));
-            // Hyprland may discard an empty, inactive compositor workspace.
-            // Keep its logical destination so focus/move can materialize it again.
-            if entry.keep_until_closed {
+            // Only a destination that has never held a window can be adopted.
+            let adoptable = !entry.occupied && active.is_some();
+            if closing
+                || loaded
+                    .journal
+                    .reservations
+                    .values()
+                    .any(|r| r.lease.workspace_id == id && !r.released)
+            {
+                if !closing && !entry.landing_pad && adoptable {
+                    entry.landing_pad = true;
+                    changed = true;
+                }
                 continue;
             }
-            if entry.landing_pad && !entry.occupied && active.is_some() {
+            // Hyprland may discard an empty, inactive compositor workspace.
+            // Keep its logical destination so focus/move can materialize it again.
+            if entry.keep_until_closed || (entry.landing_pad && adoptable) {
                 continue;
             }
             let explicitly_closed = loaded

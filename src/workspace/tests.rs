@@ -150,7 +150,7 @@ async fn new_owner_cleans_once_before_first_handoff_pin() {
 }
 
 #[tokio::test]
-async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() {
+async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() -> Result<()> {
     let fixture = Fixture::new().await;
     fixture
         .apply_focus
@@ -297,6 +297,15 @@ async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() {
                 .is_err()
         );
     }
+    // Cycling skips foreign standards and stale retained entries, in both directions.
+    for (command, current, expected) in [("next", 1, 3), ("previous", 3, 1), ("next", 10, 1)] {
+        fixture.state.lock().await["monitors"][0]["activeWorkspace"]["id"] = current.into();
+        let reply = fixture
+            .service
+            .call("workspace.command", json!({"command":command}))
+            .await?;
+        assert_eq!(reply["workspace_id"], expected);
+    }
     for command in ["create", "close", "next", "previous"] {
         assert!(
             fixture
@@ -323,6 +332,7 @@ async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() {
             .high,
         high
     );
+    Ok(())
 }
 
 #[tokio::test]
@@ -591,6 +601,15 @@ impl Fixture {
             icon: "code".into(),
         }
     }
+    async fn assert_read_only_requests(&self) {
+        let requests = self.requests.lock().await;
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r)),
+            "{requests:?}"
+        );
+    }
     async fn create(&self, key: &str) -> Value {
         self.service
             .call(
@@ -614,33 +633,58 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn empty_icon_state_survives_restart_and_unknown_apps_clear_the_previous_icon() {
+async fn empty_icon_state_survives_restart_and_cues_use_bounded_first_mapped_identity() -> Result<()>
+{
     let fixture = Fixture::new().await;
     fixture.manual("icon-manual").await;
     {
         let mut slot = fixture.service.loaded.lock().await;
-        let loaded = slot.as_mut().unwrap();
-        let entry = loaded.journal.entries.get_mut(&6).unwrap();
+        let loaded = slot.as_mut().context("initialized workspace")?;
+        let entry = loaded.journal.entries.get_mut(&6).context("manual entry")?;
         entry.icon = "previous-app".into();
         entry.origin = "Previous".into();
         entry.cue_assigned = true;
         entry.cue_empty = false;
         entry.occupied = true;
-        loaded.save().await.unwrap();
+        loaded.save().await?;
     }
     fixture.service.project(&mut Default::default()).await;
     let path = fixture.root.path().join("bar-daemon/workspaces-test.json");
-    assert!(Journal::load(&path, "test").unwrap().entries[&6].cue_empty);
+    assert!(Journal::load(&path, "test")?.entries[&6].cue_empty);
     let restarted = Fixture::service(fixture.root.path());
-    fixture.state.lock().await["windows"] = json!([{"address":"0x123","pid":42,"mapped":true,"workspace":{"id":6},"class":"unmatched-workspace-test-app"}]);
-    restarted.project(&mut Default::default()).await;
-    let journal = Journal::load(&path, "test").unwrap();
-    assert_eq!(journal.entries[&6].icon, "workspace");
-    assert!(!journal.entries[&6].cue_empty);
-    assert!(
-        journal.entries[&6].occupied,
-        "icon state must not reset lifetime occupancy"
-    );
+    let maximum = "x".repeat(256);
+    let oversized = "x".repeat(257);
+    for (class, initial, origin) in [
+        (
+            "unmatched-workspace-test-app",
+            "",
+            "unmatched-workspace-test-app",
+        ),
+        ("", "workspace-test-initial", "workspace-test-initial"),
+        ("", "", "Workspace"),
+        (&maximum, "", &maximum),
+        (&oversized, "", "Workspace"),
+        ("bad\nclass", "", "Workspace"),
+    ] {
+        // Unmapped windows and larger addresses must not choose the cue.
+        fixture.state.lock().await["windows"] = json!([
+            {"address":"0x456","pid":42,"mapped":true,"workspace":{"id":6},"class":"Other"},
+            {"address":"0x123","pid":42,"mapped":true,"workspace":{"id":6},"class":class,"initialClass":initial},
+            {"address":"0x001","pid":42,"mapped":false,"workspace":{"id":6},"class":"Unmapped"}
+        ]);
+        for _ in 0..2 {
+            restarted.project(&mut Default::default()).await;
+            let journal = Journal::load(&path, "test")?;
+            let entry = &journal.entries[&6];
+            assert_eq!(entry.icon, "workspace");
+            assert_eq!(entry.origin, origin);
+            assert!(!entry.cue_empty && entry.cue_assigned && entry.occupied);
+            fixture.state.lock().await["windows"][1]["class"] = "Changed while occupied".into();
+        }
+        fixture.state.lock().await["windows"] = json!([]);
+        restarted.project(&mut Default::default()).await;
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -947,14 +991,7 @@ async fn restart_fences_old_placement_and_lookup_retains_indeterminate_receipt()
         )
         .await
         .unwrap();
-    assert!(
-        fixture
-            .requests
-            .lock()
-            .await
-            .iter()
-            .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r))
-    );
+    fixture.assert_read_only_requests().await;
 }
 
 #[tokio::test]
@@ -1082,18 +1119,11 @@ async fn journal_failure_poisoning_prevents_effects_and_stale_context_is_rejecte
             .await
             .is_err()
     );
-    assert!(
-        fixture
-            .requests
-            .lock()
-            .await
-            .iter()
-            .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r))
-    );
+    fixture.assert_read_only_requests().await;
 }
 
 #[tokio::test]
-async fn user_adoption_and_unknown_observations_protect_empty_reservations() {
+async fn adopted_empty_workspace_survives_unknown_reads_and_output_migration() -> Result<()> {
     let fixture = Fixture::new().await;
     let reserved = fixture.create("adopt").await;
     {
@@ -1101,123 +1131,50 @@ async fn user_adoption_and_unknown_observations_protect_empty_reservations() {
         state["monitors"][0]["activeWorkspace"]["id"] = 6.into();
         state["workspaces"] = json!([{"id":6,"monitor":"DP-1","windows":0}]);
     }
-    fixture
-        .service
-        .project(&mut crate::model::WorkspaceState::default())
-        .await;
+    let mut projection = crate::model::WorkspaceState::default();
+    fixture.service.project(&mut projection).await;
     fixture
         .service
         .call("workspace.lease.release", reserved["lease"].clone())
-        .await
-        .unwrap();
-    assert!(
-        fixture
-            .service
-            .loaded
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .journal
-            .entries[&6]
-            .landing_pad
-    );
+        .await?;
+    let path = fixture.root.path().join("bar-daemon/workspaces-test.json");
+    let entry = || -> Result<Value> {
+        Ok(serde_json::to_value(
+            &Journal::load(&path, "test")?.entries[&6],
+        )?)
+    };
+    let original = entry()?;
+    assert_eq!(original["landing_pad"], true);
     fixture.state.lock().await["windows"] = json!("unavailable");
-    let mut projection = crate::model::WorkspaceState::default();
     fixture.service.project(&mut projection).await;
     assert!(!projection.lifecycle.available);
-    assert!(
-        fixture
-            .service
-            .loaded
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .journal
-            .entries
-            .contains_key(&6)
+    assert_eq!(
+        entry()?,
+        original,
+        "unknown reads cannot change the durable entry"
     );
     {
         let mut state = fixture.state.lock().await;
         state["windows"] = json!([]);
-        state["monitors"][0]["activeWorkspace"]["id"] = 1.into();
-    }
-    fixture.service.project(&mut projection).await;
-    assert!(
-        !fixture
-            .service
-            .loaded
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .journal
-            .entries
-            .contains_key(&6)
-    );
-    assert!(
-        fixture
-            .requests
-            .lock()
-            .await
-            .iter()
-            .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r))
-    );
-}
-
-#[tokio::test]
-async fn empty_adopted_workspace_follows_output_migration_without_new_identity() {
-    let fixture = Fixture::new().await;
-    let reserved = fixture.create("migrate").await;
-    {
-        let mut state = fixture.state.lock().await;
-        state["monitors"][0]["activeWorkspace"]["id"] = 6.into();
-        state["workspaces"] = json!([{"id":6,"monitor":"DP-1","windows":0}]);
-    }
-    fixture
-        .service
-        .project(&mut crate::model::WorkspaceState::default())
-        .await;
-    fixture
-        .service
-        .call("workspace.lease.release", reserved["lease"].clone())
-        .await
-        .unwrap();
-    let original = fixture
-        .service
-        .loaded
-        .lock()
-        .await
-        .as_ref()
-        .unwrap()
-        .journal
-        .entries[&6]
-        .clone();
-    {
-        let mut state = fixture.state.lock().await;
         state["monitors"][0]["name"] = "DP-2".into();
         state["workspaces"][0]["monitor"] = "DP-2".into();
     }
-    fixture
-        .service
-        .project(&mut crate::model::WorkspaceState::default())
-        .await;
-    let loaded = fixture.service.loaded.lock().await;
-    let migrated = &loaded.as_ref().unwrap().journal.entries[&6];
-    assert_eq!(migrated.monitor, "DP-2");
-    assert_eq!(migrated.generation, original.generation);
-    assert_eq!(migrated.origin, original.origin);
-    assert!(migrated.landing_pad);
-    drop(loaded);
-    assert!(
-        fixture
-            .requests
-            .lock()
-            .await
-            .iter()
-            .all(|request| request.starts_with("[[BATCH]]") || reference_cleanup(request))
-    );
+    let mut migrated = original;
+    migrated["monitor"] = "DP-2".into();
+    for _ in 0..2 {
+        fixture.service.project(&mut projection).await;
+        assert!(projection.lifecycle.error.is_none());
+        assert_eq!(
+            entry()?,
+            migrated,
+            "only ownership changes, including repeated observations"
+        );
+    }
+    fixture.state.lock().await["monitors"][0]["activeWorkspace"]["id"] = 1.into();
+    fixture.service.project(&mut projection).await;
+    assert!(!Journal::load(&path, "test")?.entries.contains_key(&6));
+    fixture.assert_read_only_requests().await;
+    Ok(())
 }
 
 #[tokio::test]

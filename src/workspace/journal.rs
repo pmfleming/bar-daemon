@@ -4,11 +4,12 @@ use shelllist_daemon_core::{
     AtomicFilePolicy, read_bytes_bounded,
     workspace_wire::{self as wire, Create, Lease, WindowIdentity},
 };
+use shelllist_hyprland::workspace::{Window, Workspace};
 use std::{collections::BTreeMap, path::Path};
 
 pub(super) const MAX_RECORDS: usize = 4096;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Entry {
     pub id: i64,
     pub generation: String,
@@ -23,6 +24,48 @@ pub(super) struct Entry {
     /// Last observed occupancy for icon replacement, separate from ever-occupied lifetime.
     #[serde(default)]
     pub cue_empty: bool,
+}
+
+impl Entry {
+    /// Apply observed ownership and decorative cues without changing retention policy.
+    /// The caller selects the first mapped window in stable address order.
+    pub fn observe(&mut self, workspace: Option<&Workspace>, window: Option<&Window>) -> bool {
+        let mut changed = false;
+        // Empty landing pads follow observed output migration without a new identity.
+        if let Some(workspace) = workspace
+            && self.monitor != workspace.monitor
+        {
+            self.monitor.clone_from(&workspace.monitor);
+            changed = true;
+        }
+        let was_empty = std::mem::replace(&mut self.cue_empty, window.is_none());
+        changed |= was_empty != self.cue_empty;
+        if let Some(window) = window {
+            changed |= !self.occupied;
+            self.occupied = true;
+            if was_empty || !self.cue_assigned {
+                self.icon =
+                    crate::desktop_identity::window_icon(&window.class, &window.initial_class)
+                        .unwrap_or_else(|| "workspace".into());
+                let origin = if window.class.is_empty() {
+                    &window.initial_class
+                } else {
+                    &window.class
+                };
+                self.origin = if origin.is_empty()
+                    || origin.len() > 256
+                    || origin.chars().any(char::is_control)
+                {
+                    "Workspace".into()
+                } else {
+                    origin.into()
+                };
+                self.cue_assigned = true;
+                changed = true;
+            }
+        }
+        changed
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -51,7 +94,7 @@ pub(super) struct CloseRecord {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Journal {
     pub version: u32,
     pub session: String,
@@ -202,12 +245,6 @@ impl Journal {
         );
         self.high = highest + 1;
         Ok(self.high)
-    }
-
-    pub fn leased(&self, id: i64) -> bool {
-        self.reservations
-            .values()
-            .any(|r| r.lease.workspace_id == id && !r.released)
     }
 
     pub fn closing(&self, id: i64) -> bool {
