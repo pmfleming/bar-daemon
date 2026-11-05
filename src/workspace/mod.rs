@@ -136,6 +136,7 @@ struct Loaded {
     journal: Journal,
     path: PathBuf,
     poisoned: bool,
+    pins_cleaned: bool,
     empty_since: handoff::EmptySince,
 }
 
@@ -195,14 +196,11 @@ impl Service {
                 .join("bar-daemon")
                 .join(format!("workspaces-{}.json", snapshot.session));
             let journal = Journal::load(&path, &snapshot.session)?;
-            // Pinning precedes durable close admission, so a crash can leave
-            // references with no journal record. Clear only this owner's prefix
-            // before any new pins are admitted; restarted observers are fenced.
-            compositor::execute(&self.client, &compositor::release_prefix(PIN_PREFIX)?).await?;
             *slot = Some(Loaded {
                 journal,
                 path,
                 poisoned: false,
+                pins_cleaned: false,
                 empty_since: Default::default(),
             });
             slot.as_mut().unwrap().save().await?;
@@ -214,6 +212,16 @@ impl Service {
             "compositor session changed"
         );
         Ok(loaded)
+    }
+
+    // Called under the loaded mutex, before either path can create new pins.
+    // A failed or uncertain release is safe to retry: no new pins were admitted.
+    async fn prepare_pins(&self, loaded: &mut Loaded) -> Result<()> {
+        if !loaded.pins_cleaned {
+            compositor::execute(&self.client, &compositor::release_prefix(PIN_PREFIX)?).await?;
+            loaded.pins_cleaned = true;
+        }
+        Ok(())
     }
 
     pub async fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> Value {
@@ -722,6 +730,9 @@ impl Service {
             self.cancel_handoff(loaded, &key).await?;
         }
         let handoff = handoff::Handoff::prepare(loaded, &request, snapshot);
+        if handoff.is_some() {
+            self.prepare_pins(loaded).await?;
+        }
         if let Some(handoff) = &handoff {
             loaded
                 .journal
@@ -851,6 +862,7 @@ impl Service {
             "{PIN_PREFIX}close-{}",
             crate::state::publication::Publication::new().epoch
         );
+        self.prepare_pins(loaded).await?;
         let snapshot = compositor::pinned_snapshot(
             &self.client,
             &request.context.monitor,

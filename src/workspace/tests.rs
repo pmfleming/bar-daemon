@@ -9,23 +9,109 @@ fn reference_cleanup(request: &str) -> bool {
 }
 
 #[tokio::test]
-async fn new_session_owner_cleans_only_its_pin_namespace_once_before_admission() {
+async fn reads_skip_capabilities_and_pin_cleanup_retries_before_admission() {
     let fixture = Fixture::new().await;
-    for _ in 0..2 {
+    fixture.state.lock().await["reject_cleanup"] = true.into();
+    for method in ["workspace.context", "workspace.operation.get"] {
+        let params = if method == "workspace.context" {
+            json!({"monitor":"DP-1"})
+        } else {
+            json!({"request_id":"absent"})
+        };
+        // A missing operation is a domain error, not a capability error.
+        let _ = fixture.service.call(method, params).await;
+    }
+    let mut state = crate::model::WorkspaceState {
+        available: true,
+        ..Default::default()
+    };
+    fixture.service.project(&mut state).await;
+    assert!(state.lifecycle.error.is_none());
+    assert_ne!(fixture.state.lock().await["capabilities_requested"], true);
+    assert!(
+        fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .all(|r| r.starts_with("[[BATCH]]j/"))
+    );
+
+    let request = json!({"request_id":"close", "context":Fixture::request("close").context});
+    assert!(
         fixture
             .service
-            .call("workspace.context", json!({"monitor":"DP-1"}))
+            .call("workspace.close", request.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        !fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .pins_cleaned
+    );
+    assert!(
+        !fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .any(|r| r.starts_with("[[BATCH]]eval "))
+    );
+    fixture.state.lock().await["reject_cleanup"] = false.into();
+    fixture
+        .service
+        .call("workspace.close", request)
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .pins_cleaned
+    );
+    let requests = fixture.requests.lock().await;
+    let pin = requests
+        .iter()
+        .position(|r| r.starts_with("[[BATCH]]eval "))
+        .unwrap();
+    let cleanups: Vec<_> = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| reference_cleanup(r))
+        .collect();
+    assert_eq!(cleanups.len(), 2);
+    assert!(cleanups.iter().all(|(i, _)| *i < pin));
+}
+
+#[tokio::test]
+async fn new_owner_cleans_once_before_first_handoff_pin() {
+    let fixture = Fixture::new().await;
+    fixture.tracked_launch().await;
+    {
+        let mut guard = fixture.service.loaded.lock().await;
+        fixture
+            .service
+            .prepare_pins(guard.as_mut().unwrap())
             .await
             .unwrap();
     }
-    let cleanup = compositor::release_prefix(PIN_PREFIX).unwrap().to_string();
     assert_eq!(
         fixture
             .requests
             .lock()
             .await
             .iter()
-            .filter(|request| **request == format!("eval {cleanup}"))
+            .filter(|r| reference_cleanup(r))
             .count(),
         1
     );
@@ -40,12 +126,27 @@ async fn new_session_owner_cleans_only_its_pin_namespace_once_before_admission()
             .lock()
             .await
             .iter()
-            .filter(|request| **request == format!("eval {cleanup}"))
+            .filter(|r| reference_cleanup(r))
+            .count(),
+        1
+    );
+    {
+        let mut guard = restarted.loaded.lock().await;
+        restarted
+            .prepare_pins(guard.as_mut().unwrap())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .filter(|r| reference_cleanup(r))
             .count(),
         2
     );
-    assert!(!cleanup.contains("hl.dispatch"));
-    assert!(!cleanup.contains("hl.dsp"));
 }
 
 #[tokio::test]
@@ -389,6 +490,7 @@ impl Fixture {
                     _ => None,
                 };
                 if let Some(reply) = preflight {
+                    shared.lock().await["capabilities_requested"] = true.into();
                     let _ = stream.write_all(reply.as_bytes()).await;
                     continue;
                 }
@@ -427,7 +529,11 @@ impl Fixture {
                     }
                     state["pinned_status"] = "present".into();
                 }
-                let reply = if command.contains("shelllist-handoff-gone") {
+                let reply = if reference_cleanup(&command)
+                    && shared.lock().await["reject_cleanup"] == true
+                {
+                    "cleanup rejected".into()
+                } else if command.contains("shelllist-handoff-gone") {
                     match shared.lock().await["pinned_status"]
                         .as_str()
                         .unwrap_or("present")
