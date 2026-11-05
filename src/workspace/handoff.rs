@@ -101,7 +101,7 @@ impl Service {
             if h.watching
                 && (events.lost
                     || events.moved.iter().any(|(address, workspace)| {
-                        *workspace != h.window.workspace_id
+                        *workspace != Some(h.window.workspace_id)
                             && (address == &h.window.address
                                 || snapshot
                                     .windows
@@ -125,7 +125,7 @@ impl Service {
             if !handoff.watching
                 || events.lost
                 || events.moved.iter().any(|(address, workspace)| {
-                    address == &handoff.window.address && *workspace != id
+                    address == &handoff.window.address && *workspace != Some(id)
                 })
                 || process_start(handoff.window.pid) != Some(handoff.process_start)
                 || entry.is_none_or(|e| e.generation != reservation.lease.generation)
@@ -203,7 +203,7 @@ impl Service {
             if events
                 .moved
                 .iter()
-                .any(|(address, workspace)| address == &candidate.address && *workspace != id)
+                .any(|(address, workspace)| address == &candidate.address && *workspace != Some(id))
             {
                 self.cancel_handoff(loaded, &key).await?;
                 continue;
@@ -254,7 +254,7 @@ pub(super) type EmptySince = BTreeMap<i64, Instant>;
 
 #[derive(Default)]
 pub(super) struct Events {
-    moved: std::collections::BTreeSet<(String, i64)>,
+    moved: std::collections::BTreeSet<(String, Option<i64>)>,
     lost: bool,
 }
 
@@ -273,15 +273,15 @@ impl Service {
                 | CompositorEvent::WorkspaceIdChanged
                 | CompositorEvent::Malformed { .. },
             ) => events.lost = true,
-            Event::Compositor(CompositorEvent::WindowMoved { address, workspace })
-                if !workspace.special =>
-            {
-                if let Some(workspace) = workspace.id {
-                    if events.moved.len() < 512 {
-                        events.moved.insert((address.to_string(), workspace));
-                    } else {
-                        events.lost = true;
-                    }
+            Event::Compositor(CompositorEvent::WindowMoved { address, workspace }) => {
+                if events.moved.len() < 512 {
+                    // A numberless or special destination can never equal a
+                    // numbered handoff destination. Keep the move even if the
+                    // window returns or closes before the next snapshot.
+                    let destination = workspace.id.filter(|id| *id > 0 && !workspace.special);
+                    events.moved.insert((address.to_string(), destination));
+                } else {
+                    events.lost = true;
                 }
             }
             _ => {}
@@ -300,6 +300,14 @@ mod event_tests {
             "movewindowv2>>123,special:probe,display,name",
         )));
         assert!(!service.handoff_events.lock().unwrap().lost);
+        assert!(
+            service
+                .handoff_events
+                .lock()
+                .unwrap()
+                .moved
+                .contains(&("0x123".into(), None))
+        );
         service.handoff_event(&Event::Compositor(CompositorEvent::parse(
             "movewindowv2>>123,3,name,with,commas",
         )));
@@ -309,7 +317,7 @@ mod event_tests {
                 .lock()
                 .unwrap()
                 .moved
-                .contains(&("0x123".into(), 3))
+                .contains(&("0x123".into(), Some(3)))
         );
         for event in [
             Event::Lagged,

@@ -1342,39 +1342,45 @@ async fn empty_gap_is_retained_then_expires_without_further_window_events() {
 
 #[tokio::test]
 async fn manual_move_even_followed_by_close_or_return_cancels_replacement() {
-    let fixture = Fixture::new().await;
-    fixture.tracked_launch().await;
-    fixture
-        .service
-        .handoff_event(&shelllist_hyprland::Event::Compositor(
-            shelllist_hyprland::CompositorEvent::parse("movewindowv2>>123,3,3"),
-        ));
-    fixture
-        .service
-        .handoff_event(&shelllist_hyprland::Event::Compositor(
-            shelllist_hyprland::CompositorEvent::parse("movewindowv2>>123,6,6"),
-        ));
-    fixture.replacement(std::process::id()).await;
-    fixture
-        .service
-        .project(&mut crate::model::WorkspaceState::default())
-        .await;
-    assert_eq!(
-        fixture.state.lock().await["windows"][0]["workspace"]["id"],
-        1
-    );
-    assert!(
+    for moved in [
+        "movewindowv2>>123,3,3",
+        "movewindowv2>>123,special:probe,special:probe",
+        "movewindow>>123,project",
+    ] {
+        let fixture = Fixture::new().await;
+        fixture.tracked_launch().await;
         fixture
             .service
-            .loaded
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .journal
-            .handoffs
-            .is_empty()
-    );
+            .handoff_event(&shelllist_hyprland::Event::Compositor(
+                shelllist_hyprland::CompositorEvent::parse(moved),
+            ));
+        fixture
+            .service
+            .handoff_event(&shelllist_hyprland::Event::Compositor(
+                shelllist_hyprland::CompositorEvent::parse("movewindowv2>>123,6,6"),
+            ));
+        fixture.replacement(std::process::id()).await;
+        fixture
+            .service
+            .project(&mut crate::model::WorkspaceState::default())
+            .await;
+        assert_eq!(
+            fixture.state.lock().await["windows"][0]["workspace"]["id"],
+            1
+        );
+        assert!(
+            fixture
+                .service
+                .loaded
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .journal
+                .handoffs
+                .is_empty()
+        );
+    }
 }
 
 #[tokio::test]
