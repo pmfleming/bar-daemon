@@ -22,9 +22,12 @@ enum Command {
     Workspace {
         #[arg(value_enum)]
         command: bar_daemon::WorkspaceCommand,
-        /// Existing destination for focus/move; standard IDs 1-5 are always available.
+        /// Destination ID, or one-based bar position with --position, for focus/move.
         #[arg(required_if_eq_any = [("command", "focus"), ("command", "move")])]
         workspace_id: Option<i64>,
+        /// Resolve the destination in this monitor's bar order instead of as an ID.
+        #[arg(long, requires = "workspace_id")]
+        position: bool,
         #[arg(long)]
         monitor: Option<String>,
     },
@@ -98,7 +101,8 @@ async fn dispatch(command: Command) -> Result<()> {
             command,
             monitor,
             workspace_id,
-        } => bar_daemon::run_workspace_command(command, monitor, workspace_id).await,
+            position,
+        } => bar_daemon::run_workspace_command(command, monitor, workspace_id, position).await,
         Command::Agenda { command } => bar_daemon::run_agenda_maintenance(command).await,
         Command::Idle { config, hypridle } => bar_daemon::run_idle(&config, &hypridle).await,
         Command::IdleSleep {
@@ -144,7 +148,29 @@ mod tests {
     fn workspace_shortcuts_are_typed_and_never_offer_force() {
         for command in ["focus", "move"] {
             assert!(Cli::try_parse_from(["bar-daemon", "workspace", command, "6"]).is_ok());
+            let positional = Cli::try_parse_from([
+                "bar-daemon",
+                "workspace",
+                command,
+                "7",
+                "--position",
+                "--monitor",
+                "DP-1",
+            ])
+            .unwrap();
+            assert!(matches!(
+                positional.command,
+                Command::Workspace {
+                    workspace_id: Some(7),
+                    position: true,
+                    monitor: Some(_),
+                    ..
+                }
+            ));
             assert!(Cli::try_parse_from(["bar-daemon", "workspace", command]).is_err());
+            assert!(
+                Cli::try_parse_from(["bar-daemon", "workspace", command, "--position"]).is_err()
+            );
             assert!(Cli::try_parse_from(["bar-daemon", "workspace", command, "six"]).is_err());
         }
         for command in ["create", "close", "next", "previous"] {

@@ -126,6 +126,35 @@ async fn workspace_icon(bus: &zbus::Connection, id: i64, expected: &str) -> Resu
     anyhow::bail!("workspace {id} did not adopt icon {expected}")
 }
 
+async fn workspace_order(bus: &zbus::Connection, expected: &[i64]) -> Result<()> {
+    for _ in 0..100 {
+        let state = call(
+            bus,
+            "bar.snapshot",
+            json!({"streams":["workspaces.changed"]}),
+        )
+        .await?;
+        if state["snapshot"]["workspaces"]["lifecycle"]["monitors"]
+            .as_object()
+            .is_some_and(|monitors| {
+                monitors.values().any(|items| {
+                    items.as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item["id"].as_i64())
+                            .collect::<Vec<_>>()
+                            == expected
+                    })
+                })
+            })
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    anyhow::bail!("workspace bar did not reach order {expected:?}")
+}
+
 fn qt_runner(root: &Path, qml: &Path) -> Result<PathBuf> {
     let declarative = qml.parent().unwrap().parent().unwrap();
     let plugins = PathBuf::from(std::env::var("WORKSPACE_TEST_QT_PLUGINS")?);
@@ -458,6 +487,192 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     drop(second_qt);
     eprintln!(
         "Numeric shortcut scenarios passed: absent, standard, retained, move-and-follow, no spare workspace"
+    );
+
+    // Real Qt focus/move through gapped bar positions. Retire IDs 7 and 8,
+    // retain empty 9, and select ID 10 as the seventh bar destination.
+    workspace_order(&bus, &[1, 2, 3, 4, 5]).await?;
+    let mut destinations = Vec::new();
+    for index in 0..4 {
+        let created = call(
+            &bus,
+            "workspace.command",
+            json!({
+                "command":"create","request_id":format!("position-create-{index}")
+            }),
+        )
+        .await?;
+        let id = created["workspace_operation"]["lease"]["workspace_id"]
+            .as_i64()
+            .unwrap();
+        destinations.push(id);
+        if index < 2 {
+            call(
+                &bus,
+                "workspace.command",
+                json!({
+                    "command":"close","request_id":format!("position-close-{index}")
+                }),
+            )
+            .await?;
+            workspace_order(&bus, &[1, 2, 3, 4, 5]).await?;
+        }
+    }
+    ensure!(
+        destinations == [7, 8, 9, 10],
+        "unexpected positional fixture IDs"
+    );
+    workspace_order(&bus, &[1, 2, 3, 4, 5, 9, 10]).await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"focus","workspace_id":1}),
+    )
+    .await?;
+    let position_control = root.join("position-command");
+    fs::write(&position_control, "")?;
+    let position_qt = spawn(
+        &qml,
+        &[
+            "-I",
+            imports.to_str().unwrap(),
+            fixture.to_str().unwrap(),
+            "--",
+            "position-app",
+            position_control.to_str().unwrap(),
+        ],
+        &root,
+        &display,
+        &signature,
+        "qt-position.log",
+    )?;
+    let position_window = window(&client, position_qt.0.id(), Some(1)).await?;
+    workspace::execute(
+        &client,
+        &workspace::focus_window(&position_window.address, position_window.pid, 1)?,
+    )
+    .await?;
+    // Exercise the actual shortcut CLI as well as the owner API.
+    let mut shortcut = spawn(
+        Path::new(env!("CARGO_BIN_EXE_bar-daemon")),
+        &["workspace", "focus", "7", "--position"],
+        &root,
+        &display,
+        &signature,
+        "position-cli.log",
+    )?;
+    let status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(status) = shortcut.0.try_wait()? {
+                return Ok::<_, anyhow::Error>(status);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+    ensure!(status.success(), "positional shortcut CLI failed");
+    ensure!(
+        workspace::snapshot(&client)
+            .await?
+            .monitors
+            .iter()
+            .any(|m| { m.focused && m.active_workspace.id == 10 }),
+        "seventh bar position did not focus workspace 10"
+    );
+    for position in [7, 1, 7, 1] {
+        if position == 7 {
+            workspace::execute(
+                &client,
+                &workspace::focus_window(&position_window.address, position_window.pid, 1)?,
+            )
+            .await?;
+        }
+        let reply = call(
+            &bus,
+            "workspace.command",
+            json!({
+                "command":"move","workspace_position":position
+            }),
+        )
+        .await?;
+        let expected = if position == 7 { 10 } else { 1 };
+        ensure!(
+            reply["workspace_operation"]["workspace_id"] == expected,
+            "wrong position destination"
+        );
+        window(&client, position_window.pid, Some(expected)).await?;
+        ensure!(
+            workspace::snapshot(&client)
+                .await?
+                .monitors
+                .iter()
+                .any(|m| { m.focused && m.active_workspace.id == expected }),
+            "positional move did not follow"
+        );
+    }
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"focus","workspace_position":6}),
+    )
+    .await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"close","request_id":"position-close-retained"}),
+    )
+    .await?;
+    workspace_order(&bus, &[1, 2, 3, 4, 5, 10]).await?;
+    for command in ["focus", "move"] {
+        ensure!(
+            call(
+                &bus,
+                "workspace.command",
+                json!({
+                    "command":command,"workspace_position":7
+                })
+            )
+            .await
+            .is_err(),
+            "missing position accepted"
+        );
+    }
+    workspace::execute(
+        &client,
+        &workspace::focus_window(&position_window.address, position_window.pid, 1)?,
+    )
+    .await?;
+    let moved = call(
+        &bus,
+        "workspace.command",
+        json!({
+            "command":"move","workspace_position":6
+        }),
+    )
+    .await?;
+    ensure!(
+        moved["workspace_operation"]["workspace_id"] == 10,
+        "position did not shift after close"
+    );
+    window(&client, position_window.pid, Some(10)).await?;
+    call(
+        &bus,
+        "workspace.command",
+        json!({"command":"close","request_id":"position-close-final"}),
+    )
+    .await?;
+    drop(position_qt);
+    workspace_order(&bus, &[1, 2, 3, 4, 5]).await?;
+    ensure!(
+        !workspace::snapshot(&client)
+            .await?
+            .workspaces
+            .iter()
+            .any(|w| w.id > 10),
+        "positional shortcuts allocated a workspace"
+    );
+    eprintln!(
+        "Positional shortcuts passed: seventh selects ID 10, native CLI, Qt move/follow, retained empty, shift after close, missing rejection"
     );
 
     for (index, mode, gap) in [

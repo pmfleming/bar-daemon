@@ -3,6 +3,182 @@ use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
+async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() {
+    let fixture = Fixture::new().await;
+    fixture
+        .apply_focus
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .extend([
+            json!({"id":6,"monitor":"DP-1","windows":1}),
+            json!({"id":7,"monitor":"other","windows":1}),
+            json!({"id":10,"monitor":"DP-1","windows":1}),
+            json!({"id":20,"monitor":"other","windows":1}),
+        ]);
+    for command in ["focus", "move"] {
+        let reply = fixture
+            .service
+            .call(
+                "workspace.command",
+                json!({
+                    "command":command,"workspace_position":7,"monitor":"DP-1"
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply["workspace_id"], 10);
+    }
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .extend([30, 40, 50].map(|id| json!({"id":id,"monitor":"DP-1","windows":1})));
+    for command in ["focus", "move"] {
+        let reply = fixture
+            .service
+            .call(
+                "workspace.command",
+                json!({
+                    "command":command,"workspace_position":10
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply["workspace_id"], 50);
+    }
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|w| w["id"].as_i64().unwrap() < 30);
+    // A closed/removed earlier entry shifts later shortcuts without renumbering IDs.
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|w| w["id"] != 6);
+    let reply = fixture
+        .service
+        .call(
+            "workspace.command",
+            json!({
+                "command":"focus","workspace_position":6
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply["workspace_id"], 10);
+    let manual = fixture
+        .service
+        .call(
+            "workspace.command",
+            json!({
+                "command":"create","request_id":"positional-manual"
+            }),
+        )
+        .await
+        .unwrap();
+    let id = manual["lease"]["workspace_id"].as_i64().unwrap();
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|w| w["id"] != id);
+    for command in ["focus", "move"] {
+        let reply = fixture
+            .service
+            .call(
+                "workspace.command",
+                json!({
+                    "command":command,"workspace_position":7
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply["workspace_id"], id);
+    }
+    // The bar always shows standard categories, but selection must not pull one
+    // away from another monitor. A stale retained entry also follows live ownership.
+    fixture.state.lock().await["workspaces"]
+        .as_array_mut()
+        .unwrap()
+        .extend([
+            json!({"id":2,"monitor":"other","windows":1}),
+            json!({"id":id,"monitor":"other","windows":0}),
+        ]);
+    let high = fixture
+        .service
+        .loaded
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .journal
+        .high;
+    for command in ["focus", "move"] {
+        for position in [0, -1, 2, 7, 8, i64::MAX] {
+            fixture.requests.lock().await.clear();
+            assert!(
+                fixture
+                    .service
+                    .call(
+                        "workspace.command",
+                        json!({
+                            "command":command,"workspace_position":position
+                        })
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                !fixture
+                    .requests
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|s| s.starts_with("eval "))
+            );
+        }
+        assert!(
+            fixture
+                .service
+                .call(
+                    "workspace.command",
+                    json!({
+                        "command":command,"workspace_position":1,"workspace_id":1
+                    })
+                )
+                .await
+                .is_err()
+        );
+    }
+    for command in ["create", "close", "next", "previous"] {
+        assert!(
+            fixture
+                .service
+                .call(
+                    "workspace.command",
+                    json!({
+                        "command":command,"workspace_position":1
+                    })
+                )
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        fixture
+            .service
+            .loaded
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .journal
+            .high,
+        high
+    );
+}
+
+#[tokio::test]
 async fn numeric_commands_reject_absent_foreign_and_invalid_destinations_without_effects() {
     let fixture = Fixture::new().await;
     fixture.state.lock().await["workspaces"]

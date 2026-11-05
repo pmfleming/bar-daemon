@@ -31,6 +31,8 @@ pub(crate) struct Command {
     command: CommandKind,
     #[serde(default)]
     workspace_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_position: Option<i64>,
     #[serde(default)]
     monitor: Option<String>,
     #[serde(default)]
@@ -54,6 +56,7 @@ pub async fn run_command(
     command: CommandKind,
     monitor: Option<String>,
     workspace_id: Option<i64>,
+    position: bool,
 ) -> Result<()> {
     let connection = crate::bus::session().await?;
     let proxy = zbus::Proxy::new(
@@ -63,7 +66,12 @@ pub async fn run_command(
         crate::api::INTERFACE,
     )
     .await?;
-    let request = json!({"command":command, "monitor":monitor, "workspace_id":workspace_id, "request_id":crate::state::publication::Publication::new().epoch});
+    let mut request = json!({"command":command, "monitor":monitor, "request_id":crate::state::publication::Publication::new().epoch});
+    request[if position {
+        "workspace_position"
+    } else {
+        "workspace_id"
+    }] = workspace_id.into();
     // A timeout is an unknown outcome; this CLI never retries an effect.
     let reply: String = proxy
         .call("Call", &("workspace.command", request.to_string()))
@@ -222,9 +230,12 @@ impl Service {
             "workspace.command" => {
                 let command: Command = serde_json::from_value(params)?;
                 ensure!(
-                    matches!(command.command, CommandKind::Focus | CommandKind::Move)
-                        == command.workspace_id.is_some(),
-                    "only focus and move require a workspace ID"
+                    if matches!(command.command, CommandKind::Focus | CommandKind::Move) {
+                        command.workspace_id.is_some() ^ command.workspace_position.is_some()
+                    } else {
+                        command.workspace_id.is_none() && command.workspace_position.is_none()
+                    },
+                    "only focus and move require exactly one workspace ID or bar position"
                 );
                 if let Some(key) = &command.request_id {
                     if let Some(record) = loaded.journal.reservations.get(key) {
@@ -271,12 +282,36 @@ impl Service {
                     .unwrap_or_else(|| crate::state::publication::Publication::new().epoch);
                 match command.command {
                     CommandKind::Focus | CommandKind::Move => {
-                        let id = command.workspace_id.unwrap();
+                        let id = if let Some(position) = command.workspace_position {
+                            let index = usize::try_from(position)
+                                .ok()
+                                .and_then(|position| position.checked_sub(1))
+                                .context("invalid workspace bar position")?;
+                            *presentation::workspace_ids(
+                                &loaded.journal,
+                                &context.monitor,
+                                snapshot
+                                    .workspaces
+                                    .iter()
+                                    .map(|w| (w.id, w.monitor.as_str())),
+                            )
+                            .get(index)
+                            .context("workspace bar position does not exist on this monitor")?
+                        } else {
+                            command.workspace_id.unwrap()
+                        };
                         ensure!(
                             (1..=wire::MAX_WORKSPACE_ID).contains(&id),
                             "invalid workspace ID"
                         );
                         ensure!(!loaded.journal.closing(id), "workspace is closing");
+                        ensure!(
+                            !snapshot
+                                .workspaces
+                                .iter()
+                                .any(|w| w.id == id && w.monitor != context.monitor),
+                            "workspace belongs to another monitor"
+                        );
                         let retained =
                             loaded.journal.entries.get(&id).is_some_and(|e| {
                                 e.keep_until_closed && e.monitor == context.monitor

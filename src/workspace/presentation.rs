@@ -34,6 +34,31 @@ const CATEGORIES: [(&str, &str); 5] = [
     ("Text", "description"),
 ];
 
+/// The bar and positional commands share one ordering, including retained empties.
+pub(super) fn workspace_ids<'a>(
+    journal: &Journal,
+    monitor: &str,
+    workspaces: impl IntoIterator<Item = (i64, &'a str)>,
+) -> Vec<i64> {
+    let live: BTreeMap<_, _> = workspaces.into_iter().collect();
+    let mut ids = vec![1, 2, 3, 4, 5];
+    ids.extend(
+        live.iter()
+            .filter(|(id, owner)| **id > 5 && **owner == monitor)
+            .map(|(id, _)| *id),
+    );
+    ids.extend(
+        journal
+            .entries
+            .values()
+            .filter(|entry| live.get(&entry.id).copied().unwrap_or(&entry.monitor) == monitor)
+            .map(|entry| entry.id),
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 pub(super) fn view(journal: &Journal, state: &crate::model::WorkspaceState) -> View {
     let mut view = View {
         version: shelllist_daemon_core::workspace_wire::VERSION,
@@ -42,30 +67,11 @@ pub(super) fn view(journal: &Journal, state: &crate::model::WorkspaceState) -> V
         ..Default::default()
     };
     for monitor in &state.monitors {
-        let mut ids = vec![1, 2, 3, 4, 5];
-        ids.extend(
-            state
-                .workspaces
-                .iter()
-                .filter(|w| w.id > 5 && w.monitor == monitor.name)
-                .map(|w| w.id),
+        let ids = workspace_ids(
+            journal,
+            &monitor.name,
+            state.workspaces.iter().map(|w| (w.id, w.monitor.as_str())),
         );
-        ids.extend(
-            journal
-                .entries
-                .values()
-                .filter(|e| {
-                    state
-                        .workspaces
-                        .iter()
-                        .find(|w| w.id == e.id)
-                        .map_or(e.monitor.as_str(), |w| w.monitor.as_str())
-                        == monitor.name
-                })
-                .map(|e| e.id),
-        );
-        ids.sort_unstable();
-        ids.dedup();
         let first_extra = ids.iter().copied().find(|id| *id > 5);
         let items = ids.into_iter().map(|id| {
             let workspace = state.workspaces.iter().find(|w| w.id == id);
