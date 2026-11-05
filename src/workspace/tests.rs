@@ -657,7 +657,8 @@ async fn manual_workspace_survives_switching_away_becoming_empty_and_restart_unt
             id: 1,
             name: "DP-1".into(),
             focused: true,
-            active_workspace_id: 1,
+            active_workspace_id: Some(1),
+            active_workspace_address: None,
         }],
         ..Default::default()
     };
@@ -1346,6 +1347,7 @@ async fn manual_move_even_followed_by_close_or_return_cancels_replacement() {
         "movewindowv2>>123,3,3",
         "movewindowv2>>123,special:probe,special:probe",
         "movewindow>>123,project",
+        "movewindowv2>>123,project,project",
     ] {
         let fixture = Fixture::new().await;
         fixture.tracked_launch().await;

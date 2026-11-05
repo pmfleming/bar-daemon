@@ -83,9 +83,8 @@ fn project_status(status: shelllist_hyprland::workspace::Status) -> WorkspaceSta
         title: window.title,
         class_name: window.class,
         initial_class: window.initial_class,
-        // The existing wire field uses zero for a non-numbered active window;
-        // numbered-workspace selection below never admits that sentinel.
-        workspace_id: window.workspace.id.unwrap_or(0),
+        workspace_id: window.workspace.id,
+        workspace_address: window.workspace.address,
         fullscreen: window.fullscreen != 0,
         floating: window.floating,
     });
@@ -100,23 +99,24 @@ fn project_status(status: shelllist_hyprland::workspace::Status) -> WorkspaceSta
                 id: monitor.id,
                 name: monitor.name,
                 focused: monitor.focused,
-                active_workspace_id: monitor.active_workspace.id.unwrap_or(0),
+                active_workspace_id: monitor.active_workspace.id,
+                active_workspace_address: monitor.active_workspace.address,
             })
             .collect(),
         workspaces: workspaces
             .into_iter()
-            // The numbered bar excludes special workspaces; their active window
-            // remains visible independently. Absence must never become workspace 0.
-            .filter_map(|workspace| {
-                Some(Workspace {
-                    id: workspace.id.filter(|id| *id > 0)?,
-                    name: workspace.name,
-                    monitor: workspace.monitor,
-                    windows: workspace.windows,
-                    urgent: false,
-                    fullscreen: workspace.has_fullscreen,
-                    last_window_title: workspace.last_window_title,
-                })
+            // Publish named regular workspaces without giving them a numeric
+            // lifecycle identity. The numbered strip filters these explicitly.
+            .filter(|workspace| !workspace.special)
+            .map(|workspace| Workspace {
+                id: workspace.id,
+                address: workspace.identity.address,
+                name: workspace.identity.name,
+                monitor: workspace.monitor,
+                windows: workspace.windows,
+                urgent: false,
+                fullscreen: workspace.has_fullscreen,
+                last_window_title: workspace.last_window_title,
             })
             .collect(),
         error: None,
@@ -297,8 +297,35 @@ mod tests {
         ).unwrap();
         assert!(state.available);
         assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].id, 1);
+        assert_eq!(state.workspaces[0].id, Some(1));
         assert_eq!(state.active_window.unwrap().title, "Special window");
+    }
+
+    #[test]
+    fn named_workspace_capture_is_published_without_a_synthetic_id() {
+        let capture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../daemon-framework/crates/shelllist-hyprland/tests/fixtures/0.57.1/named.json"
+        ))
+        .unwrap();
+        let state = parse_snapshot(
+            &capture["workspaces"].to_string(),
+            &capture["monitors"].to_string(),
+            &capture["activewindow"].to_string(),
+        )
+        .unwrap();
+        let named = state
+            .workspaces
+            .iter()
+            .find(|w| w.address.as_deref() == Some("ipc-review"))
+            .unwrap();
+        assert_eq!(named.id, None);
+        let monitor = state.monitors.iter().find(|m| m.focused).unwrap();
+        assert_eq!(monitor.active_workspace_id, None);
+        assert_eq!(
+            monitor.active_workspace_address.as_deref(),
+            Some("ipc-review")
+        );
+        assert_eq!(state.active_window.as_ref().unwrap().workspace_id, None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -365,7 +392,7 @@ mod tests {
                 .iter()
                 .map(|ws| ws.id)
                 .collect::<Vec<_>>(),
-            [1, 5]
+            [Some(1), Some(5)]
         );
         assert!(!snapshot.workspaces[0].urgent);
         assert!(snapshot.workspaces[1].fullscreen);

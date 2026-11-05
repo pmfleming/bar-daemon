@@ -70,18 +70,21 @@ pub(super) fn view(journal: &Journal, state: &crate::model::WorkspaceState) -> V
         let ids = workspace_ids(
             journal,
             &monitor.name,
-            state.workspaces.iter().map(|w| (w.id, w.monitor.as_str())),
+            state
+                .workspaces
+                .iter()
+                .filter_map(|w| Some((w.id?, w.monitor.as_str()))),
         );
         let first_extra = ids.iter().copied().find(|id| *id > 5);
         let items = ids.into_iter().map(|id| {
-            let workspace = state.workspaces.iter().find(|w| w.id == id);
+            let workspace = state.workspaces.iter().find(|w| w.id == Some(id));
             let entry = journal.entries.get(&id);
             let (label, icon) = if (1..=5).contains(&id) {
                 let (label, icon) = CATEGORIES[id as usize-1];
                 (label.to_owned(), icon.to_owned())
             } else { entry.map(|e| (e.origin.clone(), e.icon.clone())).unwrap_or_else(|| ("Workspace".into(), "workspace".into())) };
             let count = workspace.map_or(0, |w| w.windows);
-            Item { id, accessible_name:format!("Workspace {id}, {label}, {count} windows. Shift+Super+Q closes its windows."), label, icon, number:if id>5 {id.to_string()} else {String::new()}, temporary:id>5, divider_before:Some(id)==first_extra, active:monitor.active_workspace_id==id, occupied:count>0, urgent:workspace.is_some_and(|w| w.urgent) }
+            Item { id, accessible_name:format!("Workspace {id}, {label}, {count} windows. Shift+Super+Q closes its windows."), label, icon, number:if id>5 {id.to_string()} else {String::new()}, temporary:id>5, divider_before:Some(id)==first_extra, active:monitor.active_workspace_id==Some(id), occupied:count>0, urgent:workspace.is_some_and(|w| w.urgent) }
         }).collect();
         view.monitors.insert(monitor.name.clone(), items);
     }
@@ -136,7 +139,10 @@ mod tests {
             windows: vec![],
             workspaces: (1..=5)
                 .map(|id| shelllist_hyprland::workspace::Workspace {
-                    id: Some(id),
+                    identity: shelllist_hyprland::workspace::WorkspaceRef {
+                        id: Some(id),
+                        ..Default::default()
+                    },
                     monitor: "other".into(),
                     windows: 1,
                     ..Default::default()
@@ -147,7 +153,10 @@ mod tests {
         snapshot
             .workspaces
             .push(shelllist_hyprland::workspace::Workspace {
-                id: Some(7),
+                identity: shelllist_hyprland::workspace::WorkspaceRef {
+                    id: Some(7),
+                    ..Default::default()
+                },
                 monitor: "local".into(),
                 windows: 1,
                 ..Default::default()
@@ -159,7 +168,10 @@ mod tests {
         snapshot
             .workspaces
             .push(shelllist_hyprland::workspace::Workspace {
-                id: Some(8),
+                identity: shelllist_hyprland::workspace::WorkspaceRef {
+                    id: Some(8),
+                    ..Default::default()
+                },
                 monitor: "local".into(),
                 windows: 1,
                 ..Default::default()

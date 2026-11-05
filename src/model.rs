@@ -572,7 +572,9 @@ pub(crate) struct ActiveWindow {
     pub title: String,
     pub class_name: String,
     pub initial_class: String,
-    pub workspace_id: i64,
+    pub workspace_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_address: Option<String>,
     pub fullscreen: bool,
     pub floating: bool,
 }
@@ -582,12 +584,16 @@ pub(crate) struct MonitorState {
     pub id: i64,
     pub name: String,
     pub focused: bool,
-    pub active_workspace_id: i64,
+    pub active_workspace_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_address: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Workspace {
-    pub id: i64,
+    pub id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     pub name: String,
     pub monitor: String,
     pub windows: u32,

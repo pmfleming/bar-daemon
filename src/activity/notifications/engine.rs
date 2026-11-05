@@ -1614,7 +1614,8 @@ mod tests {
                 id: id as i64,
                 name: name.into(),
                 focused: id == 0,
-                active_workspace_id: 1,
+                active_workspace_id: Some(1),
+                active_workspace_address: None,
             })
             .collect();
         let mut workspaces = WorkspaceState {
