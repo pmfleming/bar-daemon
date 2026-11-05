@@ -175,11 +175,7 @@ impl Backend for HyprlandClient {
             .context("read Hyprland display topology")
     }
     async fn configure(&self, setting: &layout::Setting) -> Result<()> {
-        let response = self.request_exact(&setting.command()?).await?;
-        if response.trim() != "ok" {
-            bail!("Hyprland rejected layout change: {}", response.trim());
-        }
-        Ok(())
+        self.execute(&setting.command()?).await
     }
     async fn apply(&self, output: &Output, disable: bool) -> Result<()> {
         if !disable
@@ -188,11 +184,7 @@ impl Backend for HyprlandClient {
         {
             return Ok(());
         }
-        let response = self.request_exact(&output.command(disable)?).await?;
-        if response.trim() != "ok" {
-            bail!("Hyprland rejected display change: {}", response.trim());
-        }
-        Ok(())
+        self.execute(&output.command(disable)?).await
     }
 }
 

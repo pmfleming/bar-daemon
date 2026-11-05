@@ -1,6 +1,6 @@
 use std::{future::Future, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use shelllist_hyprland::Event;
 use tokio::{
@@ -86,9 +86,11 @@ impl HyprlandClient {
         self.ipc.request(command).await
     }
 
-    /// Mutations must not fall back to a different compositor session.
-    pub(crate) async fn request_exact(&self, command: &str) -> Result<String> {
-        self.ipc.request_exact(command).await
+    pub(crate) async fn execute(&self, command: &shelllist_hyprland::Lua) -> Result<()> {
+        shelllist_hyprland::execute(&self.ipc, command).await
+    }
+    pub(crate) async fn options(&self, names: &[&str]) -> Result<String> {
+        self.ipc.options(names).await
     }
 
     pub(crate) async fn snapshot(&self) -> Result<WorkspaceState> {
@@ -105,17 +107,11 @@ impl HyprlandClient {
         workspace_id: i64,
         on_current_monitor: bool,
     ) -> Result<()> {
-        if workspace_id <= 0 {
-            bail!("workspace_id must be a positive integer");
-        }
-        let current = if on_current_monitor {
-            ", on_current_monitor = true"
-        } else {
-            ""
-        };
-        let command = format!("dispatch hl.dsp.focus({{ workspace = {workspace_id}{current} }})");
-        let response = self.request_exact(&command).await?;
-        shelllist_hyprland::ack(&response)
+        self.execute(&shelllist_hyprland::lua::focus_workspace(
+            workspace_id,
+            on_current_monitor,
+        )?)
+        .await
     }
 }
 

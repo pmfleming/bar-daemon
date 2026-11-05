@@ -95,7 +95,7 @@ impl Output {
     pub(super) fn usable(&self) -> bool {
         self.active() && !self.mirrored()
     }
-    pub fn command(&self, disable: bool) -> Result<String> {
+    pub fn command(&self, disable: bool) -> Result<shelllist_hyprland::Lua> {
         // Automatic docking may mutate only compositor-reported internal
         // connectors. Syntax encoding belongs to the shared Hyprland adapter.
         if !self.internal()

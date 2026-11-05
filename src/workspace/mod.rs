@@ -747,8 +747,7 @@ impl Service {
             destination_monitor,
         )?;
         if let Some(handoff) = &handoff {
-            expression.push_str("; ");
-            expression.push_str(&compositor::pin_window(
+            expression = expression.then(compositor::pin_window(
                 &handoff.token,
                 &request.window.address,
                 request.window.pid,

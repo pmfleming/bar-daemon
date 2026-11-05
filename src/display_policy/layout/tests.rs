@@ -30,7 +30,7 @@ impl Backend for Fake {
     }
     async fn configure(&self, setting: &Setting) -> Result<()> {
         let command = setting.command()?;
-        self.calls.borrow_mut().push(command.clone());
+        self.calls.borrow_mut().push(command.to_string());
         if self.fail.get() {
             bail!("compositor failure")
         }

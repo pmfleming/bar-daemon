@@ -98,16 +98,6 @@ fn same(key: &str, actual: &Value, desired: &Value) -> bool {
         actual == desired
     }
 }
-fn query() -> String {
-    format!(
-        "[[BATCH]]{}",
-        OPTIONS
-            .iter()
-            .map(|(key, _)| format!("j/getoption {key}"))
-            .collect::<Vec<_>>()
-            .join(";")
-    )
-}
 fn parse(reply: &str) -> Result<Values> {
     let parts: Vec<_> = reply.split("\n\n\n").collect();
     ensure!(
@@ -144,18 +134,11 @@ fn parse(reply: &str) -> Result<Values> {
     );
     Ok(values)
 }
-fn command(values: &Values) -> Result<String> {
+fn command(values: &Values) -> Result<shelllist_hyprland::Lua> {
     validate(values)?;
-    ensure!(!values.is_empty(), "Choose at least one focus setting");
-    Ok(format!(
-        "eval hl.config({{ {} }})",
-        values
-            .iter()
-            .map(|(key, value)| { format!("[\"{}\"] = {value}", key.replace(':', ".")) })
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))
+    shelllist_hyprland::lua::configure(values)
 }
+
 trait Backend {
     async fn eligible(&self) -> Result<()>;
     async fn values(&self) -> Result<Values>;
@@ -166,11 +149,14 @@ impl Backend for HyprlandClient {
         super::Backend::eligible(self).await
     }
     async fn values(&self) -> Result<Values> {
-        parse(&self.request(&query()).await?)
+        parse(
+            &self
+                .options(&OPTIONS.iter().map(|(key, _)| *key).collect::<Vec<_>>())
+                .await?,
+        )
     }
     async fn configure(&self, values: &Values) -> Result<()> {
-        let response = self.request_exact(&command(values)?).await?;
-        shelllist_hyprland::ack(&response)
+        self.execute(&command(values)?).await
     }
 }
 async fn guard<B: Backend>(backend: &B, store: &StateStore, generation: u64) -> Result<()> {

@@ -78,7 +78,7 @@ fn closed_schema_rejects_unknown_keys_commands_types_and_ranges() {
     }
     assert_eq!(
         command(&values(json!({"cursor:no_warps": true}))).unwrap(),
-        "eval hl.config({ [\"cursor.no_warps\"] = true })"
+        "hl.config({ [\"cursor.no_warps\"] = true })"
     );
     assert!(serde_json::from_value::<Patch>(json!({"values": {}, "command": "exec"})).is_err());
     assert!(serde_json::from_value::<Empty>(json!({"values": {}})).is_err());

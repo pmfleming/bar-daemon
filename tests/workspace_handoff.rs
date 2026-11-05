@@ -744,7 +744,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         if matches!(mode, "manual" | "background") {
             workspace::execute(
                 &client,
-                "local r=hl.dispatch(hl.dsp.focus({workspace=1})); assert(r.ok,r.error)",
+                &shelllist_hyprland::lua::focus_workspace(1, false)?,
             )
             .await?;
         }

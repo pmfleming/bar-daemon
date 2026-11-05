@@ -336,6 +336,16 @@ impl Fixture {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut command = String::new();
                 stream.read_to_string(&mut command).await.unwrap();
+                let preflight = match command.as_str() {
+                    "j/status" => Some(r#"{"configProvider":"lua"}"#),
+                    "j/version" => Some(r#"{"version":"0.57.1"}"#),
+                    _ if command.starts_with("eval assert(type(") => Some("ok"),
+                    _ => None,
+                };
+                if let Some(reply) = preflight {
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                    continue;
+                }
                 calls.lock().await.push(command.clone());
                 if focus_effects.load(std::sync::atomic::Ordering::Relaxed)
                     && command.starts_with("eval ")

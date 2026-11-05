@@ -56,7 +56,7 @@ impl Setting {
         );
         Ok(())
     }
-    pub(super) fn command(&self) -> Result<String> {
+    pub(super) fn command(&self) -> Result<shelllist_hyprland::Lua> {
         self.validate()?;
         let rule = if self.enabled {
             Rule::Enable {
