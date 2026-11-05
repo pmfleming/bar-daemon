@@ -15,7 +15,7 @@ use crate::{
 
 #[derive(Debug, Deserialize)]
 struct HyprWorkspace {
-    id: i64,
+    id: Option<i64>,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -172,14 +172,18 @@ fn parse_snapshot(
             .collect(),
         workspaces: workspaces
             .into_iter()
-            .map(|workspace| Workspace {
-                id: workspace.id,
-                name: workspace.name,
-                monitor: workspace.monitor,
-                windows: workspace.windows,
-                urgent: workspace.urgent,
-                fullscreen: workspace.has_fullscreen,
-                last_window_title: workspace.last_window_title,
+            // The numbered bar excludes special workspaces; their active window
+            // remains visible independently. Absence must never become workspace 0.
+            .filter_map(|workspace| {
+                Some(Workspace {
+                    id: workspace.id.filter(|id| *id > 0)?,
+                    name: workspace.name,
+                    monitor: workspace.monitor,
+                    windows: workspace.windows,
+                    urgent: workspace.urgent,
+                    fullscreen: workspace.has_fullscreen,
+                    last_window_title: workspace.last_window_title,
+                })
             })
             .collect(),
         error: None,
@@ -318,6 +322,19 @@ mod tests {
         time::Duration,
     };
     use tokio::sync::{Semaphore, mpsc};
+
+    #[test]
+    fn special_workspace_without_number_does_not_hide_numbered_workspaces() {
+        let state = parse_snapshot(
+            r#"[{"id":1,"name":"1","monitor":"eDP-1"},{"address":"special:probe","type":"special","name":"special:probe","monitor":"eDP-1"}]"#,
+            r#"[{"id":0,"name":"eDP-1","focused":true,"activeWorkspace":{"id":1}}]"#,
+            r#"{"address":"0x123","title":"Special window","workspace":{"address":"special:probe","name":"special:probe","type":"special"}}"#,
+        ).unwrap();
+        assert!(state.available);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].id, 1);
+        assert_eq!(state.active_window.unwrap().title, "Special window");
+    }
 
     #[tokio::test(start_paused = true)]
     async fn slow_snapshots_do_not_block_invalidations_and_bursts_coalesce() {

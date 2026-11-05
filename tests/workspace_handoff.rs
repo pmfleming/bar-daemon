@@ -90,7 +90,9 @@ async fn window(client: &Client, pid: u32, workspace: Option<i64>) -> Result<wor
             .await?
             .windows
             .into_iter()
-            .find(|w| w.mapped && w.pid == pid && workspace.is_none_or(|id| w.workspace.id == id))
+            .find(|w| {
+                w.mapped && w.pid == pid && workspace.is_none_or(|id| w.workspace.id == Some(id))
+            })
         {
             return Ok(w);
         }
@@ -327,7 +329,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     }
     workspace::execute(
         &client,
-        &workspace::focus_window(&first.address, first.pid, first.workspace.id)?,
+        &workspace::focus_window(&first.address, first.pid, first.workspace.id.unwrap())?,
     )
     .await?;
     for command in ["focus", "move"] {
@@ -346,10 +348,10 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
                 .await?
                 .workspaces
                 .iter()
-                .any(|w| w.id == 6),
+                .any(|w| w.id == Some(6)),
             "numeric command created workspace 6"
         );
-        window(&client, qt.0.id(), Some(first.workspace.id)).await?;
+        window(&client, qt.0.id(), first.workspace.id).await?;
     }
     call(
         &bus,
@@ -373,7 +375,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
     call(
         &bus,
         "workspace.command",
-        json!({"command":"focus","workspace_id":first.workspace.id}),
+        json!({"command":"focus","workspace_id":first.workspace.id.unwrap()}),
     )
     .await?;
     call(
@@ -396,7 +398,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
             .await?
             .workspaces
             .iter()
-            .any(|w| w.id == destination),
+            .any(|w| w.id == Some(destination)),
         "fixture did not release empty compositor workspace"
     );
     // Both commands can rematerialize a retained logical destination.
@@ -424,11 +426,14 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         snapshot
             .monitors
             .iter()
-            .any(|m| m.focused && m.active_workspace.id == destination),
+            .any(|m| m.focused && m.active_workspace.id == Some(destination)),
         "move did not follow"
     );
     ensure!(
-        !snapshot.workspaces.iter().any(|w| w.id > 6),
+        !snapshot
+            .workspaces
+            .iter()
+            .any(|w| w.id.is_some_and(|id| id > 6)),
         "move created a spare workspace"
     );
     workspace::execute(
@@ -576,7 +581,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
             .await?
             .monitors
             .iter()
-            .any(|m| { m.focused && m.active_workspace.id == 10 }),
+            .any(|m| { m.focused && m.active_workspace.id == Some(10) }),
         "seventh bar position did not focus workspace 10"
     );
     for position in [7, 1, 7, 1] {
@@ -606,7 +611,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
                 .await?
                 .monitors
                 .iter()
-                .any(|m| { m.focused && m.active_workspace.id == expected }),
+                .any(|m| { m.focused && m.active_workspace.id == Some(expected) }),
             "positional move did not follow"
         );
     }
@@ -668,7 +673,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
             .await?
             .workspaces
             .iter()
-            .any(|w| w.id > 10),
+            .any(|w| w.id.is_some_and(|id| id > 10)),
         "positional shortcuts allocated a workspace"
     );
     eprintln!(
@@ -715,7 +720,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
             &bus,
             "workspace.placement.apply",
             json!({"lease":reservation["lease"],"window":{"address":first.address,
-            "pid":first.pid,"workspace_id":first.workspace.id},"follow":true}),
+            "pid":first.pid,"workspace_id":first.workspace.id.unwrap()},"follow":true}),
         )
         .await?;
         call(
@@ -774,7 +779,10 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         };
         let next = window(&client, qt.0.id(), expected).await?;
         if matches!(mode, "manual" | "close" | "expired") {
-            ensure!(next.workspace.id != destination, "{mode} revived placement");
+            ensure!(
+                next.workspace.id != Some(destination),
+                "{mode} revived placement"
+            );
         }
         if mode == "background" {
             ensure!(
@@ -782,7 +790,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
                     .await?
                     .monitors
                     .iter()
-                    .any(|m| m.focused && m.active_workspace.id == 1),
+                    .any(|m| m.focused && m.active_workspace.id == Some(1)),
                 "replacement stole focus"
             );
         }

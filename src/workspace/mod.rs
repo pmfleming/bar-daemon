@@ -275,7 +275,11 @@ impl Service {
                 let context = Context {
                     session: snapshot.session.clone(),
                     monitor: monitor.name.clone(),
-                    workspace_id: monitor.active_workspace.id,
+                    workspace_id: monitor
+                        .active_workspace
+                        .id
+                        .filter(|id| *id > 0)
+                        .context("ordinary workspace required")?,
                 };
                 let key = command
                     .request_id
@@ -293,7 +297,7 @@ impl Service {
                                 snapshot
                                     .workspaces
                                     .iter()
-                                    .map(|w| (w.id, w.monitor.as_str())),
+                                    .filter_map(|w| Some((w.id?, w.monitor.as_str()))),
                             )
                             .get(index)
                             .context("workspace bar position does not exist on this monitor")?
@@ -309,7 +313,7 @@ impl Service {
                             !snapshot
                                 .workspaces
                                 .iter()
-                                .any(|w| w.id == id && w.monitor != context.monitor),
+                                .any(|w| w.id == Some(id) && w.monitor != context.monitor),
                             "workspace belongs to another monitor"
                         );
                         let retained =
@@ -322,7 +326,7 @@ impl Service {
                                 || snapshot
                                     .workspaces
                                     .iter()
-                                    .any(|w| w.id == id && w.monitor == context.monitor),
+                                    .any(|w| w.id == Some(id) && w.monitor == context.monitor),
                             "workspace does not exist on this monitor"
                         );
                         compositor::execute(
@@ -340,7 +344,7 @@ impl Service {
                             && !snapshot
                                 .windows
                                 .iter()
-                                .any(|w| w.mapped && w.workspace.id == id)
+                                .any(|w| w.mapped && w.workspace.id == Some(id))
                             && let Some(entry) = loaded.journal.entries.get_mut(&id)
                         {
                             // Preserve the observed empty transition even if event
@@ -390,8 +394,10 @@ impl Service {
                             snapshot
                                 .workspaces
                                 .iter()
-                                .filter(|w| w.id > 5 && w.monitor == context.monitor)
-                                .map(|w| w.id),
+                                .filter(|w| {
+                                    w.id.is_some_and(|id| id > 5) && w.monitor == context.monitor
+                                })
+                                .filter_map(|w| w.id),
                         );
                         ids.extend(
                             loaded
@@ -408,7 +414,7 @@ impl Service {
                             !snapshot
                                 .workspaces
                                 .iter()
-                                .any(|w| w.id == *id && w.monitor != context.monitor)
+                                .any(|w| w.id == Some(*id) && w.monitor != context.monitor)
                         });
                         ensure!(!ids.is_empty(), "no local workspace");
                         let position = ids
@@ -445,7 +451,7 @@ impl Service {
                     .find(|m| monitor.map_or(m.focused, |name| m.name == name))
                     .context("invoking monitor unavailable")?;
                 ensure!(
-                    monitor.active_workspace.id > 0,
+                    monitor.active_workspace.id.is_some_and(|id| id > 0),
                     "ordinary workspace required"
                 );
                 Ok(serde_json::to_value(ContextReply {
@@ -453,7 +459,11 @@ impl Service {
                     context: Context {
                         session: snapshot.session,
                         monitor: monitor.name.clone(),
-                        workspace_id: monitor.active_workspace.id,
+                        workspace_id: monitor
+                            .active_workspace
+                            .id
+                            .filter(|id| *id > 0)
+                            .context("ordinary workspace required")?,
                     },
                     request_id: crate::state::publication::Publication::new().epoch,
                 })?)
@@ -539,7 +549,7 @@ impl Service {
                 );
                 ensure!(
                     id <= 5
-                        || snapshot.workspaces.iter().any(|w| w.id == id)
+                        || snapshot.workspaces.iter().any(|w| w.id == Some(id))
                         || loaded.journal.entries.get(&id).is_some_and(|entry| {
                             entry.keep_until_closed && entry.monitor == request.context.monitor
                         }),
@@ -549,7 +559,7 @@ impl Service {
             }
             None => loaded
                 .journal
-                .allocate(snapshot.workspaces.iter().map(|w| w.id))?,
+                .allocate(snapshot.workspaces.iter().filter_map(|w| w.id))?,
         };
         ensure!(!loaded.journal.closing(id), "destination is closing");
         let generation = loaded
@@ -612,7 +622,8 @@ impl Service {
                     observed
                         .monitors
                         .iter()
-                        .any(|m| m.name == request.context.monitor && m.active_workspace.id == id),
+                        .any(|m| m.name == request.context.monitor
+                            && m.active_workspace.id == Some(id)),
                     "workspace focus was not observed"
                 );
                 Ok::<_, anyhow::Error>(())
@@ -678,7 +689,7 @@ impl Service {
             snapshot.windows.iter().any(|w| w.mapped
                 && w.address == request.window.address
                 && w.pid == request.window.pid
-                && w.workspace.id == request.window.workspace_id),
+                && w.workspace.id == Some(request.window.workspace_id)),
             "stale placement candidate"
         );
         ensure!(
@@ -726,7 +737,7 @@ impl Service {
         let destination_monitor = snapshot
             .workspaces
             .iter()
-            .find(|w| w.id == id)
+            .find(|w| w.id == Some(id))
             .map_or(context.monitor.as_str(), |w| w.monitor.as_str());
         let mut expression = compositor::move_local(
             &request.window.address,
@@ -751,7 +762,7 @@ impl Service {
                 w.mapped
                     && w.address == request.window.address
                     && w.pid == request.window.pid
-                    && w.workspace.id == id
+                    && w.workspace.id == Some(id)
             });
         let record = loaded
             .journal
@@ -841,12 +852,12 @@ impl Service {
         let targets: Vec<_> = snapshot
             .windows
             .iter()
-            .filter(|w| w.mapped && w.workspace.id == request.context.workspace_id)
+            .filter(|w| w.mapped && w.workspace.id == Some(request.context.workspace_id))
             .map(|w| Target {
                 window: wire::WindowIdentity {
                     address: w.address.clone(),
                     pid: w.pid,
-                    workspace_id: w.workspace.id,
+                    workspace_id: request.context.workspace_id,
                 },
                 token: format!("{prefix}-{}", w.address),
                 attempted: false,
@@ -965,14 +976,17 @@ impl Service {
         };
         let mut changed = false;
         for monitor in &snapshot.monitors {
+            let Some(active) = monitor.active_workspace.id.filter(|id| *id > 0) else {
+                continue;
+            };
             let history = loaded
                 .journal
                 .history
                 .entry(monitor.name.clone())
                 .or_default();
-            if history.first() != Some(&monitor.active_workspace.id) {
-                history.retain(|id| *id != monitor.active_workspace.id);
-                history.insert(0, monitor.active_workspace.id);
+            if history.first() != Some(&active) {
+                history.retain(|id| *id != active);
+                history.insert(0, active);
                 history.truncate(128);
                 changed = true;
             }
@@ -981,7 +995,7 @@ impl Service {
         for id in ids {
             // Empty landing pads migrate too (for example after output removal).
             // Keep their identity while following observed compositor ownership.
-            if let Some(live) = snapshot.workspaces.iter().find(|w| w.id == id) {
+            if let Some(live) = snapshot.workspaces.iter().find(|w| w.id == Some(id)) {
                 let entry = loaded.journal.entries.get_mut(&id).unwrap();
                 if live.monitor != entry.monitor {
                     entry.monitor = live.monitor.clone();
@@ -992,7 +1006,7 @@ impl Service {
             if let Some(window) = snapshot
                 .windows
                 .iter()
-                .filter(|w| w.mapped && w.workspace.id == id)
+                .filter(|w| w.mapped && w.workspace.id == Some(id))
                 .min_by_key(|w| &w.address)
             {
                 loaded.empty_since.remove(&id);
@@ -1036,7 +1050,7 @@ impl Service {
                     && snapshot
                         .monitors
                         .iter()
-                        .any(|m| m.active_workspace.id == id)
+                        .any(|m| m.active_workspace.id == Some(id))
                 {
                     loaded.journal.entries.get_mut(&id).unwrap().landing_pad = true;
                     changed = true;
@@ -1046,7 +1060,7 @@ impl Service {
             let active = snapshot
                 .monitors
                 .iter()
-                .find(|m| m.active_workspace.id == id);
+                .find(|m| m.active_workspace.id == Some(id));
             // Hyprland may discard an empty, inactive compositor workspace.
             // Keep its logical destination so focus/move can materialize it again.
             if entry.keep_until_closed {
@@ -1082,7 +1096,7 @@ impl Service {
                     None => {
                         let next = loaded
                             .journal
-                            .allocate(snapshot.workspaces.iter().map(|w| w.id))?;
+                            .allocate(snapshot.workspaces.iter().filter_map(|w| w.id))?;
                         loaded.journal.entries.insert(
                             next,
                             Entry {
@@ -1112,7 +1126,8 @@ impl Service {
                     observed
                         .monitors
                         .iter()
-                        .any(|m| m.name == monitor.name && m.active_workspace.id == destination),
+                        .any(|m| m.name == monitor.name
+                            && m.active_workspace.id == Some(destination)),
                     "fallback focus was not observed"
                 );
             }
@@ -1166,7 +1181,7 @@ fn validate_context(
         .find(|m| m.name == context.monitor)
         .context("monitor disappeared")?;
     ensure!(
-        !active || monitor.active_workspace.id == context.workspace_id,
+        !active || monitor.active_workspace.id == Some(context.workspace_id),
         "workspace context changed"
     );
     Ok(())

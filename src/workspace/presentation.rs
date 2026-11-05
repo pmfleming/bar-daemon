@@ -101,7 +101,7 @@ pub(super) fn fallback(
             && snapshot
                 .workspaces
                 .iter()
-                .any(|w| w.id == id && w.monitor == monitor)
+                .any(|w| w.id == Some(id) && w.monitor == monitor)
     };
     journal
         .history
@@ -114,12 +114,12 @@ pub(super) fn fallback(
             snapshot
                 .workspaces
                 .iter()
-                .map(|w| w.id)
+                .filter_map(|w| w.id)
                 .find(|id| usable(*id))
         })
         .or_else(|| {
             (1..=5).find(|id| {
-                !journal.closing(*id) && !snapshot.workspaces.iter().any(|w| w.id == *id)
+                !journal.closing(*id) && !snapshot.workspaces.iter().any(|w| w.id == Some(*id))
             })
         })
 }
@@ -136,7 +136,7 @@ mod tests {
             windows: vec![],
             workspaces: (1..=5)
                 .map(|id| shelllist_hyprland::workspace::Workspace {
-                    id,
+                    id: Some(id),
                     monitor: "other".into(),
                     windows: 1,
                 })
@@ -146,7 +146,7 @@ mod tests {
         snapshot
             .workspaces
             .push(shelllist_hyprland::workspace::Workspace {
-                id: 7,
+                id: Some(7),
                 monitor: "local".into(),
                 windows: 1,
             });
@@ -157,7 +157,7 @@ mod tests {
         snapshot
             .workspaces
             .push(shelllist_hyprland::workspace::Workspace {
-                id: 8,
+                id: Some(8),
                 monitor: "local".into(),
                 windows: 1,
             });

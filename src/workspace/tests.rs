@@ -818,6 +818,20 @@ async fn close_admission_fences_existing_launch_lease() {
 }
 
 #[tokio::test]
+async fn special_workspace_windows_are_excluded_from_ordinary_close_targets() {
+    let fixture = Fixture::new().await;
+    fixture.state.lock().await["windows"] = json!([
+        {"address":"0x123","pid":42,"workspace":{"id":1},"mapped":true},
+        {"address":"0x456","pid":43,"workspace":{"address":"special:probe","name":"special:probe","type":"special"},"mapped":true}
+    ]);
+    let admitted = fixture.service.call("workspace.close", json!({
+        "request_id":"ordinary-close", "context":{"session":"test","monitor":"DP-1","workspace_id":1}
+    })).await.unwrap();
+    assert_eq!(admitted["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(admitted["targets"][0]["window"]["address"], "0x123");
+}
+
+#[tokio::test]
 async fn lost_close_reply_recovers_without_dispatching_again_or_sweeping_new_arrivals() {
     let fixture = Fixture::new().await;
     fixture.state.lock().await["windows"] =

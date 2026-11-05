@@ -185,7 +185,7 @@ impl Service {
                 .filter(|w| {
                     w.mapped
                         && w.pid == handoff.window.pid
-                        && w.workspace.id > 0
+                        && w.workspace.id.is_some_and(|id| id > 0)
                         && !handoff.excluded.contains(&w.address)
                 })
                 .collect();
