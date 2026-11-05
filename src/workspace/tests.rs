@@ -2,6 +2,52 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+// Housekeeping may forget only this owner's stale references. Safety assertions
+// below continue to reject every window/workspace mutation.
+fn reference_cleanup(request: &str) -> bool {
+    request == format!("eval {}", compositor::release_prefix(PIN_PREFIX).unwrap())
+}
+
+#[tokio::test]
+async fn new_session_owner_cleans_only_its_pin_namespace_once_before_admission() {
+    let fixture = Fixture::new().await;
+    for _ in 0..2 {
+        fixture
+            .service
+            .call("workspace.context", json!({"monitor":"DP-1"}))
+            .await
+            .unwrap();
+    }
+    let cleanup = compositor::release_prefix(PIN_PREFIX).unwrap().to_string();
+    assert_eq!(
+        fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .filter(|request| **request == format!("eval {cleanup}"))
+            .count(),
+        1
+    );
+    let restarted = Fixture::service(fixture.root.path());
+    restarted
+        .call("workspace.context", json!({"monitor":"DP-1"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .requests
+            .lock()
+            .await
+            .iter()
+            .filter(|request| **request == format!("eval {cleanup}"))
+            .count(),
+        2
+    );
+    assert!(!cleanup.contains("hl.dispatch"));
+    assert!(!cleanup.contains("hl.dsp"));
+}
+
 #[tokio::test]
 async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() {
     let fixture = Fixture::new().await;
@@ -134,7 +180,7 @@ async fn bar_positions_resolve_gaps_retained_entries_and_monitor_ownership() {
                     .lock()
                     .await
                     .iter()
-                    .any(|s| s.starts_with("eval "))
+                    .any(|s| s.starts_with("eval ") && !reference_cleanup(s))
             );
         }
         assert!(
@@ -204,7 +250,7 @@ async fn numeric_commands_reject_absent_foreign_and_invalid_destinations_without
                     .lock()
                     .await
                     .iter()
-                    .any(|s| s.starts_with("eval "))
+                    .any(|s| s.starts_with("eval ") && !reference_cleanup(s))
             );
         }
         assert!(
@@ -800,7 +846,7 @@ async fn restart_fences_old_placement_and_lookup_retains_indeterminate_receipt()
             .lock()
             .await
             .iter()
-            .all(|r| r.starts_with("[[BATCH]]"))
+            .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r))
     );
 }
 
@@ -935,7 +981,7 @@ async fn journal_failure_poisoning_prevents_effects_and_stale_context_is_rejecte
             .lock()
             .await
             .iter()
-            .all(|r| r.starts_with("[[BATCH]]"))
+            .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r))
     );
 }
 
@@ -1009,7 +1055,7 @@ async fn user_adoption_and_unknown_observations_protect_empty_reservations() {
             .lock()
             .await
             .iter()
-            .all(|r| r.starts_with("[[BATCH]]"))
+            .all(|r| r.starts_with("[[BATCH]]") || reference_cleanup(r))
     );
 }
 
@@ -1063,7 +1109,7 @@ async fn empty_adopted_workspace_follows_output_migration_without_new_identity()
             .lock()
             .await
             .iter()
-            .all(|request| request.starts_with("[[BATCH]]"))
+            .all(|request| request.starts_with("[[BATCH]]") || reference_cleanup(request))
     );
 }
 

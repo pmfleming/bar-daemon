@@ -63,7 +63,8 @@ impl Handoff {
                 ..request.window.clone()
             },
             token: format!(
-                "handoff-{}",
+                "{}handoff-{}",
+                super::PIN_PREFIX,
                 crate::state::publication::Publication::new().epoch
             ),
             process_start: process_start(request.window.pid)?,

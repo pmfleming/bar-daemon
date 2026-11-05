@@ -175,6 +175,9 @@ impl Loaded {
     }
 }
 
+// Owned by the sole bar daemon within one exact compositor session.
+const PIN_PREFIX: &str = "shelllist-bar-workspace-";
+
 impl Service {
     async fn initialize<'a>(
         &self,
@@ -192,6 +195,10 @@ impl Service {
                 .join("bar-daemon")
                 .join(format!("workspaces-{}.json", snapshot.session));
             let journal = Journal::load(&path, &snapshot.session)?;
+            // Pinning precedes durable close admission, so a crash can leave
+            // references with no journal record. Clear only this owner's prefix
+            // before any new pins are admitted; restarted observers are fenced.
+            compositor::execute(&self.client, &compositor::release_prefix(PIN_PREFIX)?).await?;
             *slot = Some(Loaded {
                 journal,
                 path,
@@ -840,7 +847,10 @@ impl Service {
             return Ok(serde_json::to_value(record)?);
         }
         loaded.journal.admit(&request.request_id)?;
-        let prefix = crate::state::publication::Publication::new().epoch;
+        let prefix = format!(
+            "{PIN_PREFIX}close-{}",
+            crate::state::publication::Publication::new().epoch
+        );
         let snapshot = compositor::pinned_snapshot(
             &self.client,
             &request.context.monitor,
