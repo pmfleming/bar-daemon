@@ -323,7 +323,7 @@ impl Fixture {
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         let listener = tokio::net::UnixListener::bind(directory.join(".socket.sock")).unwrap();
         let state = Arc::new(Mutex::new(json!({
-            "monitors":[{"name":"DP-1", "focused":true,"activeWorkspace":{"id":1}}],
+            "monitors":[{"id":0,"name":"DP-1", "focused":true,"activeWorkspace":{"id":1}}],
             "workspaces":[{"id":1,"monitor":"DP-1","windows":0}], "windows":[]
         })));
         let requests = Arc::new(Mutex::new(Vec::new()));

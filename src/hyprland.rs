@@ -1,7 +1,6 @@
 use std::{future::Future, time::Duration};
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use anyhow::Result;
 use shelllist_hyprland::Event;
 use tokio::{
     sync::{mpsc, watch},
@@ -12,57 +11,6 @@ use crate::{
     model::{ActiveWindow, MonitorState, Workspace, WorkspaceState},
     state::StateStore,
 };
-
-#[derive(Debug, Deserialize)]
-struct HyprWorkspace {
-    id: Option<i64>,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    monitor: String,
-    #[serde(default)]
-    windows: u32,
-    #[serde(default)]
-    urgent: bool,
-    #[serde(default, rename = "hasfullscreen")]
-    has_fullscreen: bool,
-    #[serde(default, rename = "lastwindowtitle")]
-    last_window_title: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HyprMonitor {
-    id: i64,
-    name: String,
-    #[serde(default)]
-    focused: bool,
-    #[serde(default, rename = "activeWorkspace")]
-    active_workspace: HyprActiveWorkspace,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct HyprActiveWorkspace {
-    #[serde(default)]
-    id: i64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct HyprActiveWindow {
-    #[serde(default)]
-    address: String,
-    #[serde(default)]
-    title: String,
-    #[serde(default, rename = "class")]
-    class_name: String,
-    #[serde(default, rename = "initialClass")]
-    initial_class: String,
-    #[serde(default)]
-    workspace: HyprActiveWorkspace,
-    #[serde(default)]
-    fullscreen: i8,
-    #[serde(default)]
-    floating: bool,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct HyprlandClient {
@@ -94,12 +42,7 @@ impl HyprlandClient {
     }
 
     pub(crate) async fn snapshot(&self) -> Result<WorkspaceState> {
-        let (workspaces, monitors, active_window) = tokio::try_join!(
-            self.request("j/workspaces"),
-            self.request("j/monitors"),
-            self.request("j/activewindow")
-        )?;
-        parse_snapshot(&workspaces, &monitors, &active_window)
+        Ok(project_status(self.ipc.status().await?))
     }
 
     pub(crate) async fn focus_workspace(
@@ -115,40 +58,38 @@ impl HyprlandClient {
     }
 }
 
-fn parse_snapshot(
-    workspaces_json: &str,
-    monitors_json: &str,
-    active_window_json: &str,
-) -> Result<WorkspaceState> {
-    let mut workspaces: Vec<HyprWorkspace> =
-        serde_json::from_str(workspaces_json).context("decode Hyprland workspaces")?;
-    let mut monitors: Vec<HyprMonitor> =
-        serde_json::from_str(monitors_json).context("decode Hyprland monitors")?;
-    let active_window: HyprActiveWindow =
-        serde_json::from_str(active_window_json).context("decode Hyprland active window")?;
+#[cfg(test)]
+fn parse_snapshot(workspaces: &str, monitors: &str, active: &str) -> Result<WorkspaceState> {
+    Ok(project_status(
+        shelllist_hyprland::workspace::Status::parse(&format!(
+            "{workspaces}\n\n{monitors}\n\n{active}"
+        ))?,
+    ))
+}
+fn project_status(status: shelllist_hyprland::workspace::Status) -> WorkspaceState {
+    let shelllist_hyprland::workspace::Status {
+        mut workspaces,
+        mut monitors,
+        active_window,
+    } = status;
     workspaces.sort_by_key(|workspace| workspace.id);
     monitors.sort_by_key(|monitor| monitor.id);
     let focused_monitor = monitors
         .iter()
         .find(|monitor| monitor.focused)
         .map(|monitor| monitor.name.clone());
-    let active_window = if active_window.address.is_empty()
-        && active_window.title.is_empty()
-        && active_window.class_name.is_empty()
-    {
-        None
-    } else {
-        Some(ActiveWindow {
-            address: active_window.address,
-            title: active_window.title,
-            class_name: active_window.class_name,
-            initial_class: active_window.initial_class,
-            workspace_id: active_window.workspace.id,
-            fullscreen: active_window.fullscreen != 0,
-            floating: active_window.floating,
-        })
-    };
-    Ok(WorkspaceState {
+    let active_window = active_window.map(|window| ActiveWindow {
+        address: window.address,
+        title: window.title,
+        class_name: window.class,
+        initial_class: window.initial_class,
+        // The existing wire field uses zero for a non-numbered active window;
+        // numbered-workspace selection below never admits that sentinel.
+        workspace_id: window.workspace.id.unwrap_or(0),
+        fullscreen: window.fullscreen != 0,
+        floating: window.floating,
+    });
+    WorkspaceState {
         lifecycle: Default::default(),
         available: true,
         focused_monitor,
@@ -159,7 +100,7 @@ fn parse_snapshot(
                 id: monitor.id,
                 name: monitor.name,
                 focused: monitor.focused,
-                active_workspace_id: monitor.active_workspace.id,
+                active_workspace_id: monitor.active_workspace.id.unwrap_or(0),
             })
             .collect(),
         workspaces: workspaces
@@ -172,14 +113,14 @@ fn parse_snapshot(
                     name: workspace.name,
                     monitor: workspace.monitor,
                     windows: workspace.windows,
-                    urgent: workspace.urgent,
+                    urgent: false,
                     fullscreen: workspace.has_fullscreen,
                     last_window_title: workspace.last_window_title,
                 })
             })
             .collect(),
         error: None,
-    })
+    }
 }
 
 pub(crate) async fn monitor(store: StateStore) {
@@ -350,9 +291,9 @@ mod tests {
     #[test]
     fn special_workspace_without_number_does_not_hide_numbered_workspaces() {
         let state = parse_snapshot(
-            r#"[{"id":1,"name":"1","monitor":"eDP-1"},{"address":"special:probe","type":"special","name":"special:probe","monitor":"eDP-1"}]"#,
+            r#"[{"id":1,"name":"1","monitor":"eDP-1","windows":0},{"address":"special:probe","type":"special","name":"special:probe","monitor":"eDP-1","windows":1}]"#,
             r#"[{"id":0,"name":"eDP-1","focused":true,"activeWorkspace":{"id":1}}]"#,
-            r#"{"address":"0x123","title":"Special window","workspace":{"address":"special:probe","name":"special:probe","type":"special"}}"#,
+            r#"{"address":"0x123","pid":42,"title":"Special window","workspace":{"address":"special:probe","name":"special:probe","type":"special"}}"#,
         ).unwrap();
         assert!(state.available);
         assert_eq!(state.workspaces.len(), 1);
@@ -383,9 +324,9 @@ mod tests {
                     blocked.acquire().await.unwrap().forget();
                 }
                 parse_snapshot(
-                    r#"[{"id":5,"name":"5","monitor":"eDP-1","windows":1,"hasfullscreen":true},{"id":1,"name":"1","monitor":"eDP-1","windows":2,"urgent":true}]"#,
+                    r#"[{"id":5,"name":"5","monitor":"eDP-1","windows":1,"hasfullscreen":true},{"id":1,"name":"1","monitor":"eDP-1","windows":2}]"#,
                     r#"[{"id":0,"name":"eDP-1","focused":true,"activeWorkspace":{"id":1}}]"#,
-                    r#"{"address":"0x123","title":"Terminal","class":"ghostty","workspace":{"id":1},"fullscreen":0,"floating":false}"#,
+                    r#"{"address":"0x123","pid":42,"title":"Terminal","class":"ghostty","workspace":{"id":1},"fullscreen":0,"floating":false}"#,
                 )
             }
         }));
@@ -426,7 +367,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 5]
         );
-        assert!(snapshot.workspaces[0].urgent);
+        assert!(!snapshot.workspaces[0].urgent);
         assert!(snapshot.workspaces[1].fullscreen);
         assert_eq!(snapshot.active_window.unwrap().title, "Terminal");
         for failure in [

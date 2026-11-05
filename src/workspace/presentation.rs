@@ -139,6 +139,7 @@ mod tests {
                     id: Some(id),
                     monitor: "other".into(),
                     windows: 1,
+                    ..Default::default()
                 })
                 .collect(),
         };
@@ -149,6 +150,7 @@ mod tests {
                 id: Some(7),
                 monitor: "local".into(),
                 windows: 1,
+                ..Default::default()
             });
         assert_eq!(fallback(&journal, &snapshot, "local", 6), Some(7));
         assert_eq!(fallback(&journal, &snapshot, "local", 7), None);
@@ -160,6 +162,7 @@ mod tests {
                 id: Some(8),
                 monitor: "local".into(),
                 windows: 1,
+                ..Default::default()
             });
         journal.history.insert("local".into(), vec![6, 2, 8, 7]);
         assert_eq!(fallback(&journal, &snapshot, "local", 6), Some(8));
