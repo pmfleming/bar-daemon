@@ -12,9 +12,15 @@ repository = "https://github.com/pmfleming/bar-daemon"
 name = "agenda-turso-contract"
 path = "tools/agenda-turso-contract/main.rs"
 
+[[test]]
+name = "workspace_handoff"
+path = "tests/workspace_handoff.rs"
+required-features = ["native-workspace-handoff"]
+
 [features]
-# Explicit private Quickshell probe; not part of the package's --include-ignored suite.
+# Explicit private graphical probes; not part of the package's --include-ignored suite.
 native-quickshell-socket = []
+native-workspace-handoff = []
 
 [dependencies]
 anyhow = "1"

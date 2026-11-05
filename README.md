@@ -289,9 +289,19 @@ cargo llvm-cov --workspace --all-targets --cobertura --output-path cobertura.xml
 ../daemon-framework/tools/local-build check .
 ```
 
-Nix package checks and CI run all tests, including the ignored PipeWire and native
-idle fixtures. The native test uses a private Wayland display, test-owned D-Bus
+Nix package checks and CI run all default-feature tests, including the ignored
+PipeWire and native idle fixtures. The native test uses a private Wayland display, test-owned D-Bus
 configuration, mock logind, and an isolated home; it cannot suspend the host.
 The patched Hypridle package is shared with Shelllist, not separately vendored:
 see [`packaging/hypridle/README.md`](packaging/hypridle/README.md).
+The real Qt workspace handoff test is separately opt-in because it requires an
+isolated compositor and Qt environment unavailable in the package sandbox. Supply
+`WORKSPACE_TEST_HYPRLAND`, `WORKSPACE_TEST_PARENT_DISPLAY`, `WORKSPACE_TEST_DBUS`,
+`WORKSPACE_TEST_QML`, and `WORKSPACE_TEST_QT_PLUGINS` (plus optionally
+`WORKSPACE_TEST_CXX`), then run:
+
+```sh
+cargo test --locked --features native-workspace-handoff --test workspace_handoff -- --ignored
+```
+
 The local-build helper requires new source files to be tracked before snapshotting.
