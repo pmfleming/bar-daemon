@@ -95,7 +95,7 @@ pub(crate) async fn run() -> Result<()> {
             .context("export notification server interface")?;
     }
     let tasks = MonitorTasks::spawn(
-        state,
+        state.clone(),
         Arc::clone(&activity),
         notification_service,
         media,
@@ -114,6 +114,7 @@ pub(crate) async fn run() -> Result<()> {
     }));
     let (mut result, joined) = tokio::select! {
         result = shelllist_daemon_tokio::wait_for_shutdown() => (result, false),
+        error = state.compositor_failure() => (Err(error), false),
         result = &mut listener => (result.context("join bar socket listener").and_then(|r| r), true),
     };
     let _ = stop.send(());

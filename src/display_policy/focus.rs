@@ -170,12 +170,7 @@ impl Backend for HyprlandClient {
     }
     async fn configure(&self, values: &Values) -> Result<()> {
         let response = self.request_exact(&command(values)?).await?;
-        ensure!(
-            response.trim() == "ok",
-            "Hyprland rejected focus settings: {}",
-            response.trim()
-        );
-        Ok(())
+        shelllist_hyprland::ack(&response)
     }
 }
 async fn guard<B: Backend>(backend: &B, store: &StateStore, generation: u64) -> Result<()> {

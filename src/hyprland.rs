@@ -115,11 +115,7 @@ impl HyprlandClient {
         };
         let command = format!("dispatch hl.dsp.focus({{ workspace = {workspace_id}{current} }})");
         let response = self.request_exact(&command).await?;
-        if response.trim_start().starts_with("ok") {
-            Ok(())
-        } else {
-            bail!("Hyprland rejected workspace focus: {}", response.trim())
-        }
+        shelllist_hyprland::ack(&response)
     }
 }
 
@@ -197,7 +193,7 @@ pub(crate) async fn monitor(store: StateStore) {
     // Both futures are owned by this monitor; shutdown drops the event receiver
     // and cancels pending reads without leaving an orphan watcher task.
     tokio::join!(
-        shelllist_hyprland::watch_events_detailed(sender),
+        client.ipc.clone().watch_events(sender),
         monitor_with(store, events, || async {
             let mut state = client.snapshot().await?;
             lifecycle.project(&mut state).await;
@@ -217,14 +213,14 @@ where
     let intake = async {
         let mut connected = false;
         while let Some(event) = events.recv().await {
+            store.workspace_lifecycle.handoff_event(&event);
             let refresh = match event {
-                Event::Connected => {
+                Event::Connected { .. } => {
                     connected = true;
                     store.set_hyprland_connected(connected);
                     true
                 }
                 Event::Disconnected(cause) => {
-                    store.workspace_lifecycle.handoff_event("disconnected");
                     connected = false;
                     store.set_hyprland_connected(connected);
                     if let Some(cause) = cause {
@@ -238,12 +234,23 @@ where
                     tracing::warn!(%cause, "Hyprland event connection failed; continuing reconciliation");
                     true
                 }
-                Event::Message(event) => {
-                    store.workspace_lifecycle.handoff_event(&event);
-                    if shelllist_hyprland::preferences::preference_event(&event) {
+                Event::SessionGone { configured, live } => {
+                    store.compositor_failed(shelllist_hyprland::IpcError::SessionGone {
+                        configured,
+                        live,
+                    });
+                    return;
+                }
+                Event::Lagged => {
+                    store.compositor_changed.notify_one();
+                    store.work_area_changed.notify_one();
+                    true
+                }
+                Event::Compositor(event) => {
+                    if event.invalidates_preferences() {
                         store.compositor_changed.notify_one();
                     }
-                    if shelllist_hyprland::work_area::geometry_event(&event) {
+                    if event.invalidates_geometry() {
                         store.work_area_changed.notify_one();
                     }
                     refresh_event(&event)
@@ -288,25 +295,28 @@ async fn refresh_workspaces<F, Fut>(
     }
 }
 
-fn refresh_event(event: &str) -> bool {
-    const PREFIXES: &[&str] = &[
-        "workspace",
-        "focusedmon",
-        "activewindow",
-        "windowtitle",
-        "createworkspace",
-        "destroyworkspace",
-        "moveworkspace",
-        "openwindow",
-        "closewindow",
-        "movewindow",
-        "urgent",
-        "fullscreen",
-        "monitoradded",
-        "monitorremoved",
-        "configreloaded",
-    ];
-    PREFIXES.iter().any(|prefix| event.starts_with(prefix))
+fn refresh_event(event: &shelllist_hyprland::CompositorEvent) -> bool {
+    use shelllist_hyprland::CompositorEvent::*;
+    matches!(
+        event,
+        WorkspaceChanged
+            | FocusedMonitorChanged
+            | ActiveWindowChanged
+            | WindowTitleChanged
+            | WorkspaceCreated
+            | WorkspaceDestroyed
+            | WorkspaceMoved
+            | WindowOpened
+            | WindowClosed
+            | WindowMoved { .. }
+            | WindowUrgent
+            | FullscreenChanged
+            | MonitorAdded
+            | MonitorRemoved
+            | ConfigReloaded
+            | WorkspaceIdChanged
+            | Malformed { .. }
+    )
 }
 
 #[cfg(test)]
@@ -322,6 +332,24 @@ mod tests {
         time::Duration,
     };
     use tokio::sync::{Semaphore, mpsc};
+
+    #[tokio::test]
+    async fn session_loss_is_retained_for_the_daemon_cleanup_path() {
+        let store = StateStore::default();
+        let (sender, events) = mpsc::channel(1);
+        sender
+            .send(Event::SessionGone {
+                configured: "old".into(),
+                live: "new".into(),
+            })
+            .await
+            .unwrap();
+        monitor_with(store.clone(), events, || async { Ok(Default::default()) }).await;
+        let error = store.compositor_failure().await;
+        assert!(
+            matches!(error.downcast_ref::<shelllist_hyprland::IpcError>(), Some(shelllist_hyprland::IpcError::SessionGone { configured, live }) if configured=="old" && live=="new")
+        );
+    }
 
     #[test]
     fn special_workspace_without_number_does_not_hide_numbered_workspaces() {
@@ -344,7 +372,12 @@ mod tests {
         let started = Arc::new(Semaphore::new(0));
         let gate = Arc::new(Semaphore::new(0));
         let (count, start, blocked) = (calls.clone(), started.clone(), gate.clone());
-        events.send(Event::Connected).await.unwrap();
+        events
+            .send(Event::Connected {
+                instance: "test".into(),
+            })
+            .await
+            .unwrap();
         let task = tokio::spawn(monitor_with(store.clone(), receiver, move || {
             let call = count.fetch_add(1, Ordering::SeqCst);
             let (start, blocked) = (start.clone(), blocked.clone());
@@ -365,12 +398,16 @@ mod tests {
         store.work_area_changed.notified().await;
         for _ in 0..100 {
             events
-                .send(Event::Message("workspace>>1".into()))
+                .send(Event::Compositor(
+                    shelllist_hyprland::CompositorEvent::parse("workspace>>1"),
+                ))
                 .await
                 .unwrap();
         }
         events
-            .send(Event::Message("configreloaded>>".into()))
+            .send(Event::Compositor(
+                shelllist_hyprland::CompositorEvent::ConfigReloaded,
+            ))
             .await
             .unwrap();
         store.compositor_changed.notified().await; // delivered while first fetch is blocked
@@ -407,7 +444,12 @@ mod tests {
             started.acquire().await.unwrap().forget();
             assert!(!store.hyprland_connected());
         }
-        events.send(Event::Connected).await.unwrap();
+        events
+            .send(Event::Connected {
+                instance: "test".into(),
+            })
+            .await
+            .unwrap();
         store.compositor_changed.notified().await;
         store.work_area_changed.notified().await;
         started.acquire().await.unwrap().forget();

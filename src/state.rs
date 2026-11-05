@@ -45,6 +45,7 @@ pub(crate) struct StateStore {
     failed_monitors: Arc<Mutex<BTreeMap<&'static str, String>>>,
     work_area_demand: tokio::sync::watch::Sender<usize>,
     hyprland_connected: Arc<AtomicBool>,
+    compositor_failure: tokio::sync::watch::Sender<Option<shelllist_hyprland::IpcError>>,
     pub(crate) work_area_changed: Arc<tokio::sync::Notify>,
     pub(crate) compositor_changed: Arc<tokio::sync::Notify>,
 }
@@ -68,6 +69,7 @@ impl Default for StateStore {
             failed_monitors: Arc::default(),
             work_area_demand: tokio::sync::watch::channel(0).0,
             hyprland_connected: Arc::new(AtomicBool::new(false)),
+            compositor_failure: tokio::sync::watch::channel(None).0,
             work_area_changed: Arc::new(tokio::sync::Notify::new()),
             compositor_changed: Arc::new(tokio::sync::Notify::new()),
         }
@@ -281,6 +283,29 @@ impl StateStore {
 
     pub(crate) fn hyprland_connected(&self) -> bool {
         self.hyprland_connected.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn compositor_failed(&self, error: shelllist_hyprland::IpcError) {
+        self.compositor_failure.send_if_modified(|current| {
+            if current.is_some() {
+                false
+            } else {
+                *current = Some(error);
+                true
+            }
+        });
+    }
+
+    pub(crate) async fn compositor_failure(&self) -> anyhow::Error {
+        let mut errors = self.compositor_failure.subscribe();
+        loop {
+            if let Some(error) = errors.borrow_and_update().clone() {
+                return error.into();
+            }
+            if errors.changed().await.is_err() {
+                return anyhow::anyhow!("compositor failure channel closed");
+            }
+        }
     }
 
     pub(crate) fn set_hyprland_connected(&self, connected: bool) {

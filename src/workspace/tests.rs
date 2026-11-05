@@ -1182,8 +1182,16 @@ async fn empty_gap_is_retained_then_expires_without_further_window_events() {
 async fn manual_move_even_followed_by_close_or_return_cancels_replacement() {
     let fixture = Fixture::new().await;
     fixture.tracked_launch().await;
-    fixture.service.handoff_event("movewindowv2>>123,3,3");
-    fixture.service.handoff_event("movewindowv2>>123,6,6");
+    fixture
+        .service
+        .handoff_event(&shelllist_hyprland::Event::Compositor(
+            shelllist_hyprland::CompositorEvent::parse("movewindowv2>>123,3,3"),
+        ));
+    fixture
+        .service
+        .handoff_event(&shelllist_hyprland::Event::Compositor(
+            shelllist_hyprland::CompositorEvent::parse("movewindowv2>>123,6,6"),
+        ));
     fixture.replacement(std::process::id()).await;
     fixture
         .service
@@ -1228,7 +1236,9 @@ async fn restart_explicit_close_and_lost_identity_never_replay_replacement() {
             fixture.state.lock().await["pinned_status"] = "lost".into();
         }
         if reason == "disconnect" {
-            fixture.service.handoff_event("disconnected");
+            fixture
+                .service
+                .handoff_event(&shelllist_hyprland::Event::Disconnected(None));
         }
         let service = if reason == "restart" {
             Fixture::service(fixture.root.path())

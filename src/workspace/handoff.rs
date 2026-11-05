@@ -259,23 +259,65 @@ pub(super) struct Events {
 
 impl Service {
     /// Synchronous bounded intake: never block compositor event intake on IPC.
-    pub(crate) fn handoff_event(&self, event: &str) {
+    pub(crate) fn handoff_event(&self, event: &shelllist_hyprland::Event) {
+        use shelllist_hyprland::{CompositorEvent, Event};
         let mut events = self.handoff_events.lock().unwrap();
-        if event == "disconnected" || event.starts_with("configreloaded>>") {
-            events.lost = true;
-        } else if let Some(value) = event.strip_prefix("movewindowv2>>") {
-            let mut fields = value.split(',');
-            if let (Some(address), Some(workspace)) = (fields.next(), fields.next())
-                && let Ok(workspace) = workspace.parse()
+        match event {
+            Event::Disconnected(_)
+            | Event::ConnectFailed(_)
+            | Event::SessionGone { .. }
+            | Event::Lagged
+            | Event::Compositor(
+                CompositorEvent::ConfigReloaded
+                | CompositorEvent::WorkspaceIdChanged
+                | CompositorEvent::Malformed { .. },
+            ) => events.lost = true,
+            Event::Compositor(CompositorEvent::WindowMoved { address, workspace })
+                if !workspace.special =>
             {
-                if events.moved.len() < 512 {
-                    events
-                        .moved
-                        .insert((format!("0x{}", address.trim_start_matches("0x")), workspace));
-                } else {
-                    events.lost = true;
+                if let Some(workspace) = workspace.id {
+                    if events.moved.len() < 512 {
+                        events.moved.insert((address.to_string(), workspace));
+                    } else {
+                        events.lost = true;
+                    }
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    use shelllist_hyprland::{CompositorEvent, Event};
+    #[test]
+    fn malformed_moves_and_event_loss_cancel_handoffs_but_special_moves_are_valid() {
+        let service = Service::default();
+        service.handoff_event(&Event::Compositor(CompositorEvent::parse(
+            "movewindowv2>>123,special:probe,display,name",
+        )));
+        assert!(!service.handoff_events.lock().unwrap().lost);
+        service.handoff_event(&Event::Compositor(CompositorEvent::parse(
+            "movewindowv2>>123,3,name,with,commas",
+        )));
+        assert!(
+            service
+                .handoff_events
+                .lock()
+                .unwrap()
+                .moved
+                .contains(&("0x123".into(), 3))
+        );
+        for event in [
+            Event::Lagged,
+            Event::Compositor(CompositorEvent::parse("movewindowv2>>123,broken")),
+            Event::Compositor(CompositorEvent::WorkspaceIdChanged),
+        ] {
+            service.handoff_events.lock().unwrap().lost = false;
+            service.handoff_event(&event);
+            assert!(service.handoff_events.lock().unwrap().lost);
         }
     }
 }
