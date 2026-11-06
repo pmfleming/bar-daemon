@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.laufan.BarStatusDaemon
-Exec=@out@/bin/bar-daemon daemon
-SystemdService=bar-daemon.service

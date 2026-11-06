@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Generate standalone activation and units from the same service specifications
+  used by NixOS and Home Manager; remove the residual bar notification setting.
+
 - Share preparation, initial-read and suspend-clock resume semantics in the
   daemon framework across policy owners and read-only observers.
 

@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.laufan.BarCompositorDaemon
-Exec=@out@/bin/bar-compositor-daemon daemon
-SystemdService=bar-compositor-daemon.service

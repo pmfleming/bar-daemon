@@ -11,7 +11,7 @@ let
     inherit pkgs;
     package = cfg.package;
   };
-  session = import ./session-service.nix {
+  sessions = import ./session-services.nix {
     inherit lib cfg;
     idleConfig = cfg.idleConfig;
   };
@@ -34,95 +34,27 @@ in
     (lib.mkIf cfg.enable {
       environment.systemPackages = [ cfg.package ];
       services.dbus.packages = [ cfg.package ];
-      systemd.user.services.bar-daemon = {
-        unitConfig = session.Unit;
-        serviceConfig = session.Service;
-        wantedBy = session.Install.WantedBy;
-      };
-      systemd.user.services.bar-notification-daemon = {
-        description = "Desktop notifications";
-        partOf = [ cfg.target ];
-        after = [
-          cfg.target
-          "dbus.service"
-        ];
-        wantedBy = [ cfg.target ];
-        conflicts = [ "swaync.service" ];
-        before = [ "swaync.service" ];
-        serviceConfig = {
-          Type = "dbus";
-          BusName = "org.laufan.BarNotificationDaemon";
-          ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ];
+      systemd.user.services =
+        (lib.mapAttrs (_: session: {
+          unitConfig = session.Unit;
+          serviceConfig = session.Service;
+          wantedBy = session.Install.WantedBy;
+        }) sessions)
+        // lib.optionalAttrs cfg.suspend.enable {
+          hypridle = {
+            description = "Daemon-managed idle policy";
+            wantedBy = [ cfg.target ];
+            partOf = [ cfg.target ];
+            after = [ cfg.target ];
+            serviceConfig = {
+              Type = "notify";
+              NotifyAccess = "main";
+              TimeoutStartSec = "8s";
+              ExecStart = "${cfg.package}/bin/bar-daemon idle --config ${cfg.idleConfig} --hypridle ${self.lib.mkManagedHypridle pkgs.hypridle}/bin/hypridle";
+              Restart = "on-failure";
+            };
+          };
         };
-      };
-      systemd.user.services.bar-power-daemon = {
-        description = "Desktop power and sleep policy";
-        partOf = [ cfg.target ];
-        after = [
-          cfg.target
-          "dbus.service"
-        ];
-        wantedBy = [ cfg.target ];
-        serviceConfig = {
-          Type = "dbus";
-          BusName = "org.laufan.BarPowerDaemon";
-          ExecStart = "${cfg.package}/bin/bar-power-daemon daemon";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${cfg.idleConfig}";
-        };
-      };
-      systemd.user.services.bar-compositor-daemon = {
-        description = "Compositor integration and display policy";
-        partOf = [ cfg.target ];
-        after = [
-          cfg.target
-          "dbus.service"
-        ]
-        ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service";
-        conflicts = lib.optional cfg.displays.enable "hypr-monitor-auto.service";
-        wantedBy = [ cfg.target ];
-        serviceConfig = {
-          Type = "dbus";
-          BusName = "org.laufan.BarCompositorDaemon";
-          ExecStart = "${cfg.package}/bin/bar-compositor-daemon daemon";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          Environment = lib.optional cfg.displays.enable "BAR_DAEMON_DISPLAY_CONTROL=1";
-        };
-      };
-      systemd.user.services.bar-activity-daemon = {
-        description = "Agenda, locations, clocks and weather";
-        partOf = [ cfg.target ];
-        after = [
-          cfg.target
-          "dbus.service"
-        ];
-        wantedBy = [ cfg.target ];
-        serviceConfig = {
-          Type = "dbus";
-          BusName = "org.laufan.BarActivityDaemon";
-          ExecStart = "${cfg.package}/bin/bar-activity-daemon daemon";
-          Restart = "on-failure";
-          RestartSec = "2s";
-        };
-      };
-      systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
-        description = "Daemon-managed idle policy";
-        wantedBy = [ cfg.target ];
-        partOf = [ cfg.target ];
-        after = [ cfg.target ];
-        serviceConfig = {
-          Type = "notify";
-          NotifyAccess = "main";
-          TimeoutStartSec = "8s";
-          ExecStart = "${cfg.package}/bin/bar-daemon idle --config ${cfg.idleConfig} --hypridle ${self.lib.mkManagedHypridle pkgs.hypridle}/bin/hypridle";
-          Restart = "on-failure";
-        };
-      };
     })
     (lib.mkIf cfg.batteryHelper.enable {
       environment.systemPackages = [ battery ];

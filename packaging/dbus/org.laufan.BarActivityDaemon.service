@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.laufan.BarActivityDaemon
-Exec=@out@/bin/bar-activity-daemon daemon
-SystemdService=bar-activity-daemon.service

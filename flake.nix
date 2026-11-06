@@ -31,6 +31,42 @@
         let
           managedHypridle = self.lib.mkManagedHypridle pkgs.hypridle;
           locationGeoclue = self.lib.mkLocationGeoclue (pkgs.geoclue2.override { withDemoAgent = true; });
+          serviceSpecs = import ./packaging/service-specs.nix;
+          standaloneServices = import ./packaging/session-services.nix {
+            lib = pkgs.lib;
+            idleConfig = "%h/.config/hypr/hypridle.conf";
+            cfg = {
+              package = "@out@";
+              target = "graphical-session.target";
+              displays.enable = false;
+              suspend.enable = false;
+              media.youtubeMetadata.enable = false;
+            };
+          };
+          unitFiles = pkgs.lib.mapAttrs (
+            name: unit: pkgs.writeText "${name}.service" ((import ./packaging/render-unit.nix pkgs.lib) unit)
+          ) standaloneServices;
+          activationFiles = pkgs.lib.listToAttrs (
+            pkgs.lib.concatMap (
+              name:
+              map (bus: {
+                name = "${bus}.service";
+                value = pkgs.writeText "${bus}.service" "[D-BUS Service]\nName=${bus}\nExec=@out@/bin/${name} daemon\nSystemdService=${name}.service\n";
+              }) ([ serviceSpecs.${name}.bus ] ++ serviceSpecs.${name}.aliases)
+            ) (builtins.attrNames serviceSpecs)
+          );
+          sessionUnits = pkgs.runCommand "bar-session-unit-templates" { } ''
+            ${pkgs.lib.concatStringsSep "\n" (
+              pkgs.lib.mapAttrsToList (
+                name: file: "install -Dm644 ${file} $out/share/systemd/user/${name}.service"
+              ) unitFiles
+            )}
+            ${pkgs.lib.concatStringsSep "\n" (
+              pkgs.lib.mapAttrsToList (
+                name: file: "install -Dm644 ${file} $out/share/dbus-1/services/${name}"
+              ) activationFiles
+            )}
+          '';
           barDaemon = daemonFramework.lib.buildRustPackage pkgs {
             pname = "bar-daemon";
             version = "0.1.0";
@@ -106,34 +142,9 @@
                 $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
               install -Dm644 packaging/licenses/ODbL-1.0.txt $out/share/licenses/bar-daemon/ODbL-1.0.txt
               install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
-              install -Dm644 packaging/systemd/bar-power-daemon.service $out/share/systemd/user/bar-power-daemon.service
-              install -Dm644 packaging/dbus/org.laufan.BarPowerDaemon.service $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service
-              install -Dm644 packaging/systemd/bar-compositor-daemon.service $out/share/systemd/user/bar-compositor-daemon.service
-              install -Dm644 packaging/dbus/org.laufan.BarCompositorDaemon.service $out/share/dbus-1/services/org.laufan.BarCompositorDaemon.service
-              install -Dm644 packaging/systemd/bar-activity-daemon.service $out/share/systemd/user/bar-activity-daemon.service
-              install -Dm644 packaging/dbus/org.laufan.BarActivityDaemon.service $out/share/dbus-1/services/org.laufan.BarActivityDaemon.service
-              install -Dm644 packaging/systemd/bar-notification-daemon.service $out/share/systemd/user/bar-notification-daemon.service
-              install -Dm644 packaging/dbus/org.laufan.BarNotificationDaemon.service $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service
-              install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
-              install -Dm644 packaging/dbus/org.laufan.BarStatusDaemon.service $out/share/dbus-1/services/org.laufan.BarStatusDaemon.service
-              install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
-                $out/share/dbus-1/services/org.laufan.BarDaemon.service
-              install -Dm644 ${./packaging/dbus/org.freedesktop.Notifications.service} \
-                $out/share/dbus-1/services/org.freedesktop.Notifications.service
-              substituteInPlace \
-                $out/share/systemd/user/bar-daemon.service \
-                $out/share/systemd/user/bar-activity-daemon.service \
-                $out/share/dbus-1/services/org.laufan.BarActivityDaemon.service \
-                $out/share/systemd/user/bar-compositor-daemon.service \
-                $out/share/dbus-1/services/org.laufan.BarCompositorDaemon.service \
-                $out/share/systemd/user/bar-power-daemon.service \
-                $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service \
-                $out/share/systemd/user/bar-notification-daemon.service \
-                $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service \
-                $out/share/dbus-1/services/org.laufan.BarDaemon.service \
-                $out/share/dbus-1/services/org.laufan.BarStatusDaemon.service \
-                $out/share/dbus-1/services/org.freedesktop.Notifications.service \
-                --replace-fail @out@ $out
+              cp -r ${sessionUnits}/share/systemd $out/share/
+              cp -r ${sessionUnits}/share/dbus-1 $out/share/
+              substituteInPlace $out/share/systemd/user/*.service $out/share/dbus-1/services/*.service --replace-fail @out@ $out
             '';
             meta = {
               description = "Status, policy, and action daemon for a Quickshell desktop bar";
@@ -148,6 +159,7 @@
         in
         {
           default = barDaemon;
+          inherit sessionUnits;
           batteryIntegration = import ./packaging/battery-integration.nix {
             inherit pkgs;
             package = barDaemon;

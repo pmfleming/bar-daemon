@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.laufan.BarNotificationDaemon
-Exec=@out@/bin/bar-notification-daemon daemon
-SystemdService=bar-notification-daemon.service

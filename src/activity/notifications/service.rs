@@ -36,8 +36,7 @@ impl NotificationService {
         matches!(
             self.backend,
             NotificationBackend::Native(_) | NotificationBackend::Remote
-        ) && !std::env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
-            .is_ok_and(|s| s.eq_ignore_ascii_case("swaync"))
+        )
     }
 
     pub(crate) async fn notify_update_once(
