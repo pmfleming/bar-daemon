@@ -17,6 +17,11 @@ policy through `org.laufan.BarPowerDaemon`. Hypridle callbacks target this owner
 Display and activity consumers observe logind transitions locally and continue
 to receive resume generations when the power process is unavailable.
 
+`bar-compositor-daemon` owns workspace lifecycle, display policy, work area and
+compositor preferences through `org.laufan.BarCompositorDaemon`. Only this
+process exits on compositor session replacement. Workspace CLI commands continue
+to use `bar-daemon workspace ...` and address the compositor owner directly.
+
 ## Shelllist Updates
 
 The desktop update monitor exports a genuine `shelllist-updates` StatusNotifierItem

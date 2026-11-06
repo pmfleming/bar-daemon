@@ -34,6 +34,10 @@ in
         description = "Desktop power and sleep policy"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ]; wantedBy = [ cfg.target ];
         serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarPowerDaemon"; ExecStart = "${cfg.package}/bin/bar-power-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${cfg.idleConfig}"; };
       };
+      systemd.user.services.bar-compositor-daemon = {
+        description = "Compositor integration and display policy"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ] ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service"; conflicts = lib.optional cfg.displays.enable "hypr-monitor-auto.service"; wantedBy = [ cfg.target ];
+        serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarCompositorDaemon"; ExecStart = "${cfg.package}/bin/bar-compositor-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.displays.enable "BAR_DAEMON_DISPLAY_CONTROL=1"; };
+      };
       systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
         description = "Daemon-managed idle policy";
         wantedBy = [ cfg.target ];

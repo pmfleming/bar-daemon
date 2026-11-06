@@ -4,7 +4,7 @@ use std::{os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use tokio::{io::AsyncBufReadExt, net::UnixListener, process::Command, time::timeout};
 
 #[tokio::test]
-async fn compositor_replacement_exits_nonzero_after_persistent_stores_open() -> Result<()> {
+async fn compositor_replacement_exits_only_the_compositor_owner() -> Result<()> {
     let root = tempfile::Builder::new()
         .prefix("bar-session-")
         .tempdir_in("/tmp")?;
@@ -29,7 +29,7 @@ async fn compositor_replacement_exits_nonzero_after_persistent_stores_open() -> 
     )
     .await??;
     let log_path = root.path().join("daemon.log");
-    let mut daemon = Command::new(env!("CARGO_BIN_EXE_bar-daemon"));
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_bar-compositor-daemon"));
     daemon
         .arg("daemon")
         .env_clear()

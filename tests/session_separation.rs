@@ -175,3 +175,38 @@ async fn power_remains_available_after_notification_owner_dies() -> Result<()> {
     power.kill().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn compositor_owner_rejects_power_calls_and_its_death_leaves_power_available() -> Result<()> {
+    let session = Session::new().await?;
+    let mut compositor = session.start(Path::new(env!("CARGO_BIN_EXE_bar-compositor-daemon")))?;
+    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
+    session.ready("org.laufan.BarCompositorDaemon").await?;
+    session.ready("org.laufan.BarPowerDaemon").await?;
+    let state = session.snapshot("org.laufan.BarCompositorDaemon").await?;
+    ensure!(
+        state["data"]["snapshot"]
+            .as_object()
+            .context("compositor snapshot")?
+            .len()
+            == 4
+    );
+    let proxy = zbus::Proxy::new(
+        &session.connection,
+        "org.laufan.BarCompositorDaemon",
+        "/org/laufan/BarDaemon",
+        "org.laufan.BarDaemon2",
+    )
+    .await?;
+    let reply: String = proxy
+        .call("Call", &("powerProfile.set", "{\"profile\":\"balanced\"}"))
+        .await?;
+    ensure!(serde_json::from_str::<serde_json::Value>(&reply)?["ok"] == false);
+    let reply: String = proxy.call("Subscribe", &(vec!["battery.changed"],)).await?;
+    ensure!(serde_json::from_str::<serde_json::Value>(&reply)?["ok"] == false);
+    compositor.kill().await?;
+    ensure!(session.snapshot("org.laufan.BarPowerDaemon").await?["ok"] == true);
+    ensure!(power.try_wait()?.is_none());
+    power.kill().await?;
+    Ok(())
+}

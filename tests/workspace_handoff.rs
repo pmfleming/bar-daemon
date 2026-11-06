@@ -69,7 +69,7 @@ fn spawn(
 async fn call(bus: &zbus::Connection, method: &str, params: Value) -> Result<Value> {
     let proxy = zbus::Proxy::new(
         bus,
-        "org.laufan.BarDaemon",
+        "org.laufan.BarCompositorDaemon",
         "/org/laufan/BarDaemon",
         "org.laufan.BarDaemon2",
     )
@@ -314,7 +314,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         )?;
     }
     let _bar = spawn(
-        Path::new(env!("CARGO_BIN_EXE_bar-daemon")),
+        Path::new(env!("CARGO_BIN_EXE_bar-compositor-daemon")),
         &["daemon"],
         &root,
         &display,

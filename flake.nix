@@ -100,6 +100,8 @@
               install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
               install -Dm644 packaging/systemd/bar-power-daemon.service $out/share/systemd/user/bar-power-daemon.service
               install -Dm644 packaging/dbus/org.laufan.BarPowerDaemon.service $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service
+              install -Dm644 packaging/systemd/bar-compositor-daemon.service $out/share/systemd/user/bar-compositor-daemon.service
+              install -Dm644 packaging/dbus/org.laufan.BarCompositorDaemon.service $out/share/dbus-1/services/org.laufan.BarCompositorDaemon.service
               install -Dm644 packaging/systemd/bar-notification-daemon.service $out/share/systemd/user/bar-notification-daemon.service
               install -Dm644 packaging/dbus/org.laufan.BarNotificationDaemon.service $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
@@ -109,6 +111,8 @@
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
+                $out/share/systemd/user/bar-compositor-daemon.service \
+                $out/share/dbus-1/services/org.laufan.BarCompositorDaemon.service \
                 $out/share/systemd/user/bar-power-daemon.service \
                 $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service \
                 $out/share/systemd/user/bar-notification-daemon.service \

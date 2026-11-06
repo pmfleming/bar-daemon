@@ -6,6 +6,7 @@ pub enum Component {
     Bar,
     Notifications,
     Power,
+    Compositor,
 }
 impl Component {
     pub const fn name(self) -> &'static str {
@@ -13,6 +14,7 @@ impl Component {
             Self::Bar => "bar-daemon",
             Self::Notifications => "bar-notification-daemon",
             Self::Power => "bar-power-daemon",
+            Self::Compositor => "bar-compositor-daemon",
         }
     }
     pub const fn bus_name(self) -> &'static str {
@@ -20,6 +22,7 @@ impl Component {
             Self::Bar => "org.laufan.BarDaemon",
             Self::Notifications => "org.laufan.BarNotificationDaemon",
             Self::Power => "org.laufan.BarPowerDaemon",
+            Self::Compositor => "org.laufan.BarCompositorDaemon",
         }
     }
     pub(crate) fn owns_stream(self, name: &str) -> bool {
@@ -29,6 +32,9 @@ impl Component {
             | stream::POWER_PROFILE
             | stream::POWER_SLEEP
             | stream::SLEEP_POLICY => Self::Power,
+            stream::WORKSPACES | stream::WORKAREA | stream::COMPOSITOR | stream::DISPLAY_POLICY => {
+                Self::Compositor
+            }
             _ => Self::Bar,
         };
         self == owner
@@ -48,6 +54,17 @@ impl Component {
             .any(|prefix| name.starts_with(prefix))
         {
             return self == Self::Power;
+        }
+        if [
+            "workspace.",
+            "displayPolicy.",
+            "displayFocus.",
+            "displayLayout.",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        {
+            return self == Self::Compositor;
         }
         self == Self::Bar
     }
@@ -95,10 +112,15 @@ mod tests {
     fn streams_have_one_process_owner() {
         for stream in crate::protocol::STREAMS {
             assert_eq!(
-                [Component::Bar, Component::Notifications, Component::Power]
-                    .iter()
-                    .filter(|c| c.owns_stream(stream))
-                    .count(),
+                [
+                    Component::Bar,
+                    Component::Notifications,
+                    Component::Power,
+                    Component::Compositor
+                ]
+                .iter()
+                .filter(|c| c.owns_stream(stream))
+                .count(),
                 1,
                 "{stream}"
             );
@@ -108,7 +130,12 @@ mod tests {
     }
     #[tokio::test]
     async fn component_snapshots_and_calls_reject_foreign_domains() {
-        for component in [Component::Bar, Component::Notifications, Component::Power] {
+        for component in [
+            Component::Bar,
+            Component::Notifications,
+            Component::Power,
+            Component::Compositor,
+        ] {
             let state = crate::state::StateStore::for_component(component);
             let api = crate::api::ApiService::new(
                 state.clone(),

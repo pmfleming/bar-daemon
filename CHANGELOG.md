@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Move workspaces, display policy, work area and compositor preferences to
+  `bar-compositor-daemon`. Compositor session loss stops only this process.
+
 - Isolate battery, power profiles and sleep policies in `bar-power-daemon`;
   other consumers observe logind sleep transitions independently.
 

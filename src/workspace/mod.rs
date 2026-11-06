@@ -61,7 +61,7 @@ pub async fn run_command(
     let connection = crate::bus::session().await?;
     let proxy = zbus::Proxy::new(
         &connection,
-        crate::api::BUS_NAME,
+        crate::component::Component::Compositor.bus_name(),
         crate::api::OBJECT_PATH,
         crate::api::INTERFACE,
     )

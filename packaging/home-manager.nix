@@ -27,6 +27,11 @@ in
       Service = { Type = "dbus"; BusName = "org.laufan.BarPowerDaemon"; ExecStart = "${cfg.package}/bin/bar-power-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${idleConfig}"; };
       Install.WantedBy = [ cfg.target ];
     };
+    systemd.user.services.bar-compositor-daemon = {
+      Unit = { Description = "Compositor integration and display policy"; PartOf = [ cfg.target ]; After = [ cfg.target "dbus.service" ] ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service"; Conflicts = lib.optional cfg.displays.enable "hypr-monitor-auto.service"; };
+      Service = { Type = "dbus"; BusName = "org.laufan.BarCompositorDaemon"; ExecStart = "${cfg.package}/bin/bar-compositor-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.displays.enable "BAR_DAEMON_DISPLAY_CONTROL=1"; };
+      Install.WantedBy = [ cfg.target ];
+    };
     systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
       Service = {
         Type = lib.mkForce "notify";
