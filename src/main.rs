@@ -62,6 +62,7 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum DebugCommand {
     ProtocolRegistry,
+    RoutingJavascript,
     ContractFixture,
     ReadContractFixture,
     ControlContractFixture,
@@ -94,6 +95,15 @@ async fn main() -> Result<()> {
 }
 
 async fn dispatch(command: Command) -> Result<()> {
+    if matches!(
+        command,
+        Command::Debug {
+            command: DebugCommand::RoutingJavascript
+        }
+    ) {
+        print!("{}", bar_daemon::component::routing_javascript());
+        return Ok(());
+    }
     match command {
         Command::Daemon => run_daemon().await,
         Command::Client => run_client().await,
@@ -112,6 +122,7 @@ async fn dispatch(command: Command) -> Result<()> {
         } => bar_daemon::run_idle_sleep(sleep_minutes, &generation, episode).await,
         Command::Debug { command } => {
             let value = match command {
+                DebugCommand::RoutingJavascript => unreachable!("handled before JSON dispatch"),
                 DebugCommand::ProtocolRegistry => protocol::registry(),
                 DebugCommand::ContractFixture => protocol::contract_fixture()?,
                 DebugCommand::ReadContractFixture => protocol::read_contract_fixture().await?,

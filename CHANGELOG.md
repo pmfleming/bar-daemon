@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Generate Shelllist routing from the explicit native ownership registry and
+  reject unregistered streams; route application workspace requests to compositor.
+
 - Hold the legacy monolith bus name for the entire agenda lifetime. The status
   endpoint now uses `org.laufan.BarStatusDaemon`, so legacy startup cannot race
   an active activity store and activity does not depend on status responsiveness.
