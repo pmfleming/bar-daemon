@@ -34,7 +34,7 @@ use self::{
 };
 
 #[cfg(test)]
-pub(crate) const BUS_NAME: &str = "org.laufan.BarDaemon";
+pub(crate) const BUS_NAME: &str = "org.laufan.BarStatusDaemon";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
 pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon2";
 

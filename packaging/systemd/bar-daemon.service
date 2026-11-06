@@ -6,7 +6,7 @@ After=graphical-session.target dbus.service pipewire.service wireplumber.service
 
 [Service]
 Type=dbus
-BusName=org.laufan.BarDaemon
+BusName=org.laufan.BarStatusDaemon
 ExecStart=@out@/bin/bar-daemon daemon
 Environment=BAR_DAEMON_NOTIFICATION_BACKEND=native
 Restart=on-failure

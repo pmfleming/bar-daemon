@@ -6,7 +6,7 @@ only its own methods and streams. `bar.snapshot {}` returns that owner's state.
 
 | Executable / user service | Responsibilities | Session bus name |
 | --- | --- | --- |
-| `bar-daemon` | Media, audio, brightness, hardware OSD, theme, updates, search | `org.laufan.BarDaemon` |
+| `bar-daemon` | Media, audio, brightness, hardware OSD, theme, updates, search | `org.laufan.BarStatusDaemon` |
 | `bar-notification-daemon` | Notification server, history, privacy and toast routing | `org.laufan.BarNotificationDaemon` |
 | `bar-power-daemon` | Battery, profiles, sleep, lid and critical-battery policy | `org.laufan.BarPowerDaemon` |
 | `bar-compositor-daemon` | Workspace lifecycle, display policy, geometry and preferences | `org.laufan.BarCompositorDaemon` |
@@ -22,7 +22,9 @@ processes observe logind sleep transitions independently of power policy.
 Deploy the matching package and Shelllist together, stop the old monolithic
 service, and start the five new services. Persistent paths and helper/polkit IDs
 are unchanged; no data copy is needed. The activity owner refuses agenda startup
-while a legacy monolith is still running. For offline agenda maintenance, stop
+while a legacy monolith is still running and holds its old bus name until
+shutdown, excluding later legacy startups. The status endpoint uses the distinct
+`org.laufan.BarStatusDaemon` name. For offline agenda maintenance, stop
 `bar-activity-daemon.service` and prevent its activation during maintenance.
 Workspace shortcuts and maintenance commands remain `bar-daemon workspace ...`
 and `bar-daemon agenda ...`; idle callbacks address the power owner.
@@ -157,7 +159,7 @@ See [`docs/architecture.md`](docs/architecture.md) for ownership and recovery bo
 
 D-Bus endpoint:
 
-- Bus: `org.laufan.BarDaemon`
+- Bus: `org.laufan.BarStatusDaemon`
 - Path: `/org/laufan/BarDaemon`
 - Interface: `org.laufan.BarDaemon1`
 

@@ -1,6 +1,6 @@
 //! Claim the legacy writer's exclusive bus owner before touching agenda data.
 use super::*;
-use crate::api::BUS_NAME;
+const BUS_NAME: &str = "org.laufan.BarDaemon";
 use tokio::io::{AsyncBufReadExt, BufReader};
 #[tokio::test]
 async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() {
@@ -38,9 +38,7 @@ async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() 
         .build()
         .await
         .unwrap();
-    claim_names(&first, crate::component::Component::Bar, false)
-        .await
-        .unwrap();
+    first.request_name(BUS_NAME).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let legacy = dir.path().join("todos.json");
     std::fs::write(&legacy, b"legacy snapshot must remain untouched").unwrap();
@@ -67,9 +65,18 @@ async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() 
         .unwrap();
     assert_eq!(owner.as_str(), first.unique_name().unwrap().as_str());
     first.release_name(BUS_NAME).await.unwrap();
-    drop(first);
+    // An unresponsive status owner has no role in agenda exclusion.
+    first
+        .request_name(crate::component::Component::Bar.bus_name())
+        .await
+        .unwrap();
     claim_names(&second, crate::component::Component::Activity, false)
         .await
         .unwrap();
+    // A legacy writer started later is excluded for the full activity lifetime.
+    let reply = first
+        .request_name_with_flags(BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
+        .await;
+    assert!(matches!(reply, Err(zbus::Error::NameTaken)));
     bus.kill().await.unwrap();
 }

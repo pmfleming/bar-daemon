@@ -28,7 +28,7 @@ async fn claim_names(
 ) -> Result<()> {
     use zbus::fdo::{RequestNameFlags, RequestNameReply};
     if component == crate::component::Component::Activity {
-        reject_legacy_activity_owner(connection).await?;
+        reserve_legacy_agenda_name(connection).await?;
     }
 
     for name in std::iter::once(component.bus_name())
@@ -65,7 +65,7 @@ async fn reserve_startup(
         component.name()
     );
     if component == crate::component::Component::Activity {
-        reject_legacy_activity_owner(connection).await?;
+        reserve_legacy_agenda_name(connection).await?;
     }
     let bus = zbus::fdo::DBusProxy::new(connection).await?;
     for name in std::iter::once(component.bus_name())
@@ -79,16 +79,34 @@ async fn reserve_startup(
     Ok(())
 }
 
-async fn reject_legacy_activity_owner(connection: &zbus::Connection) -> Result<()> {
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        let bus = zbus::fdo::DBusProxy::new(connection).await?;
-        if !bus.name_has_owner(crate::component::Component::Bar.bus_name().try_into()?).await? { return Ok(()); }
-        let proxy = zbus::Proxy::new(connection, crate::component::Component::Bar.bus_name(), OBJECT_PATH, crate::api::INTERFACE).await?;
-        let owner = proxy.call::<_, _, String>("Component", &()).await;
-        anyhow::ensure!(owner.as_deref().ok() == Some("bar-daemon"),
-            "legacy bar-daemon may own the agenda store; stop it before starting bar-activity-daemon");
-        Ok(())
-    }).await.context("identify legacy agenda owner before migration")?
+/// Own the pre-split writer's bus name for the entire agenda lifetime. This
+/// excludes old binaries started after us, without querying the status process.
+async fn reserve_legacy_agenda_name(connection: &zbus::Connection) -> Result<()> {
+    use zbus::fdo::{RequestNameFlags, RequestNameReply};
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        connection
+            .request_name_with_flags("org.laufan.BarDaemon", RequestNameFlags::DoNotQueue.into()),
+    )
+    .await
+    .context("D-Bus unavailable while reserving the legacy agenda writer name")?;
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(zbus::Error::NameTaken) => anyhow::bail!(
+            "a legacy bar-daemon owns the agenda writer name; stop it before starting activity"
+        ),
+        Err(error) => {
+            return Err(error).context("D-Bus failed while reserving the agenda writer name");
+        }
+    };
+    anyhow::ensure!(
+        matches!(
+            reply,
+            RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner
+        ),
+        "a legacy bar-daemon owns the agenda writer name; stop it before starting activity"
+    );
+    Ok(())
 }
 
 pub(crate) async fn run() -> Result<()> {

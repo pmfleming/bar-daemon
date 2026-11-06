@@ -35,7 +35,7 @@ let
       ];
     }).config;
 in
-assert session.systemd.user.services.bar-daemon.serviceConfig.BusName == "org.laufan.BarDaemon";
+assert session.systemd.user.services.bar-daemon.serviceConfig.BusName == "org.laufan.BarStatusDaemon";
 assert builtins.elem "BAR_DAEMON_DISPLAY_CONTROL=1"
   session.systemd.user.services.bar-compositor-daemon.serviceConfig.Environment;
 assert builtins.elem "BAR_DAEMON_YOUTUBE_METADATA=1"

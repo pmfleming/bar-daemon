@@ -144,8 +144,8 @@ async fn notification_startup_failure_leaves_bar_available() -> Result<()> {
             .success()
     );
     let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
-    session.ready("org.laufan.BarDaemon").await?;
-    let snapshot = session.snapshot("org.laufan.BarDaemon").await?;
+    session.ready("org.laufan.BarStatusDaemon").await?;
+    let snapshot = session.snapshot("org.laufan.BarStatusDaemon").await?;
     ensure!(snapshot["ok"] == true, "{snapshot}");
     ensure!(snapshot["data"]["snapshot"].get("notifications").is_none());
     ensure!(
@@ -229,8 +229,8 @@ async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
     let session = Session::new().await?;
     let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
     let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
-    session.ready("org.laufan.BarDaemon").await?;
-    session.snapshot("org.laufan.BarDaemon").await?;
+    session.ready("org.laufan.BarStatusDaemon").await?;
+    session.snapshot("org.laufan.BarStatusDaemon").await?;
     session.ready("org.laufan.BarPowerDaemon").await?;
     let before = session.snapshot("org.laufan.BarPowerDaemon").await?;
     assert_no_audio_controller(&power)?;
@@ -321,8 +321,8 @@ async fn legal_large_search_catalog_traverses_socket_and_stdio_bridge() -> Resul
     use tokio::io::AsyncWriteExt;
     let session = Session::new().await?;
     let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
-    session.ready("org.laufan.BarDaemon").await?;
-    session.snapshot("org.laufan.BarDaemon").await?;
+    session.ready("org.laufan.BarStatusDaemon").await?;
+    session.snapshot("org.laufan.BarStatusDaemon").await?;
     let items: Vec<_> = (0..12_000)
         .map(|i| serde_json::json!({"key":format!("item-{i}"), "title":"a".repeat(80)}))
         .collect();

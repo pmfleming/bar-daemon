@@ -21,7 +21,7 @@ impl Component {
     }
     pub const fn bus_name(self) -> &'static str {
         match self {
-            Self::Bar => "org.laufan.BarDaemon",
+            Self::Bar => "org.laufan.BarStatusDaemon",
             Self::Notifications => "org.laufan.BarNotificationDaemon",
             Self::Power => "org.laufan.BarPowerDaemon",
             Self::Compositor => "org.laufan.BarCompositorDaemon",

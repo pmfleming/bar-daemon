@@ -16,7 +16,7 @@
   };
   Service = {
     Type = "dbus";
-    BusName = "org.laufan.BarDaemon";
+    BusName = "org.laufan.BarStatusDaemon";
     ExecStart = "${cfg.package}/bin/bar-daemon daemon";
     Environment = [
       "BAR_DAEMON_NOTIFICATION_BACKEND=native"

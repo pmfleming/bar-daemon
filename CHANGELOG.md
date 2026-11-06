@@ -23,6 +23,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Hold the legacy monolith bus name for the entire agenda lifetime. The status
+  endpoint now uses `org.laufan.BarStatusDaemon`, so legacy startup cannot race
+  an active activity store and activity does not depend on status responsiveness.
+
 - Prepare search catalogs on bounded blocking workers outside the store lock;
   release and disconnect fence in-flight preparations against resurrection.
 

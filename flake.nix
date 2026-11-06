@@ -115,6 +115,7 @@
               install -Dm644 packaging/systemd/bar-notification-daemon.service $out/share/systemd/user/bar-notification-daemon.service
               install -Dm644 packaging/dbus/org.laufan.BarNotificationDaemon.service $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
+              install -Dm644 packaging/dbus/org.laufan.BarStatusDaemon.service $out/share/dbus-1/services/org.laufan.BarStatusDaemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service
               install -Dm644 ${./packaging/dbus/org.freedesktop.Notifications.service} \
@@ -130,6 +131,7 @@
                 $out/share/systemd/user/bar-notification-daemon.service \
                 $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service \
+                $out/share/dbus-1/services/org.laufan.BarStatusDaemon.service \
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service \
                 --replace-fail @out@ $out
             '';
