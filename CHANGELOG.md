@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Prepare search catalogs on bounded blocking workers outside the store lock;
+  release and disconnect fence in-flight preparations against resurrection.
+
 - Align direct D-Bus, socket, stdio bridge and Shelllist buffering bounds with
   the documented search catalog allowance, including JSON escaping overhead.
 

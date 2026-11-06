@@ -44,17 +44,44 @@ struct Catalog {
     prepared: Arc<PreparedCatalog>,
 }
 type Catalogs = HashMap<String, HashMap<String, Catalog>>;
+#[derive(Default)]
+struct Store {
+    clients: Catalogs,
+    pending: HashMap<(String, String), (u64, u64)>,
+    next: u64,
+}
+struct Preparation {
+    store: Arc<Mutex<Store>>,
+    key: (String, String),
+    ticket: u64,
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        let mut store = self.store.lock().unwrap();
+        if store
+            .pending
+            .get(&self.key)
+            .is_some_and(|(ticket, _)| *ticket == self.ticket)
+        {
+            store.pending.remove(&self.key);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Search {
-    catalogs: Arc<Mutex<Catalogs>>,
+    catalogs: Arc<Mutex<Store>>,
     workers: Arc<Semaphore>,
+    #[cfg(test)]
+    preparation_barrier: Arc<Mutex<Option<Arc<std::sync::Barrier>>>>,
 }
 impl Default for Search {
     fn default() -> Self {
         Self {
             catalogs: Arc::default(),
             workers: Arc::new(Semaphore::new(2)),
+            #[cfg(test)]
+            preparation_barrier: Arc::default(),
         }
     }
 }
@@ -78,78 +105,114 @@ impl Search {
                         "invalid search owner, revision or catalog size",
                     );
                 }
-                let bytes = request
-                    .items
-                    .iter()
-                    .map(|item| {
-                        std::mem::size_of::<SearchItem>()
-                            + item.key.len()
-                            + item.title.len()
-                            + item.subtitle.len()
-                            + item
-                                .keywords
-                                .iter()
-                                .map(|keyword| keyword.len() + std::mem::size_of::<String>())
-                                .sum::<usize>()
-                    })
-                    .sum::<usize>();
-                if bytes > MAX_BYTES
-                    || request
-                        .items
-                        .iter()
-                        .any(|item| !item.score.is_finite() || !item.provider_priority.is_finite())
-                {
-                    return error("validation-error", "search catalog exceeds its bounds");
+                let Ok(permit) = self.workers.clone().try_acquire_owned() else {
+                    return error("busy", "search workers are busy");
+                };
+                let key = (owner.name().to_owned(), request.owner.clone());
+                let ticket = {
+                    let mut store = self.catalogs.lock().unwrap();
+                    if store
+                        .pending
+                        .get(&key)
+                        .is_some_and(|(_, revision)| *revision >= request.revision)
+                    {
+                        return error("busy", "catalog revision is already preparing");
+                    }
+                    let fresh = !store.clients.contains_key(owner.name());
+                    if fresh && store.clients.len() >= MAX_CLIENTS {
+                        return error("busy", "search client capacity reached");
+                    }
+                    store.clients.entry(owner.name().into()).or_default();
+                    store.next = store.next.wrapping_add(1);
+                    let ticket = store.next;
+                    store
+                        .pending
+                        .insert(key.clone(), (ticket, request.revision));
+                    if fresh {
+                        let owner = owner.clone();
+                        let catalogs = self.catalogs.clone();
+                        tokio::spawn(async move {
+                            owner.closed().await;
+                            let mut store = catalogs.lock().unwrap();
+                            store.clients.remove(owner.name());
+                            store
+                                .pending
+                                .retain(|(transport, _), _| transport != owner.name());
+                        });
+                    }
+                    ticket
+                };
+                let preparation = Preparation {
+                    store: self.catalogs.clone(),
+                    key: key.clone(),
+                    ticket,
+                };
+                #[cfg(test)]
+                let barrier = self.preparation_barrier.lock().unwrap().clone();
+                let prepared = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    #[cfg(test)]
+                    if let Some(barrier) = barrier {
+                        barrier.wait();
+                    }
+                    prepare_catalog(request)
+                })
+                .await;
+                let (logical_owner, catalog) = match prepared {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(response)) => return response,
+                    Err(_) => return error("internal-error", "search preparation worker failed"),
+                };
+                if !owner.exists().await {
+                    return error(
+                        "owner-lost",
+                        "search caller disconnected during preparation",
+                    );
                 }
-                let fingerprint: [u8; 32] =
-                    Sha256::digest(serde_json::to_vec(&request.items).unwrap()).into();
-                let mut catalogs = self.catalogs.lock().unwrap();
+                let mut store = self.catalogs.lock().unwrap();
+                if store.pending.get(&key).map(|(ticket, _)| *ticket) != Some(preparation.ticket) {
+                    return error(
+                        "catalog-released",
+                        "catalog was released or superseded during preparation",
+                    );
+                }
+                store.pending.remove(&key);
+                let catalogs = &mut store.clients;
                 let fresh = !catalogs.contains_key(owner.name());
                 if fresh && catalogs.len() >= MAX_CLIENTS {
                     return error("busy", "search client capacity reached");
                 }
                 let client = catalogs.entry(owner.name().into()).or_default();
-                if let Some(previous) = client.get(&request.owner)
-                    && previous.revision >= request.revision
+                if let Some(previous) = client.get(&logical_owner)
+                    && previous.revision >= catalog.revision
                 {
-                    if previous.revision == request.revision && previous.fingerprint == fingerprint
+                    if previous.revision == catalog.revision
+                        && previous.fingerprint == catalog.fingerprint
                     {
                         return success(
-                            json!({"owner":request.owner, "revision":request.revision}),
+                            json!({"owner":logical_owner, "revision":catalog.revision}),
                         );
                     }
                     return error("stale-catalog", "search catalog revision must increase");
                 }
-                if (!client.contains_key(&request.owner) && client.len() >= MAX_CATALOGS)
+                if (!client.contains_key(&logical_owner) && client.len() >= MAX_CATALOGS)
                     || client
                         .iter()
-                        .filter(|(key, _)| *key != &request.owner)
+                        .filter(|(key, _)| *key != &logical_owner)
                         .map(|(_, catalog)| catalog.bytes)
                         .sum::<usize>()
-                        + bytes
+                        + catalog.bytes
                         > MAX_BYTES
                 {
                     return error("busy", "search catalog capacity reached");
                 }
-                client.insert(
-                    request.owner.clone(),
-                    Catalog {
-                        revision: request.revision,
-                        bytes,
-                        fingerprint,
-                        prepared: Arc::new(PreparedCatalog::new(&request.items)),
-                    },
-                );
-                if fresh {
-                    let owner = owner.clone();
-                    let catalogs = self.catalogs.clone();
-                    tokio::spawn(async move {
-                        owner.closed().await;
-                        catalogs.lock().unwrap().remove(owner.name());
-                    });
-                }
-                success(json!({"owner":request.owner, "revision":request.revision}))
+                let revision = catalog.revision;
+                client.insert(logical_owner.clone(), catalog);
+                drop(store);
+                drop(preparation);
+                success(json!({"owner":logical_owner, "revision":revision}))
             }
+
             "search.query" => {
                 let request = match decode_request::<QueryRequest>(params, method) {
                     Ok(request) => request,
@@ -159,8 +222,9 @@ impl Search {
                     return error("validation-error", "invalid search owner or query size");
                 }
                 let prepared = {
-                    let catalogs = self.catalogs.lock().unwrap();
-                    let Some(catalog) = catalogs
+                    let store = self.catalogs.lock().unwrap();
+                    let Some(catalog) = store
+                        .clients
                         .get(owner.name())
                         .and_then(|client| client.get(&request.owner))
                     else {
@@ -193,7 +257,11 @@ impl Search {
                     Ok(request) => request,
                     Err(response) => return response,
                 };
-                if let Some(client) = self.catalogs.lock().unwrap().get_mut(owner.name()) {
+                let mut store = self.catalogs.lock().unwrap();
+                store
+                    .pending
+                    .remove(&(owner.name().into(), request.owner.clone()));
+                if let Some(client) = store.clients.get_mut(owner.name()) {
                     client.remove(&request.owner);
                 }
                 success(json!({"owner":request.owner}))
@@ -202,6 +270,46 @@ impl Search {
         }
     }
 }
+fn prepare_catalog(request: CatalogRequest) -> Result<(String, Catalog), Value> {
+    let bytes = request
+        .items
+        .iter()
+        .map(|item| {
+            std::mem::size_of::<SearchItem>()
+                + item.key.len()
+                + item.title.len()
+                + item.subtitle.len()
+                + item
+                    .keywords
+                    .iter()
+                    .map(|keyword| keyword.len() + std::mem::size_of::<String>())
+                    .sum::<usize>()
+        })
+        .sum::<usize>();
+    if bytes > MAX_BYTES
+        || request
+            .items
+            .iter()
+            .any(|item| !item.score.is_finite() || !item.provider_priority.is_finite())
+    {
+        return Err(error(
+            "validation-error",
+            "search catalog exceeds its bounds",
+        ));
+    }
+    let fingerprint = Sha256::digest(serde_json::to_vec(&request.items).unwrap()).into();
+    let prepared = Arc::new(PreparedCatalog::new(&request.items));
+    Ok((
+        request.owner,
+        Catalog {
+            revision: request.revision,
+            bytes,
+            fingerprint,
+            prepared,
+        },
+    ))
+}
+
 fn valid_owner(owner: &str) -> bool {
     !owner.is_empty() && owner.len() <= 128
 }

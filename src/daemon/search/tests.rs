@@ -147,6 +147,7 @@ async fn ranking_is_revision_fenced_owner_scoped_bounded_and_reclaimed_on_discon
                 .catalogs
                 .lock()
                 .unwrap()
+                .clients
                 .values()
                 .all(HashMap::is_empty)
         );
@@ -160,7 +161,7 @@ async fn ranking_is_revision_fenced_owner_scoped_bounded_and_reclaimed_on_discon
             true
         );
         drop(a);
-        while !search.catalogs.lock().unwrap().is_empty() {
+        while !search.catalogs.lock().unwrap().clients.is_empty() {
             tokio::task::yield_now().await;
         }
         drop(b);
@@ -169,4 +170,51 @@ async fn ranking_is_revision_fenced_owner_scoped_bounded_and_reclaimed_on_discon
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn preparation_does_not_hold_store_lock_and_release_fences_its_result() {
+    let bus = crate::battery::helper::authorization_tests::Bus::new();
+    let connection = bus.connection().await;
+    let owner = Owner::bus(
+        &connection,
+        connection.unique_name().unwrap().to_string(),
+        shelllist_daemon_tokio::OwnerLossMonitor::new(connection.clone()),
+    );
+    let search = Search::default();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    *search.preparation_barrier.lock().unwrap() = Some(barrier.clone());
+    let preparing = {
+        let search = search.clone();
+        let owner = owner.clone();
+        tokio::spawn(async move {
+            search
+                .call(
+                    "search.catalog",
+                    json!({"owner":"pending","revision":1,"items":[{"key":"one","title":"One"}]}),
+                    &owner,
+                )
+                .await
+        })
+    };
+    timeout(Duration::from_secs(2), async {
+        while search.catalogs.lock().unwrap().pending.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let released = timeout(
+        Duration::from_secs(2),
+        search.call("search.release", json!({"owner":"pending"}), &owner),
+    )
+    .await
+    .unwrap();
+    assert_eq!(released["ok"], true);
+    barrier.wait();
+    assert_eq!(
+        preparing.await.unwrap()["error"]["code"],
+        "catalog-released"
+    );
+    assert!(search.catalogs.lock().unwrap().clients[owner.name()].is_empty());
 }
