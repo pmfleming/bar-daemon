@@ -161,8 +161,15 @@ async fn send_freedesktop(notification: IncomingNotification) -> Result<u32> {
     let connection = crate::bus::session()
         .await
         .context("connect to notification session bus")?;
+    send_freedesktop_on(&connection, notification).await
+}
+
+pub(crate) async fn send_freedesktop_on(
+    connection: &zbus::Connection,
+    notification: IncomingNotification,
+) -> Result<u32> {
     let proxy = zbus::Proxy::new(
-        &connection,
+        connection,
         super::server::BUS_NAME,
         super::server::OBJECT_PATH,
         super::server::BUS_NAME,

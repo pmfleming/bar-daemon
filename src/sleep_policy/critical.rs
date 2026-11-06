@@ -169,7 +169,11 @@ impl Engine {
         self.state = State {
             phase: "countdown".into(),
             remaining_seconds: remaining as u32,
-            error: None,
+            error: if self.state.phase == "countdown" {
+                self.state.error.clone()
+            } else {
+                None
+            },
         };
         (warning, false)
     }
@@ -409,8 +413,8 @@ pub(crate) async fn monitor(store: StateStore, notifications: NotificationSink) 
 }
 
 impl Engine {
-    /// Read fresh evidence, deliver the warning, then persist intent before
-    /// returning an action. A failed prerequisite never reaches the worker.
+    /// Read fresh evidence, attempt the warning, then persist intent before
+    /// returning an action. Notification availability never authorizes or vetoes sleep.
     async fn refresh(
         &mut self,
         saved: &mut Recovery,
@@ -465,20 +469,13 @@ impl Engine {
     }
 
     fn warning_delivered(&mut self, result: Result<()>, policy: &Policy, now: u64) {
-        match result {
-            Ok(()) => {
-                // Start the full grace interval after delivery, not before a slow backend.
-                self.deadline = Some(now.saturating_add(u64::from(policy.grace_seconds)));
-                self.state.remaining_seconds = policy.grace_seconds;
-            }
-            Err(error) => self.stop(
-                "blocked",
-                Some(format!(
-                    "Cannot deliver critical battery warning: {error:#}"
-                )),
-            ),
-        }
-        // A failed warning latches the episode before refresh persists recovery.
+        // Always grant the full grace interval after the bounded delivery attempt.
+        // Sleep evidence, cancellation, locking and inhibitors still gate the action.
+        self.deadline = Some(now.saturating_add(u64::from(policy.grace_seconds)));
+        self.state.remaining_seconds = policy.grace_seconds;
+        self.state.error = result.err().map(|error| {
+            format!("Critical battery warning unavailable; protection remains active: {error:#}")
+        });
     }
 }
 
@@ -515,39 +512,61 @@ mod tests {
             ..Default::default()
         }
     }
+    #[tokio::test]
+    async fn unavailable_notification_server_does_not_cancel_critical_protection() {
+        let bus = crate::battery::helper::authorization_tests::Bus::new();
+        let connection = bus.connection().await;
+        let result = crate::activity::notifications::service::send_freedesktop_on(
+            &connection,
+            crate::activity::notifications::service::internal_notification(
+                "battery", "Critical", "Low", 2,
+            ),
+        )
+        .await
+        .map(|_| ());
+        assert!(result.is_err(), "private peer has no notification server");
+        let mut engine = Engine::default();
+        assert_eq!(engine.observe(&policy(), low(), 0, 0), (true, false));
+        engine.warning_delivered(result, &policy(), 2);
+        assert_eq!(engine.state.phase, "countdown");
+        assert!(!engine.latched);
+        assert!(
+            engine
+                .state
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("protection remains active")
+        );
+        assert_eq!(engine.observe(&policy(), low(), 61, 0), (false, false));
+        assert!(engine.state.error.is_some());
+        assert_eq!(engine.observe(&policy(), low(), 62, 0), (false, true));
+        assert!(engine.latched);
+        assert_eq!(engine.observe(&policy(), low(), 600, 0), (false, false));
+    }
+
     #[test]
-    fn warning_delivery_restarts_full_grace_and_failure_latches_before_persistence() {
-        for delivered in [false, true] {
-            let mut e = Engine::default();
-            assert_eq!(e.observe(&Policy::default(), low(), 0, 0), (false, false));
-            assert_eq!(e.observe(&policy(), low(), 0, 0), (true, false));
-            e.warning_delivered(Ok(()), &policy(), 10);
-            assert_eq!(e.observe(&policy(), low(), 69, 0), (false, false));
-            if delivered {
-                assert_eq!(e.observe(&policy(), low(), 70, 0), (false, true));
-                e.stop("failed", Some("inhibited".into()));
-            } else {
-                e.warning_delivered(Err(anyhow::anyhow!("unavailable")), &policy(), 69);
-                assert_eq!(e.state.phase, "blocked");
-            }
-            assert!(e.latched);
-            assert_eq!(e.observe(&policy(), low(), 600, 0), (false, false));
-            let saved = Recovery {
-                policy: policy(),
-                attempted: e.latched,
-            };
-            let restored: Recovery =
-                serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-            let mut restarted = Engine {
-                policy: Some(restored.policy),
-                latched: restored.attempted,
-                ..Default::default()
-            };
-            assert_eq!(
-                restarted.observe(&policy(), low(), 10000, 0),
-                (false, false)
-            );
-        }
+    fn warning_delivery_grants_full_grace_and_attempt_is_latched_durably() {
+        let mut engine = Engine::default();
+        assert_eq!(engine.observe(&policy(), low(), 0, 0), (true, false));
+        engine.warning_delivered(Ok(()), &policy(), 10);
+        assert_eq!(engine.observe(&policy(), low(), 69, 0), (false, false));
+        assert_eq!(engine.observe(&policy(), low(), 70, 0), (false, true));
+        let saved = Recovery {
+            policy: policy(),
+            attempted: engine.latched,
+        };
+        let restored: Recovery =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let mut restarted = Engine {
+            policy: Some(restored.policy),
+            latched: restored.attempted,
+            ..Default::default()
+        };
+        assert_eq!(
+            restarted.observe(&policy(), low(), 10000, 0),
+            (false, false)
+        );
     }
 
     #[test]

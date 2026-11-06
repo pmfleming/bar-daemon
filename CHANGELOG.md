@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Continue the critical-battery grace period when the notification server is
+  unavailable, retaining the warning error and all sleep safety checks.
+
 - Give an empty temporary workspace the icon of the app moved into it. Replace
   the icon when a different app fills it later, retain it while occupied, and
   preserve standard workspace category icons. Reuse the desktop icon cache.
