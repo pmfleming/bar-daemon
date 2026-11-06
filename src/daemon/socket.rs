@@ -75,7 +75,10 @@ pub(super) async fn listen(
         .serve(
             Arc::new(Service(connection)),
             BasicCorrelation,
-            JsonlSocketConfig::default(),
+            JsonlSocketConfig {
+                maximum_request_bytes: component.request_bytes(),
+                ..Default::default()
+            },
             stop,
         )
         .await

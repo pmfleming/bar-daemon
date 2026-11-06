@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Align direct D-Bus, socket, stdio bridge and Shelllist buffering bounds with
+  the documented search catalog allowance, including JSON escaping overhead.
+
 - Reserve startup privately and claim public D-Bus names only after persistent
   stores and interfaces are ready, including the freedesktop notification name.
 

@@ -315,3 +315,71 @@ async fn failed_notification_store_never_advertises_public_readiness() -> Result
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn legal_large_search_catalog_traverses_socket_and_stdio_bridge() -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let session = Session::new().await?;
+    let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
+    session.ready("org.laufan.BarDaemon").await?;
+    session.snapshot("org.laufan.BarDaemon").await?;
+    let items: Vec<_> = (0..12_000)
+        .map(|i| serde_json::json!({"key":format!("item-{i}"), "title":"a".repeat(80)}))
+        .collect();
+    let request = serde_json::json!({"op":"call", "id":"bulk", "method":"search.catalog", "params":{"owner":"large", "revision":1,"items":items}}).to_string()+"\n";
+    ensure!(request.len() > 1024 * 1024);
+    // Wait for the actual socket listener, not just the public D-Bus name.
+    let stream = timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(s) =
+                tokio::net::UnixStream::connect(session.root.path().join("run/bar-daemon.sock"))
+                    .await
+            {
+                return s;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let (read, mut write) = stream.into_split();
+    write.write_all(request.as_bytes()).await?;
+    let mut line = String::new();
+    timeout(
+        Duration::from_secs(15),
+        BufReader::new(read).read_line(&mut line),
+    )
+    .await??;
+    ensure!(
+        serde_json::from_str::<serde_json::Value>(&line)?["response"]["ok"] == true,
+        "{line}"
+    );
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_bar-daemon"))
+        .arg("client")
+        .env("DBUS_SESSION_BUS_ADDRESS", &session.address)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    bridge
+        .stdin
+        .take()
+        .context("bridge stdin")?
+        .write_all(request.as_bytes())
+        .await?;
+    let mut records = BufReader::new(bridge.stdout.take().context("bridge stdout")?).lines();
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let line = records.next_line().await?.context("bridge reply")?;
+            let value: serde_json::Value = serde_json::from_str(&line)?;
+            if value["id"] == "bulk" {
+                ensure!(value["response"]["ok"] == true, "{value}");
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    let _ = bridge.kill().await;
+    bar.kill().await?;
+    Ok(())
+}

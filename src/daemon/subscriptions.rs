@@ -24,8 +24,12 @@ pub(super) struct BarDaemon {
 impl BarDaemon {
     pub(super) fn new(api: ApiService, state: StateStore) -> Self {
         Self {
-            boundary: shelllist_daemon_tokio::ServiceBoundary::new(
+            boundary: shelllist_daemon_tokio::ServiceBoundary::with_limits(
                 shelllist_daemon_core::ApiIdentity::new(protocol::NAME, protocol::VERSION as u32),
+                64,
+                16,
+                state.component().request_bytes(),
+                32 * 1024 * 1024,
             ),
             api: Arc::new(api),
             operations: super::battery_operations::Operations::default(),

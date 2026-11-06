@@ -28,6 +28,15 @@ impl Component {
             Self::Activity => "org.laufan.BarActivityDaemon",
         }
     }
+    // The 4 MiB catalog budget counts decoded strings. JSON escaping can grow
+    // those strings sixfold; leave bounded room for fields and the outer record.
+    pub(crate) const fn request_bytes(self) -> usize {
+        if matches!(self, Self::Bar) {
+            32 * 1024 * 1024
+        } else {
+            1024 * 1024
+        }
+    }
     pub(crate) fn owns_stream(self, name: &str) -> bool {
         let owner = match name {
             stream::NOTIFICATIONS | stream::NOTIFICATION_ACTIVE => Self::Notifications,
