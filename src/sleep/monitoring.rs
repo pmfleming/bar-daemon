@@ -96,7 +96,7 @@ async fn observe<F>(
 ) where
     F: FnMut() -> Option<i128>,
 {
-    let mut resumes = resume::ResumeDetector::default();
+    let mut resumes = shelllist_daemon_tokio::SleepTransitionDetector::default();
     // Establish the clock baseline before waiting for D-Bus setup or signals.
     resumes.poll(sample());
     let mut clock = interval(poll_interval);
@@ -108,18 +108,18 @@ async fn observe<F>(
             event = events.recv() => match event {
                 Some(Event::Prepare(preparing)) => {
                     super::outcome::TRACKER.prepared(preparing);
-                    if !preparing && resumes.signal(sample()) {
-                        store.record_resume().await;
-                    } else {
-                        store.record_sleep_preparation(preparing).await;
-                    }
+                    let previous = resumes.state();
+                    let current = resumes.signal(preparing, sample());
+                    if current.resume_generation != previous.resume_generation { store.record_resume().await; }
+                    else { store.record_sleep_preparation(current.preparing).await; }
                     refresh.send_replace(());
                 }
                 Some(Event::Refresh) => { refresh.send_replace(()); }
                 None => return,
             },
             _ = clock.tick() => {
-                if resumes.poll(sample()) {
+                let previous = resumes.state();
+                if resumes.poll(sample()).resume_generation != previous.resume_generation {
                     store.record_resume().await;
                     refresh.send_replace(());
                 }

@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Share preparation, initial-read and suspend-clock resume semantics in the
+  daemon framework across policy owners and read-only observers.
+
 - Scope component default logging to the daemon and its framework instead of
   enabling informational logs from every dependency; preserve RUST_LOG overrides.
 
