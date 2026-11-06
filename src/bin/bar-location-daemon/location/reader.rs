@@ -4,10 +4,9 @@ use super::{
     control::{self, Command, Request},
     storage::Storage,
 };
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use zbus::{Connection, message::Header};
-use zvariant::Value;
 
 pub(super) struct Reader {
     pub storage: Storage,
@@ -22,27 +21,15 @@ async fn authorize(
     let sender = header
         .sender()
         .ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing caller identity".into()))?;
-    let authorized = tokio::time::timeout(Duration::from_secs(3), async {
-        let proxy = zbus::Proxy::new(
+    let authorized = tokio::time::timeout(Duration::from_secs(6), async {
+        shelllist_daemon_tokio::authorize_polkit(
             connection,
-            "org.freedesktop.PolicyKit1",
-            "/org/freedesktop/PolicyKit1/Authority",
-            "org.freedesktop.PolicyKit1.Authority",
+            sender,
+            action,
+            Duration::from_secs(3),
+            false,
         )
         .await?;
-        let subject = (
-            "system-bus-name",
-            HashMap::from([("name", Value::from(sender.as_str()))]),
-        );
-        let (allowed, _, _): (bool, bool, HashMap<String, String>) = proxy
-            .call(
-                "CheckAuthorization",
-                &(subject, action, HashMap::<&str, &str>::new(), 0_u32, ""),
-            )
-            .await?;
-        if !allowed {
-            return Err(zbus::Error::Failure("Not authorized".into()));
-        }
         zbus::fdo::DBusProxy::new(connection)
             .await?
             .get_connection_unix_user(sender.clone().into())

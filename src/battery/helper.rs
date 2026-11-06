@@ -1,24 +1,23 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use std::collections::HashMap;
 use tokio::signal::{
     ctrl_c,
     unix::{SignalKind, signal},
 };
 use zbus::{Connection, connection, message::Header};
-use zvariant::Value;
 
 use super::config::{valid_thresholds, validate_battery_id};
 
 pub(crate) const BUS_NAME: &str = "org.laufan.BarBatteryHelper";
 pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarBatteryHelper";
 pub(crate) const INTERFACE: &str = "org.laufan.BarBatteryHelper1";
+#[cfg(test)]
 const POLKIT_BUS: &str = "org.freedesktop.PolicyKit1";
+#[cfg(test)]
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
-const POLKIT_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 const POLKIT_THRESHOLDS_ACTION: &str = "org.laufan.bar-daemon.set-battery-thresholds";
 const POLKIT_BEHAVIOUR_ACTION: &str = "org.laufan.bar-daemon.set-battery-charge-behaviour";
 
@@ -182,59 +181,12 @@ async fn authorize(
     let sender = header
         .sender()
         .ok_or_else(|| zbus::fdo::Error::AccessDenied("caller has no D-Bus identity".into()))?;
-    let proxy = zbus::Proxy::new(connection, POLKIT_BUS, POLKIT_PATH, POLKIT_INTERFACE)
-        .await
-        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-    let subject_details = HashMap::from([("name", Value::from(sender.as_str()))]);
-    let subject = ("system-bus-name", subject_details);
-    let details = HashMap::<&str, &str>::new();
-    // A separate cancellation ID per request; never supplied as caller identity.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let cancellation_id = format!(
-        "battery-{}",
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
-    let monitor = shelllist_daemon_tokio::OwnerLossMonitor::new(connection.clone());
     let budget = if flags == 0 {
         std::time::Duration::from_secs(3)
     } else {
         super::authorization::AUTHORIZATION_BUDGET
     };
-    let body = (subject, action, details, flags, cancellation_id.as_str());
-    let check =
-        proxy.call::<_, _, (bool, bool, HashMap<String, String>)>("CheckAuthorization", &body);
-    let result = tokio::select! {
-        result = tokio::time::timeout(budget, check) => result.ok(),
-        _ = monitor.wait(sender.as_str()) => None,
-    };
-    let Some(result) = result else {
-        // Dropping a local wait alone does not cancel polkit. Bound cleanup too.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            proxy.call::<_, _, ()>("CancelCheckAuthorization", &(cancellation_id.as_str(),)),
-        )
-        .await;
-        return Err(zbus::fdo::Error::AccessDenied(
-            "authorization cancelled or expired; no write started".into(),
-        ));
-    };
-    let (authorized, _challenge, _details) =
-        result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-    // Owner loss may race a successful authorization. No await between this
-    // check returning and the synchronous writer. A write already begun cannot
-    // be rolled back by disconnect/cancellation.
-    if !monitor.has_owner(sender.as_str()).await.map_err(failed)? {
-        return Err(zbus::fdo::Error::AccessDenied(
-            "caller disconnected before write".into(),
-        ));
-    }
-    if authorized {
-        Ok(())
-    } else {
-        Err(zbus::fdo::Error::AccessDenied(
-            "power setting change was not authorized".into(),
-        ))
-    }
+    shelllist_daemon_tokio::authorize_polkit(connection, sender, action, budget, flags != 0).await
 }
 
 #[derive(Debug, Clone)]
