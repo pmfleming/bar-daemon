@@ -17,7 +17,7 @@ use serde_json::Value;
 pub(super) struct DesktopEffects {
     state: StateStore,
     hyprland: HyprlandClient,
-    audio: AudioController,
+    audio: Option<AudioController>,
     brightness: BrightnessService,
     media: MediaService,
 }
@@ -31,7 +31,9 @@ impl DesktopEffects {
         Self {
             state: state.clone(),
             hyprland: HyprlandClient::default(),
-            audio: AudioController::new(state),
+            audio: state
+                .owns_stream(crate::protocol::stream::AUDIO)
+                .then(|| AudioController::new(state)),
             brightness,
             media,
         }
@@ -109,6 +111,8 @@ impl DesktopEffects {
         command: AudioCommand,
     ) -> Result<crate::model::AudioState, Value> {
         self.audio
+            .as_ref()
+            .ok_or_else(|| super::error("unsupported-domain", "audio belongs to bar-daemon"))?
             .execute(command)
             .await
             .map_err(|message| super::error("audio-operation-failed", message))

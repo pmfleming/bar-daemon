@@ -7,6 +7,7 @@ pub enum Component {
     Notifications,
     Power,
     Compositor,
+    Activity,
 }
 impl Component {
     pub const fn name(self) -> &'static str {
@@ -15,6 +16,7 @@ impl Component {
             Self::Notifications => "bar-notification-daemon",
             Self::Power => "bar-power-daemon",
             Self::Compositor => "bar-compositor-daemon",
+            Self::Activity => "bar-activity-daemon",
         }
     }
     pub const fn bus_name(self) -> &'static str {
@@ -23,6 +25,7 @@ impl Component {
             Self::Notifications => "org.laufan.BarNotificationDaemon",
             Self::Power => "org.laufan.BarPowerDaemon",
             Self::Compositor => "org.laufan.BarCompositorDaemon",
+            Self::Activity => "org.laufan.BarActivityDaemon",
         }
     }
     pub(crate) fn owns_stream(self, name: &str) -> bool {
@@ -35,6 +38,7 @@ impl Component {
             stream::WORKSPACES | stream::WORKAREA | stream::COMPOSITOR | stream::DISPLAY_POLICY => {
                 Self::Compositor
             }
+            stream::ACTIVITY | stream::TIMEZONE => Self::Activity,
             _ => Self::Bar,
         };
         self == owner
@@ -65,6 +69,12 @@ impl Component {
         .any(|prefix| name.starts_with(prefix))
         {
             return self == Self::Compositor;
+        }
+        if ["agenda.", "activity.", "locations.", "location.", "todos."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            return self == Self::Activity;
         }
         self == Self::Bar
     }
@@ -116,13 +126,33 @@ mod tests {
                     Component::Bar,
                     Component::Notifications,
                     Component::Power,
-                    Component::Compositor
+                    Component::Compositor,
+                    Component::Activity
                 ]
                 .iter()
                 .filter(|c| c.owns_stream(stream))
                 .count(),
                 1,
                 "{stream}"
+            );
+        }
+        for method in crate::protocol::METHODS
+            .iter()
+            .filter(|m| **m != "bar.snapshot")
+        {
+            assert_eq!(
+                [
+                    Component::Bar,
+                    Component::Notifications,
+                    Component::Power,
+                    Component::Compositor,
+                    Component::Activity
+                ]
+                .iter()
+                .filter(|c| c.owns_method(method))
+                .count(),
+                1,
+                "{method}"
             );
         }
         assert!(!Component::Bar.owns_method("notifications.invoke"));
@@ -135,6 +165,7 @@ mod tests {
             Component::Notifications,
             Component::Power,
             Component::Compositor,
+            Component::Activity,
         ] {
             let state = crate::state::StateStore::for_component(component);
             let api = crate::api::ApiService::new(

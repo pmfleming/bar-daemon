@@ -72,7 +72,10 @@
             ];
             HYPRIDLE_TEST_BIN = "${managedHypridle}/bin/hypridle";
             LOCATION_GEOCLUE_AGENT = "${locationGeoclue}/libexec/geoclue-2.0/demos/agent";
-            cargoTestFlags = [ "--workspace" "--all-targets" ];
+            cargoTestFlags = [
+              "--workspace"
+              "--all-targets"
+            ];
             cargoBuildFlags = [ "--workspace" ];
             checkFlags = [ "--include-ignored" ];
             # Qualify the exact packaged Turso/Syscall build in private temporary
@@ -84,7 +87,12 @@
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             strictDeps = true;
             postFixup = ''
-              wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl pkgs.systemd ]}
+              wrapProgram $out/bin/bar-daemon --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.brightnessctl
+                  pkgs.systemd
+                ]
+              }
               wrapProgram $out/bin/bar-power-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-battery-helper --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-location-daemon --set-default TZDIR ${pkgs.tzdata}/share/zoneinfo
@@ -102,6 +110,8 @@
               install -Dm644 packaging/dbus/org.laufan.BarPowerDaemon.service $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service
               install -Dm644 packaging/systemd/bar-compositor-daemon.service $out/share/systemd/user/bar-compositor-daemon.service
               install -Dm644 packaging/dbus/org.laufan.BarCompositorDaemon.service $out/share/dbus-1/services/org.laufan.BarCompositorDaemon.service
+              install -Dm644 packaging/systemd/bar-activity-daemon.service $out/share/systemd/user/bar-activity-daemon.service
+              install -Dm644 packaging/dbus/org.laufan.BarActivityDaemon.service $out/share/dbus-1/services/org.laufan.BarActivityDaemon.service
               install -Dm644 packaging/systemd/bar-notification-daemon.service $out/share/systemd/user/bar-notification-daemon.service
               install -Dm644 packaging/dbus/org.laufan.BarNotificationDaemon.service $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
@@ -111,6 +121,8 @@
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
+                $out/share/systemd/user/bar-activity-daemon.service \
+                $out/share/dbus-1/services/org.laufan.BarActivityDaemon.service \
                 $out/share/systemd/user/bar-compositor-daemon.service \
                 $out/share/dbus-1/services/org.laufan.BarCompositorDaemon.service \
                 $out/share/systemd/user/bar-power-daemon.service \
@@ -134,7 +146,10 @@
         in
         {
           default = barDaemon;
-          batteryIntegration = import ./packaging/battery-integration.nix { inherit pkgs; package = barDaemon; };
+          batteryIntegration = import ./packaging/battery-integration.nix {
+            inherit pkgs;
+            package = barDaemon;
+          };
           locationIntegration = pkgs.runCommand "bar-location-integration" { } ''
             install -Dm644 ${./packaging/dbus/org.laufan.LocationTimezone.conf} \
               $out/share/dbus-1/system.d/org.laufan.LocationTimezone.conf
@@ -160,14 +175,25 @@
       nixosModules.location-timezone = { lib, pkgs, ... }: {
         imports = [ ./packaging/location-timezone.nix ];
         services.location-timezone.package = lib.mkDefault self.packages.${pkgs.system}.default;
-        services.location-timezone.integrationPackage = lib.mkDefault self.packages.${pkgs.system}.locationIntegration;
+        services.location-timezone.integrationPackage =
+          lib.mkDefault
+            self.packages.${pkgs.system}.locationIntegration;
       };
 
-      checks = forAllSystems (system: pkgs: {
-        default = self.packages.${system}.default;
-        modules = import ./packaging/module-check.nix { inherit self nixpkgs system pkgs; };
-        locationGeoclue = self.packages.${system}.locationGeoclue;
-      });
+      checks = forAllSystems (
+        system: pkgs: {
+          default = self.packages.${system}.default;
+          modules = import ./packaging/module-check.nix {
+            inherit
+              self
+              nixpkgs
+              system
+              pkgs
+              ;
+          };
+          locationGeoclue = self.packages.${system}.locationGeoclue;
+        }
+      );
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt-tree);
 
       devShells = forAllSystems (
@@ -199,7 +225,9 @@
             LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
             HYPRIDLE_TEST_BIN = "${self.packages.${system}.managedHypridle}/bin/hypridle";
-            LOCATION_GEOCLUE_AGENT = "${self.packages.${system}.locationGeoclue}/libexec/geoclue-2.0/demos/agent";
+            LOCATION_GEOCLUE_AGENT = "${
+              self.packages.${system}.locationGeoclue
+            }/libexec/geoclue-2.0/demos/agent";
             RUST_BACKTRACE = "1";
             RUST_LOG = "bar_daemon=debug";
           };

@@ -162,6 +162,11 @@ impl BarDaemon {
 
 #[zbus::interface(name = "org.laufan.BarDaemon2")]
 impl BarDaemon {
+    /// Identifies a split owner without changing the shared JSON protocol.
+    fn component(&self) -> &str {
+        self.state.component().name()
+    }
+
     async fn call(
         &self,
         method: &str,

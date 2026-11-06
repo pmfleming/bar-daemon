@@ -18,12 +18,13 @@ and all its domain receivers (including the work-area demand token).
   Cross-domain ordering is intentionally unspecified. Each domain's initial
   state precedes its changes.
 
-The v1 event envelope and full `bar.snapshot {}` reply are preserved. The
+The v2 event envelope is preserved. `bar.snapshot {}` returns only the serving
+process's owned domains. The
 additive `bar.snapshot {"streams":["battery.changed"]}` option returns the
 usual `data.snapshot`, containing only the requested fields. Invalid stream
 lists fail validation. The registry documents delivery and recovery semantics.
-Old clients can still request full snapshots; old daemons ignore the new option,
-so new clients also project replies locally.
+Clients must address the matching owner; foreign stream requests are rejected.
+Shelllist also projects replies locally.
 
 `BarDaemonBackend` is shared by bar, battery, activity, notifications, display and
 work-area/compositor consumers. It admits at most one snapshot read per domain
@@ -78,12 +79,22 @@ resources. Global congestion is still possible and must retain the bridge's
 existing observable failure/reconnect behavior. Domain isolation does not promise
 zero shared backpressure or bounded notification payload bytes.
 
-## Process extraction decision
+## Process ownership
 
-No service extraction is justified by this deterministic experiment alone. Keep
-one notification D-Bus server/database owner, battery alert sinks connected to
-that owner, one sleep-policy/inhibitor engine, coordinated display/resume policy,
-and the existing update/timezone ownership. Extract only after deployment
-measurements establish a reliability, lifetime or privilege benefit and a
-separate design specifies bus names, dependencies, state migration and rollback.
-No service packaging, live policy or service restart is changed by P5.
+Notifications, power, compositor integration and activity run in separate session
+processes. Media/audio/brightness, hardware OSD, theme, updates and search remain
+in bar-daemon. Each process has a distinct bus name, socket, service lifetime,
+monitor set, publication clocks and subscription registry. See the executable and
+bus-name table in README.md. The implementation library and wire DTOs remain
+shared; health/publication and transport capacity are local to each process.
+
+Power keeps battery and sleep policy together. Display and activity use read-only
+logind observers with clock-based resume fallback. Notifications keep their own
+read-only compositor routing feed; session loss does not stop the notification
+server. Update delivery uses a private D-Bus call that retains native durable
+idempotency keys; external servers keep summary-only semantics. Battery alerts
+use the standard notification interface.
+
+The privileged battery helper and location authority are independent Cargo
+packages. Only generic authorization checks belong to daemon-framework; hardware
+writes, action IDs and runtime sleep leases remain in this repository.

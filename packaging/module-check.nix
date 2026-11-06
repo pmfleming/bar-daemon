@@ -1,9 +1,19 @@
-{ self, nixpkgs, system, pkgs }:
+{
+  self,
+  nixpkgs,
+  system,
+  pkgs,
+}:
 let
-  evaluate = settings: (nixpkgs.lib.nixosSystem {
-    inherit system;
-    modules = [ self.nixosModules.default settings ];
-  }).config;
+  evaluate =
+    settings:
+    (nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        self.nixosModules.default
+        settings
+      ];
+    }).config;
   session = evaluate {
     services.bar-daemon = {
       enable = true;
@@ -13,20 +23,39 @@ let
     };
   };
   helper = evaluate { services.bar-daemon.batteryHelper.enable = true; };
-  location = (nixpkgs.lib.nixosSystem {
-    inherit system;
-    modules = [ self.nixosModules.location-timezone {
-      services.location-timezone.enable = true;
-      networking.networkmanager.enable = true;
-    } ];
-  }).config;
+  location =
+    (nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        self.nixosModules.location-timezone
+        {
+          services.location-timezone.enable = true;
+          networking.networkmanager.enable = true;
+        }
+      ];
+    }).config;
 in
 assert session.systemd.user.services.bar-daemon.serviceConfig.BusName == "org.laufan.BarDaemon";
-assert builtins.elem "BAR_DAEMON_DISPLAY_CONTROL=1" session.systemd.user.services.bar-compositor-daemon.serviceConfig.Environment;
-assert builtins.elem "BAR_DAEMON_YOUTUBE_METADATA=1" session.systemd.user.services.bar-daemon.serviceConfig.Environment;
-assert builtins.elem "hypr-monitor-auto.service" session.systemd.user.services.bar-compositor-daemon.conflicts;
-assert session.systemd.user.services.bar-power-daemon.serviceConfig.BusName == "org.laufan.BarPowerDaemon";
-assert builtins.elem "BAR_DAEMON_IDLE_CONFIG=%h/.config/hypr/hypridle.conf" session.systemd.user.services.bar-power-daemon.serviceConfig.Environment;
+assert builtins.elem "BAR_DAEMON_DISPLAY_CONTROL=1"
+  session.systemd.user.services.bar-compositor-daemon.serviceConfig.Environment;
+assert builtins.elem "BAR_DAEMON_YOUTUBE_METADATA=1"
+  session.systemd.user.services.bar-daemon.serviceConfig.Environment;
+assert builtins.elem "hypr-monitor-auto.service"
+  session.systemd.user.services.bar-compositor-daemon.conflicts;
+assert
+  session.systemd.user.services.bar-notification-daemon.serviceConfig.BusName
+  == "org.laufan.BarNotificationDaemon";
+assert
+  session.systemd.user.services.bar-compositor-daemon.serviceConfig.BusName
+  == "org.laufan.BarCompositorDaemon";
+assert
+  session.systemd.user.services.bar-activity-daemon.serviceConfig.BusName
+  == "org.laufan.BarActivityDaemon";
+assert session.systemd.user.services.bar-daemon.conflicts == [ ];
+assert
+  session.systemd.user.services.bar-power-daemon.serviceConfig.BusName == "org.laufan.BarPowerDaemon";
+assert builtins.elem "BAR_DAEMON_IDLE_CONFIG=%h/.config/hypr/hypridle.conf"
+  session.systemd.user.services.bar-power-daemon.serviceConfig.Environment;
 assert session.systemd.user.services.hypridle.serviceConfig.Type == "notify";
 assert !(helper.systemd.user.services ? bar-daemon);
 assert !(location.systemd.user.services ? bar-daemon);
@@ -38,20 +67,33 @@ assert builtins.elem "geoclue-demo-agent" location.services.geoclue2.whitelisted
 assert location.systemd.services.location-timezone-agent.serviceConfig.ProtectSystem == "strict";
 assert location.systemd.services.location-timezone-agent.serviceConfig.ProtectHome;
 assert location.systemd.services.location-timezone-agent.serviceConfig.PrivateNetwork;
-assert location.systemd.services.location-timezone-agent.serviceConfig.RestrictAddressFamilies == [ "AF_UNIX" ];
+assert
+  location.systemd.services.location-timezone-agent.serviceConfig.RestrictAddressFamilies
+  == [ "AF_UNIX" ];
 assert location.services.geoclue2.appConfig.location-timezone.isSystem;
-assert location.services.geoclue2.appConfig.location-timezone.users == [ (toString location.ids.uids.automatic-timezoned) ];
+assert
+  location.services.geoclue2.appConfig.location-timezone.users
+  == [ (toString location.ids.uids.automatic-timezoned) ];
 assert builtins.elem ./geoclue/provenance.patch location.services.geoclue2.package.patches;
 assert builtins.elem ./geoclue/freshness.patch location.services.geoclue2.package.patches;
-assert location.services.geoclue2.package.drvPath == (self.packages.${system}.locationGeoclue.override { withDemoAgent = false; }).drvPath;
-assert (location.services.geoclue2.package.override { withDemoAgent = true; }).drvPath == self.packages.${system}.locationGeoclue.drvPath;
-assert !(nixpkgs.lib.hasInfix "org.freedesktop.NetworkManager.wifi.scan" location.security.polkit.extraConfig);
+assert
+  location.services.geoclue2.package.drvPath
+  == (self.packages.${system}.locationGeoclue.override { withDemoAgent = false; }).drvPath;
+assert
+  (location.services.geoclue2.package.override { withDemoAgent = true; }).drvPath
+  == self.packages.${system}.locationGeoclue.drvPath;
+assert
+  !(nixpkgs.lib.hasInfix "org.freedesktop.NetworkManager.wifi.scan" location.security.polkit.extraConfig);
 assert !(builtins.elem self.packages.${system}.default location.services.dbus.packages);
 pkgs.runCommand "bar-daemon-module-contract" { } ''
   runtime=${self.packages.${system}.default}
   test ! -e "$runtime/share/dbus-1/system-services"
   test ! -e "$runtime/share/dbus-1/system.d"
   test ! -e "$runtime/share/polkit-1"
+  for name in bar-daemon bar-notification-daemon bar-power-daemon bar-compositor-daemon bar-activity-daemon; do
+    test -x "$runtime/bin/$name"
+    test -f "$runtime/share/systemd/user/$name.service"
+  done
   battery=${self.packages.${system}.batteryIntegration}
   location=${self.packages.${system}.locationIntegration}
   test -f "$battery/share/dbus-1/system-services/org.laufan.BarBatteryHelper.service"

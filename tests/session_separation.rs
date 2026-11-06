@@ -118,6 +118,18 @@ impl Session {
     }
 }
 
+fn assert_no_audio_controller(process: &Child) -> Result<()> {
+    let pid = process.id().context("running process")?;
+    for thread in std::fs::read_dir(format!("/proc/{pid}/task"))? {
+        let name = std::fs::read_to_string(thread?.path().join("comm"))?;
+        ensure!(
+            !name.starts_with("bar-pipewire"),
+            "foreign process started an audio controller: {name}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn notification_startup_failure_leaves_bar_available() -> Result<()> {
     let session = Session::new().await?;
@@ -156,6 +168,7 @@ async fn power_remains_available_after_notification_owner_dies() -> Result<()> {
     session.ready("org.laufan.BarNotificationDaemon").await?;
     session.ready("org.laufan.BarPowerDaemon").await?;
     let before = session.snapshot("org.laufan.BarPowerDaemon").await?;
+    assert_no_audio_controller(&power)?;
     ensure!(before["ok"] == true, "{before}");
     ensure!(
         before["data"]["snapshot"]
@@ -208,5 +221,59 @@ async fn compositor_owner_rejects_power_calls_and_its_death_leaves_power_availab
     ensure!(session.snapshot("org.laufan.BarPowerDaemon").await?["ok"] == true);
     ensure!(power.try_wait()?.is_none());
     power.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
+    let session = Session::new().await?;
+    let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
+    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
+    session.ready("org.laufan.BarDaemon").await?;
+    session.snapshot("org.laufan.BarDaemon").await?;
+    session.ready("org.laufan.BarPowerDaemon").await?;
+    let before = session.snapshot("org.laufan.BarPowerDaemon").await?;
+    assert_no_audio_controller(&power)?;
+    ensure!(!session.root.path().join("state/bar-daemon/agenda").exists());
+    let mut activity = session.start(Path::new(env!("CARGO_BIN_EXE_bar-activity-daemon")))?;
+    session.ready("org.laufan.BarActivityDaemon").await?;
+    let initial = session.snapshot("org.laufan.BarActivityDaemon").await?;
+    assert_no_audio_controller(&activity)?;
+    ensure!(
+        initial["data"]["snapshot"]
+            .as_object()
+            .context("activity snapshot")?
+            .len()
+            == 2
+    );
+    let proxy = zbus::Proxy::new(
+        &session.connection,
+        "org.laufan.BarActivityDaemon",
+        "/org/laufan/BarDaemon",
+        "org.laufan.BarDaemon2",
+    )
+    .await?;
+    let list: String = proxy.call("Call", &("agenda.list", "{}")).await?;
+    ensure!(
+        serde_json::from_str::<serde_json::Value>(&list)?["ok"] == true,
+        "{list}"
+    );
+    activity.kill().await?;
+    let mut replacement = session.start(Path::new(env!("CARGO_BIN_EXE_bar-activity-daemon")))?;
+    session.ready("org.laufan.BarActivityDaemon").await?;
+    let restarted = session.snapshot("org.laufan.BarActivityDaemon").await?;
+    ensure!(
+        restarted["data"]["snapshot"]["activity"]["_publication"]["epoch"]
+            != initial["data"]["snapshot"]["activity"]["_publication"]["epoch"]
+    );
+    let after = session.snapshot("org.laufan.BarPowerDaemon").await?;
+    ensure!(
+        after["data"]["snapshot"]["battery"]["_publication"]["epoch"]
+            == before["data"]["snapshot"]["battery"]["_publication"]["epoch"]
+    );
+    ensure!(bar.try_wait()?.is_none() && power.try_wait()?.is_none());
+    replacement.kill().await?;
+    power.kill().await?;
+    bar.kill().await?;
     Ok(())
 }

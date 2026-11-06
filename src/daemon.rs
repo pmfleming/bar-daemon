@@ -27,6 +27,10 @@ async fn claim_names(
     native_notifications: bool,
 ) -> Result<()> {
     use zbus::fdo::{RequestNameFlags, RequestNameReply};
+    if component == crate::component::Component::Activity {
+        reject_legacy_activity_owner(connection).await?;
+    }
+
     for name in std::iter::once(component.bus_name())
         .chain(native_notifications.then_some(notifications::server::BUS_NAME))
     {
@@ -38,10 +42,23 @@ async fn claim_names(
             })?;
         anyhow::ensure!(
             reply == RequestNameReply::PrimaryOwner,
-            "another daemon owns {name}; stop it before agenda migration"
+            "another daemon owns {name}; stop it before starting {}",
+            component.name()
         );
     }
     Ok(())
+}
+
+async fn reject_legacy_activity_owner(connection: &zbus::Connection) -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let bus = zbus::fdo::DBusProxy::new(connection).await?;
+        if !bus.name_has_owner(crate::component::Component::Bar.bus_name().try_into()?).await? { return Ok(()); }
+        let proxy = zbus::Proxy::new(connection, crate::component::Component::Bar.bus_name(), OBJECT_PATH, crate::api::INTERFACE).await?;
+        let owner = proxy.call::<_, _, String>("Component", &()).await;
+        anyhow::ensure!(owner.as_deref().ok() == Some("bar-daemon"),
+            "legacy bar-daemon may own the agenda store; stop it before starting bar-activity-daemon");
+        Ok(())
+    }).await.context("identify legacy agenda owner before migration")?
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -53,14 +70,18 @@ pub(crate) async fn run_component(component: crate::component::Component) -> Res
     let native_notifications = component == crate::component::Component::Notifications
         && !env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
             .is_ok_and(|value| value.eq_ignore_ascii_case("swaync"));
-    // Old JSON-writing versions do not know the new DB lock. Claim the same
-    // exclusive bus owner first, so a second daemon cannot race migration.
+    // Claim component ownership before opening persistent stores. Activity also
+    // checks for a legacy monolith that may not know the agenda ownership lock.
     let connection = connection::Builder::session()
         .context("connect to session D-Bus")?
         .build()
         .await
         .context("start bar-daemon D-Bus connection")?;
-    claim_names(&connection, component, native_notifications).await?;
+    // The residual bar process owns no persistent stores. Export it before
+    // claiming its name, so the activity startup fence can identify this split.
+    if component != crate::component::Component::Bar {
+        claim_names(&connection, component, native_notifications).await?;
+    }
     let notification_engine = if native_notifications {
         Some(
             notifications::engine::NotificationEngine::persistent(
@@ -111,14 +132,17 @@ pub(crate) async fn run_component(component: crate::component::Component) -> Res
             .await
             .context("export notification server interface")?;
     }
-    if let Some(engine) = notification_engine.as_ref() {
+    if component == crate::component::Component::Notifications {
         connection
             .object_server()
             .at(
                 OBJECT_PATH,
-                notifications::service::InternalNotifications(Arc::clone(engine)),
+                notifications::service::InternalNotifications(Arc::clone(&notification_service)),
             )
             .await?;
+    }
+    if component == crate::component::Component::Bar {
+        claim_names(&connection, component, false).await?;
     }
     let tasks = MonitorTasks::spawn(
         state.clone(),

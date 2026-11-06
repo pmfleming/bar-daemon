@@ -44,7 +44,7 @@ impl NotificationService {
         &self,
         key: String,
         run_id: String,
-        incoming: IncomingNotification,
+        mut incoming: IncomingNotification,
     ) -> Result<()> {
         if let NotificationBackend::Native(engine) = &self.backend {
             return engine.notify_update_once(key, run_id, incoming).await;
@@ -66,6 +66,8 @@ impl NotificationService {
                 .await?;
             return Ok(());
         }
+        // External servers cannot retain our durable action owner.
+        incoming.actions.clear();
         self.sink().send(incoming).await?;
         Ok(())
     }
@@ -156,7 +158,7 @@ impl NotificationSink {
 }
 
 async fn send_freedesktop(notification: IncomingNotification) -> Result<u32> {
-    let connection = zbus::Connection::session()
+    let connection = crate::bus::session()
         .await
         .context("connect to notification session bus")?;
     let proxy = zbus::Proxy::new(
@@ -236,9 +238,9 @@ pub(crate) fn internal_notification(
     }
 }
 
-/// Private session-bus delivery path; the server persists the key before replying.
+/// Private session-bus delivery path; the native server persists the key before replying.
 /// A lost reply can safely be retried with the same key.
-pub(crate) struct InternalNotifications(pub Arc<NotificationEngine>);
+pub(crate) struct InternalNotifications(pub Arc<NotificationService>);
 #[zbus::interface(name = "org.laufan.BarNotificationInternal1")]
 impl InternalNotifications {
     async fn notify_update_once(
@@ -276,7 +278,10 @@ mod separation_tests {
         .unwrap();
         let exported = engine.clone();
         let (_server, client) = crate::test_support::dbus_peer(|builder| {
-            builder.serve_at(crate::api::OBJECT_PATH, InternalNotifications(exported))
+            builder.serve_at(
+                crate::api::OBJECT_PATH,
+                InternalNotifications(NotificationService::native(exported)),
+            )
         })
         .await
         .unwrap();

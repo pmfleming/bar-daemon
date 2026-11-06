@@ -1,7 +1,7 @@
 # Offline Agenda export and recovery
 
 These are supported **offline** logical transfers, not a live file-copy procedure.
-Manually stop the daemon using your normal service/session management first, and
+Manually stop `bar-activity-daemon.service` using your normal service/session management first, and
 prevent automatic restart for the maintenance window. The tool never stops,
 starts, or contacts services. An active Agenda owner makes export fail on the
 same exclusive ownership lock; a lock file's mere existence does not mean busy.

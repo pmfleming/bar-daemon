@@ -44,7 +44,7 @@ async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() 
     let dir = tempfile::tempdir().unwrap();
     let legacy = dir.path().join("todos.json");
     std::fs::write(&legacy, b"legacy snapshot must remain untouched").unwrap();
-    let admitted = claim_names(&second, crate::component::Component::Bar, false).await;
+    let admitted = claim_names(&second, crate::component::Component::Activity, false).await;
     // This is the same startup admission barrier run() executes before Store::open.
     if admitted.is_ok() {
         let _ = ActivityService::with_paths(
@@ -68,7 +68,7 @@ async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() 
     assert_eq!(owner.as_str(), first.unique_name().unwrap().as_str());
     first.release_name(BUS_NAME).await.unwrap();
     drop(first);
-    claim_names(&second, crate::component::Component::Bar, false)
+    claim_names(&second, crate::component::Component::Activity, false)
         .await
         .unwrap();
     bus.kill().await.unwrap();

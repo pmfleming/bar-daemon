@@ -1,26 +1,44 @@
 # bar-daemon
 
-The Cargo workspace includes independent `bar-battery-helper` and
-`bar-location-daemon` packages. The root battery service links only the helper
-API and daemon framework; session-side authorization, cancellation, and policy
-remain in the session daemon. Build and test the complete distribution with
-`cargo build --workspace` and `cargo test --workspace --all-targets`.
+The session service is split into independently restartable processes. They use
+bar-api v2 with the existing object path and interface; each endpoint accepts
+only its own methods and streams. `bar.snapshot {}` returns that owner's state.
 
-The notification owner runs as `bar-notification-daemon daemon` with its own
-`org.laufan.BarNotificationDaemon` bus name and `bar-notification-daemon.sock`.
-Its `client` subcommand uses the same bar-api version and notification streams.
-Update delivery crosses a private D-Bus method with a durable idempotency key;
-other alerts use the standard notification interface.
+| Executable / user service | Responsibilities | Session bus name |
+| --- | --- | --- |
+| `bar-daemon` | Media, audio, brightness, hardware OSD, theme, updates, search | `org.laufan.BarDaemon` |
+| `bar-notification-daemon` | Notification server, history, privacy and toast routing | `org.laufan.BarNotificationDaemon` |
+| `bar-power-daemon` | Battery, profiles, sleep, lid and critical-battery policy | `org.laufan.BarPowerDaemon` |
+| `bar-compositor-daemon` | Workspace lifecycle, display policy, geometry and preferences | `org.laufan.BarCompositorDaemon` |
+| `bar-activity-daemon` | Agenda, locations, weather, clocks and timezone | `org.laufan.BarActivityDaemon` |
 
-`bar-power-daemon` owns battery, power profiles, sleep, lid and critical-battery
-policy through `org.laufan.BarPowerDaemon`. Hypridle callbacks target this owner.
-Display and activity consumers observe logind transitions locally and continue
-to receive resume generations when the power process is unavailable.
+Each executable supports `daemon` and `client`, and owns a correspondingly named
+socket in `XDG_RUNTIME_DIR`. Shelllist connects directly to each owner. Enabling
+`services.bar-daemon.enable` installs and starts all five services under the
+configured session target, with separate failure/restart lifetimes. Only the
+compositor process exits on compositor session replacement. Display and activity
+processes observe logind sleep transitions independently of power policy.
 
-`bar-compositor-daemon` owns workspace lifecycle, display policy, work area and
-compositor preferences through `org.laufan.BarCompositorDaemon`. Only this
-process exits on compositor session replacement. Workspace CLI commands continue
-to use `bar-daemon workspace ...` and address the compositor owner directly.
+Deploy the matching package and Shelllist together, stop the old monolithic
+service, and start the five new services. Persistent paths and helper/polkit IDs
+are unchanged; no data copy is needed. The activity owner refuses agenda startup
+while a legacy monolith is still running. For offline agenda maintenance, stop
+`bar-activity-daemon.service` and prevent its activation during maintenance.
+Workspace shortcuts and maintenance commands remain `bar-daemon workspace ...`
+and `bar-daemon agenda ...`; idle callbacks address the power owner.
+
+Session processes share the Rust implementation library. This split isolates
+running tasks, bus ownership, native failures and persistence; it does not create
+separate domain libraries or promise cross-process snapshot atomicity. Native
+update notifications cross a private D-Bus method with durable idempotency keys;
+other alerts use the standard notification interface. External notification
+servers retain their summary-only delivery semantics.
+
+The Cargo workspace also contains independent `bar-battery-helper` and
+`bar-location-daemon` packages. The root battery service links only its small
+contract crate and the daemon framework, excluding PipeWire and Turso. Build and
+test the complete distribution with `cargo build --workspace` and
+`cargo test --workspace --all-targets`.
 
 ## Shelllist Updates
 

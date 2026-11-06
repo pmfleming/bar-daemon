@@ -1,0 +1,14 @@
+[Unit]
+Description=Agenda, locations, clocks and weather
+PartOf=graphical-session.target
+After=graphical-session.target dbus.service
+
+[Service]
+Type=dbus
+BusName=org.laufan.BarActivityDaemon
+ExecStart=@out@/bin/bar-activity-daemon daemon
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target

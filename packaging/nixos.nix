@@ -1,22 +1,35 @@
 self:
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.services.bar-daemon;
-  battery = import ./battery-integration.nix { inherit pkgs; package = cfg.package; };
-  session = import ./session-service.nix { inherit lib cfg; idleConfig = cfg.idleConfig; };
+  battery = import ./battery-integration.nix {
+    inherit pkgs;
+    package = cfg.package;
+  };
+  session = import ./session-service.nix {
+    inherit lib cfg;
+    idleConfig = cfg.idleConfig;
+  };
 in
 {
-  options.services.bar-daemon = (import ./session-options.nix {
-    inherit lib;
-    package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  }) // {
-    batteryHelper.enable = lib.mkEnableOption "privileged battery helper and its authorization policy";
-    idleConfig = lib.mkOption {
-      type = lib.types.str;
-      default = "%h/.config/hypr/hypridle.conf";
-      description = "Idle configuration for the daemon-managed notify-ready hypridle service.";
+  options.services.bar-daemon =
+    (import ./session-options.nix {
+      inherit lib;
+      package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+    })
+    // {
+      batteryHelper.enable = lib.mkEnableOption "privileged battery helper and its authorization policy";
+      idleConfig = lib.mkOption {
+        type = lib.types.str;
+        default = "%h/.config/hypr/hypridle.conf";
+        description = "Idle configuration for the daemon-managed notify-ready hypridle service.";
+      };
     };
-  };
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
       environment.systemPackages = [ cfg.package ];
@@ -27,16 +40,75 @@ in
         wantedBy = session.Install.WantedBy;
       };
       systemd.user.services.bar-notification-daemon = {
-        description = "Desktop notifications"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ]; wantedBy = [ cfg.target ]; conflicts = [ "swaync.service" ]; before = [ "swaync.service" ];
-        serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarNotificationDaemon"; ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ]; };
+        description = "Desktop notifications";
+        partOf = [ cfg.target ];
+        after = [
+          cfg.target
+          "dbus.service"
+        ];
+        wantedBy = [ cfg.target ];
+        conflicts = [ "swaync.service" ];
+        before = [ "swaync.service" ];
+        serviceConfig = {
+          Type = "dbus";
+          BusName = "org.laufan.BarNotificationDaemon";
+          ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ];
+        };
       };
       systemd.user.services.bar-power-daemon = {
-        description = "Desktop power and sleep policy"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ]; wantedBy = [ cfg.target ];
-        serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarPowerDaemon"; ExecStart = "${cfg.package}/bin/bar-power-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${cfg.idleConfig}"; };
+        description = "Desktop power and sleep policy";
+        partOf = [ cfg.target ];
+        after = [
+          cfg.target
+          "dbus.service"
+        ];
+        wantedBy = [ cfg.target ];
+        serviceConfig = {
+          Type = "dbus";
+          BusName = "org.laufan.BarPowerDaemon";
+          ExecStart = "${cfg.package}/bin/bar-power-daemon daemon";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${cfg.idleConfig}";
+        };
       };
       systemd.user.services.bar-compositor-daemon = {
-        description = "Compositor integration and display policy"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ] ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service"; conflicts = lib.optional cfg.displays.enable "hypr-monitor-auto.service"; wantedBy = [ cfg.target ];
-        serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarCompositorDaemon"; ExecStart = "${cfg.package}/bin/bar-compositor-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.displays.enable "BAR_DAEMON_DISPLAY_CONTROL=1"; };
+        description = "Compositor integration and display policy";
+        partOf = [ cfg.target ];
+        after = [
+          cfg.target
+          "dbus.service"
+        ]
+        ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service";
+        conflicts = lib.optional cfg.displays.enable "hypr-monitor-auto.service";
+        wantedBy = [ cfg.target ];
+        serviceConfig = {
+          Type = "dbus";
+          BusName = "org.laufan.BarCompositorDaemon";
+          ExecStart = "${cfg.package}/bin/bar-compositor-daemon daemon";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          Environment = lib.optional cfg.displays.enable "BAR_DAEMON_DISPLAY_CONTROL=1";
+        };
+      };
+      systemd.user.services.bar-activity-daemon = {
+        description = "Agenda, locations, clocks and weather";
+        partOf = [ cfg.target ];
+        after = [
+          cfg.target
+          "dbus.service"
+        ];
+        wantedBy = [ cfg.target ];
+        serviceConfig = {
+          Type = "dbus";
+          BusName = "org.laufan.BarActivityDaemon";
+          ExecStart = "${cfg.package}/bin/bar-activity-daemon daemon";
+          Restart = "on-failure";
+          RestartSec = "2s";
+        };
       };
       systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
         description = "Daemon-managed idle policy";

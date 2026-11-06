@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Give agenda, locations, weather, clocks and timezone their own activity process.
+  Each session daemon exposes only its owned methods, snapshots and streams.
+
 - Move workspaces, display policy, work area and compositor preferences to
   `bar-compositor-daemon`. Compositor session loss stops only this process.
 
