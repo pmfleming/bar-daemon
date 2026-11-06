@@ -13,6 +13,7 @@ mod battery;
 mod brightness;
 mod bus;
 mod client;
+pub mod component;
 mod compositor;
 mod daemon;
 mod desktop_identity;

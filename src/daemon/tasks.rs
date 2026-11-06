@@ -22,6 +22,7 @@ use crate::{
 
 pub(super) struct MonitorTasks {
     group: TaskGroup,
+    component: crate::component::Component,
     state: StateStore,
 }
 
@@ -46,23 +47,33 @@ impl MonitorTasks {
         domains: &'static [&'static str],
         future: impl Future<Output = ()> + Send + 'static,
     ) {
+        if !domains
+            .iter()
+            .any(|domain| self.component.owns_stream(domain))
+        {
+            return;
+        }
         self.group
             .spawn(name, supervise(self.state.clone(), name, domains, future));
     }
 
     pub(super) fn spawn(
         state: StateStore,
-        activity: Arc<ActivityService>,
+        activity: Option<Arc<ActivityService>>,
         notifications: Arc<NotificationService>,
         media: MediaService,
         brightness: BrightnessService,
         connection: zbus::Connection,
     ) -> Self {
+        let component = state.component();
         let tasks = Self {
             group: TaskGroup::default(),
+            component,
             state: state.clone(),
         };
-        tasks.add("activity", &[ACTIVITY], activity.monitor());
+        if let Some(activity) = activity {
+            tasks.add("activity", &[ACTIVITY], activity.monitor());
+        }
         tasks.add("hyprland", &[WORKSPACES], hyprland::monitor(state.clone()));
         tasks.add(
             "work-area",
@@ -118,8 +129,14 @@ impl MonitorTasks {
         tasks.add(
             "notifications",
             &[NOTIFICATIONS, NOTIFICATION_ACTIVE],
-            notifications.monitor(state, connection),
+            notifications.monitor(state.clone(), connection),
         );
+        if component == crate::component::Component::Notifications {
+            tasks.group.spawn(
+                "notification-routing",
+                crate::hyprland::monitor_routes(state),
+            );
+        }
         tasks
     }
 

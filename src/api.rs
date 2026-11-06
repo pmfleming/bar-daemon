@@ -39,7 +39,7 @@ pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon2";
 
 pub(crate) struct ApiService {
     state: StateStore,
-    activity: ActivityApi,
+    activity: Option<ActivityApi>,
     battery: BatteryApi,
     effects: DesktopEffects,
     notifications: NotificationApi,
@@ -48,13 +48,15 @@ pub(crate) struct ApiService {
 impl ApiService {
     pub(crate) fn new(
         state: StateStore,
-        activity: Arc<ActivityService>,
+        activity: impl Into<Option<Arc<ActivityService>>>,
         notifications: Arc<NotificationService>,
         media: MediaService,
         brightness: crate::brightness::BrightnessService,
     ) -> Self {
         Self {
-            activity: ActivityApi::new(state.clone(), activity),
+            activity: activity
+                .into()
+                .map(|activity| ActivityApi::new(state.clone(), activity)),
             battery: BatteryApi::new(state.clone()),
             effects: DesktopEffects::new(state.clone(), media, brightness),
             notifications: NotificationApi::new(notifications),
@@ -69,7 +71,10 @@ impl ApiService {
         let started = std::time::Instant::now();
         let result = match params.get("streams") {
             Some(streams) => self.project_snapshot(streams).await,
-            None => self.state.read(protocol::read_wire::snapshot).await,
+            None => {
+                self.project_snapshot(&serde_json::json!(self.state.owned_streams()))
+                    .await
+            }
         };
         tracing::debug!(snapshot_requests_total, streams = ?params.get("streams"), latency_us = started.elapsed().as_micros() as u64,
             payload_bytes = result.to_string().len(), "bar snapshot request");
@@ -81,7 +86,13 @@ impl ApiService {
         let Some(streams) = streams.ok().and_then(|streams| {
             streams
                 .into_iter()
-                .map(protocol::read_wire::stream_spec)
+                .map(|name| {
+                    if self.state.owns_stream(name) {
+                        protocol::read_wire::stream_spec(name)
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Option<Vec<_>>>()
         }) else {
             return error(
@@ -125,7 +136,10 @@ impl ApiService {
                     .iter()
                     .any(|prefix| method.starts_with(prefix)) =>
             {
-                self.activity.dispatch(method, params).await
+                match self.activity.as_ref() {
+                    Some(activity) => activity.dispatch(method, params).await,
+                    None => unsupported_method(method),
+                }
             }
             "workspace.focus" => self.effects.focus_workspace(params).await,
             method if method.starts_with("workspace.") => {

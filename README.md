@@ -6,6 +6,12 @@ API and daemon framework; session-side authorization, cancellation, and policy
 remain in the session daemon. Build and test the complete distribution with
 `cargo build --workspace` and `cargo test --workspace --all-targets`.
 
+The notification owner runs as `bar-notification-daemon daemon` with its own
+`org.laufan.BarNotificationDaemon` bus name and `bar-notification-daemon.sock`.
+Its `client` subcommand uses the same bar-api version and notification streams.
+Update delivery crosses a private D-Bus method with a durable idempotency key;
+other alerts use the standard notification interface.
+
 ## Shelllist Updates
 
 The desktop update monitor exports a genuine `shelllist-updates` StatusNotifierItem

@@ -5,8 +5,7 @@
     PartOf = [ cfg.target ];
     After = [ cfg.target "dbus.service" "pipewire.service" "wireplumber.service" ]
       ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service";
-    Before = [ "swaync.service" ];
-    Conflicts = [ "swaync.service" ] ++ lib.optional cfg.displays.enable "hypr-monitor-auto.service";
+    Conflicts = lib.optional cfg.displays.enable "hypr-monitor-auto.service";
   };
   Service = {
     Type = "dbus";

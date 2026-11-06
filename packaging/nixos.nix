@@ -26,6 +26,10 @@ in
         serviceConfig = session.Service;
         wantedBy = session.Install.WantedBy;
       };
+      systemd.user.services.bar-notification-daemon = {
+        description = "Desktop notifications"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ]; wantedBy = [ cfg.target ]; conflicts = [ "swaync.service" ]; before = [ "swaync.service" ];
+        serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarNotificationDaemon"; ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ]; };
+      };
       systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
         description = "Daemon-managed idle policy";
         wantedBy = [ cfg.target ];

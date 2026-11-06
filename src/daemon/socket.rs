@@ -65,11 +65,12 @@ impl LocalJsonlService for Service {
 }
 pub(super) async fn listen(
     connection: zbus::Connection,
+    component: crate::component::Component,
     stop: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .ok_or_else(|| anyhow::anyhow!("XDG_RUNTIME_DIR is required for the bar socket"))?;
-    JsonlListener::bind(std::path::Path::new(&runtime), "bar-daemon")
+    JsonlListener::bind(std::path::Path::new(&runtime), component.name())
         .await?
         .serve(
             Arc::new(Service(connection)),

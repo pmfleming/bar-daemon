@@ -1,5 +1,6 @@
 //! Claim the legacy writer's exclusive bus owner before touching agenda data.
 use super::*;
+use crate::api::BUS_NAME;
 use tokio::io::{AsyncBufReadExt, BufReader};
 #[tokio::test]
 async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() {
@@ -37,11 +38,13 @@ async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() 
         .build()
         .await
         .unwrap();
-    claim_names(&first, false).await.unwrap();
+    claim_names(&first, crate::component::Component::Bar, false)
+        .await
+        .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let legacy = dir.path().join("todos.json");
     std::fs::write(&legacy, b"legacy snapshot must remain untouched").unwrap();
-    let admitted = claim_names(&second, false).await;
+    let admitted = claim_names(&second, crate::component::Component::Bar, false).await;
     // This is the same startup admission barrier run() executes before Store::open.
     if admitted.is_ok() {
         let _ = ActivityService::with_paths(
@@ -65,6 +68,8 @@ async fn existing_legacy_owner_blocks_startup_without_queueing_or_replacement() 
     assert_eq!(owner.as_str(), first.unique_name().unwrap().as_str());
     first.release_name(BUS_NAME).await.unwrap();
     drop(first);
-    claim_names(&second, false).await.unwrap();
+    claim_names(&second, crate::component::Component::Bar, false)
+        .await
+        .unwrap();
     bus.kill().await.unwrap();
 }

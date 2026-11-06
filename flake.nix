@@ -45,6 +45,8 @@
                 ./test_support
                 ./tools/agenda-turso-contract
                 ./protocols
+                ./packaging/systemd
+                ./packaging/dbus
                 ./packaging/licenses
                 ./docs/activity.example.json
               ];
@@ -95,6 +97,8 @@
                 $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
               install -Dm644 packaging/licenses/ODbL-1.0.txt $out/share/licenses/bar-daemon/ODbL-1.0.txt
               install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
+              install -Dm644 packaging/systemd/bar-notification-daemon.service $out/share/systemd/user/bar-notification-daemon.service
+              install -Dm644 packaging/dbus/org.laufan.BarNotificationDaemon.service $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
               install -Dm644 ${./packaging/dbus/org.laufan.BarDaemon.service} \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service
@@ -102,6 +106,8 @@
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
+                $out/share/systemd/user/bar-notification-daemon.service \
+                $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service \
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service \
                 --replace-fail @out@ $out

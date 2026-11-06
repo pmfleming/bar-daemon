@@ -39,6 +39,7 @@ impl Drop for WorkAreaInterest {
 
 #[derive(Clone)]
 pub(crate) struct StateStore {
+    component: Option<crate::component::Component>,
     pub(crate) workspace_lifecycle: Arc<crate::workspace::Service>,
     snapshot: Arc<RwLock<BarSnapshot>>,
     events: Arc<BTreeMap<&'static str, Source>>,
@@ -57,6 +58,7 @@ impl Default for StateStore {
             .map(|stream| (*stream, Source::new(stream)))
             .collect();
         Self {
+            component: None,
             workspace_lifecycle: Arc::new(crate::workspace::Service::default()),
             snapshot: Arc::new(RwLock::new(BarSnapshot {
                 publications: crate::protocol::STREAMS
@@ -87,6 +89,27 @@ macro_rules! state_updates {
 }
 
 impl StateStore {
+    pub(crate) fn for_component(component: crate::component::Component) -> Self {
+        Self {
+            component: Some(component),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn component(&self) -> crate::component::Component {
+        self.component.unwrap_or(crate::component::Component::Bar)
+    }
+    pub(crate) fn owns_stream(&self, stream: &str) -> bool {
+        self.component.is_none_or(|c| c.owns_stream(stream))
+    }
+    pub(crate) fn owns_method(&self, method: &str) -> bool {
+        self.component.is_none_or(|c| c.owns_method(method))
+    }
+    pub(crate) fn owned_streams(&self) -> Vec<&'static str> {
+        self.component
+            .map(|c| c.streams())
+            .unwrap_or_else(|| crate::protocol::STREAMS.to_vec())
+    }
+
     pub(crate) fn stream_semantics(stream: &str) -> &'static str {
         if events::ordered(stream) {
             "ordered-state"

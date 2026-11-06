@@ -92,7 +92,7 @@ impl Publisher {
             app_icon: "shelllist-updates".into(),
             summary: summary.into(),
             body,
-            actions: if self.service.native_engine().is_some() {
+            actions: if self.service.durable_updates() {
                 vec![NotificationAction {
                     key: "default".into(),
                     label: "Review update".into(),
@@ -112,15 +112,9 @@ impl Publisher {
         let target = if catchup { "" } else { &last.record.job.id };
         // Stable across a crash after delivery but before the cursor write.
         let key = format!("updates:run:{}", last.record.job.id);
-        if let Some(engine) = self.service.native_engine() {
-            engine
-                .notify_update_once(key, target.into(), notification)
-                .await?;
-        } else {
-            // External Notify has no durable idempotency key or retained action
-            // owner. It gets a truthful summary and the desktop/tray fallback.
-            self.service.sink().send(notification).await?;
-        }
+        self.service
+            .notify_update_once(key, target.into(), notification)
+            .await?;
         Ok(())
     }
 }

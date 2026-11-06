@@ -70,10 +70,11 @@ async fn compositor_replacement_exits_nonzero_after_persistent_stores_open() -> 
         "unexpected failure: {error}"
     );
     ensure!(
-        root.path()
+        !root
+            .path()
             .join("state/bar-daemon/notifications-turso-v2.db")
-            .is_file(),
-        "notification store never opened"
+            .exists(),
+        "bar process opened the notification store"
     );
     bus.kill().await?;
     bus.wait().await?;

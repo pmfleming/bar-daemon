@@ -256,6 +256,39 @@ fn refresh_event(event: &shelllist_hyprland::CompositorEvent) -> bool {
     )
 }
 
+/// Independent read-only routing feed for the notification owner.
+pub(crate) async fn monitor_routes(store: StateStore) {
+    let client = HyprlandClient::default();
+    let (sender, mut events) = mpsc::channel(64);
+    let refresh = async {
+        // Snapshot once before the first event, then only on routing invalidation.
+        loop {
+            match client.snapshot().await {
+                Ok(state) => store.update_workspaces(state).await,
+                Err(error) => {
+                    store
+                        .update_workspaces(WorkspaceState {
+                            error: Some(error.to_string()),
+                            ..Default::default()
+                        })
+                        .await
+                }
+            }
+            let Some(event) = events.recv().await else {
+                return;
+            };
+            if matches!(event, Event::SessionGone { .. }) {
+                store.update_workspaces(WorkspaceState::default()).await;
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        _ = client.ipc.clone().watch_events(sender) => {},
+        _ = refresh => {},
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{monitor_with, parse_snapshot};

@@ -5,7 +5,7 @@ use zbus::connection;
 
 use crate::{
     activity::{ActivityService, notifications},
-    api::{ApiService, BUS_NAME, OBJECT_PATH},
+    api::{ApiService, OBJECT_PATH},
     media::MediaService,
     state::StateStore,
 };
@@ -21,9 +21,13 @@ mod socket;
 mod subscriptions;
 mod tasks;
 
-async fn claim_names(connection: &zbus::Connection, native_notifications: bool) -> Result<()> {
+async fn claim_names(
+    connection: &zbus::Connection,
+    component: crate::component::Component,
+    native_notifications: bool,
+) -> Result<()> {
     use zbus::fdo::{RequestNameFlags, RequestNameReply};
-    for name in std::iter::once(BUS_NAME)
+    for name in std::iter::once(component.bus_name())
         .chain(native_notifications.then_some(notifications::server::BUS_NAME))
     {
         let reply = connection
@@ -41,9 +45,14 @@ async fn claim_names(connection: &zbus::Connection, native_notifications: bool) 
 }
 
 pub(crate) async fn run() -> Result<()> {
-    let state = StateStore::default();
-    let native_notifications = !env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
-        .is_ok_and(|value| value.eq_ignore_ascii_case("swaync"));
+    run_component(crate::component::Component::Bar).await
+}
+
+pub(crate) async fn run_component(component: crate::component::Component) -> Result<()> {
+    let state = StateStore::for_component(component);
+    let native_notifications = component == crate::component::Component::Notifications
+        && !env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
+            .is_ok_and(|value| value.eq_ignore_ascii_case("swaync"));
     // Old JSON-writing versions do not know the new DB lock. Claim the same
     // exclusive bus owner first, so a second daemon cannot race migration.
     let connection = connection::Builder::session()
@@ -51,7 +60,7 @@ pub(crate) async fn run() -> Result<()> {
         .build()
         .await
         .context("start bar-daemon D-Bus connection")?;
-    claim_names(&connection, native_notifications).await?;
+    claim_names(&connection, component, native_notifications).await?;
     let notification_engine = if native_notifications {
         Some(
             notifications::engine::NotificationEngine::persistent(
@@ -66,14 +75,21 @@ pub(crate) async fn run() -> Result<()> {
     };
     let notification_service = match notification_engine.as_ref() {
         Some(engine) => notifications::service::NotificationService::native(Arc::clone(engine)),
-        None => notifications::service::NotificationService::swaync(),
+        None if component == crate::component::Component::Notifications => {
+            notifications::service::NotificationService::swaync()
+        }
+        None => notifications::service::NotificationService::remote(),
     };
-    let activity = ActivityService::new(state.clone()).await;
+    let activity = if component.owns_stream(crate::protocol::stream::ACTIVITY) {
+        Some(ActivityService::new(state.clone()).await)
+    } else {
+        None
+    };
     let media = MediaService::default();
     let brightness = crate::brightness::BrightnessService::new(state.clone());
     let api = ApiService::new(
         state.clone(),
-        Arc::clone(&activity),
+        activity.clone(),
         Arc::clone(&notification_service),
         media.clone(),
         brightness.clone(),
@@ -95,9 +111,18 @@ pub(crate) async fn run() -> Result<()> {
             .await
             .context("export notification server interface")?;
     }
+    if let Some(engine) = notification_engine.as_ref() {
+        connection
+            .object_server()
+            .at(
+                OBJECT_PATH,
+                notifications::service::InternalNotifications(Arc::clone(engine)),
+            )
+            .await?;
+    }
     let tasks = MonitorTasks::spawn(
         state.clone(),
-        Arc::clone(&activity),
+        activity.clone(),
         notification_service,
         media,
         brightness,
@@ -105,17 +130,17 @@ pub(crate) async fn run() -> Result<()> {
     );
 
     tracing::info!(
-        bus_name = BUS_NAME,
+        bus_name = component.bus_name(),
         object_path = OBJECT_PATH,
         "bar-daemon started"
     );
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let mut listener = tokio::spawn(socket::listen(connection, async {
+    let mut listener = tokio::spawn(socket::listen(connection, component, async {
         let _ = stopped.await;
     }));
     let (mut result, joined) = tokio::select! {
         result = shelllist_daemon_tokio::wait_for_shutdown() => (result, false),
-        error = state.compositor_failure() => (Err(error), false),
+        error = state.compositor_failure(), if component.owns_stream(crate::protocol::stream::WORKSPACES) => (Err(error), false),
         result = &mut listener => (result.context("join bar socket listener").and_then(|r| r), true),
     };
     let _ = stop.send(());
@@ -137,10 +162,13 @@ pub(crate) async fn run() -> Result<()> {
                 .context("drain notification store on shutdown"),
         );
     }
-    result.and(
-        activity
-            .shutdown()
-            .await
-            .context("drain agenda store on shutdown"),
-    )
+    if let Some(activity) = activity {
+        result = result.and(
+            activity
+                .shutdown()
+                .await
+                .context("drain agenda store on shutdown"),
+        );
+    }
+    result
 }

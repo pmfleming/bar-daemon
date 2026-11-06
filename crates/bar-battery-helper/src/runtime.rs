@@ -256,6 +256,31 @@ pub(crate) async fn maintain() {
     }
 }
 
+async fn bounded<T>(
+    subject: &str,
+    budget: Duration,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(budget, future)
+        .await
+        .with_context(|| format!("{subject} timed out"))?
+}
+async fn system_bus() -> Result<zbus::Connection> {
+    Ok(zbus::connection::Builder::system()?
+        .method_timeout(Duration::from_secs(3))
+        .build()
+        .await?)
+}
+async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
+    Ok(zbus::Proxy::new(
+        connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{NAME, PendingOverride, contents, install, remove_if_unchanged, verify_effective};
@@ -316,29 +341,4 @@ mod tests {
         }
         assert!(verify_effective("HibernateDelaySec=120min\nHibernateOnACPower=yes", 120).is_err());
     }
-}
-
-async fn bounded<T>(
-    subject: &str,
-    budget: Duration,
-    future: impl std::future::Future<Output = Result<T>>,
-) -> Result<T> {
-    tokio::time::timeout(budget, future)
-        .await
-        .with_context(|| format!("{subject} timed out"))?
-}
-async fn system_bus() -> Result<zbus::Connection> {
-    Ok(zbus::connection::Builder::system()?
-        .method_timeout(Duration::from_secs(3))
-        .build()
-        .await?)
-}
-async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
-    Ok(zbus::Proxy::new(
-        connection,
-        "org.freedesktop.login1",
-        "/org/freedesktop/login1",
-        "org.freedesktop.login1.Manager",
-    )
-    .await?)
 }

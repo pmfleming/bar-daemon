@@ -43,6 +43,9 @@ impl BarDaemon {
         params_json: &str,
         lifetime: Option<Owner>,
     ) -> String {
+        if !self.state.owns_method(method) {
+            return api::unsupported_method(method).to_string();
+        }
         let policy = protocol::method_policy(method);
         let owner = lifetime.as_ref().map(Owner::name);
         let admission = match policy {
@@ -112,10 +115,9 @@ impl BarDaemon {
             Ok(admitted) => admitted,
             Err(response) => return response,
         };
-        if let Some(stream) = streams
-            .iter()
-            .find(|stream| !protocol::STREAMS.contains(&stream.as_str()))
-        {
+        if let Some(stream) = streams.iter().find(|stream| {
+            !protocol::STREAMS.contains(&stream.as_str()) || !self.state.owns_stream(stream)
+        }) {
             return api::error(
                 "unsupported-stream",
                 format!("Unsupported bar-api stream: {stream}"),

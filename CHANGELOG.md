@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Run notifications in their own session process, with independent startup,
+  compositor routing, persistence, activation and Shelllist subscriptions.
+
 - Extract the privileged battery helper and location authority into independent
   workspace crates. Share only battery helper contracts and validated place data.
 

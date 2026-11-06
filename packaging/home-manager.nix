@@ -17,6 +17,11 @@ in
       message = "services.bar-daemon.suspend requires Home Manager's hypridle service.";
     };
     systemd.user.services.bar-daemon = import ./session-service.nix { inherit lib cfg idleConfig; };
+    systemd.user.services.bar-notification-daemon = {
+      Unit = { Description = "Desktop notifications"; PartOf = [ cfg.target ]; After = [ cfg.target "dbus.service" ]; Conflicts = [ "swaync.service" ]; Before = [ "swaync.service" ]; };
+      Service = { Type = "dbus"; BusName = "org.laufan.BarNotificationDaemon"; ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ]; };
+      Install.WantedBy = [ cfg.target ];
+    };
     systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
       Service = {
         Type = lib.mkForce "notify";

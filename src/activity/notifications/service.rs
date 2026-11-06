@@ -16,6 +16,7 @@ pub(crate) struct NotificationService {
 enum NotificationBackend {
     Native(Arc<NotificationEngine>),
     SwayNc,
+    Remote,
 }
 
 impl NotificationService {
@@ -23,6 +24,50 @@ impl NotificationService {
         Arc::new(Self {
             backend: NotificationBackend::Native(engine),
         })
+    }
+
+    pub(crate) fn remote() -> Arc<Self> {
+        Arc::new(Self {
+            backend: NotificationBackend::Remote,
+        })
+    }
+
+    pub(crate) fn durable_updates(&self) -> bool {
+        matches!(
+            self.backend,
+            NotificationBackend::Native(_) | NotificationBackend::Remote
+        ) && !std::env::var("BAR_DAEMON_NOTIFICATION_BACKEND")
+            .is_ok_and(|s| s.eq_ignore_ascii_case("swaync"))
+    }
+
+    pub(crate) async fn notify_update_once(
+        &self,
+        key: String,
+        run_id: String,
+        incoming: IncomingNotification,
+    ) -> Result<()> {
+        if let NotificationBackend::Native(engine) = &self.backend {
+            return engine.notify_update_once(key, run_id, incoming).await;
+        }
+        if matches!(self.backend, NotificationBackend::Remote) && self.durable_updates() {
+            let connection = crate::bus::session().await?;
+            let proxy = zbus::Proxy::new(
+                &connection,
+                crate::component::Component::Notifications.bus_name(),
+                crate::api::OBJECT_PATH,
+                "org.laufan.BarNotificationInternal1",
+            )
+            .await?;
+            proxy
+                .call::<_, _, ()>(
+                    "NotifyUpdateOnce",
+                    &(key, run_id, serde_json::to_string(&incoming)?),
+                )
+                .await?;
+            return Ok(());
+        }
+        self.sink().send(incoming).await?;
+        Ok(())
     }
 
     pub(crate) fn swaync() -> Arc<Self> {
@@ -48,13 +93,14 @@ impl NotificationService {
                 );
             }
             NotificationBackend::SwayNc => swaync::monitor(state).await,
+            NotificationBackend::Remote => std::future::pending().await,
         }
     }
 
     pub(crate) fn native_engine(&self) -> Option<&Arc<NotificationEngine>> {
         match &self.backend {
             NotificationBackend::Native(engine) => Some(engine),
-            NotificationBackend::SwayNc => None,
+            NotificationBackend::SwayNc | NotificationBackend::Remote => None,
         }
     }
 
@@ -63,7 +109,7 @@ impl NotificationService {
             NotificationBackend::Native(engine) => NotificationSink {
                 backend: SinkBackend::Native(Arc::clone(engine)),
             },
-            NotificationBackend::SwayNc => NotificationSink {
+            NotificationBackend::SwayNc | NotificationBackend::Remote => NotificationSink {
                 backend: SinkBackend::Freedesktop,
             },
         }
@@ -72,7 +118,7 @@ impl NotificationService {
     pub(crate) async fn toggle_dnd(&self) -> Result<bool> {
         match &self.backend {
             NotificationBackend::Native(engine) => engine.toggle_dnd().await,
-            NotificationBackend::SwayNc => {
+            NotificationBackend::SwayNc | NotificationBackend::Remote => {
                 swaync::toggle_dnd().await?;
                 Ok(false)
             }
@@ -82,7 +128,9 @@ impl NotificationService {
     pub(crate) async fn toggle_panel(&self) -> Result<()> {
         match &self.backend {
             NotificationBackend::Native(_) => Ok(()),
-            NotificationBackend::SwayNc => swaync::toggle_panel().await,
+            NotificationBackend::SwayNc | NotificationBackend::Remote => {
+                swaync::toggle_panel().await
+            }
         }
     }
 }
@@ -185,5 +233,70 @@ pub(crate) fn internal_notification(
             ..NotificationHints::default()
         },
         expire_timeout: -1,
+    }
+}
+
+/// Private session-bus delivery path; the server persists the key before replying.
+/// A lost reply can safely be retried with the same key.
+pub(crate) struct InternalNotifications(pub Arc<NotificationEngine>);
+#[zbus::interface(name = "org.laufan.BarNotificationInternal1")]
+impl InternalNotifications {
+    async fn notify_update_once(
+        &self,
+        key: String,
+        run_id: String,
+        incoming: &str,
+    ) -> zbus::fdo::Result<()> {
+        if incoming.len() > 256 * 1024 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "notification too large".into(),
+            ));
+        }
+        let incoming = serde_json::from_str(incoming)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+        self.0
+            .notify_update_once(key, run_id, incoming)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod separation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn private_bus_delivery_keeps_the_durable_key_across_retries() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = NotificationEngine::persistent(
+            crate::state::StateStore::default(),
+            directory.path().join("notifications.db"),
+        )
+        .await
+        .unwrap();
+        let exported = engine.clone();
+        let (_server, client) = crate::test_support::dbus_peer(|builder| {
+            builder.serve_at(crate::api::OBJECT_PATH, InternalNotifications(exported))
+        })
+        .await
+        .unwrap();
+        let proxy = zbus::Proxy::new(
+            &client,
+            crate::component::Component::Notifications.bus_name(),
+            crate::api::OBJECT_PATH,
+            "org.laufan.BarNotificationInternal1",
+        )
+        .await
+        .unwrap();
+        let notification = internal_notification("updates", "Updated", "Complete", 1);
+        let encoded = serde_json::to_string(&notification).unwrap();
+        for _ in 0..2 {
+            proxy
+                .call::<_, _, ()>("NotifyUpdateOnce", &("updates:once", "", &encoded))
+                .await
+                .unwrap();
+        }
+        assert_eq!(engine.active().await.len(), 1);
+        engine.shutdown().await.unwrap();
     }
 }

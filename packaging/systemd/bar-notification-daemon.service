@@ -1,0 +1,15 @@
+[Unit]
+Description=Desktop notification service
+PartOf=graphical-session.target
+After=graphical-session.target dbus.service
+Conflicts=swaync.service
+Before=swaync.service
+[Service]
+Type=dbus
+BusName=org.laufan.BarNotificationDaemon
+ExecStart=@out@/bin/bar-notification-daemon daemon
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target
