@@ -173,6 +173,38 @@
   "registry": {
     "methods": [
       {
+        "limits": {
+          "bytes_per_client": 4194304,
+          "catalogs_per_client": 128,
+          "items_per_catalog": 20000
+        },
+        "name": "search.catalog",
+        "ownership": "transport-scoped; cleared on disconnect",
+        "params": {
+          "items": [],
+          "owner": "result-store-1",
+          "revision": 1
+        },
+        "result": "owner,revision"
+      },
+      {
+        "name": "search.query",
+        "params": {
+          "generation": 1,
+          "owner": "result-store-1",
+          "query": "",
+          "revision": 1
+        },
+        "result": "owner,revision,generation,keys"
+      },
+      {
+        "name": "search.release",
+        "params": {
+          "owner": "result-store-1"
+        },
+        "result": "owner"
+      },
+      {
         "name": "theme.configure",
         "params_example": {
           "dark": false,

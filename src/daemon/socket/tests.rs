@@ -130,6 +130,15 @@ async fn direct_dispatch_mixed_streams_and_connection_lifetimes_share_the_servic
         ("bar.snapshot", json!({"streams":[false]})),
         ("unknown.method", json!({})),
         (
+            "search.catalog",
+            json!({"owner":"parity", "revision":1, "items":[{"key":"cafe", "title":"Café"}]}),
+        ),
+        (
+            "search.query",
+            json!({"owner":"parity", "revision":1, "generation":1, "query":"cafe"}),
+        ),
+        ("search.release", json!({"owner":"parity"})),
+        (
             "battery.operation.status",
             json!({"operation_id":"unknown"}),
         ),

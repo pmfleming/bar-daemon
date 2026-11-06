@@ -147,6 +147,9 @@ pub mod stream {
 
 /// Complete ordered method registry for protocol version 1.
 pub const METHODS: &[&str] = &[
+    "search.catalog",
+    "search.query",
+    "search.release",
     "theme.configure",
     "theme.resolve",
     "bar.snapshot",
@@ -241,6 +244,13 @@ pub const STREAMS: &[&str] = &read_wire::STREAM_NAMES;
 
 /// Only declared policies participate in deadline enforcement during migration.
 pub(crate) fn method_policy(name: &str) -> Option<shelllist_daemon_core::MethodPolicy> {
+    if matches!(name, "search.catalog" | "search.query" | "search.release") {
+        use shelllist_daemon_core::{ExecutionMode, MethodPolicy, Sensitivity};
+        let mut policy =
+            MethodPolicy::new(ExecutionMode::Read, Sensitivity::SensitiveRead, "search");
+        policy.request_bytes = 32 * 1024 * 1024;
+        return Some(policy);
+    }
     if let Some(method) = audio_wire::Method::parse(name) {
         return Some(method.policy());
     }
@@ -267,6 +277,9 @@ pub fn registry() -> Value {
         "protocol": NAME,
         "version": VERSION,
         "methods": [
+            { "name": "search.catalog", "params": {"owner":"result-store-1", "revision":1, "items":[]}, "result":"owner,revision", "ownership":"transport-scoped; cleared on disconnect", "limits":{"catalogs_per_client":128,"items_per_catalog":20000,"bytes_per_client":4194304} },
+            { "name": "search.query", "params": {"owner":"result-store-1", "revision":1,"generation":1,"query":""}, "result":"owner,revision,generation,keys" },
+            { "name": "search.release", "params": {"owner":"result-store-1"}, "result":"owner" },
             control_wire::contract::<crate::theme::ThemeRequest, crate::theme::ThemeRoles>("theme.configure", "theme", json!({"seed":"#6750a4", "dark":false})),
             control_wire::contract::<crate::theme::ThemeRequest, crate::theme::ThemeRoles>("theme.resolve", "theme", json!({"seed":"#6750a4", "dark":false})),
             { "name": "bar.snapshot", "params": {}, "optional_params": { "streams": "registered stream names; omitted means full snapshot" }, "result": "snapshot" },

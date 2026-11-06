@@ -16,6 +16,7 @@ use self::{subscriptions::BarDaemon, tasks::MonitorTasks};
 mod agenda_tests;
 pub(crate) mod battery_operations;
 mod owner;
+mod search;
 mod socket;
 mod subscriptions;
 mod tasks;

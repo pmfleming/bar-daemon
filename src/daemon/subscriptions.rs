@@ -16,6 +16,7 @@ pub(super) struct BarDaemon {
     boundary: shelllist_daemon_tokio::ServiceBoundary,
     api: Arc<ApiService>,
     operations: super::battery_operations::Operations,
+    search: super::search::Search,
     state: StateStore,
     pub(super) subscriptions: Arc<OwnedTaskRegistry>,
 }
@@ -28,6 +29,7 @@ impl BarDaemon {
             ),
             api: Arc::new(api),
             operations: super::battery_operations::Operations::default(),
+            search: super::search::Search::default(),
             state,
             subscriptions: Arc::new(OwnedTaskRegistry::default()),
         }
@@ -60,6 +62,18 @@ impl BarDaemon {
                     .to_string();
             }
         };
+        if method.starts_with("search.") {
+            let Some(owner) = lifetime.as_ref() else {
+                return api::error("owner-required", "search requires a transport owner")
+                    .to_string();
+            };
+            let search = self.search.clone();
+            let owner = owner.clone();
+            let method = method.to_owned();
+            return admitted
+                .run(async move { search.call(&method, params, &owner).await })
+                .await;
+        }
         if matches!(
             method,
             "battery.operation.start" | "battery.operation.status" | "battery.operation.cancel"
