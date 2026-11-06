@@ -30,6 +30,10 @@ in
         description = "Desktop notifications"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ]; wantedBy = [ cfg.target ]; conflicts = [ "swaync.service" ]; before = [ "swaync.service" ];
         serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarNotificationDaemon"; ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ]; };
       };
+      systemd.user.services.bar-power-daemon = {
+        description = "Desktop power and sleep policy"; partOf = [ cfg.target ]; after = [ cfg.target "dbus.service" ]; wantedBy = [ cfg.target ];
+        serviceConfig = { Type = "dbus"; BusName = "org.laufan.BarPowerDaemon"; ExecStart = "${cfg.package}/bin/bar-power-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${cfg.idleConfig}"; };
+      };
       systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
         description = "Daemon-managed idle policy";
         wantedBy = [ cfg.target ];

@@ -12,6 +12,11 @@ Its `client` subcommand uses the same bar-api version and notification streams.
 Update delivery crosses a private D-Bus method with a durable idempotency key;
 other alerts use the standard notification interface.
 
+`bar-power-daemon` owns battery, power profiles, sleep, lid and critical-battery
+policy through `org.laufan.BarPowerDaemon`. Hypridle callbacks target this owner.
+Display and activity consumers observe logind transitions locally and continue
+to receive resume generations when the power process is unavailable.
+
 ## Shelllist Updates
 
 The desktop update monitor exports a genuine `shelllist-updates` StatusNotifierItem

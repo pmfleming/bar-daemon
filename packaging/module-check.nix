@@ -25,6 +25,8 @@ assert session.systemd.user.services.bar-daemon.serviceConfig.BusName == "org.la
 assert builtins.elem "BAR_DAEMON_DISPLAY_CONTROL=1" session.systemd.user.services.bar-daemon.serviceConfig.Environment;
 assert builtins.elem "BAR_DAEMON_YOUTUBE_METADATA=1" session.systemd.user.services.bar-daemon.serviceConfig.Environment;
 assert builtins.elem "hypr-monitor-auto.service" session.systemd.user.services.bar-daemon.unitConfig.Conflicts;
+assert session.systemd.user.services.bar-power-daemon.serviceConfig.BusName == "org.laufan.BarPowerDaemon";
+assert builtins.elem "BAR_DAEMON_IDLE_CONFIG=%h/.config/hypr/hypridle.conf" session.systemd.user.services.bar-power-daemon.serviceConfig.Environment;
 assert session.systemd.user.services.hypridle.serviceConfig.Type == "notify";
 assert !(helper.systemd.user.services ? bar-daemon);
 assert !(location.systemd.user.services ? bar-daemon);

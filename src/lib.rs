@@ -28,6 +28,7 @@ mod power;
 mod presentation;
 /// Stable metadata and contract fixtures for the JSON/D-Bus protocol.
 pub mod protocol;
+mod session_sleep;
 mod sleep;
 mod sleep_policy;
 mod state;
@@ -74,8 +75,13 @@ pub async fn run_idle_sleep(
     episode: u64,
 ) -> anyhow::Result<()> {
     let connection = zbus::Connection::session().await?;
-    let proxy =
-        zbus::Proxy::new(&connection, api::BUS_NAME, api::OBJECT_PATH, api::INTERFACE).await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        component::Component::Power.bus_name(),
+        api::OBJECT_PATH,
+        api::INTERFACE,
+    )
+    .await?;
     let params =
         serde_json::json!({"sleep_minutes": sleep_minutes, "generation": generation, "episode": episode}).to_string();
     let reply: String = proxy.call("Call", &("powerSleep.idle", params)).await?;

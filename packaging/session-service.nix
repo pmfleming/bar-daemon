@@ -1,4 +1,4 @@
-{ lib, cfg, idleConfig }:
+{ lib, cfg, idleConfig ? null }:
 {
   Unit = {
     Description = "Desktop status and policy service";
@@ -12,7 +12,6 @@
     BusName = "org.laufan.BarDaemon";
     ExecStart = "${cfg.package}/bin/bar-daemon daemon";
     Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ]
-      ++ lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${idleConfig}"
       ++ lib.optional cfg.displays.enable "BAR_DAEMON_DISPLAY_CONTROL=1"
       ++ lib.optional cfg.media.youtubeMetadata.enable "BAR_DAEMON_YOUTUBE_METADATA=1";
     Restart = "on-failure";

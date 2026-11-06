@@ -5,36 +5,51 @@ use crate::protocol::stream;
 pub enum Component {
     Bar,
     Notifications,
+    Power,
 }
 impl Component {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Bar => "bar-daemon",
             Self::Notifications => "bar-notification-daemon",
+            Self::Power => "bar-power-daemon",
         }
     }
     pub const fn bus_name(self) -> &'static str {
         match self {
             Self::Bar => "org.laufan.BarDaemon",
             Self::Notifications => "org.laufan.BarNotificationDaemon",
+            Self::Power => "org.laufan.BarPowerDaemon",
         }
     }
     pub(crate) fn owns_stream(self, name: &str) -> bool {
-        let notifications = matches!(name, stream::NOTIFICATIONS | stream::NOTIFICATION_ACTIVE);
-        match self {
-            Self::Bar => !notifications,
-            Self::Notifications => notifications,
-        }
+        let owner = match name {
+            stream::NOTIFICATIONS | stream::NOTIFICATION_ACTIVE => Self::Notifications,
+            stream::BATTERY
+            | stream::POWER_PROFILE
+            | stream::POWER_SLEEP
+            | stream::SLEEP_POLICY => Self::Power,
+            _ => Self::Bar,
+        };
+        self == owner
     }
     pub(crate) fn owns_method(self, name: &str) -> bool {
         if name == "bar.snapshot" {
             return true;
         }
-        let notifications = name.starts_with("notifications.");
-        match self {
-            Self::Bar => !notifications,
-            Self::Notifications => notifications,
+        if ["notifications."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            return self == Self::Notifications;
         }
+        if ["battery.", "powerProfile.", "powerSleep."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            return self == Self::Power;
+        }
+        self == Self::Bar
     }
     pub(crate) fn streams(self) -> Vec<&'static str> {
         crate::protocol::STREAMS
@@ -80,7 +95,7 @@ mod tests {
     fn streams_have_one_process_owner() {
         for stream in crate::protocol::STREAMS {
             assert_eq!(
-                [Component::Bar, Component::Notifications]
+                [Component::Bar, Component::Notifications, Component::Power]
                     .iter()
                     .filter(|c| c.owns_stream(stream))
                     .count(),
@@ -93,7 +108,7 @@ mod tests {
     }
     #[tokio::test]
     async fn component_snapshots_and_calls_reject_foreign_domains() {
-        for component in [Component::Bar, Component::Notifications] {
+        for component in [Component::Bar, Component::Notifications, Component::Power] {
             let state = crate::state::StateStore::for_component(component);
             let api = crate::api::ApiService::new(
                 state.clone(),

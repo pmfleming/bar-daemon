@@ -6,6 +6,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Isolate battery, power profiles and sleep policies in `bar-power-daemon`;
+  other consumers observe logind sleep transitions independently.
+
 - Run notifications in their own session process, with independent startup,
   compositor routing, persistence, activation and Shelllist subscriptions.
 

@@ -131,6 +131,15 @@ impl MonitorTasks {
             &[NOTIFICATIONS, NOTIFICATION_ACTIVE],
             notifications.monitor(state.clone(), connection),
         );
+        if !component.owns_stream(POWER_SLEEP)
+            && (component.owns_stream(ACTIVITY) || component.owns_stream(DISPLAY_POLICY))
+        {
+            tasks.add(
+                "session-sleep",
+                &[ACTIVITY, DISPLAY_POLICY],
+                crate::session_sleep::monitor(state.clone()),
+            );
+        }
         if component == crate::component::Component::Notifications {
             tasks.group.spawn(
                 "notification-routing",

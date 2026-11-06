@@ -85,6 +85,7 @@
             strictDeps = true;
             postFixup = ''
               wrapProgram $out/bin/bar-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.brightnessctl pkgs.systemd ]}
+              wrapProgram $out/bin/bar-power-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-battery-helper --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-location-daemon --set-default TZDIR ${pkgs.tzdata}/share/zoneinfo
             '';
@@ -97,6 +98,8 @@
                 $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
               install -Dm644 packaging/licenses/ODbL-1.0.txt $out/share/licenses/bar-daemon/ODbL-1.0.txt
               install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
+              install -Dm644 packaging/systemd/bar-power-daemon.service $out/share/systemd/user/bar-power-daemon.service
+              install -Dm644 packaging/dbus/org.laufan.BarPowerDaemon.service $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service
               install -Dm644 packaging/systemd/bar-notification-daemon.service $out/share/systemd/user/bar-notification-daemon.service
               install -Dm644 packaging/dbus/org.laufan.BarNotificationDaemon.service $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service
               install -Dm644 ${./packaging/systemd/bar-daemon.service} $out/share/systemd/user/bar-daemon.service
@@ -106,6 +109,8 @@
                 $out/share/dbus-1/services/org.freedesktop.Notifications.service
               substituteInPlace \
                 $out/share/systemd/user/bar-daemon.service \
+                $out/share/systemd/user/bar-power-daemon.service \
+                $out/share/dbus-1/services/org.laufan.BarPowerDaemon.service \
                 $out/share/systemd/user/bar-notification-daemon.service \
                 $out/share/dbus-1/services/org.laufan.BarNotificationDaemon.service \
                 $out/share/dbus-1/services/org.laufan.BarDaemon.service \

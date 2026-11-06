@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.laufan.BarPowerDaemon
+Exec=@out@/bin/bar-power-daemon daemon
+SystemdService=bar-power-daemon.service

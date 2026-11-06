@@ -146,3 +146,32 @@ async fn notification_startup_failure_leaves_bar_available() -> Result<()> {
     bar.kill().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn power_remains_available_after_notification_owner_dies() -> Result<()> {
+    let session = Session::new().await?;
+    let mut notifications =
+        session.start(Path::new(env!("CARGO_BIN_EXE_bar-notification-daemon")))?;
+    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
+    session.ready("org.laufan.BarNotificationDaemon").await?;
+    session.ready("org.laufan.BarPowerDaemon").await?;
+    let before = session.snapshot("org.laufan.BarPowerDaemon").await?;
+    ensure!(before["ok"] == true, "{before}");
+    ensure!(
+        before["data"]["snapshot"]
+            .as_object()
+            .context("power snapshot")?
+            .len()
+            == 4
+    );
+    ensure!(!session.root.path().join("state/bar-daemon/agenda").exists());
+    notifications.kill().await?;
+    let after = session.snapshot("org.laufan.BarPowerDaemon").await?;
+    ensure!(after["ok"] == true, "{after}");
+    ensure!(
+        power.try_wait()?.is_none(),
+        "power stopped with notifications"
+    );
+    power.kill().await?;
+    Ok(())
+}

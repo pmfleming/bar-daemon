@@ -22,6 +22,11 @@ in
       Service = { Type = "dbus"; BusName = "org.laufan.BarNotificationDaemon"; ExecStart = "${cfg.package}/bin/bar-notification-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = [ "BAR_DAEMON_NOTIFICATION_BACKEND=native" ]; };
       Install.WantedBy = [ cfg.target ];
     };
+    systemd.user.services.bar-power-daemon = {
+      Unit = { Description = "Desktop power and sleep policy"; PartOf = [ cfg.target ]; After = [ cfg.target "dbus.service" ]; };
+      Service = { Type = "dbus"; BusName = "org.laufan.BarPowerDaemon"; ExecStart = "${cfg.package}/bin/bar-power-daemon daemon"; Restart = "on-failure"; RestartSec = "2s"; Environment = lib.optional cfg.suspend.enable "BAR_DAEMON_IDLE_CONFIG=${idleConfig}"; };
+      Install.WantedBy = [ cfg.target ];
+    };
     systemd.user.services.hypridle = lib.mkIf cfg.suspend.enable {
       Service = {
         Type = lib.mkForce "notify";
