@@ -25,13 +25,13 @@ fn owned(bytes: &[u8]) -> bool {
     }) else {
         return false;
     };
-    value
-        .parse::<u32>()
-        .is_ok_and(|m| (1..=super::MAX_MINUTES).contains(&m) && text == contents(m))
+    value.parse::<u32>().is_ok_and(|m| {
+        (1..=bar_battery_helper_api::MAX_MINUTES).contains(&m) && text == contents(m)
+    })
 }
 pub(super) fn install(directory: &Path, minutes: u32) -> Result<Vec<u8>> {
     anyhow::ensure!(
-        (1..=super::MAX_MINUTES).contains(&minutes),
+        (1..=bar_battery_helper_api::MAX_MINUTES).contains(&minutes),
         "hibernate delay must be 1–10080 minutes"
     );
     let path = directory.join(NAME);
@@ -50,7 +50,11 @@ pub(super) fn install(directory: &Path, minutes: u32) -> Result<Vec<u8>> {
         Err(e) => return Err(e.into()),
     }
     let bytes = contents(minutes).into_bytes();
-    crate::paths::save_bytes_durable(&path, &bytes)?;
+    shelllist_daemon_core::write_bytes_atomic(
+        &path,
+        &bytes,
+        shelllist_daemon_core::AtomicFilePolicy::DURABLE,
+    )?;
     Ok(bytes)
 }
 fn remove_if_unchanged(path: &Path, expected: &[u8]) -> Result<bool> {
@@ -92,7 +96,7 @@ fn verify_effective(text: &str, minutes: u32) -> Result<()> {
     Ok(())
 }
 async fn effective(minutes: u32) -> Result<()> {
-    crate::sleep::bounded(
+    bounded(
         "read effective systemd sleep settings",
         Duration::from_secs(2),
         async {
@@ -114,9 +118,9 @@ async fn effective(minutes: u32) -> Result<()> {
 // Read-only and deliberately conservative. A bus failure is not evidence that
 // a settings lease is safe to release while systemd may still be consuming it.
 async fn safe_to_restore() -> Result<bool> {
-    crate::sleep::bounded("inspect sleep jobs", Duration::from_secs(3), async {
-        let connection = crate::sleep::system_bus().await?;
-        if crate::sleep::manager(&connection)
+    bounded("inspect sleep jobs", Duration::from_secs(3), async {
+        let connection = system_bus().await?;
+        if manager(&connection)
             .await?
             .get_property::<bool>("PreparingForSleep")
             .await?
@@ -262,7 +266,7 @@ mod tests {
         let bytes = install(dir.path(), 120).unwrap();
         assert!(verify_effective(std::str::from_utf8(&bytes).unwrap(), 120).is_ok());
         assert!(install(dir.path(), 0).is_err());
-        assert!(install(dir.path(), super::super::MAX_MINUTES + 1).is_err());
+        assert!(install(dir.path(), bar_battery_helper_api::MAX_MINUTES + 1).is_err());
         assert!(
             std::str::from_utf8(&bytes)
                 .unwrap()
@@ -312,4 +316,29 @@ mod tests {
         }
         assert!(verify_effective("HibernateDelaySec=120min\nHibernateOnACPower=yes", 120).is_err());
     }
+}
+
+async fn bounded<T>(
+    subject: &str,
+    budget: Duration,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(budget, future)
+        .await
+        .with_context(|| format!("{subject} timed out"))?
+}
+async fn system_bus() -> Result<zbus::Connection> {
+    Ok(zbus::connection::Builder::system()?
+        .method_timeout(Duration::from_secs(3))
+        .build()
+        .await?)
+}
+async fn manager(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
+    Ok(zbus::Proxy::new(
+        connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await?)
 }

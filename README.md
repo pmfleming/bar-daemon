@@ -1,5 +1,11 @@
 # bar-daemon
 
+The Cargo workspace includes independent `bar-battery-helper` and
+`bar-location-daemon` packages. The root battery service links only the helper
+API and daemon framework; session-side authorization, cancellation, and policy
+remain in the session daemon. Build and test the complete distribution with
+`cargo build --workspace` and `cargo test --workspace --all-targets`.
+
 ## Shelllist Updates
 
 The desktop update monitor exports a genuine `shelllist-updates` StatusNotifierItem

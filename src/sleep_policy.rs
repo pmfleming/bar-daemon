@@ -17,12 +17,11 @@ use crate::{
 pub(crate) mod critical;
 mod hypridle;
 pub(crate) mod lid;
-pub(crate) mod runtime;
 pub(crate) use hypridle::run;
 
 // Serializes saves, power-source changes and idle callbacks.
 static POLICY_WRITE: Mutex<()> = Mutex::const_new(());
-const MAX_MINUTES: u32 = 7 * 24 * 60;
+const MAX_MINUTES: u32 = bar_battery_helper_api::MAX_MINUTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

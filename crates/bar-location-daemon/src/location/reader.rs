@@ -34,7 +34,7 @@ async fn authorize(
             .await?
             .get_connection_unix_user(sender.clone().into())
             .await
-            .map_err(Into::into)
+            .map_err(zbus::Error::from)
     })
     .await;
     match authorized {

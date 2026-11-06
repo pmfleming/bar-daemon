@@ -1,9 +1,7 @@
 //! Interactive scope is opt-in. Background policy never opens a polkit prompt.
-use std::time::Duration;
 use tokio::sync::watch;
 
-pub(crate) const AUTHORIZATION_BUDGET: Duration = Duration::from_secs(90);
-pub(crate) const HELPER_BUDGET: Duration = Duration::from_secs(100);
+pub(crate) use bar_battery_helper_api::HELPER_BUDGET;
 
 tokio::task_local! {
     pub(crate) static INTERACTIVE: watch::Receiver<bool>;

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Place {
+pub struct Place {
     pub name: String,
     #[serde(default)]
     pub country: String,
@@ -36,7 +36,7 @@ impl Place {
 }
 
 /// Parsed once per tzdata source; both authorities resolve the same bounded chains.
-pub(crate) struct TimezoneLinks(HashMap<String, String>);
+pub struct TimezoneLinks(HashMap<String, String>);
 impl TimezoneLinks {
     pub fn from_table(table: &str) -> Self {
         Self(

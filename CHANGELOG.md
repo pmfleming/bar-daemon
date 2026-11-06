@@ -4,6 +4,11 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- Extract the privileged battery helper and location authority into independent
+  workspace crates. Share only battery helper contracts and validated place data.
+
 ### Fixed
 
 - Give an empty temporary workspace the icon of the app moved into it. Replace

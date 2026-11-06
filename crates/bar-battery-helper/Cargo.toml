@@ -1,0 +1,19 @@
+[package]
+name = "bar-battery-helper"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+bar-battery-helper-api = { path = "../bar-battery-helper-api" }
+shelllist-daemon-core = { path = "../../../daemon-framework/crates/shelllist-daemon-core" }
+shelllist-daemon-tokio = { path = "../../../daemon-framework/crates/shelllist-daemon-tokio" }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5.18", features = ["tokio"] }
+zvariant = "5.13.1"
+[dev-dependencies]
+tempfile = "3"

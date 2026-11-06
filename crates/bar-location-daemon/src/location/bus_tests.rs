@@ -367,7 +367,7 @@ async fn peer(legacy: bool) -> (tokio::process::Child, Connection, Peer, Arc<Ser
             concat!(
                 "--config-file=",
                 env!("CARGO_MANIFEST_DIR"),
-                "/test_support/location-session.conf"
+                "/../../test_support/location-session.conf"
             ),
             "--nofork",
             "--print-address=1",

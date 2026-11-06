@@ -40,6 +40,7 @@
                 ./Cargo.toml
                 ./Cargo.lock
                 ./src
+                ./crates
                 ./tests
                 ./test_support
                 ./tools/agenda-turso-contract
@@ -69,7 +70,8 @@
             ];
             HYPRIDLE_TEST_BIN = "${managedHypridle}/bin/hypridle";
             LOCATION_GEOCLUE_AGENT = "${locationGeoclue}/libexec/geoclue-2.0/demos/agent";
-            cargoTestFlags = [ "--all-targets" ];
+            cargoTestFlags = [ "--workspace" "--all-targets" ];
+            cargoBuildFlags = [ "--workspace" ];
             checkFlags = [ "--include-ignored" ];
             # Qualify the exact packaged Turso/Syscall build in private temporary
             # storage, including durable restart and logical backup restoration.

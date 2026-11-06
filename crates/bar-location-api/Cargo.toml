@@ -1,0 +1,11 @@
+[package]
+name = "bar-location-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+chrono-tz = "0.10"

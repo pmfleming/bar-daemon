@@ -161,12 +161,7 @@ async fn slow_interactive_authorization_and_owner_loss_never_touch_live_policy()
     let service = bus.connection().await;
     service
         .object_server()
-        .at(
-            OBJECT_PATH,
-            BatteryHelper {
-                writer: writer.clone(),
-            },
-        )
+        .at(OBJECT_PATH, BatteryHelper::new(writer.clone()))
         .await?;
     service.request_name(BUS_NAME).await?;
     let caller = bus.connection().await;

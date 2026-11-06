@@ -18,7 +18,7 @@ mod daemon;
 mod desktop_identity;
 mod display_policy;
 mod hyprland;
-mod location_place;
+use bar_location_api as location_place;
 mod media;
 mod model;
 mod osd_hardware;
@@ -100,9 +100,4 @@ pub async fn inspect_lock() -> anyhow::Result<serde_json::Value> {
     Ok(
         serde_json::json!({"source": "hyprland-lock-notify-v1", "locked": sleep::inspect_lock().await?}),
     )
-}
-
-/// Runs the privileged battery helper service.
-pub async fn run_battery_helper() -> anyhow::Result<()> {
-    battery::helper::run().await
 }

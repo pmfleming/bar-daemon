@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, env, path::PathBuf, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use shelllist_daemon_core::XdgRoot;
 
@@ -355,19 +355,7 @@ impl BatteryRuntimeState {
     }
 }
 
-pub(crate) fn valid_thresholds(start: u8, end: u8) -> bool {
-    start < end && end <= 100
-}
-
-pub(crate) fn validate_battery_id(battery_id: &str) -> Result<()> {
-    let suffix = battery_id
-        .strip_prefix("BAT")
-        .with_context(|| format!("battery id {battery_id} must start with BAT"))?;
-    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
-        bail!("battery id must match BAT followed by digits");
-    }
-    Ok(())
-}
+pub(crate) use bar_battery_helper_api::{valid_thresholds, validate_battery_id};
 
 pub(crate) fn config_path() -> PathBuf {
     env::var_os("BAR_DAEMON_BATTERY_CONFIG")
