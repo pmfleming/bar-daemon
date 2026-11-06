@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Reserve startup privately and claim public D-Bus names only after persistent
+  stores and interfaces are ready, including the freedesktop notification name.
+
 - Exit safe session owners after a monitor panic or unexpected return so their
   service restart policy can recover them, retaining conservative power policy.
 

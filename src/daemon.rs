@@ -49,6 +49,36 @@ async fn claim_names(
     Ok(())
 }
 
+async fn reserve_startup(
+    connection: &zbus::Connection,
+    component: crate::component::Component,
+    native_notifications: bool,
+) -> Result<()> {
+    use zbus::fdo::{RequestNameFlags, RequestNameReply};
+    let reservation = format!("{}.Starting", component.bus_name());
+    let reply = connection
+        .request_name_with_flags(reservation.as_str(), RequestNameFlags::DoNotQueue.into())
+        .await?;
+    anyhow::ensure!(
+        reply == RequestNameReply::PrimaryOwner,
+        "{} startup is already in progress",
+        component.name()
+    );
+    if component == crate::component::Component::Activity {
+        reject_legacy_activity_owner(connection).await?;
+    }
+    let bus = zbus::fdo::DBusProxy::new(connection).await?;
+    for name in std::iter::once(component.bus_name())
+        .chain(native_notifications.then_some(notifications::server::BUS_NAME))
+    {
+        anyhow::ensure!(
+            !bus.name_has_owner(name.try_into()?).await?,
+            "another daemon owns {name}"
+        );
+    }
+    Ok(())
+}
+
 async fn reject_legacy_activity_owner(connection: &zbus::Connection) -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         let bus = zbus::fdo::DBusProxy::new(connection).await?;
@@ -77,11 +107,8 @@ pub(crate) async fn run_component(component: crate::component::Component) -> Res
         .build()
         .await
         .context("start bar-daemon D-Bus connection")?;
-    // The residual bar process owns no persistent stores. Export it before
-    // claiming its name, so the activity startup fence can identify this split.
-    if component != crate::component::Component::Bar {
-        claim_names(&connection, component, native_notifications).await?;
-    }
+    // A private reservation serializes store startup without advertising readiness.
+    reserve_startup(&connection, component, native_notifications).await?;
     let notification_engine = if native_notifications {
         Some(
             notifications::engine::NotificationEngine::persistent(
@@ -141,8 +168,15 @@ pub(crate) async fn run_component(component: crate::component::Component) -> Res
             )
             .await?;
     }
-    if component == crate::component::Component::Bar {
-        claim_names(&connection, component, false).await?;
+    // Public names are the readiness boundary: stores and every interface exist.
+    if let Err(error) = claim_names(&connection, component, native_notifications).await {
+        if let Some(engine) = &notification_engine {
+            let _ = engine.shutdown().await;
+        }
+        if let Some(activity) = &activity {
+            let _ = activity.shutdown().await;
+        }
+        return Err(error);
     }
     let tasks = MonitorTasks::spawn(
         state.clone(),

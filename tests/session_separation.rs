@@ -277,3 +277,41 @@ async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
     bar.kill().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn failed_notification_store_never_advertises_public_readiness() -> Result<()> {
+    use futures::StreamExt;
+    let session = Session::new().await?;
+    std::fs::create_dir_all(
+        session
+            .root
+            .path()
+            .join("state/bar-daemon/notifications-turso-v2.db"),
+    )?;
+    let proxy = zbus::Proxy::new(
+        &session.connection,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    )
+    .await?;
+    let mut changes = proxy.receive_signal("NameOwnerChanged").await?;
+    let mut process = session.start(Path::new(env!("CARGO_BIN_EXE_bar-notification-daemon")))?;
+    ensure!(
+        !timeout(Duration::from_secs(20), process.wait())
+            .await??
+            .success()
+    );
+    while let Ok(Some(message)) = timeout(Duration::from_millis(100), changes.next()).await {
+        let (name, _, new): (String, String, String) = message.body().deserialize()?;
+        ensure!(
+            new.is_empty()
+                || !matches!(
+                    name.as_str(),
+                    "org.laufan.BarNotificationDaemon" | "org.freedesktop.Notifications"
+                ),
+            "failed startup advertised {name}"
+        );
+    }
+    Ok(())
+}
