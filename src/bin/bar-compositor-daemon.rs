@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    bar_daemon::component::main(bar_daemon::component::Component::Compositor).await
+    bar_compositor::main().await
 }

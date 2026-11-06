@@ -1,0 +1,12 @@
+[package]
+name = "bar-power-events"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+udev = "0.9"
+tokio = { version = "1", features = ["sync", "net", "rt", "macros"] }
+tracing = "0.1"

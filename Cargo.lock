@@ -345,6 +345,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bar-activity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-daemon-core",
+]
+
+[[package]]
+name = "bar-audio-native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-native-api",
+ "pipewire",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bar-battery-helper"
 version = "0.1.0"
 dependencies = [
@@ -368,13 +389,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "bar-compositor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-daemon-core",
+]
+
+[[package]]
 name = "bar-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-activity",
+ "bar-compositor",
+ "bar-daemon-core",
+ "bar-notification",
+ "bar-power",
+ "bar-status",
+ "clap",
+ "futures",
+ "serde_json",
+ "shelllist-hyprland",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+ "wayland-scanner",
+ "wayland-server",
+ "zbus",
+ "zvariant",
+]
+
+[[package]]
+name = "bar-daemon-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bar-battery-helper",
  "bar-battery-helper-api",
  "bar-location-api",
+ "bar-native-api",
  "chrono",
  "chrono-tz",
  "clap",
@@ -383,7 +437,6 @@ dependencies = [
  "ksni",
  "material-colors",
  "notify",
- "pipewire",
  "regex",
  "reqwest",
  "rusqlite",
@@ -403,7 +456,6 @@ dependencies = [
  "tracing-subscriber",
  "turso",
  "tzf-rs",
- "udev",
  "update-worker",
  "wayland-client",
  "wayland-scanner",
@@ -432,7 +484,6 @@ dependencies = [
  "clap",
  "futures",
  "reqwest",
- "rustix 1.1.4",
  "serde",
  "serde_json",
  "shelllist-daemon-core",
@@ -444,6 +495,62 @@ dependencies = [
  "tzf-rs",
  "zbus",
  "zvariant",
+]
+
+[[package]]
+name = "bar-native-api"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "bar-notification"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-daemon-core",
+ "bar-sharing-native",
+]
+
+[[package]]
+name = "bar-power"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-daemon-core",
+ "bar-power-events",
+]
+
+[[package]]
+name = "bar-power-events"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tracing",
+ "udev",
+]
+
+[[package]]
+name = "bar-sharing-native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pipewire",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bar-status"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bar-audio-native",
+ "bar-daemon-core",
 ]
 
 [[package]]

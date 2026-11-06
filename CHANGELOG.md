@@ -6,6 +6,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Add owner assembly crates and isolate audio, sharing and power-event native
+  providers behind a pure contract. Link PipeWire only into status/notifications
+  and udev only into power; verify actual executable dependencies in tests.
+
 - Give agenda, locations, weather, clocks and timezone their own activity process.
   Each session daemon exposes only its owned methods, snapshots and streams.
 

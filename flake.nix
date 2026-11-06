@@ -103,6 +103,7 @@
               pkgs.systemd
             ];
             nativeCheckInputs = [
+              pkgs.binutils
               pkgs.dbus
               pkgs.pipewire
             ];
@@ -117,7 +118,7 @@
             # Qualify the exact packaged Turso/Syscall build in private temporary
             # storage, including durable restart and logical backup restoration.
             postCheck = ''
-              cargo run --offline --locked --release --bin agenda-turso-contract
+              cargo run --offline --locked --release -p bar-daemon-core --bin agenda-turso-contract
             '';
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.stdenv.cc.libc.dev}/include";
@@ -222,6 +223,7 @@
                 cargo-llvm-cov
                 cargo-mutants
                 cargo-shear
+                binutils
                 dbus
                 git
                 jq
@@ -243,7 +245,7 @@
               self.packages.${system}.locationGeoclue
             }/libexec/geoclue-2.0/demos/agent";
             RUST_BACKTRACE = "1";
-            RUST_LOG = "bar_daemon=debug";
+            RUST_LOG = "bar_daemon=debug,bar_daemon_core=debug,bar_audio_native=debug,bar_power_events=debug,bar_sharing_native=debug";
           };
         }
       );

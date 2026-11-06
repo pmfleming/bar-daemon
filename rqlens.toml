@@ -49,59 +49,59 @@ miri = false
 # intentional composition roots; docs/quality-policy.md owns their fan-out baseline.
 [[architecture.rules]]
 id = "protocol-does-not-depend-on-api"
-from = ["bar-daemon::shared::protocol", "bar-daemon::shared::protocol::audio_wire"]
-deny = ["bar-daemon::shared::api", "bar-daemon::shared::api::**"]
+from = ["bar-daemon-core::shared::protocol", "bar-daemon-core::shared::protocol::audio_wire"]
+deny = ["bar-daemon-core::shared::api", "bar-daemon-core::shared::api::**"]
 level = "error"
 
 [[architecture.rules]]
 id = "domains-do-not-depend-on-transport"
 from = [
-  "bar-daemon::shared::activity::**",
-  "bar-daemon::shared::audio",
-  "bar-daemon::shared::audio::**",
-  "bar-daemon::shared::battery::**",
-  "bar-daemon::shared::brightness",
-  "bar-daemon::shared::display_policy",
-  "bar-daemon::shared::display_policy::**",
-  "bar-daemon::shared::hyprland",
-  "bar-daemon::shared::media",
-  "bar-daemon::shared::osd_hardware",
-  "bar-daemon::shared::power",
-  "bar-daemon::shared::power::**",
-  "bar-daemon::shared::sleep",
-  "bar-daemon::shared::sleep::**",
-  "bar-daemon::shared::sleep_policy",
-  "bar-daemon::shared::sleep_policy::**",
-  "bar-daemon::shared::timezone",
-  "bar-daemon::shared::updates",
-  "bar-daemon::shared::updates::**",
-  "bar-daemon::shared::work_area",
+  "bar-daemon-core::shared::activity::**",
+  "bar-daemon-core::shared::audio",
+  "bar-daemon-core::shared::audio::**",
+  "bar-daemon-core::shared::battery::**",
+  "bar-daemon-core::shared::brightness",
+  "bar-daemon-core::shared::display_policy",
+  "bar-daemon-core::shared::display_policy::**",
+  "bar-daemon-core::shared::hyprland",
+  "bar-daemon-core::shared::media",
+  "bar-daemon-core::shared::osd_hardware",
+  "bar-daemon-core::shared::power",
+  "bar-daemon-core::shared::power::**",
+  "bar-daemon-core::shared::sleep",
+  "bar-daemon-core::shared::sleep::**",
+  "bar-daemon-core::shared::sleep_policy",
+  "bar-daemon-core::shared::sleep_policy::**",
+  "bar-daemon-core::shared::timezone",
+  "bar-daemon-core::shared::updates",
+  "bar-daemon-core::shared::updates::**",
+  "bar-daemon-core::shared::work_area",
 ]
 deny = [
-  "bar-daemon::shared::api",
-  "bar-daemon::shared::api::**",
-  "bar-daemon::shared::daemon",
-  "bar-daemon::shared::daemon::**",
-  "bar-daemon::shared::client",
+  "bar-daemon-core::shared::api",
+  "bar-daemon-core::shared::api::**",
+  "bar-daemon-core::shared::daemon",
+  "bar-daemon-core::shared::daemon::**",
+  "bar-daemon-core::shared::client",
 ]
 level = "error"
 
 [[architecture.rules]]
 id = "state-does-not-depend-on-effects"
-from = ["bar-daemon::shared::state"]
+from = ["bar-daemon-core::shared::state"]
 deny = [
-  "bar-daemon::shared::audio",
-  "bar-daemon::shared::audio::**",
-  "bar-daemon::shared::battery::**",
-  "bar-daemon::shared::brightness",
-  "bar-daemon::shared::hyprland",
-  "bar-daemon::shared::media",
-  "bar-daemon::shared::power",
-  "bar-daemon::shared::power::**",
-  "bar-daemon::shared::sleep",
-  "bar-daemon::shared::sleep::**",
-  "bar-daemon::shared::updates",
-  "bar-daemon::shared::updates::**",
+  "bar-daemon-core::shared::audio",
+  "bar-daemon-core::shared::audio::**",
+  "bar-daemon-core::shared::battery::**",
+  "bar-daemon-core::shared::brightness",
+  "bar-daemon-core::shared::hyprland",
+  "bar-daemon-core::shared::media",
+  "bar-daemon-core::shared::power",
+  "bar-daemon-core::shared::power::**",
+  "bar-daemon-core::shared::sleep",
+  "bar-daemon-core::shared::sleep::**",
+  "bar-daemon-core::shared::updates",
+  "bar-daemon-core::shared::updates::**",
 ]
 level = "error"
 

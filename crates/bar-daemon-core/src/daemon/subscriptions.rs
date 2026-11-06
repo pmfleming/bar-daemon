@@ -1,0 +1,402 @@
+use std::sync::Arc;
+
+use super::owner::Owner;
+use serde_json::{Value, json};
+use shelllist_daemon_tokio::{EventEmitter, OwnedTaskRegistry, directed_emitter};
+use tokio::sync::broadcast::error::RecvError;
+use zbus::{message::Header, object_server::SignalEmitter};
+
+use crate::{
+    api::{self, ApiService},
+    protocol::{self, read_wire::Event},
+    state::StateStore,
+};
+
+pub(super) type Dispatcher =
+    fn(Arc<ApiService>, String, Value) -> futures::future::BoxFuture<'static, Value>;
+
+pub(super) struct BarDaemon {
+    dispatcher: Dispatcher,
+    boundary: shelllist_daemon_tokio::ServiceBoundary,
+    api: Arc<ApiService>,
+    operations: super::battery_operations::Operations,
+    search: super::search::Search,
+    state: StateStore,
+    pub(super) subscriptions: Arc<OwnedTaskRegistry>,
+}
+
+impl BarDaemon {
+    #[cfg(test)]
+    pub(super) fn new(api: ApiService, state: StateStore) -> Self {
+        Self::with_dispatch(api, state, ApiService::all)
+    }
+
+    pub(super) fn with_dispatch(
+        api: ApiService,
+        state: StateStore,
+        dispatcher: Dispatcher,
+    ) -> Self {
+        Self {
+            dispatcher,
+            boundary: shelllist_daemon_tokio::ServiceBoundary::with_limits(
+                shelllist_daemon_core::ApiIdentity::new(protocol::NAME, protocol::VERSION as u32),
+                64,
+                16,
+                state.component().request_bytes(),
+                // Catalog inputs need more room for JSON escaping. Replies
+                // retain their existing bound, leaving room for the socket's
+                // outer response envelope within its 32 MiB frame.
+                16 * 1024 * 1024,
+            ),
+            api: Arc::new(api),
+            operations: super::battery_operations::Operations::default(),
+            search: super::search::Search::default(),
+            state,
+            subscriptions: Arc::new(OwnedTaskRegistry::default()),
+        }
+    }
+}
+
+impl BarDaemon {
+    pub(super) async fn call_owned(
+        &self,
+        method: &str,
+        params_json: &str,
+        lifetime: Option<Owner>,
+    ) -> String {
+        if !self.state.owns_method(method) {
+            return api::unsupported_method(method).to_string();
+        }
+        let policy = protocol::method_policy(method);
+        let owner = lifetime.as_ref().map(Owner::name);
+        let admission = match policy {
+            Some(policy) => self
+                .boundary
+                .call_policy(owner, method, params_json, policy),
+            None => self.boundary.call(owner, method, params_json),
+        };
+        let admitted = match admission {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
+        let params: Value = match serde_json::from_str(params_json) {
+            Ok(value) => value,
+            Err(error) => {
+                return api::error("validation-error", format!("invalid params JSON: {error}"))
+                    .to_string();
+            }
+        };
+        if method.starts_with("search.") {
+            let Some(owner) = lifetime.as_ref() else {
+                return api::error("owner-required", "search requires a transport owner")
+                    .to_string();
+            };
+            let search = self.search.clone();
+            let owner = owner.clone();
+            let method = method.to_owned();
+            return admitted
+                .run(async move { search.call(&method, params, &owner).await })
+                .await;
+        }
+        if matches!(
+            method,
+            "battery.operation.start" | "battery.operation.status" | "battery.operation.cancel"
+        ) {
+            let Some(owner) = lifetime.as_ref() else {
+                return api::error("owner-required", "operation requires a transport owner")
+                    .to_string();
+            };
+            return admitted.encode(
+                &self
+                    .operations
+                    .call(method, params, owner, self.api.clone()),
+            );
+        }
+        if policy.is_some() {
+            admitted
+                .run((self.dispatcher)(
+                    self.api.clone(),
+                    method.to_owned(),
+                    params,
+                ))
+                .await
+        } else {
+            admitted.encode(&(self.dispatcher)(self.api.clone(), method.to_owned(), params).await)
+        }
+    }
+
+    pub(super) async fn subscribe_owned(
+        &self,
+        streams: Vec<String>,
+        owner: Option<Owner>,
+        emitter: EventEmitter<'static>,
+    ) -> String {
+        let _admitted = match self
+            .boundary
+            .subscribe(owner.as_ref().map(Owner::name), &streams)
+        {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
+        if let Some(stream) = streams.iter().find(|stream| {
+            !protocol::STREAMS.contains(&stream.as_str()) || !self.state.owns_stream(stream)
+        }) {
+            return api::error(
+                "unsupported-stream",
+                format!("Unsupported bar-api stream: {stream}"),
+            )
+            .to_string();
+        }
+        let id = self.subscriptions.next_id("subscription");
+        let state = self.state.clone();
+        if let Err(error) = self.subscriptions.spawn_until(
+            id.clone(),
+            owner.as_ref().map(|owner| owner.name().to_owned()),
+            async move {
+                if let Some(owner) = owner {
+                    owner.closed().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            },
+            forward_events(state, emitter, id.clone(), streams),
+        ) {
+            return api::error("subscription-unavailable", error.to_string()).to_string();
+        }
+        api::success(json!({ "subscription": { "id": id } })).to_string()
+    }
+
+    pub(super) async fn cancel_owned(&self, request_id: &str, owner: Option<&str>) -> String {
+        let _admitted = match self.boundary.cancel(owner, request_id) {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
+        if self.subscriptions.cancel_owned(request_id, owner).await {
+            return api::success(json!({ "cancelled": request_id, "kind": "subscription" }))
+                .to_string();
+        }
+        api::error(
+            "request-not-found",
+            format!("No active request named {request_id}"),
+        )
+        .to_string()
+    }
+}
+
+#[zbus::interface(name = "org.laufan.BarDaemon2")]
+impl BarDaemon {
+    /// Identifies a split owner without changing the shared JSON protocol.
+    fn component(&self) -> &str {
+        self.state.component().name()
+    }
+
+    async fn call(
+        &self,
+        method: &str,
+        params_json: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> String {
+        self.call_owned(
+            method,
+            params_json,
+            header.sender().map(|name| {
+                Owner::bus(
+                    connection,
+                    name.to_string(),
+                    self.subscriptions.owner_monitor(connection),
+                )
+            }),
+        )
+        .await
+    }
+    async fn subscribe(
+        &self,
+        streams: Vec<String>,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> String {
+        let owner = header.sender().map(|name| {
+            Owner::bus(
+                emitter.connection(),
+                name.to_string(),
+                self.subscriptions.owner_monitor(emitter.connection()),
+            )
+        });
+        self.subscribe_owned(streams, owner, directed_emitter(&emitter, &header).into())
+            .await
+    }
+    async fn cancel(&self, request_id: &str, #[zbus(header)] header: Header<'_>) -> String {
+        self.cancel_owned(request_id, header.sender().map(|name| name.as_str()))
+            .await
+    }
+    #[zbus(signal)]
+    async fn event(emitter: &SignalEmitter<'_>, stream: &str, event_json: &str)
+    -> zbus::Result<()>;
+}
+
+async fn forward_events(
+    state: StateStore,
+    emitter: EventEmitter<'static>,
+    subscription_id: String,
+    streams: Vec<String>,
+) {
+    let _work_area_interest = streams
+        .iter()
+        .any(|stream| stream == protocol::stream::WORKAREA)
+        .then(|| state.work_area_interest());
+    let streams: Vec<_> = streams
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let names: Vec<_> = streams.iter().map(String::as_str).collect();
+    let (snapshot, events) = state.snapshot_and_subscribe_domains(&names).await;
+    // JoinSet aborts all domain workers when owner cancellation drops this
+    // future. No extra shared queue can turn one domain's lag into global loss.
+    let mut workers = tokio::task::JoinSet::new();
+    for (stream, mut events) in streams.into_iter().zip(events.0) {
+        let initial = Event::subscribed(&stream, &subscription_id, &snapshot);
+        let emitter = emitter.clone();
+        let subscription_id = subscription_id.clone();
+        workers.spawn(async move {
+            emit_event(&emitter, initial).await;
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        emit_event(&emitter, Event::changed(&subscription_id, event)).await
+                    }
+                    Err(RecvError::Lagged(count)) => {
+                        tracing::warn!(%stream, dropped_events = count, "bar subscriber lag");
+                        emit_event(&emitter, Event::lagged(&stream, &subscription_id, count)).await;
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+    while let Some(result) = workers.join_next().await {
+        if let Err(error) = result {
+            tracing::error!(%error, "bar domain forwarder stopped");
+        }
+    }
+}
+
+async fn emit_event(emitter: &EventEmitter<'_>, event: Event) {
+    let stream = event.stream();
+    if let Err(error) = emitter
+        .emit(api::INTERFACE, stream, event.value().clone())
+        .await
+    {
+        tracing::warn!(%stream, %error, "bar-api event could not be emitted");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use tokio::time::{Duration, timeout};
+
+    struct Peer;
+    #[zbus::interface(name = "org.laufan.BarDaemon2")]
+    impl Peer {
+        fn ping(&self) {}
+    }
+
+    #[tokio::test]
+    async fn real_signals_keep_initial_handoff_and_burst_isolation() {
+        let state = StateStore::default();
+        let (server, client) = timeout(
+            Duration::from_secs(2),
+            crate::test_support::dbus_peer(|builder| builder.serve_at(api::OBJECT_PATH, Peer)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let proxy = zbus::Proxy::new(&client, api::BUS_NAME, api::OBJECT_PATH, api::INTERFACE)
+            .await
+            .unwrap();
+        let mut signals = proxy.receive_signal("Event").await.unwrap();
+        let emitter = SignalEmitter::new(&server, api::OBJECT_PATH)
+            .unwrap()
+            .to_owned();
+        let forwarder = tokio::spawn(forward_events(
+            state.clone(),
+            emitter.into(),
+            "test-sub".into(),
+            vec![
+                protocol::stream::BATTERY.into(),
+                protocol::stream::NOTIFICATION_ACTIVE.into(),
+            ],
+        ));
+        for _ in 0..2 {
+            let message = timeout(Duration::from_secs(2), signals.next())
+                .await
+                .unwrap()
+                .unwrap();
+            let (stream, encoded): (String, String) = message.body().deserialize().unwrap();
+            let value: Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(value["event"], "subscribed");
+            assert_eq!(value["stream"], stream);
+            assert_eq!(value["subscription_id"], "test-sub");
+        }
+        for n in 0..2048 {
+            state
+                .update_audio(crate::model::AudioState {
+                    available: true,
+                    volume_percent: (n % 100) as u8,
+                    ..Default::default()
+                })
+                .await;
+        }
+        state
+            .update_battery(crate::model::BatteryState {
+                available: true,
+                percentage: 42,
+                ..Default::default()
+            })
+            .await;
+        let message = timeout(Duration::from_secs(2), signals.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let (stream, encoded): (String, String) = message.body().deserialize().unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(stream, protocol::stream::BATTERY);
+        assert_eq!(
+            value["event"], "changed",
+            "audio burst cannot send gaps to battery/notification consumers"
+        );
+        assert_eq!(value["data"]["percentage"], 42);
+        assert!(
+            timeout(Duration::from_millis(20), signals.next())
+                .await
+                .is_err()
+        );
+        forwarder.abort();
+        assert!(forwarder.await.unwrap_err().is_cancelled());
+
+        let emitter = SignalEmitter::new(&server, api::OBJECT_PATH)
+            .unwrap()
+            .to_owned();
+        let forwarder = tokio::spawn(forward_events(
+            state.clone(),
+            emitter.into(),
+            "geometry".into(),
+            vec![protocol::stream::WORKAREA.into()],
+        ));
+        timeout(Duration::from_secs(2), signals.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*state.work_area_demand().borrow(), 1);
+        forwarder.abort();
+        assert!(forwarder.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            *state.work_area_demand().borrow(),
+            0,
+            "owner cancellation releases demand and domain workers"
+        );
+    }
+}

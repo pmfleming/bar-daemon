@@ -85,8 +85,12 @@ Notifications, power, compositor integration and activity run in separate sessio
 processes. Media/audio/brightness, hardware OSD, theme, updates and search remain
 in bar-daemon. Each process has a distinct bus name, socket, service lifetime,
 monitor set, publication clocks and subscription registry. See the executable and
-bus-name table in README.md. The implementation library and wire DTOs remain
-shared; health/publication and transport capacity are local to each process.
+bus-name table in README.md. Owner assembly crates select their service, dispatch
+and monitor constructors. Policy and wire DTOs remain in the native-free
+`bar-daemon-core`; health/publication and transport capacity are local to each
+process. Provider crates implement `bar-native-api`: audio and notification
+sharing use PipeWire, and power events use udev. Compositor and activity link
+neither library. Tests inspect the resulting executables' ELF dependencies.
 
 Power keeps battery and sleep policy together. Display and activity use read-only
 logind observers with clock-based resume fallback. Notifications keep their own

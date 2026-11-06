@@ -40,7 +40,7 @@ cargo "${args[@]}" 2>&1 | tee "$out/tests.log"
 
 # A successful filtered/default Cargo run is not full-fixture evidence.
 for test in \
-  audio::tests::private_pipewire_control_reuses_connection_and_reads_external_changes \
+  tests::private_pipewire_control_reuses_connection_and_reads_external_changes \
   native_control_preserves_cookies_and_base_listeners_and_cancels_activity; do
   grep -Fx "test $test ... ok" "$out/tests.log" >/dev/null || {
     echo "Required fixture did not pass: $test" >&2; exit 1;

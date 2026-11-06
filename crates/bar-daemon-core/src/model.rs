@@ -1,0 +1,591 @@
+use serde::{Deserialize, Serialize};
+
+use crate::activity::notifications::model::{NotificationActiveState, NotificationState};
+
+pub(crate) use crate::activity::model::ActivityState;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BarSnapshot {
+    // Carried with cloned snapshots, but added to each wire projection only.
+    #[serde(skip)]
+    pub publications: std::collections::BTreeMap<String, crate::state::publication::Publication>,
+    #[serde(default)]
+    pub theme: crate::theme::ThemeRoles,
+    pub activity: ActivityState,
+    pub workspaces: WorkspaceState,
+    #[serde(default)]
+    pub workarea: WorkAreaState,
+    #[serde(default)]
+    pub compositor: CompositorState,
+    pub media: MediaState,
+    pub audio: AudioState,
+    pub brightness: BrightnessState,
+    pub battery: BatteryState,
+    pub power_profile: PowerProfileState,
+    pub power_sleep: PowerSleepState,
+    #[serde(default)]
+    pub sleep_policy: crate::sleep_policy::SleepPolicyState,
+    #[serde(default)]
+    pub display_policy: crate::display_policy::DisplayPolicyState,
+    pub osd_hardware: OsdHardwareState,
+    pub notifications: NotificationState,
+    pub notification_active: NotificationActiveState,
+    pub updates: UpdateState,
+    pub timezone: TimezoneState,
+}
+
+// Snapshot data must not depend on the effectful compositor monitors.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WorkAreaState {
+    pub available: bool,
+    pub revision: u64,
+    pub monitors: std::collections::BTreeMap<String, shelllist_hyprland::work_area::Insets>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CompositorState {
+    pub available: bool,
+    pub revision: u64,
+    /// None until a successful observation; retained (but unavailable) on error.
+    pub animations_enabled: Option<bool>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PowerSleepState {
+    pub available: bool,
+    pub can_suspend: String,
+    pub can_hibernate: String,
+    pub preparing_for_sleep: bool,
+    /// Monotonic within this daemon lifetime; survives telemetry refreshes.
+    #[serde(default)]
+    pub resume_generation: u64,
+    #[serde(default)]
+    pub operation: SleepOperation,
+    pub lock_before_sleep: bool,
+    /// True only when logind reports this daemon's temporary sleep inhibitor.
+    #[serde(default)]
+    pub keep_awake: bool,
+    pub inhibitors: Vec<SleepInhibitor>,
+    #[serde(default)]
+    pub diagnostics: crate::sleep::diagnostics::SleepDiagnostics,
+    pub error: Option<String>,
+}
+
+/// Public sleep outcome data; tracking and lease ownership stay in the sleep domain.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SleepOperation {
+    pub id: u64,
+    pub action: String,
+    pub phase: String,
+    pub job: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct OsdHardwareState {
+    pub available: bool,
+    pub caps_lock: bool,
+    pub num_lock: bool,
+    pub keyboard_backlight_percent: Option<u8>,
+    pub microphone_privacy: bool,
+    pub camera_privacy: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SleepInhibitor {
+    pub what: String,
+    pub who: String,
+    pub why: String,
+    pub mode: String,
+    pub uid: u32,
+    pub pid: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocationSource {
+    Ip,
+    NonIp,
+    Manual,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AcceptedLocation {
+    pub timezone: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub verified_at: f64,
+    #[serde(default)]
+    pub source: LocationSource,
+    #[serde(default)]
+    pub accuracy_meters: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LocationControl {
+    pub available: bool,
+    pub revision: u64,
+    pub manual: bool,
+    pub paused: bool,
+    pub uncertain: bool,
+    pub effective_place: Option<crate::location_place::Place>,
+    pub operation_id: Option<String>,
+    pub operation_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TimezoneState {
+    pub available: bool,
+    pub timezone: String,
+    pub city: String,
+    pub abbreviation: String,
+    pub utc_offset_seconds: i32,
+    pub timezone_region_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_location: Option<AcceptedLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_control: Option<LocationControl>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct UpdateState {
+    pub available: bool,
+    pub ready: bool,
+    pub lanes: Vec<UpdateLane>,
+    pub jobs: Vec<UpdateJob>,
+    pub state_directory: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct UpdateJob {
+    pub name: String,
+    pub operation: String,
+    pub status: String,
+    pub phase: String,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct UpdateLane {
+    pub name: String,
+    pub ready: bool,
+    pub revision: Option<String>,
+    pub base_hash: Option<String>,
+    pub created_at: Option<u64>,
+    pub auto_apply: bool,
+    pub system: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct PowerProfileState {
+    pub available: bool,
+    pub profile: String,
+    pub driver: String,
+    pub profiles: Vec<PowerProfile>,
+    /// Explicit manual-cycle target; absent when the current state cannot cycle.
+    pub next_manual_profile: Option<String>,
+    pub performance_degraded: String,
+    pub version: String,
+    pub battery_aware: Option<bool>,
+    pub actions: Vec<PowerProfileAction>,
+    pub active_holds: Vec<PowerProfileHold>,
+    #[serde(default)]
+    pub battery_automation: BatteryAutomationState,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct PowerProfile {
+    pub name: String,
+    pub driver: String,
+    pub platform_driver: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct PowerProfileAction {
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct PowerProfileHold {
+    pub application_id: String,
+    pub profile: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BatteryState {
+    #[serde(default)]
+    pub display: serde_json::Value,
+    pub available: bool,
+    pub native_path: String,
+    pub percentage: u8,
+    pub state: String,
+    pub charging: bool,
+    pub plugged: bool,
+    pub power_watts: f64,
+    #[serde(default)]
+    pub power_available: bool,
+    pub time_to_empty_seconds: u64,
+    pub time_to_full_seconds: u64,
+    pub health_percent: Option<u8>,
+    pub cycles: Option<u32>,
+    pub warning: bool,
+    pub critical: bool,
+    pub policy: BatteryPolicyState,
+    pub operation: BatteryOperationState,
+    pub protection: BatteryProtectionState,
+    pub devices: Vec<BatteryDeviceState>,
+    pub history: BatteryHistoryState,
+    #[serde(default)]
+    pub forecast: ChargeForecast,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BatteryHistoryState {
+    pub retention_days: u8,
+    pub last_charge_timestamp_ms: u64,
+    pub latest_timestamp_ms: u64,
+    /// Time represented by the graph after periods when the daemon was not
+    /// observing the laptop have been removed.
+    pub active_duration_ms: u64,
+    pub points: Vec<BatteryHistoryPoint>,
+    /// Latest observation, including readings between persisted history buckets.
+    #[serde(default)]
+    pub current_point: Option<BatteryHistoryPoint>,
+    #[serde(default)]
+    pub energy: EnergyHistory,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnergyHistory {
+    pub bars: Vec<EnergyBin>,
+    pub maximum: f64,
+    pub total_wh: f64,
+    pub interval_ms: u64,
+    pub active_duration_ms: u64,
+    pub observed_ms: u64,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnergyBin {
+    pub x0: f64,
+    pub x1: f64,
+    pub value: f64,
+    pub observed_ms: u64,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ChargeForecast {
+    #[serde(default)]
+    pub duration_label: String,
+    pub limit: Option<u8>,
+    pub target: u8,
+    pub percentage: u8,
+    pub seconds: f64,
+    pub estimating: bool,
+    pub status: String,
+    pub approximate: bool,
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct BatteryHistoryPoint {
+    /// Wall-clock time, retained for labels and tooltips.
+    pub timestamp_ms: u64,
+    /// X coordinate on the compact, active-only graph timescale.
+    pub active_time_ms: u64,
+    /// Whether a line may be drawn from the preceding point. False marks a
+    /// daemon restart, suspend, shutdown, or other observation gap.
+    pub continuous: bool,
+    /// One of `charging`, `discharging`, or `holding`.
+    pub mode: String,
+    pub percentage: u8,
+    pub power_watts: f64,
+    pub power_valid: Option<bool>,
+    pub time_to_full_seconds: Option<u64>,
+    pub charging: bool,
+    pub plugged: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BatteryOperationState {
+    pub kind: String,
+    pub battery_id: String,
+    pub phase: String,
+    pub started_unix_ms: u64,
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BatteryProfileAction {
+    KeepCurrent,
+    #[default]
+    PowerSaver,
+    Balanced,
+    Performance,
+}
+
+impl BatteryProfileAction {
+    pub(crate) const fn profile(self) -> Option<&'static str> {
+        match self {
+            Self::KeepCurrent => None,
+            Self::PowerSaver => Some("power-saver"),
+            Self::Balanced => Some("balanced"),
+            Self::Performance => Some("performance"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct BatteryAutomationState {
+    pub level: String,
+    pub status: String,
+    pub profile: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct BatteryPolicyState {
+    pub warning_percent: u8,
+    pub critical_percent: u8,
+    pub notify_warning: bool,
+    pub notify_critical: bool,
+    pub warning_profile: BatteryProfileAction,
+    pub critical_profile: BatteryProfileAction,
+    pub recovery_margin_percent: u8,
+    pub notify_when_full: bool,
+    /// Legacy compatibility summary; new clients use the per-level actions.
+    pub auto_power_saver: bool,
+}
+
+impl Default for BatteryPolicyState {
+    fn default() -> Self {
+        Self {
+            warning_percent: 25,
+            critical_percent: 12,
+            notify_warning: true,
+            notify_critical: true,
+            warning_profile: BatteryProfileAction::PowerSaver,
+            critical_profile: BatteryProfileAction::PowerSaver,
+            recovery_margin_percent: 3,
+            notify_when_full: true,
+            auto_power_saver: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BatteryDeviceState {
+    #[serde(default)]
+    pub display: serde_json::Value,
+    pub id: String,
+    pub vendor: String,
+    pub model: String,
+    pub serial: String,
+    pub present: bool,
+    pub percentage: u8,
+    pub state: String,
+    pub power_watts: f64,
+    pub energy_now_wh: Option<f64>,
+    pub energy_full_wh: Option<f64>,
+    pub energy_full_design_wh: Option<f64>,
+    pub voltage_volts: Option<f64>,
+    pub health_percent: Option<u8>,
+    pub cycles: Option<u32>,
+    pub protection: BatteryProtectionState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BatteryProtectionState {
+    pub supported: bool,
+    pub backend: String,
+    pub managed: bool,
+    pub enabled: bool,
+    pub start_percent: Option<u8>,
+    pub end_percent: Option<u8>,
+    pub desired_start_percent: Option<u8>,
+    pub desired_end_percent: Option<u8>,
+    pub desired_enabled: bool,
+    pub thresholds_verified: bool,
+    pub charge_once_active: bool,
+    pub supports_start: bool,
+    pub supports_end: bool,
+    pub supports_charge_behaviour: bool,
+    pub charge_behaviour: Option<String>,
+    pub available_behaviours: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct BrightnessState {
+    pub available: bool,
+    pub device: String,
+    pub brightness: u64,
+    pub max_brightness: u64,
+    pub percent: u8,
+    pub error: Option<String>,
+}
+
+pub(crate) use bar_native_api::AudioState;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MediaState {
+    pub available: bool,
+    pub active_player: Option<String>,
+    #[serde(default)]
+    pub pinned_player: Option<String>,
+    pub players: Vec<MediaPlayer>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaControlMode {
+    #[default]
+    Automatic,
+    Tracks,
+    Seek,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaContentType {
+    #[default]
+    Unknown,
+    Music,
+    Podcast,
+    Audiobook,
+    Video,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MediaContentTypeSource {
+    #[default]
+    Unknown,
+    Mpris,
+    Url,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum MediaSourceService {
+    Youtube,
+    Vimeo,
+    Soundcloud,
+    Spotify,
+    Pocketcasts,
+    Audible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MediaSource {
+    pub url: String,
+    pub service: Option<MediaSourceService>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MediaPlayer {
+    pub id: String,
+    // Internal owner binding; never replace the public MPRIS service ID.
+    #[serde(skip)]
+    pub owner: String,
+    /// Only fields filled by the optional fallback, never MPRIS-owned values.
+    #[serde(default)]
+    pub metadata_sources: std::collections::BTreeMap<String, String>,
+    pub identity: String,
+    pub desktop_entry: String,
+    #[serde(default)]
+    pub content_type: MediaContentType,
+    #[serde(default)]
+    pub content_type_source: MediaContentTypeSource,
+    #[serde(default)]
+    pub source: Option<MediaSource>,
+    #[serde(default)]
+    pub control_mode: MediaControlMode,
+    pub playback_status: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub art_url: String,
+    pub length_us: u64,
+    pub position_us: u64,
+    pub position_observed_at_unix_ms: u64,
+    pub playback_rate: f64,
+    #[serde(default)]
+    pub can_raise: bool,
+    pub can_control: bool,
+    pub can_play: bool,
+    pub can_pause: bool,
+    #[serde(default)]
+    pub can_seek: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WorkspaceState {
+    #[serde(default)]
+    pub lifecycle: crate::workspace::View,
+    pub available: bool,
+    pub focused_monitor: Option<String>,
+    pub active_window: Option<ActiveWindow>,
+    pub monitors: Vec<MonitorState>,
+    pub workspaces: Vec<Workspace>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ActiveWindow {
+    pub address: String,
+    pub title: String,
+    pub class_name: String,
+    pub initial_class: String,
+    pub workspace_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_address: Option<String>,
+    pub fullscreen: bool,
+    pub floating: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct MonitorState {
+    pub id: i64,
+    pub name: String,
+    pub focused: bool,
+    pub active_workspace_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_address: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Workspace {
+    pub id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    pub name: String,
+    pub monitor: String,
+    pub windows: u32,
+    pub urgent: bool,
+    pub fullscreen: bool,
+    pub last_window_title: String,
+}

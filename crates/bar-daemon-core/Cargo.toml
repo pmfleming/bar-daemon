@@ -1,0 +1,64 @@
+[package]
+name = "bar-daemon-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+description = "Status, policy, and action daemon for a Quickshell desktop bar"
+repository = "https://github.com/pmfleming/bar-daemon"
+
+[[bin]]
+name = "agenda-turso-contract"
+path = "../../tools/agenda-turso-contract/main.rs"
+
+[features]
+# Explicit private graphical probes; not part of the package's --include-ignored suite.
+native-quickshell-socket = []
+native-workspace-handoff = []
+
+[dependencies]
+bar-native-api = { path = "../bar-native-api" }
+bar-battery-helper-api = { path = "../bar-battery-helper-api" }
+bar-location-api = { path = "../bar-location-api" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono-tz = "0.10"
+futures = "0.3"
+iana-time-zone = "0.1"
+ksni = "0.3"
+# 2021 Tonal Spot role semantics; upgrades require the theme parity fixtures.
+material-colors = "=0.4.2"
+notify = "8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustix = { version = "1", features = ["fs", "process", "rand"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2.3"
+shelllist-daemon-core = { version = "0.1.0", path = "../../../daemon-framework/crates/shelllist-daemon-core" }
+shelllist-daemon-tokio = { version = "0.1.0", path = "../../../daemon-framework/crates/shelllist-daemon-tokio" }
+shelllist-search = { version = "0.1.0", path = "../../../daemon-framework/crates/shelllist-search" }
+shelllist-hyprland = { version = "0.1.0", path = "../../../daemon-framework/crates/shelllist-hyprland" }
+shelllist-update-status = { path = "../../../update-daemon/crates/shelllist-update-status" }
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tempfile = "3"
+tzf-rs = { version = "2.1.3", default-features = false, features = ["bundled"] }
+turso = { version = "=0.8.3", default-features = false }
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5.18", features = ["tokio"] }
+zvariant = "5.13.1"
+wayland-client = "0.31"
+wayland-scanner = "0.31"
+
+[dev-dependencies]
+bar-battery-helper = { path = "../bar-battery-helper" }
+# Foreign-SQLite fixtures for agenda maintenance refusal tests only.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Producer-to-reader tests link the actual worker, never its privileged entrypoint.
+update-worker = { path = "../../../update-daemon" }
+tokio = { version = "1", features = ["test-util"] }
+wayland-server = "0.31"
+zbus = { version = "5.18", features = ["p2p"] }

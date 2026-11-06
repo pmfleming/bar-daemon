@@ -1,0 +1,350 @@
+use std::sync::Arc;
+
+pub(crate) use crate::protocol::{decode_request, error, success, unsupported_method};
+use crate::{
+    activity::{ActivityService, notifications::service::NotificationService},
+    media::MediaService,
+    protocol,
+    state::StateStore,
+};
+use serde_json::Value;
+
+macro_rules! request {
+    ($params:expr, $request:ty, $method:literal) => {
+        match super::decode_request::<$request>($params, $method) {
+            Ok(request) => request,
+            Err(response) => return response,
+        }
+    };
+}
+
+mod activity;
+mod audio;
+mod battery;
+mod effects;
+mod notifications;
+mod sleep;
+#[cfg(test)]
+mod tests;
+mod updates;
+
+use self::{
+    activity::ActivityApi, battery::BatteryApi, effects::DesktopEffects,
+    notifications::NotificationApi,
+};
+
+#[cfg(test)]
+pub(crate) const BUS_NAME: &str = "org.laufan.BarStatusDaemon";
+pub(crate) const OBJECT_PATH: &str = "/org/laufan/BarDaemon";
+pub(crate) const INTERFACE: &str = "org.laufan.BarDaemon2";
+
+pub(crate) struct ApiService {
+    state: StateStore,
+    activity: Option<ActivityApi>,
+    battery: BatteryApi,
+    effects: DesktopEffects,
+    notifications: NotificationApi,
+}
+
+impl ApiService {
+    pub(crate) fn new(
+        state: StateStore,
+        activity: impl Into<Option<Arc<ActivityService>>>,
+        notifications: Arc<NotificationService>,
+        media: MediaService,
+        brightness: crate::brightness::BrightnessService,
+    ) -> Self {
+        Self {
+            activity: activity
+                .into()
+                .map(|activity| ActivityApi::new(state.clone(), activity)),
+            battery: BatteryApi::new(state.clone()),
+            effects: DesktopEffects::new(state.clone(), media, brightness),
+            notifications: NotificationApi::new(notifications),
+            state,
+        }
+    }
+
+    pub(crate) fn without_audio(
+        state: StateStore,
+        activity: Option<Arc<ActivityService>>,
+        notifications: Arc<NotificationService>,
+        media: MediaService,
+        brightness: crate::brightness::BrightnessService,
+    ) -> Self {
+        Self {
+            activity: activity.map(|activity| ActivityApi::new(state.clone(), activity)),
+            battery: BatteryApi::new(state.clone()),
+            effects: DesktopEffects::without_audio(state.clone(), media, brightness),
+            notifications: NotificationApi::new(notifications),
+            state,
+        }
+    }
+
+    async fn snapshot(&self, params: Value) -> Value {
+        static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let snapshot_requests_total =
+            REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let started = std::time::Instant::now();
+        let result = match params.get("streams") {
+            Some(streams) => self.project_snapshot(streams).await,
+            None => {
+                self.project_snapshot(&serde_json::json!(self.state.owned_streams()))
+                    .await
+            }
+        };
+        tracing::debug!(snapshot_requests_total, streams = ?params.get("streams"), latency_us = started.elapsed().as_micros() as u64,
+            payload_bytes = result.to_string().len(), "bar snapshot request");
+        result
+    }
+
+    async fn project_snapshot(&self, streams: &Value) -> Value {
+        let streams = <Vec<&str> as serde::Deserialize>::deserialize(streams);
+        let Some(streams) = streams.ok().and_then(|streams| {
+            streams
+                .into_iter()
+                .map(|name| {
+                    if self.state.owns_stream(name) {
+                        protocol::read_wire::stream_spec(name)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Option<Vec<_>>>()
+        }) else {
+            return error(
+                "validation-error",
+                "streams must be a list of registered bar streams",
+            );
+        };
+        self.state
+            .read(|snapshot| {
+                let projection: serde_json::Map<String, Value> = streams
+                    .iter()
+                    .map(|stream| (stream.snapshot_key.into(), stream.project(snapshot)))
+                    .collect();
+                success(serde_json::json!({"snapshot": projection}))
+            })
+            .await
+    }
+
+    async fn theme(&self, method: &str, params: Value) -> Value {
+        let request = match decode_request::<crate::theme::ThemeRequest>(params, method) {
+            Ok(request) => request,
+            Err(error) => return error,
+        };
+        let roles = match request.resolve() {
+            Ok(roles) => roles,
+            Err(message) => return error("validation-error", message),
+        };
+        let response = crate::theme::reply(&roles);
+        if method == "theme.configure" {
+            self.state.update_theme(roles).await;
+        }
+        response
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn dispatch(&self, method: &str, params: Value) -> Value {
+        let response = match method {
+            "bar.snapshot" => self.snapshot(params).await,
+            "theme.configure" | "theme.resolve" => self.theme(method, params).await,
+            method
+                if ["agenda.", "activity.", "locations.", "location.", "todos."]
+                    .iter()
+                    .any(|prefix| method.starts_with(prefix)) =>
+            {
+                match self.activity.as_ref() {
+                    Some(activity) => activity.dispatch(method, params).await,
+                    None => unsupported_method(method),
+                }
+            }
+            "workspace.focus" => self.effects.focus_workspace(params).await,
+            method if method.starts_with("workspace.") => {
+                self.state
+                    .workspace_lifecycle
+                    .dispatch(method, params)
+                    .await
+            }
+            "media.operation" => self.effects.media_operation(params).await,
+            method if protocol::audio_wire::Method::parse(method).is_some() => {
+                audio::dispatch(self, method, params).await
+            }
+            "brightness.adjust" => self.effects.brightness_adjust(params).await,
+            "brightness.set" => self.effects.brightness_set(params).await,
+            method if method.starts_with("battery.") => self.battery.dispatch(method, params).await,
+            "powerProfile.set" => self.effects.power_profile_set(params).await,
+            "powerProfile.resumeAutomatic" => self.effects.power_profile_resume_automatic().await,
+            "powerProfile.setBatteryAware" => {
+                self.effects.power_profile_set_battery_aware(params).await
+            }
+            "powerProfile.setActionEnabled" => {
+                self.effects.power_profile_set_action_enabled(params).await
+            }
+            method if method.starts_with("powerSleep.") => {
+                sleep::dispatch(&self.state, method, params).await
+            }
+            "displayPolicy.set" => self.effects.display_policy_set(params).await,
+            "displayFocus.set" | "displayFocus.reset" => {
+                self.effects.display_focus(method, params).await
+            }
+            "displayLayout.preview" | "displayLayout.confirm" | "displayLayout.revert" => {
+                self.effects.display_layout(method, params).await
+            }
+            method if method.starts_with("notifications.") => {
+                self.notifications.dispatch(method, params).await
+            }
+            "updates.refresh" => self.effects.updates_refresh().await,
+            "updates.getOverview" | "updates.readLog" | "updates.queryHistory" => {
+                updates::dispatch(method, params).await
+            }
+            _ => unsupported_method(method),
+        };
+        // Cached projections already captured health + publication atomically.
+        // Never overlay a later failure onto an older stamped read.
+        if matches!(method, "bar.snapshot" | "theme.resolve") {
+            response
+        } else {
+            self.state
+                .reconcile_reply(self.state.fence_reply(response))
+                .await
+        }
+    }
+    async fn finish_response(&self, method: &str, response: Value) -> Value {
+        if matches!(method, "bar.snapshot" | "theme.resolve") {
+            response
+        } else {
+            self.state
+                .reconcile_reply(self.state.fence_reply(response))
+                .await
+        }
+    }
+    pub(crate) fn bar(
+        api: Arc<Self>,
+        method: String,
+        params: Value,
+    ) -> futures::future::BoxFuture<'static, Value> {
+        Box::pin(async move { api.dispatch_bar(&method, params).await })
+    }
+    pub(crate) async fn dispatch_bar(&self, method: &str, params: Value) -> Value {
+        let response = match method {
+            "bar.snapshot" => self.snapshot(params).await,
+            "theme.configure" | "theme.resolve" => self.theme(method, params).await,
+            "media.operation" => self.effects.media_operation(params).await,
+            method if protocol::audio_wire::Method::parse(method).is_some() => {
+                audio::dispatch(self, method, params).await
+            }
+            "brightness.adjust" => self.effects.brightness_adjust(params).await,
+            "brightness.set" => self.effects.brightness_set(params).await,
+            "updates.refresh" => self.effects.updates_refresh().await,
+            "updates.getOverview" | "updates.readLog" | "updates.queryHistory" => {
+                updates::dispatch(method, params).await
+            }
+            _ => unsupported_method(method),
+        };
+        self.finish_response(method, response).await
+    }
+    pub(crate) fn power(
+        api: Arc<Self>,
+        method: String,
+        params: Value,
+    ) -> futures::future::BoxFuture<'static, Value> {
+        Box::pin(async move { api.dispatch_power(&method, params).await })
+    }
+    pub(crate) async fn dispatch_power(&self, method: &str, params: Value) -> Value {
+        let response = match method {
+            "bar.snapshot" => self.snapshot(params).await,
+            method if method.starts_with("battery.") => self.battery.dispatch(method, params).await,
+            "powerProfile.set" => self.effects.power_profile_set(params).await,
+            "powerProfile.resumeAutomatic" => self.effects.power_profile_resume_automatic().await,
+            "powerProfile.setBatteryAware" => {
+                self.effects.power_profile_set_battery_aware(params).await
+            }
+            "powerProfile.setActionEnabled" => {
+                self.effects.power_profile_set_action_enabled(params).await
+            }
+            method if method.starts_with("powerSleep.") => {
+                sleep::dispatch(&self.state, method, params).await
+            }
+            _ => unsupported_method(method),
+        };
+        self.finish_response(method, response).await
+    }
+    pub(crate) fn compositor(
+        api: Arc<Self>,
+        method: String,
+        params: Value,
+    ) -> futures::future::BoxFuture<'static, Value> {
+        Box::pin(async move { api.dispatch_compositor(&method, params).await })
+    }
+    pub(crate) async fn dispatch_compositor(&self, method: &str, params: Value) -> Value {
+        let response = match method {
+            "bar.snapshot" => self.snapshot(params).await,
+            "workspace.focus" => self.effects.focus_workspace(params).await,
+            method if method.starts_with("workspace.") => {
+                self.state
+                    .workspace_lifecycle
+                    .dispatch(method, params)
+                    .await
+            }
+            "displayPolicy.set" => self.effects.display_policy_set(params).await,
+            "displayFocus.set" | "displayFocus.reset" => {
+                self.effects.display_focus(method, params).await
+            }
+            "displayLayout.preview" | "displayLayout.confirm" | "displayLayout.revert" => {
+                self.effects.display_layout(method, params).await
+            }
+            _ => unsupported_method(method),
+        };
+        self.finish_response(method, response).await
+    }
+    pub(crate) fn activity(
+        api: Arc<Self>,
+        method: String,
+        params: Value,
+    ) -> futures::future::BoxFuture<'static, Value> {
+        Box::pin(async move { api.dispatch_activity(&method, params).await })
+    }
+    pub(crate) async fn dispatch_activity(&self, method: &str, params: Value) -> Value {
+        let response = match method {
+            "bar.snapshot" => self.snapshot(params).await,
+            method
+                if ["agenda.", "activity.", "locations.", "location.", "todos."]
+                    .iter()
+                    .any(|prefix| method.starts_with(prefix)) =>
+            {
+                match self.activity.as_ref() {
+                    Some(activity) => activity.dispatch(method, params).await,
+                    None => unsupported_method(method),
+                }
+            }
+            _ => unsupported_method(method),
+        };
+        self.finish_response(method, response).await
+    }
+    pub(crate) fn notifications(
+        api: Arc<Self>,
+        method: String,
+        params: Value,
+    ) -> futures::future::BoxFuture<'static, Value> {
+        Box::pin(async move { api.dispatch_notifications(&method, params).await })
+    }
+    pub(crate) async fn dispatch_notifications(&self, method: &str, params: Value) -> Value {
+        let response = match method {
+            "bar.snapshot" => self.snapshot(params).await,
+            method if method.starts_with("notifications.") => {
+                self.notifications.dispatch(method, params).await
+            }
+            _ => unsupported_method(method),
+        };
+        self.finish_response(method, response).await
+    }
+    #[cfg(test)]
+    pub(crate) fn all(
+        api: Arc<Self>,
+        method: String,
+        params: Value,
+    ) -> futures::future::BoxFuture<'static, Value> {
+        Box::pin(async move { api.dispatch(&method, params).await })
+    }
+}

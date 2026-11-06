@@ -87,7 +87,8 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("bar_daemon=info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(bar_daemon::component::default_log_filter())),
         )
         .init();
 

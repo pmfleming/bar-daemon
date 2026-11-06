@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 SCRIPT = Path(__file__).with_name("quality-fixtures.sh").resolve()
-PIPEWIRE = "audio::tests::private_pipewire_control_reuses_connection_and_reads_external_changes"
+PIPEWIRE = "tests::private_pipewire_control_reuses_connection_and_reads_external_changes"
 IDLE = "native_control_preserves_cookies_and_base_listeners_and_cancels_activity"
 
 class FixtureRunnerTests(unittest.TestCase):

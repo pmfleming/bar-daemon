@@ -1,7 +1,7 @@
 //! Isolated engine smoke contract; never opens a user-selected store.
 //! Never defaults to an application's live state directory.
 #[cfg(not(test))]
-#[path = "../../src/activity/agenda_store/mod.rs"]
+#[path = "../../crates/bar-daemon-core/src/activity/agenda_store/mod.rs"]
 mod agenda_store;
 
 #[cfg(not(test))]

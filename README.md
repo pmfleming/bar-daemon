@@ -29,10 +29,13 @@ shutdown, excluding later legacy startups. The status endpoint uses the distinct
 Workspace shortcuts and maintenance commands remain `bar-daemon workspace ...`
 and `bar-daemon agenda ...`; idle callbacks address the power owner.
 
-Session processes share the Rust implementation library. This split isolates
-running tasks, bus ownership, native failures and persistence; it does not create
-separate domain libraries or promise cross-process snapshot atomicity. Native
-update notifications cross a private D-Bus method with durable idempotency keys;
+Each session process has its own assembly crate. Shared policy, wire DTOs and
+transport code live in `bar-daemon-core`, which has no PipeWire or udev dependency.
+Native providers depend on the small `bar-native-api` contract: only status and
+notifications link PipeWire, and only power links udev. An ELF dependency test
+checks these boundaries for the actual executables, including debug builds.
+Snapshots remain local to each process; there is no cross-process atomicity.
+Native update notifications cross a private D-Bus method with durable idempotency keys;
 other alerts use the standard notification interface. External notification
 servers retain their summary-only delivery semantics.
 

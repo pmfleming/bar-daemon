@@ -1,0 +1,17 @@
+[package]
+name = "bar-audio-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+
+[dependencies]
+bar-native-api = { path = "../bar-native-api" }
+anyhow = "1"
+pipewire = { version = "0.10", features = ["v1_2_0"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+tracing = "0.1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

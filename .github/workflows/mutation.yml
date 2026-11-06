@@ -36,9 +36,9 @@ jobs:
       - name: Test battery policy mutations
         run: |
           ../daemon-framework/tools/local-build develop . --command cargo mutants \
-            --file src/battery/config.rs \
-            --file src/battery/history.rs \
-            --file src/battery/policy.rs \
+            --file crates/bar-daemon-core/src/battery/config.rs \
+            --file crates/bar-daemon-core/src/battery/history.rs \
+            --file crates/bar-daemon-core/src/battery/policy.rs \
             --timeout 120 --jobs 2 --cargo-arg=--locked
       - uses: actions/upload-artifact@v7
         if: always()
