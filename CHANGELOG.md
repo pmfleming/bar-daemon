@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Scope component default logging to the daemon and its framework instead of
+  enabling informational logs from every dependency; preserve RUST_LOG overrides.
+
 - Generate Shelllist routing from the explicit native ownership registry and
   reject unregistered streams; route application workspace requests to compositor.
 

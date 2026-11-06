@@ -162,7 +162,9 @@ pub async fn main(component: Component) -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "bar_daemon=info,shelllist_daemon_tokio=info,shelllist_hyprland=info".into()
+            }),
         )
         .init();
     match Args::parse().command {
