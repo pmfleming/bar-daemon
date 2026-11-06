@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Reconnect native notification routing to verified replacement compositors,
+  coalesce monitor events, and skip routing for external notification backends.
+
 - Continue the critical-battery grace period when the notification server is
   unavailable, retaining the warning error and all sleep safety checks.
 

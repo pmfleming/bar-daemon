@@ -256,41 +256,92 @@ fn refresh_event(event: &shelllist_hyprland::CompositorEvent) -> bool {
     )
 }
 
-/// Independent read-only routing feed for the notification owner.
+/// Independent read-only routing feed. Explicitly rebind after verified session
+/// replacement; command/lifecycle clients keep their exact-instance semantics.
 pub(crate) async fn monitor_routes(store: StateStore) {
-    let client = HyprlandClient::default();
-    let (sender, mut events) = mpsc::channel(64);
-    let refresh = async {
-        // Snapshot once before the first event, then only on routing invalidation.
-        loop {
-            match client.snapshot().await {
-                Ok(state) => store.update_workspaces(state).await,
-                Err(error) => {
-                    store
-                        .update_workspaces(WorkspaceState {
-                            error: Some(error.to_string()),
-                            ..Default::default()
-                        })
-                        .await
+    let mut client = HyprlandClient::default();
+    loop {
+        let (sender, events) = mpsc::channel(64);
+        let (_, next) = tokio::join!(
+            client.ipc.clone().watch_events(sender),
+            route_events(store.clone(), events, || client.snapshot()),
+        );
+        store.update_workspaces(WorkspaceState::default()).await;
+        let Some(signature) = next else {
+            return;
+        };
+        tracing::info!(%signature, "notification routing follows replacement compositor");
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(format!(
+                    "/run/user/{}",
+                    rustix::process::geteuid().as_raw()
+                ))
+            });
+        client = HyprlandClient {
+            ipc: shelllist_hyprland::Client::new(runtime, Some(signature)),
+        };
+    }
+}
+
+async fn route_events<F, Fut>(
+    store: StateStore,
+    mut events: mpsc::Receiver<Event>,
+    fetch: F,
+) -> Option<String>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<WorkspaceState>>,
+{
+    let (changes, mut updates) = watch::channel(());
+    let intake = async {
+        while let Some(event) = events.recv().await {
+            match event {
+                Event::SessionGone { live, .. } => return Some(live),
+                Event::Compositor(event)
+                    if !matches!(
+                        event,
+                        shelllist_hyprland::CompositorEvent::FocusedMonitorChanged
+                            | shelllist_hyprland::CompositorEvent::MonitorAdded
+                            | shelllist_hyprland::CompositorEvent::MonitorRemoved
+                            | shelllist_hyprland::CompositorEvent::ConfigReloaded
+                            | shelllist_hyprland::CompositorEvent::Malformed { .. }
+                    ) =>
+                {
+                    continue;
+                }
+                _ => {
+                    changes.send_replace(());
                 }
             }
-            let Some(event) = events.recv().await else {
-                return;
-            };
-            if matches!(event, Event::SessionGone { .. }) {
-                store.update_workspaces(WorkspaceState::default()).await;
-                return;
+        }
+        None
+    };
+    let refresh = async {
+        loop {
+            updates.borrow_and_update();
+            let state = fetch().await.unwrap_or_else(|error| WorkspaceState {
+                error: Some(error.to_string()),
+                ..Default::default()
+            });
+            let retry = !state.available;
+            store.update_workspaces(state).await;
+            tokio::select! {
+                changed = updates.changed() => {
+                    if changed.is_err() { return; }
+                    sleep(Duration::from_millis(75)).await;
+                }
+                _ = sleep(Duration::from_secs(1)), if retry => {},
             }
         }
     };
-    tokio::select! {
-        _ = client.ipc.clone().watch_events(sender) => {},
-        _ = refresh => {},
-    }
+    tokio::select! { next = intake => next, _ = refresh => None }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{WorkspaceState, route_events, sleep};
     use super::{monitor_with, parse_snapshot};
     use crate::state::StateStore;
     use shelllist_hyprland::Event;
@@ -302,6 +353,50 @@ mod tests {
         time::Duration,
     };
     use tokio::sync::{Semaphore, mpsc};
+
+    #[tokio::test]
+    async fn routing_coalesces_bursts_and_reports_the_replacement_instance() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = StateStore::default();
+        let (sender, receiver) = mpsc::channel(64);
+        let count = calls.clone();
+        let task = tokio::spawn(route_events(state, receiver, move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(20)).await;
+                Ok(WorkspaceState {
+                    available: true,
+                    ..Default::default()
+                })
+            }
+        }));
+        for _ in 0..32 {
+            sender
+                .send(Event::Compositor(
+                    shelllist_hyprland::CompositorEvent::FocusedMonitorChanged,
+                ))
+                .await
+                .unwrap();
+        }
+        sleep(Duration::from_millis(120)).await;
+        assert!(
+            calls.load(Ordering::SeqCst) <= 2,
+            "burst caused redundant snapshots"
+        );
+        sender
+            .send(Event::SessionGone {
+                configured: "old".into(),
+                live: "new".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap().as_deref(), Some("new"));
+    }
 
     #[tokio::test]
     async fn session_loss_is_retained_for_the_daemon_cleanup_path() {

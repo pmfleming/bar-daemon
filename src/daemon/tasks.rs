@@ -129,7 +129,7 @@ impl MonitorTasks {
         tasks.add(
             "notifications",
             &[NOTIFICATIONS, NOTIFICATION_ACTIVE],
-            notifications.monitor(state.clone(), connection),
+            notifications.clone().monitor(state.clone(), connection),
         );
         if !component.owns_stream(POWER_SLEEP)
             && (component.owns_stream(ACTIVITY) || component.owns_stream(DISPLAY_POLICY))
@@ -140,7 +140,9 @@ impl MonitorTasks {
                 crate::session_sleep::monitor(state.clone()),
             );
         }
-        if component == crate::component::Component::Notifications {
+        if component == crate::component::Component::Notifications
+            && notifications.native_engine().is_some()
+        {
             tasks.group.spawn(
                 "notification-routing",
                 crate::hyprland::monitor_routes(state),
