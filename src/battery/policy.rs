@@ -17,6 +17,7 @@ pub(super) struct AlertTracker {
     warning_sent: bool,
     critical_sent: bool,
     full_sent: bool,
+    retry_not_before: Option<tokio::time::Instant>,
 }
 
 impl AlertTracker {
@@ -25,6 +26,13 @@ impl AlertTracker {
         state: &BatteryState,
         notify_when_full: bool,
     ) -> Option<BatteryAlert> {
+        if self
+            .retry_not_before
+            .is_some_and(|deadline| tokio::time::Instant::now() < deadline)
+        {
+            return None;
+        }
+        self.retry_not_before = None;
         if !state.available {
             // Wait for the first real reading before suppressing startup alerts.
             return None;
@@ -39,6 +47,26 @@ impl AlertTracker {
         } else {
             self.observe_discharging(state)
         }
+    }
+
+    pub(super) async fn deliver(
+        &mut self,
+        alert: BatteryAlert,
+        delivery: impl std::future::Future<Output = anyhow::Result<()>>,
+    ) -> anyhow::Result<()> {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), delivery)
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("battery notification delivery timed out")));
+        if result.is_err() {
+            match alert {
+                BatteryAlert::Warning => self.warning_sent = false,
+                BatteryAlert::Critical => self.critical_sent = false,
+                BatteryAlert::ChargeComplete(_) => self.full_sent = false,
+            }
+            self.retry_not_before =
+                Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+        }
+        result
     }
 
     fn initialize(&mut self, state: &BatteryState, complete_at: u8) {
@@ -102,7 +130,10 @@ fn charge_complete_percent(state: &BatteryState) -> u8 {
     }
 }
 
-pub(super) async fn send_notification(alert: BatteryAlert, notifications: NotificationSink) {
+pub(super) async fn send_notification(
+    alert: BatteryAlert,
+    notifications: NotificationSink,
+) -> anyhow::Result<()> {
     let (icon, summary, body, urgency) = match alert {
         BatteryAlert::Warning => (
             "battery-caution",
@@ -131,12 +162,10 @@ pub(super) async fn send_notification(alert: BatteryAlert, notifications: Notifi
             0u8,
         ),
     };
-    if let Err(error) = notifications
+    notifications
         .send(internal_notification(icon, summary, &body, urgency))
-        .await
-    {
-        tracing::warn!(%error, "battery notification failed");
-    }
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -153,6 +182,49 @@ mod tests {
             critical: !plugged && percent <= 12,
             ..BatteryState::default()
         }
+    }
+
+    #[tokio::test]
+    async fn failed_bus_delivery_retries_only_current_alert_and_acknowledgement_consumes_it() {
+        let bus = crate::battery::helper::authorization_tests::Bus::new();
+        let connection = bus.connection().await;
+        let mut tracker = AlertTracker::default();
+        tracker.observe(&state(50, false), true);
+        let alert = tracker.observe(&state(12, false), true).unwrap();
+        let result = tracker
+            .deliver(alert, async {
+                crate::activity::notifications::service::send_freedesktop_on(
+                    &connection,
+                    crate::activity::notifications::service::internal_notification(
+                        "battery", "Critical", "Low", 2,
+                    ),
+                )
+                .await?;
+                Ok(())
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            tracker.observe(&state(12, false), true),
+            None,
+            "failed sends back off"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert_eq!(
+            tracker.observe(&state(12, false), true),
+            Some(BatteryAlert::Critical)
+        );
+        tracker.deliver(alert, async { Ok(()) }).await.unwrap();
+        assert_eq!(
+            tracker.observe(&state(12, false), true),
+            None,
+            "acknowledged alerts never replay"
+        );
+        tracker.observe(&state(50, true), true);
+        assert_eq!(
+            tracker.observe(&state(12, false), true),
+            Some(BatteryAlert::Critical)
+        );
     }
 
     #[test]

@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Retry failed battery alert delivery after a bounded backoff while the condition
+  remains current, and consume alerts only after successful acknowledgement.
+
 - Reconnect native notification routing to verified replacement compositors,
   coalesce monitor events, and skip routing for external notification backends.
 

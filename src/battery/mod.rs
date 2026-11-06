@@ -733,10 +733,15 @@ async fn publish(
     notifications: &NotificationSink,
 ) {
     let state = history::attach_summary(state);
-    if let Some(alert) = alerts.observe(&state, state.policy.notify_when_full) {
-        tokio::spawn(send_notification(alert, notifications.clone()));
-    }
+    let alert = alerts.observe(&state, state.policy.notify_when_full);
     store.update_battery(state).await;
+    if let Some(alert) = alert
+        && let Err(error) = alerts
+            .deliver(alert, send_notification(alert, notifications.clone()))
+            .await
+    {
+        tracing::warn!(%error, "battery notification unavailable; retrying against fresh battery evidence");
+    }
 }
 
 async fn publish_error(error: impl std::fmt::Display, store: &StateStore) {
