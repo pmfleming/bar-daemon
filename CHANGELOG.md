@@ -23,6 +23,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Fixed
 
+- Exit safe session owners after a monitor panic or unexpected return so their
+  service restart policy can recover them, retaining conservative power policy.
+
 - Retry failed battery alert delivery after a bounded backoff while the condition
   remains current, and consume alerts only after successful acknowledgement.
 

@@ -164,6 +164,7 @@ pub(crate) async fn run_component(component: crate::component::Component) -> Res
     }));
     let (mut result, joined) = tokio::select! {
         result = shelllist_daemon_tokio::wait_for_shutdown() => (result, false),
+        error = tasks.failure() => (Err(error), false),
         error = state.compositor_failure(), if component.owns_stream(crate::protocol::stream::WORKSPACES) => (Err(error), false),
         result = &mut listener => (result.context("join bar socket listener").and_then(|r| r), true),
     };

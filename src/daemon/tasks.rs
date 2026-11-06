@@ -23,6 +23,7 @@ use crate::{
 pub(super) struct MonitorTasks {
     group: TaskGroup,
     component: crate::component::Component,
+    failure: tokio::sync::watch::Sender<Option<String>>,
     state: StateStore,
 }
 
@@ -30,6 +31,7 @@ async fn supervise(
     state: StateStore,
     name: &'static str,
     domains: &'static [&'static str],
+    failure: Option<tokio::sync::watch::Sender<Option<String>>>,
     future: impl Future<Output = ()>,
 ) {
     tracing::info!(monitor = name, available = true, "bar monitor started");
@@ -38,6 +40,15 @@ async fn supervise(
         Err(_) => "panicked",
     };
     state.monitor_failed(name, domains, reason).await;
+    if let Some(failure) = failure {
+        failure.send_if_modified(|current| {
+            if current.is_some() {
+                return false;
+            }
+            *current = Some(format!("monitor {name} {reason}; restart its owner"));
+            true
+        });
+    }
 }
 
 impl MonitorTasks {
@@ -53,8 +64,22 @@ impl MonitorTasks {
         {
             return;
         }
-        self.group
-            .spawn(name, supervise(self.state.clone(), name, domains, future));
+        let restart = matches!(
+            self.component,
+            crate::component::Component::Bar
+                | crate::component::Component::Notifications
+                | crate::component::Component::Activity
+        );
+        self.group.spawn(
+            name,
+            supervise(
+                self.state.clone(),
+                name,
+                domains,
+                restart.then(|| self.failure.clone()),
+                future,
+            ),
+        );
     }
 
     pub(super) fn spawn(
@@ -68,6 +93,7 @@ impl MonitorTasks {
         let component = state.component();
         let tasks = Self {
             group: TaskGroup::default(),
+            failure: tokio::sync::watch::channel(None).0,
             component,
             state: state.clone(),
         };
@@ -143,12 +169,25 @@ impl MonitorTasks {
         if component == crate::component::Component::Notifications
             && notifications.native_engine().is_some()
         {
-            tasks.group.spawn(
+            tasks.add(
                 "notification-routing",
+                &[NOTIFICATIONS, NOTIFICATION_ACTIVE],
                 crate::hyprland::monitor_routes(state),
             );
         }
         tasks
+    }
+
+    pub(super) async fn failure(&self) -> anyhow::Error {
+        let mut failure = self.failure.subscribe();
+        loop {
+            if let Some(message) = failure.borrow_and_update().clone() {
+                return anyhow::anyhow!(message);
+            }
+            if failure.changed().await.is_err() {
+                return anyhow::anyhow!("monitor supervision ended");
+            }
+        }
     }
 
     pub(super) async fn shutdown(&self) {
@@ -162,6 +201,30 @@ mod tests {
     use crate::{model::AudioState, protocol::stream, state::StateStore};
 
     #[tokio::test]
+    async fn safe_owner_failure_requests_restart_after_publishing_unavailable() {
+        for panic in [false, true] {
+            let state = StateStore::default();
+            let (failure, receiver) = tokio::sync::watch::channel(None);
+            supervise(
+                state.clone(),
+                "audio",
+                &[stream::AUDIO],
+                Some(failure),
+                async move {
+                    assert!(!panic, "injected");
+                },
+            )
+            .await;
+            assert!(receiver.borrow().as_deref().unwrap().contains(if panic {
+                "panicked"
+            } else {
+                "exited"
+            }));
+            assert!(!state.snapshot().await.audio.available);
+        }
+    }
+
+    #[tokio::test]
     async fn panic_and_early_exit_are_sticky_unavailable_without_killing_other_domains() {
         for panic in [false, true] {
             let state = StateStore::default();
@@ -173,7 +236,7 @@ mod tests {
                 .await;
             let mut audio = state.subscribe_domains(&[stream::AUDIO]);
             let mut battery = state.subscribe_domains(&[stream::BATTERY]);
-            supervise(state.clone(), "audio", &[stream::AUDIO], async move {
+            supervise(state.clone(), "audio", &[stream::AUDIO], None, async move {
                 assert!(!panic, "injected monitor panic");
             })
             .await;
