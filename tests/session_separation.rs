@@ -137,7 +137,7 @@ async fn notification_startup_failure_leaves_bar_available() -> Result<()> {
         .connection
         .request_name("org.freedesktop.Notifications")
         .await?;
-    let mut failed = session.start(Path::new(env!("CARGO_BIN_EXE_bar-notification-daemon")))?;
+    let mut failed = session.start(Path::new(env!("CARGO_BIN_EXE_notification-daemon")))?;
     ensure!(
         !timeout(Duration::from_secs(20), failed.wait())
             .await??
@@ -162,9 +162,8 @@ async fn notification_startup_failure_leaves_bar_available() -> Result<()> {
 #[tokio::test]
 async fn power_remains_available_after_notification_owner_dies() -> Result<()> {
     let session = Session::new().await?;
-    let mut notifications =
-        session.start(Path::new(env!("CARGO_BIN_EXE_bar-notification-daemon")))?;
-    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
+    let mut notifications = session.start(Path::new(env!("CARGO_BIN_EXE_notification-daemon")))?;
+    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_power-daemon")))?;
     session.ready("org.laufan.BarNotificationDaemon").await?;
     session.ready("org.laufan.BarPowerDaemon").await?;
     let before = session.snapshot("org.laufan.BarPowerDaemon").await?;
@@ -192,8 +191,8 @@ async fn power_remains_available_after_notification_owner_dies() -> Result<()> {
 #[tokio::test]
 async fn compositor_owner_rejects_power_calls_and_its_death_leaves_power_available() -> Result<()> {
     let session = Session::new().await?;
-    let mut compositor = session.start(Path::new(env!("CARGO_BIN_EXE_bar-compositor-daemon")))?;
-    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
+    let mut compositor = session.start(Path::new(env!("CARGO_BIN_EXE_compositor-daemon")))?;
+    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_power-daemon")))?;
     session.ready("org.laufan.BarCompositorDaemon").await?;
     session.ready("org.laufan.BarPowerDaemon").await?;
     let state = session.snapshot("org.laufan.BarCompositorDaemon").await?;
@@ -228,14 +227,14 @@ async fn compositor_owner_rejects_power_calls_and_its_death_leaves_power_availab
 async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
     let session = Session::new().await?;
     let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
-    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_bar-power-daemon")))?;
+    let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_power-daemon")))?;
     session.ready("org.laufan.BarStatusDaemon").await?;
     session.snapshot("org.laufan.BarStatusDaemon").await?;
     session.ready("org.laufan.BarPowerDaemon").await?;
     let before = session.snapshot("org.laufan.BarPowerDaemon").await?;
     assert_no_audio_controller(&power)?;
     ensure!(!session.root.path().join("state/bar-daemon/agenda").exists());
-    let mut activity = session.start(Path::new(env!("CARGO_BIN_EXE_bar-activity-daemon")))?;
+    let mut activity = session.start(Path::new(env!("CARGO_BIN_EXE_activity-daemon")))?;
     session.ready("org.laufan.BarActivityDaemon").await?;
     let initial = session.snapshot("org.laufan.BarActivityDaemon").await?;
     assert_no_audio_controller(&activity)?;
@@ -259,7 +258,7 @@ async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
         "{list}"
     );
     activity.kill().await?;
-    let mut replacement = session.start(Path::new(env!("CARGO_BIN_EXE_bar-activity-daemon")))?;
+    let mut replacement = session.start(Path::new(env!("CARGO_BIN_EXE_activity-daemon")))?;
     session.ready("org.laufan.BarActivityDaemon").await?;
     let restarted = session.snapshot("org.laufan.BarActivityDaemon").await?;
     ensure!(
@@ -296,7 +295,7 @@ async fn failed_notification_store_never_advertises_public_readiness() -> Result
     )
     .await?;
     let mut changes = proxy.receive_signal("NameOwnerChanged").await?;
-    let mut process = session.start(Path::new(env!("CARGO_BIN_EXE_bar-notification-daemon")))?;
+    let mut process = session.start(Path::new(env!("CARGO_BIN_EXE_notification-daemon")))?;
     ensure!(
         !timeout(Duration::from_secs(20), process.wait())
             .await??

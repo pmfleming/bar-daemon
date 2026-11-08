@@ -38,25 +38,25 @@ in
 assert
   session.systemd.user.services.bar-daemon.serviceConfig.BusName == "org.laufan.BarStatusDaemon";
 assert builtins.elem "BAR_DAEMON_DISPLAY_CONTROL=1"
-  session.systemd.user.services.bar-compositor-daemon.serviceConfig.Environment;
+  session.systemd.user.services.compositor-daemon.serviceConfig.Environment;
 assert builtins.elem "BAR_DAEMON_YOUTUBE_METADATA=1"
   session.systemd.user.services.bar-daemon.serviceConfig.Environment;
 assert builtins.elem "hypr-monitor-auto.service"
-  session.systemd.user.services.bar-compositor-daemon.unitConfig.Conflicts;
+  session.systemd.user.services.compositor-daemon.unitConfig.Conflicts;
 assert
-  session.systemd.user.services.bar-notification-daemon.serviceConfig.BusName
+  session.systemd.user.services.notification-daemon.serviceConfig.BusName
   == "org.laufan.BarNotificationDaemon";
 assert
-  session.systemd.user.services.bar-compositor-daemon.serviceConfig.BusName
+  session.systemd.user.services.compositor-daemon.serviceConfig.BusName
   == "org.laufan.BarCompositorDaemon";
 assert
-  session.systemd.user.services.bar-activity-daemon.serviceConfig.BusName
+  session.systemd.user.services.activity-daemon.serviceConfig.BusName
   == "org.laufan.BarActivityDaemon";
 assert session.systemd.user.services.bar-daemon.conflicts == [ ];
 assert
-  session.systemd.user.services.bar-power-daemon.serviceConfig.BusName == "org.laufan.BarPowerDaemon";
+  session.systemd.user.services.power-daemon.serviceConfig.BusName == "org.laufan.BarPowerDaemon";
 assert builtins.elem "BAR_DAEMON_IDLE_CONFIG=%h/.config/hypr/hypridle.conf"
-  session.systemd.user.services.bar-power-daemon.serviceConfig.Environment;
+  session.systemd.user.services.power-daemon.serviceConfig.Environment;
 assert
   !(builtins.elem "BAR_DAEMON_NOTIFICATION_BACKEND=native" session.systemd.user.services.bar-daemon.serviceConfig.Environment);
 assert session.systemd.user.services.hypridle.serviceConfig.Type == "notify";
@@ -93,7 +93,7 @@ pkgs.runCommand "bar-daemon-module-contract" { } ''
   test ! -e "$runtime/share/dbus-1/system-services"
   test ! -e "$runtime/share/dbus-1/system.d"
   test ! -e "$runtime/share/polkit-1"
-  for name in bar-daemon bar-notification-daemon bar-power-daemon bar-compositor-daemon bar-activity-daemon; do
+  for name in bar-daemon notification-daemon power-daemon compositor-daemon activity-daemon; do
     test -x "$runtime/bin/$name"
     test -f "$runtime/share/systemd/user/$name.service"
   done

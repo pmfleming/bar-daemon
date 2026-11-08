@@ -5,10 +5,10 @@ use std::process::Command;
 fn session_owners_link_only_their_native_providers() {
     for (binary, pipewire, udev) in [
         (env!("CARGO_BIN_EXE_bar-daemon"), true, false),
-        (env!("CARGO_BIN_EXE_bar-power-daemon"), false, true),
-        (env!("CARGO_BIN_EXE_bar-compositor-daemon"), false, false),
-        (env!("CARGO_BIN_EXE_bar-activity-daemon"), false, false),
-        (env!("CARGO_BIN_EXE_bar-notification-daemon"), true, false),
+        (env!("CARGO_BIN_EXE_power-daemon"), false, true),
+        (env!("CARGO_BIN_EXE_compositor-daemon"), false, false),
+        (env!("CARGO_BIN_EXE_activity-daemon"), false, false),
+        (env!("CARGO_BIN_EXE_notification-daemon"), true, false),
     ] {
         let result = Command::new("readelf")
             .args(["-d", binary])

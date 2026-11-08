@@ -7,10 +7,10 @@ only its own methods and streams. `bar.snapshot {}` returns that owner's state.
 | Executable / user service | Responsibilities | Session bus name |
 | --- | --- | --- |
 | `bar-daemon` | Media, audio, brightness, hardware OSD, theme, updates, search | `org.laufan.BarStatusDaemon` |
-| `bar-notification-daemon` | Notification server, history, privacy and toast routing | `org.laufan.BarNotificationDaemon` |
-| `bar-power-daemon` | Battery, profiles, sleep, lid and critical-battery policy | `org.laufan.BarPowerDaemon` |
-| `bar-compositor-daemon` | Workspace lifecycle, display policy, geometry and preferences | `org.laufan.BarCompositorDaemon` |
-| `bar-activity-daemon` | Agenda, locations, weather, clocks and timezone | `org.laufan.BarActivityDaemon` |
+| `notification-daemon` | Notification server, history, privacy and toast routing | `org.laufan.BarNotificationDaemon` |
+| `power-daemon` | Battery, profiles, sleep, lid and critical-battery policy | `org.laufan.BarPowerDaemon` |
+| `compositor-daemon` | Workspace lifecycle, display policy, geometry and preferences | `org.laufan.BarCompositorDaemon` |
+| `activity-daemon` | Agenda, locations, weather, clocks and timezone | `org.laufan.BarActivityDaemon` |
 
 Each executable supports `daemon` and `client`, and owns a correspondingly named
 socket in `XDG_RUNTIME_DIR`. Shelllist connects directly to each owner. Enabling
@@ -19,13 +19,18 @@ configured session target, with separate failure/restart lifetimes. Only the
 compositor process exits on compositor session replacement. Display and activity
 processes observe logind sleep transitions independently of power policy.
 
+The extracted executables, user services and sockets use the names above without
+the former `bar-` prefix. Deploy the matching Shelllist and restart the session
+to replace the old user services. D-Bus identities, configuration variables and
+persistent data paths retain their existing names for compatibility.
+
 Deploy the matching package and Shelllist together, stop the old monolithic
 service, and start the five new services. Persistent paths and helper/polkit IDs
 are unchanged; no data copy is needed. The activity owner refuses agenda startup
 while a legacy monolith is still running and holds its old bus name until
 shutdown, excluding later legacy startups. The status endpoint uses the distinct
 `org.laufan.BarStatusDaemon` name. For offline agenda maintenance, stop
-`bar-activity-daemon.service` and prevent its activation during maintenance.
+`activity-daemon.service` and prevent its activation during maintenance.
 Workspace shortcuts and maintenance commands remain `bar-daemon workspace ...`
 and `bar-daemon agenda ...`; idle callbacks address the power owner.
 

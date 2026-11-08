@@ -314,7 +314,7 @@ async fn qt_login_replacement_retains_workspace_and_respects_cancellation() -> R
         )?;
     }
     let _bar = spawn(
-        Path::new(env!("CARGO_BIN_EXE_bar-compositor-daemon")),
+        Path::new(env!("CARGO_BIN_EXE_compositor-daemon")),
         &["daemon"],
         &root,
         &display,

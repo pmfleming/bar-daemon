@@ -6,6 +6,10 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
 
 ### Changed
 
+- Rename the extracted session executables, services and sockets to
+  `notification-daemon`, `power-daemon`, `compositor-daemon` and `activity-daemon`.
+  Keep existing D-Bus identities and persistent data paths compatible.
+
 - Add owner assembly crates and isolate audio, sharing and power-event native
   providers behind a pure contract. Link PipeWire only into status/notifications
   and udev only into power; verify actual executable dependencies in tests.
@@ -14,9 +18,9 @@ All notable changes to bar-daemon are documented here. The project follows Keep 
   Each session daemon exposes only its owned methods, snapshots and streams.
 
 - Move workspaces, display policy, work area and compositor preferences to
-  `bar-compositor-daemon`. Compositor session loss stops only this process.
+  `compositor-daemon`. Compositor session loss stops only this process.
 
-- Isolate battery, power profiles and sleep policies in `bar-power-daemon`;
+- Isolate battery, power profiles and sleep policies in `power-daemon`;
   other consumers observe logind sleep transitions independently.
 
 - Run notifications in their own session process, with independent startup,

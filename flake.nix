@@ -130,7 +130,7 @@
                   pkgs.systemd
                 ]
               }
-              wrapProgram $out/bin/bar-power-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
+              wrapProgram $out/bin/power-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-battery-helper --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
               wrapProgram $out/bin/bar-location-daemon --set-default TZDIR ${pkgs.tzdata}/share/zoneinfo
             '';

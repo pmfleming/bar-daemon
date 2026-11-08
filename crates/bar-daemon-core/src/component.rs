@@ -13,10 +13,10 @@ impl Component {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Bar => "bar-daemon",
-            Self::Notifications => "bar-notification-daemon",
-            Self::Power => "bar-power-daemon",
-            Self::Compositor => "bar-compositor-daemon",
-            Self::Activity => "bar-activity-daemon",
+            Self::Notifications => "notification-daemon",
+            Self::Power => "power-daemon",
+            Self::Compositor => "compositor-daemon",
+            Self::Activity => "activity-daemon",
         }
     }
     pub const fn bus_name(self) -> &'static str {
