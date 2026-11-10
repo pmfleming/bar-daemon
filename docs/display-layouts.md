@@ -1,5 +1,22 @@
 # Display layouts
 
+`displayProfiles.set` manages up to 32 named profiles through `capture`, `update`,
+`remove`, `automatic`, `fallback` and `preview` operations. Profiles and their
+confirmed layouts share the durable layout document. Manual profile selection
+starts the ordinary Keep/Revert trial; confirmation selects the profile. Subsequent
+card edits update its layout on Keep. Global focus overrides stay independent.
+
+Automatic selection ranks matching profiles by explicit priority, number of
+required monitors, then number of AC/lid conditions. Equal ranks are errors.
+Unknown AC/lid observations never satisfy conditions; the compositor subscribes
+to the power owner's battery/lid projections and invalidates them on disconnect.
+Fallback profiles are unconditional and only considered when no regular profile
+matches. Optional/unrecognized connected outputs retain their observed settings.
+Automatic profile changes use durable trials and compositor readback; unsuccessful
+attempts are remembered across restart until topology, conditions, resume generation
+or configuration changes. Editing/toggling automatic mode explicitly permits retry.
+Existing emergency laptop restoration remains authoritative on every failure.
+
 Saved outputs now carry optional physical identities (make/model/serial, with
 description fallback), resolved one-to-one on reconnect. Ambiguous identities
 reject restoration instead of guessing. The per-display Matching control can

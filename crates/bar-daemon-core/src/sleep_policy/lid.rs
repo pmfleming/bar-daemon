@@ -26,6 +26,8 @@ pub(crate) enum LidAction {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LidState {
+    #[serde(default)]
+    pub closed: Option<bool>,
     pub available: bool,
     pub managed: bool,
     pub error: Option<String>,
@@ -189,6 +191,7 @@ impl LidController {
             self.inhibitor = None;
         }
         let closed: bool = manager.get_property("LidClosed").await?;
+        self.status.closed = Some(closed);
         // logind's Docked also covers external displays. Keep clamshell use safe.
         let docked: bool = manager.get_property("Docked").await?;
         let eligible = managed && !docked;

@@ -50,6 +50,8 @@ pub(crate) struct StateStore {
     compositor_failure: tokio::sync::watch::Sender<Option<shelllist_hyprland::IpcError>>,
     pub(crate) work_area_changed: Arc<tokio::sync::Notify>,
     pub(crate) compositor_changed: Arc<tokio::sync::Notify>,
+    pub(crate) display_changed: Arc<tokio::sync::Notify>,
+    pub(crate) display_context: Arc<RwLock<crate::display_policy::profiles::Context>>,
 }
 
 impl Default for StateStore {
@@ -76,6 +78,8 @@ impl Default for StateStore {
             compositor_failure: tokio::sync::watch::channel(None).0,
             work_area_changed: Arc::new(tokio::sync::Notify::new()),
             compositor_changed: Arc::new(tokio::sync::Notify::new()),
+            display_changed: Arc::new(tokio::sync::Notify::new()),
+            display_context: Arc::default(),
         }
     }
 }
@@ -472,6 +476,7 @@ mod tests {
         let store = StateStore::default();
         let stale = store.snapshot().await.sleep_policy;
         let lid = crate::sleep_policy::lid::LidState {
+            closed: Some(false),
             available: true,
             managed: false,
             error: Some("session inactive".into()),

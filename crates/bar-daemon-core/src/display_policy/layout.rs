@@ -228,7 +228,7 @@ impl Layout {
         }
         Ok(())
     }
-    fn observed(outputs: &[Output]) -> Self {
+    pub(crate) fn observed(outputs: &[Output]) -> Self {
         Self {
             outputs: outputs
                 .iter()
@@ -270,6 +270,10 @@ impl Layout {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Trial {
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub automatic: bool,
     pub id: String,
     pub expires_at: u64,
     pub proposed: Layout,
@@ -278,6 +282,8 @@ pub(crate) struct Trial {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Document {
+    #[serde(default)]
+    pub profiles: super::profiles::Catalog,
     // Explicit enablement/content edits override docking policy until it is changed.
     // Old saved layouts retain their existing automatic-policy behaviour.
     #[serde(default)]
@@ -459,7 +465,11 @@ pub(crate) struct Preview {
 // Process-scoped keyed fingerprint: restarted daemons invalidate old drafts.
 // Ignore observation order and transient focus/DPMS fields, but include mode
 // catalogs, physical identities, geometry, mirroring and policy ownership.
-pub(super) fn baseline(outputs: &[Output], policy: &super::DisplayPolicy) -> String {
+pub(super) fn baseline(
+    outputs: &[Output],
+    policy: &super::DisplayPolicy,
+    document: &Document,
+) -> String {
     use std::{collections::hash_map::RandomState, hash::BuildHasher, sync::OnceLock};
     static HASHER: OnceLock<RandomState> = OnceLock::new();
     let mut ordered: Vec<_> = outputs.iter().filter(|o| connector(&o.name)).collect();
@@ -480,9 +490,10 @@ pub(super) fn baseline(outputs: &[Output], policy: &super::DisplayPolicy) -> Str
         .collect();
     format!(
         "{:016x}",
-        HASHER
-            .get_or_init(RandomState::new)
-            .hash_one(serde_json::json!([policy, values]).to_string())
+        HASHER.get_or_init(RandomState::new).hash_one(
+            serde_json::json!([policy, values, document.saved, document.profiles.revision])
+                .to_string()
+        )
     )
 }
 
@@ -521,7 +532,7 @@ async fn preview_at<B: Backend>(
     let outputs = backend.outputs().await?;
     let policy = store.read(|s| s.display_policy.policy.clone()).await;
     ensure!(
-        proposed.baseline == baseline(&outputs, &policy),
+        proposed.baseline == baseline(&outputs, &policy, &doc),
         "Display baseline is stale; reload the layout"
     );
     let mut proposed = Layout {
@@ -552,6 +563,8 @@ async fn preview_at<B: Backend>(
         .as_nanos()
         .to_string();
     doc.trial = Some(Trial {
+        profile: None,
+        automatic: false,
         id: id.clone(),
         expires_at: now() + PREVIEW_SECONDS,
         proposed: proposed.clone(),
@@ -635,6 +648,43 @@ async fn finish_at<B: Backend>(
             })
         });
         doc.saved = trial.proposed;
+        if !trial.automatic {
+            doc.profiles.automatic = false;
+        }
+        if let Some(name) = trial.profile {
+            doc.profiles.active = Some(name);
+            if !trial.automatic {
+                doc.profiles.automatic = false;
+            }
+            doc.manual_enablement = true;
+        } else if let Some(name) = &doc.profiles.active {
+            if let Some(profile) = doc.profiles.items.iter_mut().find(|p| &p.name == name) {
+                // Preserve condition identities when a connector was renumbered.
+                let old = profile.layout.outputs.clone();
+                profile.required = profile
+                    .required
+                    .iter()
+                    .filter_map(|name| {
+                        let setting = old.iter().find(|s| &s.name == name)?;
+                        doc.saved
+                            .outputs
+                            .iter()
+                            .find(|s| {
+                                setting
+                                    .identity
+                                    .as_ref()
+                                    .map_or(s.name == setting.name, |id| {
+                                        s.identity.as_ref() == Some(id)
+                                    })
+                            })
+                            .map(|s| s.name.clone())
+                    })
+                    .collect();
+                profile.layout = doc.saved.clone();
+                doc.profiles.revision += 1;
+            }
+            doc.profiles.automatic = false;
+        }
     } else {
         apply(
             backend,
@@ -661,6 +711,9 @@ pub(super) async fn tick<B: Backend>(backend: &B, store: &StateStore) -> Result<
     )
     .await
 }
+pub(super) async fn document() -> Result<Document> {
+    load_json_or_default(&path(), "display layout").await
+}
 async fn tick_at<B: Backend>(
     backend: &B,
     store: &StateStore,
@@ -683,6 +736,35 @@ async fn tick_at<B: Backend>(
         return Ok((doc, true));
     }
     if let Some(trial) = &doc.trial {
+        if trial.automatic
+            && runtime.trial.as_deref() == Some(&trial.id)
+            && runtime.resume == generation
+            && now < trial.expires_at
+        {
+            let outputs = backend.outputs().await?;
+            let context = store.display_context.read().await.clone();
+            // A changed/ambiguous match invalidates an automatic trial and
+            // must enter rollback, even when profile selection itself fails.
+            let selected = doc.profiles.select(&outputs, &context).ok().flatten();
+            if selected.map(|p| p.name.as_str()) == trial.profile.as_deref()
+                && topology(&outputs) == runtime.topology
+            {
+                if trial.proposed.outputs.iter().all(|s| {
+                    outputs
+                        .iter()
+                        .find(|o| o.name == s.name)
+                        .is_some_and(|o| s.matches(o, &outputs))
+                }) {
+                    let id = trial.id.clone();
+                    return Ok((
+                        finish_at(backend, &id, true, store, path, runtime).await?,
+                        false,
+                    ));
+                }
+            } else {
+                runtime.trial = None;
+            }
+        }
         if runtime.trial.as_deref() == Some(&trial.id)
             && now < trial.expires_at
             && runtime.deadline.is_some_and(|deadline| instant < deadline)
@@ -706,16 +788,147 @@ async fn tick_at<B: Backend>(
     let outputs = backend.outputs().await?;
     let current_topology = topology(&outputs);
     if current_topology != runtime.topology || runtime.resume != generation {
-        runtime.topology = current_topology;
+        runtime.topology = current_topology.clone();
         runtime.resume = generation;
         runtime.since = Some(instant);
         runtime.applied = false;
         runtime.error = None;
     }
+    if doc.profiles.automatic && !doc.profiles.items.is_empty() {
+        let context = store.display_context.read().await.clone();
+        let key = serde_json::to_string(&(
+            doc.profiles.revision,
+            &current_topology,
+            &context,
+            generation,
+        ))?;
+        if doc.profiles.attempted.as_deref() != Some(&key)
+            && runtime
+                .since
+                .is_none_or(|since| instant.duration_since(since) >= Duration::from_secs(5))
+            && store
+                .read(|s| {
+                    s.display_policy.docking_state != super::transition::DockingState::Applying
+                })
+                .await
+        {
+            doc.profiles.attempted = Some(key);
+            doc.profiles.error = None;
+            save_json_atomic(path, &doc).await?;
+            let attempt: Result<Option<Document>> = async {
+                let Some(profile) = doc.profiles.select(&outputs, &context)?.cloned() else {
+                    return Ok(None);
+                };
+                let proposed = profile.resolve(&outputs)?;
+                let policy = store.read(|s| s.display_policy.policy.clone()).await;
+                let mut result = preview_at(
+                    backend,
+                    Preview {
+                        baseline: baseline(&outputs, &policy, &doc),
+                        outputs: proposed.outputs,
+                    },
+                    store,
+                    path,
+                    runtime,
+                )
+                .await?;
+                let trial = result.trial.as_mut().context("Profile trial missing")?;
+                trial.profile = Some(profile.name);
+                trial.automatic = true;
+                save_json_atomic(path, &result).await?;
+                Ok(Some(result))
+            }
+            .await;
+            match attempt {
+                Ok(Some(result)) => return Ok((result, true)),
+                Ok(None) => {}
+                Err(error) => {
+                    let mut failed: Document = load_json_or_default(path, "display layout").await?;
+                    failed.profiles.error = Some(format!(
+                        "Automatic profile failed: {error:#}. Edit the profile or toggle automatic switching to retry."
+                    ));
+                    save_json_atomic(path, &failed).await?;
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(error) = &doc.profiles.error {
+            bail!(error.clone());
+        }
+    }
     let paused = runtime
         .apply_saved(backend, &doc, &outputs, store, instant)
         .await?;
     Ok((doc, paused))
+}
+
+pub(super) async fn profile_action<B: Backend>(
+    backend: &B,
+    request: super::profiles::Request,
+    store: &StateStore,
+) -> Result<Document> {
+    profile_action_at(backend, request, store, &path(), &mut *RUNTIME.lock().await).await
+}
+async fn profile_action_at<B: Backend>(
+    backend: &B,
+    request: super::profiles::Request,
+    store: &StateStore,
+    path: &Path,
+    runtime: &mut Runtime,
+) -> Result<Document> {
+    backend.eligible().await?;
+    super::ensure_docking_settled(store).await?;
+    ensure!(
+        !store.read(|s| s.power_sleep.preparing_for_sleep).await,
+        "Cannot edit profiles during sleep preparation"
+    );
+    let mut doc: Document = load_json_or_default(path, "display layout").await?;
+    ensure!(
+        doc.trial.is_none(),
+        "Finish the layout preview before editing profiles"
+    );
+    let outputs = backend.outputs().await?;
+    if let super::profiles::Request::Preview { name } = request {
+        let profile = doc.profiles.get(&name)?;
+        let proposed = profile.resolve(&outputs)?;
+        let policy = store.read(|s| s.display_policy.policy.clone()).await;
+        let mut result = preview_at(
+            backend,
+            Preview {
+                baseline: baseline(&outputs, &policy, &doc),
+                outputs: proposed.outputs,
+            },
+            store,
+            path,
+            runtime,
+        )
+        .await?;
+        result
+            .trial
+            .as_mut()
+            .context("Profile trial missing")?
+            .profile = Some(name);
+        save_json_atomic(path, &result).await?;
+        return Ok(result);
+    }
+    let mut current = Layout::observed(&outputs);
+    // Metadata edits (especially disabling automation) remain available when
+    // saved monitor identities can no longer be resolved unambiguously.
+    let configured = doc.saved.connected(&outputs).unwrap_or_default();
+    for setting in &mut current.outputs {
+        if let Some(saved) = configured.outputs.iter().find(|s| {
+            s.name == setting.name
+                && s.matches(outputs.iter().find(|o| o.name == s.name).unwrap(), &outputs)
+        }) {
+            setting.relative.clone_from(&saved.relative);
+            setting.match_connector = saved.match_connector;
+            setting.identity.clone_from(&saved.identity);
+        }
+    }
+    current.validate(&outputs, true)?;
+    doc.profiles.edit(request, current)?;
+    save_json_atomic(path, &doc).await?;
+    Ok(doc)
 }
 
 impl Runtime {

@@ -21,6 +21,7 @@ pub(crate) mod contract_examples;
 pub(crate) mod focus;
 pub(crate) mod layout;
 mod planner;
+pub(crate) mod profiles;
 mod transition;
 use transition::{DockingState, Transition};
 #[cfg(test)]
@@ -58,6 +59,33 @@ pub(crate) struct DisplayPolicyState {
     pub focus: focus::State,
     #[serde(default)]
     pub configured_outputs: Vec<layout::Setting>,
+    #[serde(default)]
+    pub profile_context: profiles::Context,
+    #[serde(default)]
+    pub profile_reason: String,
+    #[serde(default)]
+    pub profile_bindings: std::collections::BTreeMap<String, String>,
+}
+impl DisplayPolicyState {
+    fn profile_bindings(&mut self) {
+        self.profile_bindings = self
+            .layout
+            .profiles
+            .active
+            .as_deref()
+            .and_then(|name| self.layout.profiles.get(name).ok())
+            .map(|profile| {
+                self.outputs
+                    .iter()
+                    .filter_map(|output| {
+                        profile
+                            .binding(output)
+                            .map(|name| (output.name.clone(), name.into()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
 }
 
 fn enabled() -> bool {
@@ -90,7 +118,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
         error: None,
         ..store.read(|s| s.display_policy.clone()).await
     };
-    state.baseline = layout::baseline(&state.outputs, &state.policy);
+    state.baseline = layout::baseline(&state.outputs, &state.policy, &state.layout);
     store.update_display_policy(state.clone()).await;
     Ok(state)
 }
@@ -122,8 +150,14 @@ pub(crate) async fn layout_action(
     let mut state = store.read(|s| s.display_policy.clone()).await;
     state.layout = document;
     state.outputs = backend.outputs().await?;
-    state.configured_outputs = state.layout.saved.connected(&state.outputs)?.outputs;
-    state.baseline = layout::baseline(&state.outputs, &state.policy);
+    state.configured_outputs = state
+        .layout
+        .saved
+        .connected(&state.outputs)
+        .unwrap_or_default()
+        .outputs;
+    state.profile_bindings();
+    state.baseline = layout::baseline(&state.outputs, &state.policy, &state.layout);
     if state.layout.manual_enablement && state.layout.trial.is_none() {
         state.docking_state = DockingState::Settled;
     }
@@ -131,6 +165,36 @@ pub(crate) async fn layout_action(
         state.error = None;
     }
     store.update_display_policy(state.clone()).await;
+    Ok(state)
+}
+
+pub(crate) async fn profile_action(
+    params: serde_json::Value,
+    store: &StateStore,
+) -> Result<DisplayPolicyState> {
+    ensure_enabled()?;
+    let request = serde_json::from_value(params)?;
+    let _guard = POLICY_WRITE.lock().await;
+    let backend = HyprlandClient::default();
+    let document = tokio::time::timeout(
+        Duration::from_secs(8),
+        layout::profile_action(&backend, request, store),
+    )
+    .await
+    .context("Display profile request timed out; refresh before retrying")??;
+    let mut state = store.read(|s| s.display_policy.clone()).await;
+    state.layout = document;
+    state.outputs = backend.outputs().await?;
+    state.profile_bindings();
+    state.configured_outputs = state
+        .layout
+        .saved
+        .connected(&state.outputs)
+        .unwrap_or_default()
+        .outputs;
+    state.baseline = layout::baseline(&state.outputs, &state.policy, &state.layout);
+    store.update_display_policy(state.clone()).await;
+    store.display_changed.notify_one();
     Ok(state)
 }
 
@@ -339,9 +403,44 @@ async fn refresh<B: Backend>(
         };
         if let Some(outputs) = outputs {
             state.outputs = outputs;
-            state.baseline = layout::baseline(&state.outputs, &state.policy);
         }
-        state.layout = layout_result?.0;
+        // Recovery errors must still publish the durable journal and a usable
+        // baseline, so clients can disable automation or correct a layout.
+        state.layout = match &layout_result {
+            Ok((document, _)) => document.clone(),
+            Err(_) => layout::document().await?,
+        };
+        state.baseline = layout::baseline(&state.outputs, &state.policy, &state.layout);
+        state.profile_bindings();
+        state.configured_outputs = state
+            .layout
+            .saved
+            .connected(&state.outputs)
+            .unwrap_or_default()
+            .outputs;
+        layout_result?;
+        state.profile_reason = if state.layout.profiles.automatic {
+            match state
+                .layout
+                .profiles
+                .select(&state.outputs, &state.profile_context)?
+            {
+                Some(profile) => format!(
+                    "Automatic: {} (priority {}, {} required displays)",
+                    profile.name,
+                    profile.priority,
+                    profile.required.len()
+                ),
+                None => "No matching profile; keeping the current layout".into(),
+            }
+        } else {
+            state
+                .layout
+                .profiles
+                .active
+                .as_ref()
+                .map_or_else(|| "Manual layout".into(), |name| format!("Manual: {name}"))
+        };
         state.configured_outputs = state.layout.saved.connected(&state.outputs)?.outputs;
         status.map(|status| {
             if paused && status != "sleeping" {
@@ -377,6 +476,7 @@ pub(crate) async fn monitor(store: StateStore) {
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _ = store.display_changed.notified() => {},
             _ = timer.tick() => {},
             event = events.recv() => match event {
                 Ok(event) if event.stream == crate::protocol::stream::POWER_SLEEP => {
@@ -398,6 +498,8 @@ pub(crate) async fn monitor(store: StateStore) {
             baseline: String::new(),
             ..store.read(|s| s.display_policy.clone()).await
         };
+        state.profile_context = store.display_context.read().await.clone();
+        state.profile_reason = String::new();
         let result = refresh(&backend, &mut planner, &mut state, &store).await;
         if result.is_err() {
             planner.reset();

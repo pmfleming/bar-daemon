@@ -13,6 +13,119 @@ use std::{
 mod mirroring;
 
 #[tokio::test]
+async fn failed_automatic_profile_is_durable_and_metadata_can_disable_it() {
+    use super::super::profiles::Request;
+    let mut f = Fixture::new();
+    let mut doc = super::profile_action_at(
+        &f.backend,
+        Request::Capture {
+            name: "Bad mode".into(),
+        },
+        &f.store,
+        &f.path,
+        &mut f.runtime,
+    )
+    .await
+    .unwrap();
+    doc.profiles.automatic = true;
+    doc.profiles.items[0].layout.outputs[0].mode = "9999x9999@60".into();
+    crate::paths::save_json_atomic(&f.path, &doc).await.unwrap();
+    let now = Instant::now();
+    f.tick(super::now(), now).await.unwrap();
+    assert!(
+        f.tick(super::now(), now + Duration::from_secs(6))
+            .await
+            .is_err()
+    );
+    assert!(f.document().await.profiles.error.is_some());
+    assert!(f.backend.calls.borrow().is_empty());
+    f.runtime = Runtime::default();
+    assert!(
+        f.tick(super::now(), now + Duration::from_secs(7))
+            .await
+            .is_err()
+    );
+    assert!(f.backend.calls.borrow().is_empty());
+    let doc = super::profile_action_at(
+        &f.backend,
+        Request::Automatic { enabled: false },
+        &f.store,
+        &f.path,
+        &mut f.runtime,
+    )
+    .await
+    .unwrap();
+    assert!(!doc.profiles.automatic);
+    assert!(doc.profiles.error.is_none());
+}
+
+#[tokio::test]
+async fn profiles_capture_preview_and_automatic_switch_share_recovery() {
+    use super::super::profiles::Request;
+    let mut f = Fixture::new();
+    let captured = super::profile_action_at(
+        &f.backend,
+        Request::Capture {
+            name: "Desk".into(),
+        },
+        &f.store,
+        &f.path,
+        &mut f.runtime,
+    )
+    .await
+    .unwrap();
+    assert_eq!(captured.profiles.items.len(), 1);
+    assert!(f.backend.calls.borrow().is_empty());
+    f.backend.outputs.borrow_mut()[0].scale = 2.0;
+    let preview = super::profile_action_at(
+        &f.backend,
+        Request::Preview {
+            name: "Desk".into(),
+        },
+        &f.store,
+        &f.path,
+        &mut f.runtime,
+    )
+    .await
+    .unwrap();
+    assert_eq!(f.backend.outputs.borrow()[0].scale, 1.25);
+    f.finish(&preview.trial.unwrap().id, false).await.unwrap();
+    assert_eq!(f.backend.outputs.borrow()[0].scale, 2.0);
+    super::profile_action_at(
+        &f.backend,
+        Request::Automatic { enabled: true },
+        &f.store,
+        &f.path,
+        &mut f.runtime,
+    )
+    .await
+    .unwrap();
+    let now = Instant::now();
+    f.tick(super::now(), now + Duration::from_secs(6))
+        .await
+        .unwrap();
+    let switched = f
+        .tick(super::now(), now + Duration::from_secs(7))
+        .await
+        .unwrap()
+        .0;
+    assert!(switched.trial.is_none());
+    assert_eq!(switched.profiles.active.as_deref(), Some("Desk"));
+    assert!(switched.profiles.automatic);
+    assert_eq!(f.backend.outputs.borrow()[0].scale, 1.25);
+    let calls = f.backend.calls.borrow().len();
+    f.runtime = Runtime::default();
+    f.tick(super::now(), now + Duration::from_secs(8))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.backend.calls.borrow().len(),
+        calls,
+        "restart does not replay an unchanged automatic attempt"
+    );
+}
+
+#[tokio::test]
 async fn physical_identity_and_relative_geometry_survive_connector_changes() {
     let mut f = Fixture::new();
     let mut external = f.backend.outputs.borrow()[0].clone();
@@ -208,7 +321,11 @@ impl Fixture {
     }
     async fn preview(&mut self, proposed: Layout) -> Result<Document> {
         let policy = self.store.read(|s| s.display_policy.policy.clone()).await;
-        let baseline = super::baseline(&self.backend.outputs.borrow(), &policy);
+        let baseline = super::baseline(
+            &self.backend.outputs.borrow(),
+            &policy,
+            &self.document().await,
+        );
         preview_at(
             &self.backend,
             super::Preview {
@@ -251,7 +368,11 @@ impl Fixture {
 #[tokio::test]
 async fn stale_preview_rejects_before_persistence_or_compositor_writes() {
     let mut f = Fixture::new();
-    let token = super::baseline(&f.backend.outputs.borrow(), &Default::default());
+    let token = super::baseline(
+        &f.backend.outputs.borrow(),
+        &Default::default(),
+        &Document::default(),
+    );
     let proposed = Layout::observed(&f.backend.outputs.borrow());
     f.backend.outputs.borrow_mut()[0].scale = 2.0;
     let error = preview_at(

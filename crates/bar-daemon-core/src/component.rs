@@ -81,6 +81,7 @@ impl Component {
             "displayPolicy.",
             "displayFocus.",
             "displayLayout.",
+            "displayProfiles.",
         ]
         .iter()
         .any(|prefix| name.starts_with(prefix))

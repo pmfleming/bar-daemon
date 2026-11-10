@@ -184,6 +184,10 @@ impl ApiService {
             method if method.starts_with("powerSleep.") => {
                 sleep::dispatch(&self.state, method, params).await
             }
+            "displayProfiles.set" => crate::protocol::display_wire::reply(
+                crate::display_policy::profile_action(params, &self.state).await,
+                crate::protocol::display_wire::Failure::Layout,
+            ),
             "displayPolicy.set" => self.effects.display_policy_set(params).await,
             "displayFocus.set" | "displayFocus.reset" => {
                 self.effects.display_focus(method, params).await
@@ -287,6 +291,10 @@ impl ApiService {
                     .dispatch(method, params)
                     .await
             }
+            "displayProfiles.set" => crate::protocol::display_wire::reply(
+                crate::display_policy::profile_action(params, &self.state).await,
+                crate::protocol::display_wire::Failure::Layout,
+            ),
             "displayPolicy.set" => self.effects.display_policy_set(params).await,
             "displayFocus.set" | "displayFocus.reset" => {
                 self.effects.display_focus(method, params).await

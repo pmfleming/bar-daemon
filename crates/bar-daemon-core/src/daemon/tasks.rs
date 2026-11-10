@@ -169,6 +169,11 @@ impl MonitorTasks {
             crate::display_policy::monitor(state.clone()),
         );
         tasks.add(
+            "display-power-context",
+            &[],
+            crate::display_policy::profiles::power::monitor(state.clone()),
+        );
+        tasks.add(
             "session-sleep",
             &[DISPLAY_POLICY],
             crate::session_sleep::monitor(state),

@@ -54,6 +54,8 @@ pub(crate) fn states() -> BTreeMap<String, DisplayPolicyState> {
     preview.baseline = "baseline-preview".into();
     preview.outputs[0].scale = 2.0;
     preview.layout.trial = Some(Trial {
+        profile: None,
+        automatic: false,
         id: "trial-example".into(),
         expires_at: 2_147_483_647,
         proposed: proposed.clone(),
