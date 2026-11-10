@@ -143,8 +143,8 @@
                 $out/share/licenses/bar-daemon/CDLA-Permissive-2.0.txt
               install -Dm644 packaging/licenses/ODbL-1.0.txt $out/share/licenses/bar-daemon/ODbL-1.0.txt
               install -Dm644 packaging/licenses/timezone-boundaries.md $out/share/licenses/bar-daemon/timezone-boundaries.md
-              cp -r ${sessionUnits}/share/systemd $out/share/
-              cp -r ${sessionUnits}/share/dbus-1 $out/share/
+              cp -r --no-preserve=mode ${sessionUnits}/share/systemd $out/share/
+              cp -r --no-preserve=mode ${sessionUnits}/share/dbus-1 $out/share/
               substituteInPlace $out/share/systemd/user/*.service $out/share/dbus-1/services/*.service --replace-fail @out@ $out
             '';
             meta = {

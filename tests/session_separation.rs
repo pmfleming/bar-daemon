@@ -7,6 +7,16 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+struct Timedate;
+
+#[zbus::interface(name = "org.freedesktop.timedate1")]
+impl Timedate {
+    #[zbus(property)]
+    fn timezone(&self) -> &str {
+        "Etc/UTC"
+    }
+}
+
 struct Session {
     root: tempfile::TempDir,
     _bus: Child,
@@ -226,6 +236,16 @@ async fn compositor_owner_rejects_power_calls_and_its_death_leaves_power_availab
 #[tokio::test]
 async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
     let session = Session::new().await?;
+    // Agenda requires a verified system timezone; the private bus has no host timedated.
+    session
+        .connection
+        .object_server()
+        .at("/org/freedesktop/timedate1", Timedate)
+        .await?;
+    session
+        .connection
+        .request_name("org.freedesktop.timedate1")
+        .await?;
     let mut bar = session.start(Path::new(env!("CARGO_BIN_EXE_bar-daemon")))?;
     let mut power = session.start(Path::new(env!("CARGO_BIN_EXE_power-daemon")))?;
     session.ready("org.laufan.BarStatusDaemon").await?;
@@ -236,7 +256,16 @@ async fn activity_restarts_without_resetting_power_or_bar() -> Result<()> {
     ensure!(!session.root.path().join("state/bar-daemon/agenda").exists());
     let mut activity = session.start(Path::new(env!("CARGO_BIN_EXE_activity-daemon")))?;
     session.ready("org.laufan.BarActivityDaemon").await?;
-    let initial = session.snapshot("org.laufan.BarActivityDaemon").await?;
+    let initial = timeout(Duration::from_secs(20), async {
+        loop {
+            let snapshot = session.snapshot("org.laufan.BarActivityDaemon").await?;
+            if snapshot["data"]["snapshot"]["timezone"]["available"] == true {
+                return Ok::<_, anyhow::Error>(snapshot);
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
     assert_no_audio_controller(&activity)?;
     ensure!(
         initial["data"]["snapshot"]
