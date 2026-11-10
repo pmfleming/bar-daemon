@@ -1266,28 +1266,59 @@ mod tests {
     async fn update_outcomes_commit_once_across_dismissal_and_restart() {
         let (_directory, path, engine) = NotificationEngine::persistent_fixture().await;
         engine.toggle_dnd().await.unwrap();
-        for _ in 0..3 {
-            engine
-                .notify_update_once(
-                    "updates:run:run-1".into(),
-                    "run-1".into(),
-                    notification("Staged, not activated", -1),
+        {
+            use super::super::service::{
+                InternalNotifications, NotificationService, internal_notification,
+            };
+            let exported = engine.clone();
+            let (_server, client) = crate::test_support::dbus_peer(|builder| {
+                builder.serve_at(
+                    crate::api::OBJECT_PATH,
+                    InternalNotifications(NotificationService::native(exported)),
                 )
-                .await
-                .unwrap();
-        }
-        assert_eq!(engine.active().await.len(), 1);
-        assert!(engine.state.read(|s| s.notifications.dnd).await);
-        let id = engine.active().await[0].id;
-        assert!(engine.data.lock().await.update_targets.contains_key(&id));
-        engine
-            .notify(id, notification("External replacement", -1))
+            })
             .await
             .unwrap();
-        assert!(
-            !engine.data.lock().await.update_targets.contains_key(&id),
-            "external replacement cannot inherit an internal route"
-        );
+            let proxy = zbus::Proxy::new(
+                &client,
+                crate::component::Component::Notifications.bus_name(),
+                crate::api::OBJECT_PATH,
+                "org.laufan.BarNotificationInternal1",
+            )
+            .await
+            .unwrap();
+            let encoded = serde_json::to_string(&internal_notification(
+                "updates",
+                "Staged, not activated",
+                "Complete",
+                1,
+            ))
+            .unwrap();
+            for _ in 0..3 {
+                proxy
+                    .call::<_, _, ()>(
+                        "NotifyUpdateOnce",
+                        &("updates:run:run-1", "run-1", &encoded),
+                    )
+                    .await
+                    .unwrap();
+            }
+            for (key, run, body) in [
+                ("key".into(), "run-1", "{".into()),
+                ("key".into(), "run-1", " ".repeat(256 * 1024 + 1)),
+                ("key".into(), "../invalid", encoded.clone()),
+                ("k".repeat(1025), "run-1", encoded),
+            ] {
+                assert!(
+                    proxy
+                        .call::<_, _, ()>("NotifyUpdateOnce", &(key, run, body))
+                        .await
+                        .is_err()
+                );
+            }
+        } // Retire both peers before testing the persistent owner's restart.
+        assert_eq!(engine.active().await.len(), 1);
+        assert!(engine.state.read(|s| s.notifications.dnd).await);
         engine.clear().await.unwrap();
         assert_eq!(engine.history(None, 100).await.unwrap().len(), 1);
         engine.shutdown().await.unwrap();

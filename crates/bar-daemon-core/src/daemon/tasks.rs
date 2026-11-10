@@ -93,7 +93,7 @@ impl MonitorTasks {
     pub(super) fn bar(
         state: StateStore,
         _activity: Option<Arc<ActivityService>>,
-        notifications: Arc<NotificationService>,
+        _notifications: Arc<NotificationService>,
         media: MediaService,
         brightness: BrightnessService,
         _connection: zbus::Connection,
@@ -107,11 +107,7 @@ impl MonitorTasks {
             &[OSD_HARDWARE],
             osd_hardware::monitor(state.clone()),
         );
-        tasks.add(
-            "updates",
-            &[UPDATES],
-            updates::monitor(state, notifications),
-        );
+        tasks.add("updates", &[UPDATES], updates::monitor(state));
         tasks
     }
     pub(super) fn power(

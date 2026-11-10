@@ -32,45 +32,6 @@ impl NotificationService {
         })
     }
 
-    pub(crate) fn durable_updates(&self) -> bool {
-        matches!(
-            self.backend,
-            NotificationBackend::Native(_) | NotificationBackend::Remote
-        )
-    }
-
-    pub(crate) async fn notify_update_once(
-        &self,
-        key: String,
-        run_id: String,
-        mut incoming: IncomingNotification,
-    ) -> Result<()> {
-        if let NotificationBackend::Native(engine) = &self.backend {
-            return engine.notify_update_once(key, run_id, incoming).await;
-        }
-        if matches!(self.backend, NotificationBackend::Remote) && self.durable_updates() {
-            let connection = crate::bus::session().await?;
-            let proxy = zbus::Proxy::new(
-                &connection,
-                crate::component::Component::Notifications.bus_name(),
-                crate::api::OBJECT_PATH,
-                "org.laufan.BarNotificationInternal1",
-            )
-            .await?;
-            proxy
-                .call::<_, _, ()>(
-                    "NotifyUpdateOnce",
-                    &(key, run_id, serde_json::to_string(&incoming)?),
-                )
-                .await?;
-            return Ok(());
-        }
-        // External servers cannot retain our durable action owner.
-        incoming.actions.clear();
-        self.sink().send(incoming).await?;
-        Ok(())
-    }
-
     pub(crate) fn swaync() -> Arc<Self> {
         Arc::new(Self {
             backend: NotificationBackend::SwayNc,
@@ -265,54 +226,16 @@ impl InternalNotifications {
                 "notification too large".into(),
             ));
         }
-        let incoming = serde_json::from_str(incoming)
+        let mut incoming: IncomingNotification = serde_json::from_str(incoming)
             .map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
-        self.0
-            .notify_update_once(key, run_id, incoming)
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
-    }
-}
-
-#[cfg(test)]
-mod separation_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn private_bus_delivery_keeps_the_durable_key_across_retries() {
-        let directory = tempfile::tempdir().unwrap();
-        let engine = NotificationEngine::persistent(
-            crate::state::StateStore::default(),
-            directory.path().join("notifications.db"),
-        )
-        .await
-        .unwrap();
-        let exported = engine.clone();
-        let (_server, client) = crate::test_support::dbus_peer(|builder| {
-            builder.serve_at(
-                crate::api::OBJECT_PATH,
-                InternalNotifications(NotificationService::native(exported)),
-            )
-        })
-        .await
-        .unwrap();
-        let proxy = zbus::Proxy::new(
-            &client,
-            crate::component::Component::Notifications.bus_name(),
-            crate::api::OBJECT_PATH,
-            "org.laufan.BarNotificationInternal1",
-        )
-        .await
-        .unwrap();
-        let notification = internal_notification("updates", "Updated", "Complete", 1);
-        let encoded = serde_json::to_string(&notification).unwrap();
-        for _ in 0..2 {
-            proxy
-                .call::<_, _, ()>("NotifyUpdateOnce", &("updates:once", "", &encoded))
-                .await
-                .unwrap();
-        }
-        assert_eq!(engine.active().await.len(), 1);
-        engine.shutdown().await.unwrap();
+        // This endpoint belongs to the notification owner, never a remote client.
+        let result = if let Some(engine) = self.0.native_engine() {
+            engine.notify_update_once(key, run_id, incoming).await
+        } else {
+            // External servers cannot retain our durable action owner.
+            incoming.actions.clear();
+            self.0.sink().send(incoming).await.map(|_| ())
+        };
+        result.map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }

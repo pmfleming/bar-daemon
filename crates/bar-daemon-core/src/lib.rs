@@ -94,7 +94,9 @@ pub async fn run_idle_sleep(
 
 /// Read the same bounded update catalog as the UI without sending notifications.
 pub async fn update_history() -> anyhow::Result<serde_json::Value> {
-    let reply = shelllist_update_session::client::call("updates.queryHistory", serde_json::json!({})).await?;
+    let reply =
+        shelllist_update_session::client::call("updates.queryHistory", serde_json::json!({}))
+            .await?;
     anyhow::ensure!(reply["ok"] == true, "{}", reply["error"]["message"]);
     Ok(reply["data"].clone())
 }

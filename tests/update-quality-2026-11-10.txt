@@ -1,0 +1,124 @@
+Update migration quality review — 2026-11-10
+Repository: bar-daemon; clean baseline d4fe3da.
+
+Scope and method
+Read CONTRIBUTING.md, the repository RQLens configuration/quality policy and the
+local /home/laufan/Projects/rust-quality-lens model/testing documentation. Review
+is confined to the update adapter and private notification delivery ownership.
+No service actions, deployment, dependency changes or protocol/schema changes.
+
+E = target/update-quality-2026-11-10 (ignored raw evidence).
+before/source.tar preserves baseline source. Both measurement stages use the same
+live repository root and unchanged Git HEAD/history, with identity_resolution
+disabled; no archived checkout with different history was compared. Seven RQLens
+producers: hotspots, clones, locality, leverage, reliability, escape-hatches,
+test-quality. Pinned binary E/rqlens SHA256:
+8f9a8852860c8e63c1f23e479e90f1ced9e711224e3c57299fca6a523f0afb9f.
+This is the same pinned binary used by the preceding repository campaign.
+Syntax/cargo-metadata evidence is partial, not compiler-certified identity:
+unexpanded macro items remain outside the authored-syntax inventory. Dependency
+workers changed sibling sources during this campaign; dependency patches are
+saved separately, and no coverage claim includes sibling-owned source.
+
+Changes and preserved boundaries
+- Remove the unused durable_updates predicate and private service forwarding
+  wrapper; dispatch native durable update delivery directly at its D-Bus owner.
+  daemon.rs exports InternalNotifications only for Component::Notifications;
+  notification_services constructs Native or SwayNc. basic_services and
+  activity_services construct Remote but never export this endpoint. The removed
+  Remote forwarding branch therefore had no production caller. Generic desktop
+  forwarding remains; the SwayNc fallback still clears actions before sending.
+  Native delivery still awaits engine persistence before acknowledging. Incoming
+  size/JSON admission, fdo error mapping and engine run/key bounds are preserved.
+- Reuse the update adapter's state/history publication closure for watch events
+  and disconnection. Remove its unused notification-service Arc parameter.
+  Reconnection delay, disconnect errors and history invalidation are unchanged.
+- Combine two overlapping persistence fixtures into one private UnixStream D-Bus
+  journey: retries, DND, clear/dismissal, durable history and engine restart. Add
+  malformed JSON, oversized payload, invalid run ID and oversized key rejection.
+  Drop both isolated peers before restart; no session-bus environment mutation.
+  The existing route-retirement matrix retains replacement/eviction/delete/
+  dismiss/clear coverage, so duplicate route checks leave this combined journey.
+  Keep the internal_notification constructor exercised by the combined test.
+- Apply rustfmt to the existing update_history line that failed baseline fmt.
+
+Comparable metrics (before -> after)
+Physical tracked Rust LOC includes blanks/comments; cfg(test) and dedicated
+test/support files are partitioned by E/loc.py. No generated/dependency source.
+  Production LOC                      38180 -> 38137 (-43)
+  Test LOC                            20037 -> 20026 (-11)
+  Total LOC                           58217 -> 58163 (-54)
+  Production nonblank                  36467 -> 36427 (-40)
+  Test nonblank                       19620 -> 19610 (-10)
+  Test declarations                     330 -> 329   (-1)
+
+Production function aggregates, excluding test items:
+  Whole repository cognitive           3069 -> 3068
+  Whole repository cyclomatic          6855 -> 6846
+  Whole repository Halstead effort 25392044.84 -> 25376871.88
+  Exact focused files: activity/notifications/service.rs and src/updates.rs
+    Cognitive                            13 -> 12
+    Cyclomatic                           49 -> 40
+    Halstead effort               124690.92 -> 109921.89
+The surviving endpoint gains the native/fallback dispatch formerly in its
+wrapper; its individual complexity increases while the complete path shrinks.
+
+  Notification service locality          88 -> 97
+  Service outbound / inbound          9/11 -> 6/10
+  Update adapter outbound                 3 -> 2 (locality stays 100)
+  Observed leverage: service / adapter 100/30 -> 100/30 (unchanged)
+  Legacy pressure: service / adapter 31.5/33.5 -> 25.0/30.5
+These are static module observations, not proof of runtime reuse improvement.
+Publication logic now has one owner; no claim of improved observed leverage.
+
+  Clone groups / duplicated lines  221/3335 -> 221/3335 (unchanged)
+  Clone percentage                    6.07 -> 6.08 (smaller source denominator)
+  Escape locations                      74 -> 73
+  Escape-bearing modules                64 -> 63
+The escape reduction is one removed test glob import, not a production safety
+improvement. Production unsafe/FFI/suppression behavior is unchanged. Literal
+production clone-call reductions are not claimed. Reliability findings decline
+1766 -> 1761; test-quality findings remain 23 (15 assertionless, 8 ignored).
+
+Executed coverage and test volume
+Rust/Cargo 1.95.0, LLVM 21.1.8, cargo-llvm-cov 0.8.5, CARGO_BUILD_JOBS=4.
+Source /tmp/update-env.sh and set LLVM_COV/LLVM_PROFDATA to the LLVM21 binaries.
+Both stages run exactly:
+  cargo llvm-cov --package bar-daemon-core --lib --locked --json \
+    --output-path E/STAGE/coverage.json -- activity::notifications:: \
+    --skip concurrent_mutations_keep_persistence_and_snapshot_consistent
+  cargo llvm-cov report --package bar-daemon-core --lcov \
+    --output-path E/STAGE/coverage.lcov
+Baseline: 47 passed, 1 ignored. After: 46 passed, 1 ignored. The existing long
+concurrent persistence stress case is excluded from this paired coverage run;
+the required uninstrumented workspace run includes it. The existing ignored
+performance qualification remains ignored. No whole-workspace coverage claim.
+
+Fixed production file scope (test lines excluded, LCOV executable lines):
+  service.rs: 49/195 (25.13%) -> 46/164 (28.05%)
+  updates.rs:  0/26  (0%)    ->  0/21  (0%)
+Line denominators shrink with removed code; this alone is not new coverage.
+For 13 byte-identical retained functions in that same scope, the fixed executable
+denominator is 150 lines: covered lines increase 25 -> 29. The generic notification
+constructor stays 20/20; native_engine gains 0/5 -> 4/5. The changed endpoint also
+executes the oversized-payload and malformed-JSON admission paths. Test LOC drops
+11 despite the additional boundary cases because duplicate fixture setup and
+route checks are removed. Branch/MC/DC coverage was not measured; the watched
+remote adapter and SwayNc fallback are not exercised by this focused suite.
+
+Validation
+See E/after/{fmt,check,clippy,tests-workspace,doc}.log and coverage reports.
+  cargo fmt --all -- --check: passed.
+  cargo check --workspace --all-targets: passed.
+  cargo clippy --workspace --all-targets -- --deny warnings: passed, including
+    a final repeat after the test constructor-preservation correction.
+  cargo test --workspace --all-targets: 320 passed, 0 failed, 7 ignored across
+    27 executable targets. Core: 273 passed, 4 ignored; the long concurrent
+    notification persistence case passed. No ignored live/native fixture run.
+  RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps: passed.
+  Final identical focused instrumented suite: 46 passed, 1 ignored.
+  Final uninstrumented combined private-bus/restart journey: 1 passed.
+  git diff --check: passed.
+The first coverage setup needed explicit LLVM tool paths; an initial dependency
+compile overlapped a sibling decoder edit and failed. Its owner fixed that
+dependency before the successful paired runs; no bar-side workaround was added.

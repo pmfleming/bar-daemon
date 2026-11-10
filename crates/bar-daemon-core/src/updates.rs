@@ -2,7 +2,6 @@
 use crate::{model::UpdateState, state::StateStore};
 use anyhow::Result;
 pub(crate) use shelllist_update_session::client::open;
-use std::sync::Arc;
 
 pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
     let value = shelllist_update_session::client::refresh().await?;
@@ -10,30 +9,25 @@ pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
     Ok(value)
 }
 
-pub(crate) async fn monitor(
-    store: StateStore,
-    _service: Arc<crate::activity::notifications::service::NotificationService>,
-) {
+pub(crate) async fn monitor(store: StateStore) {
+    let publish = |value| {
+        let store = store.clone();
+        async move {
+            store.update_updates(value).await;
+            store.invalidate_update_history().await;
+        }
+    };
     loop {
-        let result = shelllist_update_session::client::watch(|value| {
-            let store = store.clone();
-            async move {
-                store.update_updates(value).await;
-                store.invalidate_update_history().await;
-            }
+        let result = shelllist_update_session::client::watch(&publish).await;
+        publish(UpdateState {
+            error: Some(
+                result
+                    .err()
+                    .map_or_else(|| "Update service disconnected".into(), |e| e.to_string()),
+            ),
+            ..Default::default()
         })
         .await;
-        store
-            .update_updates(UpdateState {
-                error: Some(
-                    result
-                        .err()
-                        .map_or_else(|| "Update service disconnected".into(), |e| e.to_string()),
-                ),
-                ..Default::default()
-            })
-            .await;
-        store.invalidate_update_history().await;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
