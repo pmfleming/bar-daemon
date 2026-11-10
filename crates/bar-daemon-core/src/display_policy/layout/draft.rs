@@ -52,12 +52,25 @@ fn setting(value: Value) -> Result<Setting> {
             "modes",
             "internal",
             "width",
-            "height"
+            "height",
+            "relative",
+            "match_connector"
         ]
         .contains(&k.as_str())),
         "Unknown display draft field"
     );
     Ok(Setting {
+        identity: None,
+        match_connector: value
+            .get("match_connector")
+            .map(|v| v.as_bool().context("Invalid display matching choice"))
+            .transpose()?
+            .unwrap_or(false),
+        relative: value
+            .get("relative")
+            .filter(|v| !v.is_null())
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()?,
         name: value["name"].as_str().context("Missing connector")?.into(),
         mode: value["mode"].as_str().context("Missing mode")?.into(),
         x: integer(&value["x"], -32768.0, 32768.0)?,

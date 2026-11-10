@@ -35,6 +35,9 @@ pub(crate) fn states() -> BTreeMap<String, DisplayPolicyState> {
     };
     let previous = Layout {
         outputs: vec![Setting {
+            identity: None,
+            relative: None,
+            match_connector: false,
             name: "eDP-1".into(),
             mode: "1920x1200@60.00Hz".into(),
             x: 0,

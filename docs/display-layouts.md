@@ -1,5 +1,20 @@
 # Display layouts
 
+Saved outputs now carry optional physical identities (make/model/serial, with
+description fallback), resolved one-to-one on reconnect. Ambiguous identities
+reject restoration instead of guessing. The per-display Matching control can
+explicitly select connector matching for indistinguishable monitors. Legacy
+layouts without identities retain connector matching. `configured_outputs`
+projects saved relationships onto current connectors for the frontend.
+
+Per-display `relative: {reference, side, alignment, gap}` relationships resolve
+as a bounded acyclic graph in transformed, scaled logical pixels. Sides are
+left/right/above/below; alignment is start/center/end; gaps are 0–4096 pixels.
+The backend rejects cycles, invalid anchors and new overlaps before journalling.
+Disconnect recovery drops missing anchors in the applied projection while keeping
+the saved relationship for reconnect. Canvas placement returns the selected
+display to absolute positioning. Every edit still uses the whole-layout trial.
+
 With `BAR_DAEMON_DISPLAY_CONTROL=1`, the daemon owns both docking policy and
 saved layouts. Open Shelllist's dedicated Displays callout from the monitor bar
 control, `SUPER+P`, or `shelllist open displays`. Its compact diagram expands into

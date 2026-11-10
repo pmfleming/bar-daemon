@@ -17,8 +17,12 @@ use std::{
 use tokio::sync::Mutex;
 
 mod draft;
+mod identity;
 mod outputs;
+mod placement;
+pub(crate) use identity::Identity;
 pub(super) use outputs::serialize_outputs;
+pub(crate) use placement::Relative;
 
 const PREVIEW_SECONDS: u64 = 20;
 
@@ -35,6 +39,12 @@ pub(crate) struct Setting {
     /// Empty means an independent (extended) desktop; otherwise a connector.
     #[serde(default)]
     pub mirror_of: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<Identity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative: Option<Relative>,
+    #[serde(default)]
+    pub match_connector: bool,
 }
 impl Setting {
     fn validate(&self) -> Result<()> {
@@ -101,6 +111,10 @@ impl Setting {
     }
     fn observed(output: &Output, outputs: &[Output]) -> Self {
         Self {
+            identity: Identity::observed(output)
+                .filter(|identity| outputs.iter().filter(|o| identity.matches(o)).count() == 1),
+            relative: None,
+            match_connector: false,
             name: output.name.clone(),
             mode: outputs::current_mode(output),
             x: output.x,
@@ -225,22 +239,32 @@ impl Layout {
     }
     // Recovery/hotplug only: promote a surviving mirror when its source is gone.
     // Keep the saved document intact so reconnecting restores the chosen group.
-    fn connected(&self, outputs: &[Output]) -> Self {
-        let mut present = Self {
-            outputs: self
-                .outputs
-                .iter()
-                .filter(|s| outputs.iter().any(|o| o.name == s.name))
-                .cloned()
-                .collect(),
-        };
+    pub(crate) fn connected(&self, outputs: &[Output]) -> Result<Self> {
+        let mut present = identity::resolve(self, outputs)?;
         for setting in &mut present.outputs {
             if !setting.mirror_of.is_empty() && !outputs.iter().any(|o| o.name == setting.mirror_of)
             {
                 setting.mirror_of.clear();
             }
         }
-        present
+        // An unplugged relative anchor must not prevent emergency recovery.
+        let names: HashSet<_> = present
+            .outputs
+            .iter()
+            .filter(|s| s.enabled && s.mirror_of.is_empty())
+            .map(|s| s.name.clone())
+            .collect();
+        for setting in &mut present.outputs {
+            if setting
+                .relative
+                .as_ref()
+                .is_some_and(|r| !names.contains(&r.reference))
+            {
+                setting.relative = None;
+            }
+        }
+        placement::resolve(&mut present)?;
+        Ok(present)
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,8 +286,8 @@ pub(crate) struct Document {
     pub trial: Option<Trial>,
 }
 impl Document {
-    fn restoration(&self, outputs: &[Output]) -> Layout {
-        let mut present = self.saved.connected(outputs);
+    fn restoration(&self, outputs: &[Output]) -> Result<Layout> {
+        let mut present = self.saved.connected(outputs)?;
         if !self.manual_enablement {
             // Saved geometry is still useful, but automatic docking alone owns
             // laptop enablement. Never replay a retired manual Off/On first.
@@ -287,7 +311,7 @@ impl Document {
                 }
             }
         }
-        present
+        Ok(present)
     }
 }
 #[derive(Default)]
@@ -500,9 +524,24 @@ async fn preview_at<B: Backend>(
         proposed.baseline == baseline(&outputs, &policy),
         "Display baseline is stale; reload the layout"
     );
-    let proposed = Layout {
+    let mut proposed = Layout {
         outputs: proposed.outputs,
     };
+    // Physical identity is always captured from trusted observation, never a draft.
+    for setting in &mut proposed.outputs {
+        setting.identity = if setting.match_connector {
+            None
+        } else {
+            outputs
+                .iter()
+                .find(|o| o.name == setting.name)
+                .and_then(Identity::observed)
+        };
+    }
+    // Reject ambiguous persisted bindings while the user can explicitly choose
+    // connector matching; recovery must never guess which identical screen moved.
+    identity::resolve(&proposed, &outputs)?;
+    placement::resolve(&mut proposed)?;
     proposed.validate(&outputs, true)?;
     let previous = Layout::observed(&outputs);
     // Reject a non-recoverable snapshot before touching the compositor.
@@ -599,7 +638,7 @@ async fn finish_at<B: Backend>(
     } else {
         apply(
             backend,
-            &trial.previous.connected(&backend.outputs().await?),
+            &trial.previous.connected(&backend.outputs().await?)?,
             store,
         )
         .await?;
@@ -654,7 +693,7 @@ async fn tick_at<B: Backend>(
         }
         apply(
             backend,
-            &trial.previous.connected(&backend.outputs().await?),
+            &trial.previous.connected(&backend.outputs().await?)?,
             store,
         )
         .await?;
@@ -698,7 +737,13 @@ impl Runtime {
                 return Ok(true);
             }
             self.applied = true;
-            let present = doc.restoration(outputs);
+            let present = match doc.restoration(outputs) {
+                Ok(present) => present,
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    return Err(error);
+                }
+            };
             // A saved external-only layout cannot be applied while its enabled
             // outputs are unplugged. Let reconciliation restore the laptop.
             if present.outputs.iter().any(|s| s.enabled) {

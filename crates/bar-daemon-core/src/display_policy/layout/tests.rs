@@ -12,6 +12,100 @@ use std::{
 
 mod mirroring;
 
+#[tokio::test]
+async fn physical_identity_and_relative_geometry_survive_connector_changes() {
+    let mut f = Fixture::new();
+    let mut external = f.backend.outputs.borrow()[0].clone();
+    external.name = "DP-1".into();
+    external.id = 1;
+    external.model = "Desk".into();
+    external.serial = "serial-one".into();
+    external.x = 1536;
+    f.backend.outputs.borrow_mut().push(external);
+    let mut proposed = Layout::observed(&f.backend.outputs.borrow());
+    proposed.outputs[1].relative = Some(super::Relative {
+        reference: "eDP-1".into(),
+        side: super::placement::Side::Right,
+        alignment: super::placement::Alignment::Center,
+        gap: 12,
+    });
+    proposed.outputs[0].scale = 2.0;
+    let preview = f.preview(proposed).await.unwrap();
+    assert_eq!(preview.trial.as_ref().unwrap().proposed.outputs[1].x, 972);
+    f.finish(&preview.trial.unwrap().id, true).await.unwrap();
+    {
+        let mut outputs = f.backend.outputs.borrow_mut();
+        outputs[1].name = "DP-9".into();
+        outputs[1].id = 9;
+        outputs[1].x = 0;
+    }
+    f.runtime = Runtime::default();
+    let instant = Instant::now();
+    f.tick(super::now(), instant).await.unwrap();
+    f.tick(super::now(), instant + Duration::from_secs(6))
+        .await
+        .unwrap();
+    assert_eq!(f.backend.outputs.borrow()[1].x, 972);
+    let configured = f
+        .document()
+        .await
+        .saved
+        .connected(&f.backend.outputs.borrow())
+        .unwrap();
+    assert_eq!(configured.outputs[1].name, "DP-9");
+}
+
+#[tokio::test]
+async fn ambiguous_identity_and_placement_cycles_fail_before_any_write() {
+    let mut f = Fixture::new();
+    f.backend.outputs.borrow_mut()[0].model = "Identical".into();
+    let mut other = f.backend.outputs.borrow()[0].clone();
+    other.name = "DP-1".into();
+    other.id = 1;
+    other.x = 1536;
+    f.backend.outputs.borrow_mut().push(other);
+    let proposed = Layout::observed(&f.backend.outputs.borrow());
+    assert!(
+        f.preview(proposed.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Ambiguous")
+    );
+    assert!(!f.path.exists());
+    assert!(f.backend.calls.borrow().is_empty());
+    let mut proposed = proposed;
+    for i in 0..2 {
+        proposed.outputs[i].match_connector = true;
+        proposed.outputs[i].relative = Some(super::Relative {
+            reference: proposed.outputs[1 - i].name.clone(),
+            side: super::placement::Side::Right,
+            alignment: super::placement::Alignment::Start,
+            gap: 0,
+        });
+    }
+    assert!(
+        f.preview(proposed.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cycle")
+    );
+    assert!(!f.path.exists());
+    assert!(f.backend.calls.borrow().is_empty());
+    proposed.outputs[0].relative = None;
+    let trial = f.preview(proposed).await.unwrap().trial.unwrap();
+    f.finish(&trial.id, true).await.unwrap();
+    assert!(
+        f.document()
+            .await
+            .saved
+            .outputs
+            .iter()
+            .all(|s| s.identity.is_none())
+    );
+}
+
 struct Fake {
     outputs: RefCell<Vec<Output>>,
     calls: RefCell<Vec<String>>,

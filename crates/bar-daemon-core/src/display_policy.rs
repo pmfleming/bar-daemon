@@ -56,6 +56,8 @@ pub(crate) struct DisplayPolicyState {
     pub layout: layout::Document,
     #[serde(default)]
     pub focus: focus::State,
+    #[serde(default)]
+    pub configured_outputs: Vec<layout::Setting>,
 }
 
 fn enabled() -> bool {
@@ -120,6 +122,7 @@ pub(crate) async fn layout_action(
     let mut state = store.read(|s| s.display_policy.clone()).await;
     state.layout = document;
     state.outputs = backend.outputs().await?;
+    state.configured_outputs = state.layout.saved.connected(&state.outputs)?.outputs;
     state.baseline = layout::baseline(&state.outputs, &state.policy);
     if state.layout.manual_enablement && state.layout.trial.is_none() {
         state.docking_state = DockingState::Settled;
@@ -339,6 +342,7 @@ async fn refresh<B: Backend>(
             state.baseline = layout::baseline(&state.outputs, &state.policy);
         }
         state.layout = layout_result?.0;
+        state.configured_outputs = state.layout.saved.connected(&state.outputs)?.outputs;
         status.map(|status| {
             if paused && status != "sleeping" {
                 "layout-preview"

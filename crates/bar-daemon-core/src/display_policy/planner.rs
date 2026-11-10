@@ -13,6 +13,12 @@ pub(crate) struct Output {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    #[serde(default)]
+    pub make: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub serial: String,
     pub width: u32,
     pub height: u32,
     pub disabled: bool,
