@@ -154,38 +154,7 @@ pub(crate) struct TimezoneState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct UpdateState {
-    pub available: bool,
-    pub ready: bool,
-    pub lanes: Vec<UpdateLane>,
-    pub jobs: Vec<UpdateJob>,
-    pub state_directory: String,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct UpdateJob {
-    pub name: String,
-    pub operation: String,
-    pub status: String,
-    pub phase: String,
-    pub started_at: u64,
-    pub finished_at: Option<u64>,
-    pub exit_code: Option<i32>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct UpdateLane {
-    pub name: String,
-    pub ready: bool,
-    pub revision: Option<String>,
-    pub base_hash: Option<String>,
-    pub created_at: Option<u64>,
-    pub auto_apply: bool,
-    pub system: Option<String>,
-}
+pub(crate) use shelllist_update_status::api::{UpdateJob, UpdateLane, UpdateState};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PowerProfileState {
