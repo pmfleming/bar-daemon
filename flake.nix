@@ -2,7 +2,10 @@
   description = "Status, policy, and action daemon for a Quickshell desktop bar";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
-  inputs.updateWorker.url = "git+file:../update-daemon";
+  inputs.updateWorker = {
+    url = "git+file:../update-daemon";
+    inputs.daemonFramework.follows = "daemonFramework";
+  };
   # Co-development: one live sibling framework; no per-daemon revision pins.
   # Use ../daemon-framework/tools/local-build for Nix builds/checks.
   inputs.daemonFramework = {
