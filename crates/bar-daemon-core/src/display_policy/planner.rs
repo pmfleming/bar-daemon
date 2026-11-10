@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use shelllist_hyprland::monitor::{self, Mode, Position, Rule};
 
 const SETTLE: Duration = Duration::from_secs(5);
-const MAX_OBSERVATION_GAP: Duration = Duration::from_secs(6);
+// Permit the 30-second healthy fallback interval; a stalled observer still
+// invalidates settling evidence. Topology changes and failed reads reset sooner.
+const MAX_OBSERVATION_GAP: Duration = Duration::from_secs(65);
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub(crate) struct Output {

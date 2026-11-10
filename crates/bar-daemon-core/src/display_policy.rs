@@ -22,6 +22,7 @@ pub(crate) mod focus;
 pub(crate) mod layout;
 mod planner;
 pub(crate) mod profiles;
+mod schedule;
 mod transition;
 use transition::{DockingState, Transition};
 #[cfg(test)]
@@ -120,6 +121,7 @@ pub(crate) async fn set(policy: DisplayPolicy, store: &StateStore) -> Result<Dis
     };
     state.baseline = layout::baseline(&state.outputs, &state.policy, &state.layout);
     store.update_display_policy(state.clone()).await;
+    store.display_changed.notify_one();
     Ok(state)
 }
 
@@ -165,6 +167,7 @@ pub(crate) async fn layout_action(
         state.error = None;
     }
     store.update_display_policy(state.clone()).await;
+    store.display_changed.notify_one();
     Ok(state)
 }
 
@@ -472,20 +475,23 @@ pub(crate) async fn monitor(store: StateStore) {
     let mut transition = Transition::default();
     let mut last_resume = 0;
     let mut events = store.subscribe_domains(&[crate::protocol::stream::POWER_SLEEP]);
-    let mut timer = tokio::time::interval(Duration::from_secs(2));
-    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut next = Duration::ZERO;
+    let mut settle_until = Instant::now() + Duration::from_secs(6);
     loop {
-        tokio::select! {
-            _ = store.display_changed.notified() => {},
-            _ = timer.tick() => {},
+        let changed = tokio::select! {
+            changed = schedule::wake(&store.display_changed, next) => changed,
             event = events.recv() => match event {
                 Ok(event) if event.stream == crate::protocol::stream::POWER_SLEEP => {
                     if !sleep_interrupted(&store, last_resume).await { continue; }
+                    true
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 _ => continue,
             }
+        };
+        if changed {
+            settle_until = Instant::now() + Duration::from_secs(6);
         }
         let _guard = POLICY_WRITE.lock().await;
         let resume = store.read(|s| s.power_sleep.resume_generation).await;
@@ -516,6 +522,10 @@ pub(crate) async fn monitor(store: StateStore) {
             .await
         {
             tracing::info!(status = %state.status, error = ?state.error, "laptop display policy");
+        }
+        next = schedule::interval(&state);
+        if Instant::now() < settle_until {
+            next = next.min(Duration::from_secs(2));
         }
         store.update_display_policy(state).await;
     }

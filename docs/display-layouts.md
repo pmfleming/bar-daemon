@@ -174,3 +174,12 @@ The daemon does not rewrite that module.
 
 No output changes, sleep or real docking are part of automated tests. Deploy the
 daemon, UI and NixOS keybindings together before hardware verification.
+
+## Event-driven reconciliation
+
+The existing shared Hyprland observer invalidates display state on monitor
+add/remove, config reload, reconnect, disconnect and event loss. Power-owner
+context and saved settings also wake reconciliation. A fixed 50 ms window
+coalesces bursts without postponing recovery indefinitely. Healthy idle state
+uses a 30-second fallback; settling, previews and errors retain a 2-second check.
+Sleep/resume retains its separate immediate wake and preview recovery fence.

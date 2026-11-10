@@ -280,6 +280,7 @@ pub(crate) async fn action(
     let mut state = store.read(|s| s.display_policy.clone()).await;
     state.focus = focus;
     store.update_display_policy(state.clone()).await;
+    store.display_changed.notify_one();
     Ok(state)
 }
 

@@ -96,6 +96,7 @@ pub(super) async fn fixture() -> Value {
                 let mut draft = normalized.clone();
                 let observed = serde_json::to_value(&states["initial"]).unwrap();
                 for setting in draft["outputs"].as_array_mut().unwrap() {
+                    setting["relative"] = Value::Null;
                     let output = observed["outputs"]
                         .as_array()
                         .unwrap()

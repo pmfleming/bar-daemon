@@ -151,6 +151,18 @@ where
         let mut connected = false;
         while let Some(event) = events.recv().await {
             store.workspace_lifecycle.handoff_event(&event);
+            if match &event {
+                Event::Compositor(event) => matches!(
+                    event,
+                    shelllist_hyprland::CompositorEvent::MonitorAdded
+                        | shelllist_hyprland::CompositorEvent::MonitorRemoved
+                        | shelllist_hyprland::CompositorEvent::ConfigReloaded
+                        | shelllist_hyprland::CompositorEvent::Malformed { .. }
+                ),
+                _ => true,
+            } {
+                store.display_changed.notify_one();
+            }
             let refresh = match event {
                 Event::Connected { .. } => {
                     connected = true;
@@ -488,6 +500,7 @@ mod tests {
         started.acquire().await.unwrap().forget();
         store.compositor_changed.notified().await;
         store.work_area_changed.notified().await;
+        store.display_changed.notified().await;
         for _ in 0..100 {
             events
                 .send(Event::Compositor(
@@ -504,6 +517,7 @@ mod tests {
             .unwrap();
         store.compositor_changed.notified().await; // delivered while first fetch is blocked
         store.work_area_changed.notified().await;
+        store.display_changed.notified().await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(store.hyprland_connected());
         gate.add_permits(1);
