@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+pub(crate) mod advanced;
 mod draft;
 mod identity;
 mod outputs;
@@ -45,9 +46,12 @@ pub(crate) struct Setting {
     pub relative: Option<Relative>,
     #[serde(default)]
     pub match_connector: bool,
+    #[serde(default)]
+    pub advanced: advanced::Advanced,
 }
 impl Setting {
     fn validate(&self) -> Result<()> {
+        self.advanced.wire().validate()?;
         ensure!(connector(&self.name), "Invalid display connector");
         ensure!(mode(&self.mode).is_some(), "Invalid display mode");
         ensure!(
@@ -82,7 +86,7 @@ impl Setting {
         } else {
             Rule::Disable
         };
-        monitor::command(&self.name, rule)
+        monitor::command_with_advanced(&self.name, rule, self.advanced.wire())
     }
     fn observed_mode(output: &Output) -> String {
         format!(
@@ -107,10 +111,12 @@ impl Setting {
                     // own mode/scale/rotation still describe the physical output.
                     && (!self.mirror_of.is_empty() || (self.x == output.x && self.y == output.y))
                     && self.scale == output.scale
-                    && self.transform == output.transform))
+                    && self.transform == output.transform
+                    && self.advanced.matches(output)))
     }
     fn observed(output: &Output, outputs: &[Output]) -> Self {
         Self {
+            advanced: advanced::Advanced::observed(output),
             identity: Identity::observed(output)
                 .filter(|identity| outputs.iter().filter(|o| identity.matches(o)).count() == 1),
             relative: None,
@@ -191,6 +197,7 @@ impl Layout {
                 .find(|o| o.name == setting.name)
                 .context("Display disconnected; refresh the layout")?;
             if setting.enabled {
+                setting.advanced.validate_for(output)?;
                 if !setting.mirror_of.is_empty() {
                     ensure!(
                         self.outputs
@@ -390,6 +397,7 @@ async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> 
             let old_source = output.mirror_source(&current).map(|s| s.name.as_str());
             if !setting.enabled || old_source != Some(setting.mirror_of.as_str()) {
                 let mut independent = Setting::observed(output, &current);
+                independent.advanced = Default::default();
                 independent.mirror_of.clear();
                 apply_setting(backend, &independent, store, generation).await?;
             }
@@ -410,6 +418,21 @@ async fn apply<B: Backend>(backend: &B, layout: &Layout, store: &StateStore) -> 
     Ok(())
 }
 
+async fn restore<B: Backend>(backend: &B, previous: &Layout, store: &StateStore) -> Result<()> {
+    let present = previous.connected(&backend.outputs().await?)?;
+    apply(backend, &present, store).await?;
+    let outputs = backend.outputs().await?;
+    let present = previous.connected(&outputs)?;
+    ensure!(
+        present.outputs.iter().all(|s| outputs
+            .iter()
+            .find(|o| o.name == s.name)
+            .is_some_and(|o| s.matches(o, &outputs))),
+        "Layout rollback is not yet observed; keeping the recovery journal"
+    );
+    Ok(())
+}
+
 async fn apply_setting<B: Backend>(
     backend: &B,
     setting: &Setting,
@@ -425,6 +448,16 @@ async fn apply_setting<B: Backend>(
     let Some(output) = outputs.iter().find(|o| o.name == setting.name) else {
         return Ok(());
     };
+    ensure!(
+        setting
+            .identity
+            .as_ref()
+            .is_none_or(|id| id.matches(output)),
+        "Physical display changed before applying settings"
+    );
+    if setting.enabled {
+        setting.advanced.validate_for(output)?;
+    }
     if setting.matches(output, &outputs) {
         return Ok(());
     }
@@ -491,8 +524,14 @@ pub(super) fn baseline(
     format!(
         "{:016x}",
         HASHER.get_or_init(RandomState::new).hash_one(
-            serde_json::json!([policy, values, document.saved, document.profiles.revision])
-                .to_string()
+            serde_json::json!([
+                policy,
+                values,
+                document.saved,
+                document.profiles.revision,
+                document.profiles.active
+            ])
+            .to_string()
         )
     )
 }
@@ -554,7 +593,13 @@ async fn preview_at<B: Backend>(
     identity::resolve(&proposed, &outputs)?;
     placement::resolve(&mut proposed)?;
     proposed.validate(&outputs, true)?;
-    let previous = Layout::observed(&outputs);
+    let mut previous = Layout::observed(&outputs);
+    for setting in &mut previous.outputs {
+        let requested = proposed.outputs.iter().find(|s| s.name == setting.name);
+        setting
+            .advanced
+            .restrict_to(&requested.map(|s| s.advanced.clone()).unwrap_or_default());
+    }
     // Reject a non-recoverable snapshot before touching the compositor.
     previous.validate(&outputs, true)?;
     draft::validate_arrangement(&proposed, &previous)?;
@@ -650,6 +695,7 @@ async fn finish_at<B: Backend>(
         doc.saved = trial.proposed;
         if !trial.automatic {
             doc.profiles.automatic = false;
+            doc.profiles.error = None;
         }
         if let Some(name) = trial.profile {
             doc.profiles.active = Some(name);
@@ -686,12 +732,7 @@ async fn finish_at<B: Backend>(
             doc.profiles.automatic = false;
         }
     } else {
-        apply(
-            backend,
-            &trial.previous.connected(&backend.outputs().await?)?,
-            store,
-        )
-        .await?;
+        restore(backend, &trial.previous, store).await?;
     }
     save_json_atomic(path, &doc).await?;
     runtime.trial = None;
@@ -773,16 +814,18 @@ async fn tick_at<B: Backend>(
         {
             return Ok((doc, true));
         }
-        apply(
-            backend,
-            &trial.previous.connected(&backend.outputs().await?)?,
-            store,
-        )
-        .await?;
+        restore(backend, &trial.previous, store).await?;
+        let automatic = trial.automatic;
+        if automatic {
+            doc.profiles.error = Some("Automatic profile was interrupted or did not reach the requested state; previous layout restored. Edit the profile or toggle automatic switching to retry.".into());
+        }
         doc.trial = None;
         save_json_atomic(path, &doc).await?;
         runtime.trial = None;
         runtime.applied = true;
+        if automatic && let Some(error) = &doc.profiles.error {
+            bail!(error.clone());
+        }
         return Ok((doc, false));
     }
     let outputs = backend.outputs().await?;
@@ -926,7 +969,15 @@ async fn profile_action_at<B: Backend>(
         }
     }
     current.validate(&outputs, true)?;
-    doc.profiles.edit(request, current)?;
+    let capture = matches!(request, super::profiles::Request::Capture { .. });
+    doc.profiles.edit(request, current.clone())?;
+    if capture {
+        // Capturing selects this layout as the saved manual baseline too;
+        // otherwise restart or a subsequent card edit could restore the old
+        // profile's geometry or discard captured advanced attributes.
+        doc.saved = current;
+        doc.manual_enablement = true;
+    }
     save_json_atomic(path, &doc).await?;
     Ok(doc)
 }

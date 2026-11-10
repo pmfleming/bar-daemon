@@ -54,12 +54,18 @@ fn setting(value: Value) -> Result<Setting> {
             "width",
             "height",
             "relative",
+            "advanced",
             "match_connector"
         ]
         .contains(&k.as_str())),
         "Unknown display draft field"
     );
     Ok(Setting {
+        advanced: value
+            .get("advanced")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()?
+            .unwrap_or_default(),
         identity: None,
         match_connector: value
             .get("match_connector")

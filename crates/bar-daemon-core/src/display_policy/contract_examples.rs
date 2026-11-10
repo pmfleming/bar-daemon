@@ -35,6 +35,7 @@ pub(crate) fn states() -> BTreeMap<String, DisplayPolicyState> {
     };
     let previous = Layout {
         outputs: vec![Setting {
+            advanced: Default::default(),
             identity: None,
             relative: None,
             match_connector: false,

@@ -60,6 +60,8 @@ struct NormalizedOutput<'a> {
     current_mode: String,
     modes: Vec<Mode>,
     mirror_of: &'a str,
+    advanced_observed: super::advanced::Advanced,
+    advanced_options: super::advanced::Options,
 }
 
 pub(crate) fn serialize_outputs<S: Serializer>(
@@ -79,6 +81,8 @@ pub(crate) fn serialize_outputs<S: Serializer>(
             modes.insert(0, current);
         }
         NormalizedOutput {
+            advanced_observed: super::advanced::Advanced::observed(output),
+            advanced_options: super::advanced::options(output),
             observed: output,
             supported: connector(&output.name),
             internal: output.internal(),

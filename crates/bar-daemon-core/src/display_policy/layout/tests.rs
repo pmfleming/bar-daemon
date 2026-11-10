@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod advanced;
 mod mirroring;
 
 #[tokio::test]
@@ -75,6 +76,8 @@ async fn profiles_capture_preview_and_automatic_switch_share_recovery() {
     .await
     .unwrap();
     assert_eq!(captured.profiles.items.len(), 1);
+    assert_eq!(captured.saved, captured.profiles.items[0].layout);
+    assert!(captured.manual_enablement);
     assert!(f.backend.calls.borrow().is_empty());
     f.backend.outputs.borrow_mut()[0].scale = 2.0;
     let preview = super::profile_action_at(
@@ -224,6 +227,7 @@ struct Fake {
     calls: RefCell<Vec<String>>,
     fail: Cell<bool>,
     ignore_mirror: Cell<bool>,
+    ignore_advanced: Cell<bool>,
 }
 impl Backend for Fake {
     async fn eligible(&self) -> Result<()> {
@@ -278,6 +282,24 @@ impl Backend for Fake {
         }
         output.scale = setting.scale;
         output.transform = setting.transform;
+        if self.ignore_advanced.get() {
+            return Ok(());
+        }
+        if let Some(v) = setting.advanced.vrr {
+            output.vrr = Some(v);
+        }
+        if let Some(v) = setting.advanced.bit_depth {
+            output.current_format = Some(if v == 10 { "XRGB2101010" } else { "XRGB8888" }.into());
+        }
+        if let Some(v) = &setting.advanced.color {
+            output.color_management_preset = Some(v.clone());
+        }
+        if let Some(v) = setting.advanced.sdr_brightness {
+            output.sdr_brightness = Some(v);
+        }
+        if let Some(v) = setting.advanced.sdr_saturation {
+            output.sdr_saturation = Some(v);
+        }
         Ok(())
     }
 }
@@ -296,6 +318,7 @@ fn fake() -> Fake {
         calls: RefCell::new(vec![]),
         fail: Cell::new(false),
         ignore_mirror: Cell::new(false),
+        ignore_advanced: Cell::new(false),
     }
 }
 

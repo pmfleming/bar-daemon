@@ -132,6 +132,9 @@ pub(crate) async fn layout_action(
 ) -> Result<DisplayPolicyState> {
     ensure_enabled()?;
     let _guard = POLICY_WRITE.lock().await;
+    // Also wake after failed/timed-out mutations: they may have left a durable
+    // trial that needs recovery while the healthy timer would otherwise sleep.
+    store.display_changed.notify_one();
     let backend = HyprlandClient::default();
     let document = tokio::time::timeout(Duration::from_secs(8), async {
         if action == "displayLayout.preview" {
@@ -178,6 +181,7 @@ pub(crate) async fn profile_action(
     ensure_enabled()?;
     let request = serde_json::from_value(params)?;
     let _guard = POLICY_WRITE.lock().await;
+    store.display_changed.notify_one();
     let backend = HyprlandClient::default();
     let document = tokio::time::timeout(
         Duration::from_secs(8),
@@ -429,7 +433,7 @@ async fn refresh<B: Backend>(
                 .select(&state.outputs, &state.profile_context)?
             {
                 Some(profile) => format!(
-                    "Automatic: {} (priority {}, {} required displays)",
+                    "Matched: {} (priority {}, {} required displays)",
                     profile.name,
                     profile.priority,
                     profile.required.len()

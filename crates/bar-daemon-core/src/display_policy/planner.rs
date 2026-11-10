@@ -39,6 +39,18 @@ pub(crate) struct Output {
     pub available_modes: Vec<String>,
     #[serde(default, rename = "mirrorOf", deserialize_with = "mirror_reference")]
     pub mirror_of: String,
+    #[serde(default)]
+    pub vrr: Option<bool>,
+    #[serde(default, rename = "currentFormat")]
+    pub current_format: Option<String>,
+    #[serde(default, rename = "colorManagementPreset")]
+    pub color_management_preset: Option<String>,
+    #[serde(default, rename = "sdrBrightness")]
+    pub sdr_brightness: Option<f64>,
+    #[serde(default, rename = "sdrSaturation")]
+    pub sdr_saturation: Option<f64>,
+    #[serde(default, rename = "hardwareDetails")]
+    pub hardware_details: super::layout::advanced::Hardware,
     // DPMS intentionally does not participate in eligibility: idle blanking
     // must not turn another display on.
 }

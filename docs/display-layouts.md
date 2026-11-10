@@ -40,12 +40,12 @@ rotation/reflection and enablement of any output, including the laptop panel.
 At least one display must remain enabled; another output must actually be usable
 before each disable command. The UI blocks disabling the last enabled display.
 Workspace rules remain ordinary declarative Hyprland configuration. This editor
-supports extended and mirrored content, but does not provide bit-depth or
-workspace-rule UI.
+supports extended and mirrored content, including the advanced attributes below.
+Workspace rules remain outside this editor.
 
 API additions (bar-api v1, existing `display-policy.changed` stream):
 
-- `displayLayout.preview {outputs: [{name, mode, x, y, scale, transform, enabled, mirror_of}]}`
+- `displayLayout.preview {baseline, outputs: [{name, mode, x, y, scale, transform, enabled, mirror_of}]}` (optional `relative`, `match_connector`, `advanced`)
 - `displayLayout.confirm {id}`
 - `displayLayout.revert {id}`
 
@@ -183,3 +183,28 @@ context and saved settings also wake reconciliation. A fixed 50 ms window
 coalesces bursts without postponing recovery indefinitely. Healthy idle state
 uses a 30-second fallback; settling, previews and errors retain a 2-second check.
 Sleep/resume retains its separate immediate wake and preview recovery fence.
+
+## Advanced display attributes
+
+Expansion cards expose sparse `advanced` settings: explicit VRR off/on, 8/10-bit
+color, color/HDR presets, SDR brightness (0.1–3) and saturation (0–2). The daemon
+publishes `advanced_observed` and `advanced_options`; absent telemetry means
+unavailable, never a guessed default. HDR, BT.2020 and EDID selections require
+reported hardware evidence. A readable 8/10-bit format permits a 10-bit preview,
+not a claim that the link supports it. Keep fails if the compositor silently
+falls back to another depth or preset. Unsupported requests fail before writes.
+
+These are the documented [Hyprland monitor fields](https://wiki.hypr.land/configuring/core/monitors/colors/)
+and [VRR controls](https://wiki.hypr.land/configuring/core/monitors/modes/).
+Readback follows [the monitor IPC implementation](https://github.com/hyprwm/Hyprland/blob/main/src/ipc/s1/Commands.cpp).
+VRR exposes only off/on because IPC reports active adaptive sync, not the original
+fullscreen/global rule. Explicitly managing it adopts that observed off/on state;
+rollback restores that state, not an unobservable conditional config rule.
+Color presets likewise manage observed output state. Automatic CM and arbitrary
+ICC paths are outside this bounded interface.
+
+Advanced changes share the durable whole-layout trial. Restart/timeout recovery
+restores the previously observed fields. Geometry-only edits leave unmanaged
+advanced fields out of both mutation and rollback commands. Profiles capture
+observable advanced settings alongside geometry. No hardware override flags or
+raw compositor commands are accepted from the UI.
