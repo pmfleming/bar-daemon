@@ -449,6 +449,7 @@ dependencies = [
  "shelllist-daemon-tokio",
  "shelllist-hyprland",
  "shelllist-search",
+ "shelllist-update-session",
  "shelllist-update-status",
  "tempfile",
  "tokio",
@@ -3100,6 +3101,25 @@ dependencies = [
  "serde_json",
  "strsim",
  "unicode-normalization",
+]
+
+[[package]]
+name = "shelllist-update-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "ksni",
+ "notify",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "shelllist-daemon-core",
+ "shelllist-update-status",
+ "tokio",
+ "tracing",
+ "zbus",
 ]
 
 [[package]]

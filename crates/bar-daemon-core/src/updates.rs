@@ -1,224 +1,51 @@
-use std::path::{Path, PathBuf};
+//! Temporary in-process transport adapter for the update-owned session domain.
+use crate::{model::UpdateState, state::StateStore};
+use anyhow::Result;
+use std::sync::Arc;
+pub(crate) use shelllist_update_session::updates::{history, open};
 
-use anyhow::{Context, Result, ensure};
-use shelllist_update_status::{FILE_NAME, MAX_BYTES, Readiness};
-
-use crate::{
-    model::{UpdateLane, UpdateState},
-    state::StateStore,
-};
-
-mod catalog;
-mod desktop;
-#[cfg(test)]
-mod desktop_tests;
-mod files;
-pub(crate) mod history;
-mod jobs;
-mod json;
-mod manual;
-#[cfg(test)]
-mod manual_tests;
-pub(crate) mod overview;
-mod reader;
-mod tray;
-mod watch;
-
-pub(crate) async fn open(run_id: &str, token: Option<&str>) -> Result<()> {
-    ensure!(
-        run_id.is_empty() || shelllist_update_status::valid_run_id(run_id),
-        "Invalid update run identity"
-    );
-    let mut command = tokio::process::Command::new(
-        std::env::var_os("BAR_DAEMON_SHELLLIST").unwrap_or_else(|| "shelllist".into()),
-    );
-    if run_id.is_empty() {
-        command.args(["updates", "open"]);
-    } else {
-        command.args(["updates", "run", run_id]);
-    }
-    if let Some(token) = token.filter(|token| token.len() <= 4096) {
-        command.env("XDG_ACTIVATION_TOKEN", token);
-    }
-    command.kill_on_drop(true);
-    let status = tokio::time::timeout(std::time::Duration::from_secs(5), command.status())
-        .await
-        .context("Updates launcher timed out")??;
-    ensure!(status.success(), "Updates launcher failed");
-    Ok(())
-}
-
-const DEFAULT_STATE_DIR: &str = "/var/lib/nixos-delayed-updates-v2";
-
-pub(crate) fn state_dir() -> PathBuf {
-    std::env::var_os("BAR_DAEMON_UPDATE_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR))
+pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
+    let updates = shelllist_update_session::state::StateStore::default();
+    let value = shelllist_update_session::updates::refresh_default(&updates).await?;
+    store.update_updates(value.clone()).await;
+    Ok(value)
 }
 
 pub(crate) async fn monitor(
     store: StateStore,
-    service: std::sync::Arc<crate::activity::notifications::service::NotificationService>,
+    service: Arc<crate::activity::notifications::service::NotificationService>,
 ) {
-    monitor_path(store, state_dir(), Some(service)).await;
-}
-
-async fn monitor_path(
-    store: StateStore,
-    directory: PathBuf,
-    service: Option<std::sync::Arc<crate::activity::notifications::service::NotificationService>>,
-) {
-    let enabled =
-        service.is_some() && std::env::var("BAR_DAEMON_UPDATE_DESKTOP").as_deref() != Ok("0");
-    let collect_history = service.is_some();
-    let manual_directory = collect_history.then(manual::directory).flatten();
-    let mut history = service.map(|service| HistoryMonitor {
-        publisher: enabled.then(|| desktop::Publisher::new(service)),
-        last_revision: None,
-    });
-    let _tray = if enabled {
-        tray::start()
-            .await
-            .map_err(|error| tracing::warn!(%error, "Update tray unavailable"))
-            .ok()
-    } else {
-        None
-    };
-    let mut watch = watch::Watch::new();
-    let mut manual_watch = watch::Watch::new_rebuilds();
-    loop {
-        watch.refresh(&directory);
-        if let Some(path) = &manual_directory {
-            manual_watch.refresh(path);
-        }
-        refresh_path(&store, directory.clone()).await;
-        if let Some(history) = &mut history
-            && let Err(error) = history
-                .refresh(&store, directory.clone(), manual_directory.clone())
-                .await
-        {
-            tracing::warn!(error = %format_args!("{error:#}"), "Update history refresh unavailable");
-        }
-        tokio::select! { _ = watch.wait() => {}, _ = manual_watch.wait(), if manual_directory.is_some() => {} }
-    }
-}
-
-struct HistoryMonitor {
-    last_revision: Option<u64>,
-    publisher: Option<desktop::Publisher>,
-}
-impl HistoryMonitor {
-    async fn refresh(
-        &mut self,
-        store: &StateStore,
-        directory: PathBuf,
-        manual: Option<PathBuf>,
-    ) -> Result<()> {
-        let catalog =
-            reader::run(move || Ok(history::load_catalog(&directory, manual.as_deref()))).await?;
-        let revision = catalog.revision().context("Fingerprint update catalog")?;
-        if self.last_revision != Some(revision) {
-            store.invalidate_update_history().await;
-            self.last_revision = Some(revision);
-        }
-        // Delivery retries even when the catalog is unchanged, but a delivery
-        // failure must not prevent or repeatedly emit history invalidation.
-        if let Some(publisher) = &mut self.publisher {
-            publisher
-                .reconcile(&catalog)
-                .await
-                .context("Deliver update outcomes")?;
-        }
-        Ok(())
-    }
-}
-
-pub(crate) async fn refresh_default(store: &StateStore) -> Result<UpdateState> {
-    let directory = state_dir();
-    let state = tokio::task::spawn_blocking(move || read_state(&directory))
-        .await
-        .context("join update status refresh")??;
-    store.update_updates(state.clone()).await;
-    Ok(state)
-}
-
-async fn refresh_path(store: &StateStore, directory: PathBuf) {
-    let state_directory = directory_display(&directory);
-    let result = tokio::task::spawn_blocking(move || read_state(&directory))
-        .await
-        .unwrap_or_else(|error| Err(error.into()));
-    store
-        .update_updates(result.unwrap_or_else(|error| UpdateState {
-            state_directory,
-            error: Some(error.to_string()),
-            ..UpdateState::default()
-        }))
-        .await;
-}
-
-fn read_state(directory: &Path) -> Result<UpdateState> {
-    if !directory.exists() {
-        return Ok(UpdateState {
-            available: false,
-            state_directory: directory_display(directory),
-            error: None,
-            ..UpdateState::default()
-        });
-    }
-    let (lane, error) = match read_lane(directory, "delayed") {
-        Ok(lane) => (lane, None),
-        Err(error) => (
-            UpdateLane {
-                name: "delayed".into(),
-                ..Default::default()
-            },
-            Some(format!("Update readiness is unavailable: {error:#}")),
-        ),
-    };
-    Ok(UpdateState {
-        available: true,
-        ready: lane.ready,
-        lanes: vec![lane],
-        jobs: jobs::read(directory),
-        state_directory: directory_display(directory),
-        error,
-    })
-}
-
-fn read_lane(directory: &Path, name: &str) -> Result<UpdateLane> {
-    let bytes = shelllist_daemon_core::read_bytes_bounded(
-        &directory.join(name).join(FILE_NAME),
-        MAX_BYTES as u64,
-    )?
-    .context("readiness.json is missing; update-worker must publish its public status")?;
-    let record = Readiness::decode(&bytes)?;
-    let Some(candidate) = record.candidate else {
-        return Ok(UpdateLane {
-            name: name.into(),
-            ..Default::default()
-        });
-    };
-    // Check the path contained in this record, never the mutable legacy link.
-    ensure!(
-        std::fs::metadata(&candidate.system)?.is_dir(),
-        "Candidate system is not a directory"
+    let updates = shelllist_update_session::state::StateStore::default();
+    let mut events = updates.subscribe();
+    let sink = shelllist_update_session::notification::NotificationService::new(
+        service.durable_updates(),
+        move |key, run_id, incoming| {
+            let service = service.clone();
+            Box::pin(async move {
+                let incoming = serde_json::from_value(serde_json::to_value(incoming)?)?;
+                service.notify_update_once(key, run_id, incoming).await
+            })
+        },
     );
-    Ok(UpdateLane {
-        name: name.into(),
-        ready: true,
-        revision: Some(candidate.revision),
-        base_hash: Some(candidate.base_hash),
-        created_at: Some(candidate.created_at),
-        auto_apply: candidate.auto_apply,
-        system: Some(directory_display(&candidate.system)),
-    })
+    let forward = async {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    if let Ok(value) = serde_json::from_value(event.data) {
+                        store.update_updates(value).await;
+                        store.invalidate_update_history().await;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    store.update_updates(updates.snapshot().await).await;
+                    store.invalidate_update_history().await;
+                }
+                Err(_) => break,
+            }
+        }
+    };
+    tokio::select! {
+        _ = shelllist_update_session::updates::monitor(updates.clone(), sink) => {},
+        _ = forward => {},
+    }
 }
-
-fn directory_display(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
-
-#[cfg(test)]
-mod producer_tests;
-#[cfg(test)]
-mod tests;

@@ -154,7 +154,7 @@ pub(crate) struct TimezoneState {
     pub error: Option<String>,
 }
 
-pub(crate) use shelllist_update_status::api::{UpdateJob, UpdateLane, UpdateState};
+pub(crate) use shelllist_update_status::api::UpdateState;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PowerProfileState {
