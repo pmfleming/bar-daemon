@@ -3117,6 +3117,7 @@ dependencies = [
  "serde_json",
  "shelllist-daemon-core",
  "shelllist-update-status",
+ "shelllist-update-store",
  "tokio",
  "tracing",
  "zbus",
@@ -3128,6 +3129,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "shelllist-update-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "rustix 1.1.4",
+ "serde_json",
+ "shelllist-update-status",
+ "turso",
 ]
 
 [[package]]
@@ -3971,6 +3984,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shelllist-update-status",
+ "shelllist-update-store",
  "tempfile",
  "tokio",
 ]
