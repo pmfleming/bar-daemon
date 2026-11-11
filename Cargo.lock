@@ -3138,6 +3138,7 @@ dependencies = [
  "anyhow",
  "futures",
  "rustix 1.1.4",
+ "serde",
  "serde_json",
  "shelllist-update-status",
  "turso",
